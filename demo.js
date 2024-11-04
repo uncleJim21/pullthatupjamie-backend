@@ -52,7 +52,7 @@ async function runDemo() {
         await agent.initialize();
 
         // Demo 1: Find conceptual connections
-        const topic = "immigration"
+        const topic = "bitcoiner's take on election outcome"
         console.log(`🔍 Demo 1: Finding conceptual connections about "${topic}"...`);
         const connections = await agent.findConceptualConnections(topic);
         console.log('\nConceptual Connections Results:');
@@ -67,6 +67,14 @@ async function runDemo() {
         // console.log(evolution.output);
         // saveOutputToFile(evolution.output, 'topic-evolution');
         // console.log('\n' + '-'.repeat(80) + '\n');
+
+        // console.log('🔍 Fetching top headlines...');
+        // const headlines = await agent.getTopHeadlines();
+        
+        // console.log('\nTop Headlines Results:');
+        // console.log(headlines.output);
+
+        // saveOutputToFile(headlines.output,"headlines")
 
     } catch (error) {
         if (error.code?.includes('Neo.ClientError')) {

@@ -5,6 +5,7 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { initializeAgentExecutorWithOptions } = require('langchain/agents');
 const { DynamicTool } = require('langchain/tools');
 const neo4jTools = require('./agent-tools/neo4jTools');
+const {SearxNGTool} = require('./agent-tools/searxngTool')
 
 class PodcastAnalysisAgent {
     constructor(openaiKey) {
@@ -22,6 +23,7 @@ class PodcastAnalysisAgent {
             temperature: 0.7
         });
 
+        this.searxng = new SearxNGTool();
         this.tools = this.createTools();
         this.executor = null;
     }
@@ -35,7 +37,6 @@ class PodcastAnalysisAgent {
                     try {
                         const embedding = await this.embeddings.embedQuery(topic);
                         const results = await neo4jTools.findSimilarDiscussions({ embedding });
-                        // Format results into a descriptive string
                         return results.map(r => 
                             `Episode: "${r.episode}" by ${r.creator} (${r.date})\nQuote: "${r.quote}"\nSimilarity: ${r.similarity}`
                         ).join('\n\n');
@@ -44,7 +45,7 @@ class PodcastAnalysisAgent {
                     }
                 }
             }),
-            // new DynamicTool({
+                        // new DynamicTool({
             //     name: "find_timeline_discussions",
             //     description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
             //     func: async (input) => {
@@ -70,6 +71,36 @@ class PodcastAnalysisAgent {
                         return `Database contains ${stats.episodeCount} episodes, ${stats.sentenceCount} sentences, and ${stats.creatorCount} unique creators.`;
                     } catch (error) {
                         return `Error getting database stats: ${error.message}`;
+                    }
+                }
+            }),
+            new DynamicTool({
+                name: "search_news",
+                description: "Search for recent news headlines and articles using SearxNG. You can specify topics or get general news.",
+                func: async (query) => {
+                    try {
+                        const results = await this.searxng.search(query, {
+                            time_range: 'day',
+                            categories: 'news'
+                        });
+                        return JSON.stringify(results.slice(0, 5), null, 2);
+                    } catch (error) {
+                        return `Error searching news: ${error.message}`;
+                    }
+                }
+            }),
+            new DynamicTool({
+                name: "get_top_headlines",
+                description: "Get the current top news headlines from various sources",
+                func: async () => {
+                    try {
+                        const headlines = await this.searxng.getTopHeadlines();
+                        return JSON.stringify(headlines.map(h => ({
+                            title: h.title,
+                            summary: h.snippet
+                        })), null, 2);
+                    } catch (error) {
+                        return `Error fetching headlines: ${error.message}`;
                     }
                 }
             })
@@ -101,12 +132,29 @@ class PodcastAnalysisAgent {
         });
     }
 
-    async analyzeTopicEvolution(topic, timeframe) {
+    // async analyzeTopicEvolution(topic, timeframe) {
+    //     await this.initialize();
+    //     return this.executor.call({
+    //         input: `Analyze how discussions about "${topic}" have evolved over ${timeframe}. 
+    //                First get timeline data, then analyze for trends and shifts in perspective.
+    //                Consider: key turning points, emerging themes, and changing approaches.`
+    //     });
+    // }
+
+    async getTopHeadlines() {
         await this.initialize();
         return this.executor.call({
-            input: `Analyze how discussions about "${topic}" have evolved over ${timeframe}. 
-                   First get timeline data, then analyze for trends and shifts in perspective.
-                   Consider: key turning points, emerging themes, and changing approaches.`
+            input: `Get the current top news headlines and provide a brief summary of each. 
+                   Use the get_top_headlines tool to fetch the latest news, then organize and 
+                   present the information in a clear, structured format.`
+        });
+    }
+
+    async searchNews(query) {
+        await this.initialize();
+        return this.executor.call({
+            input: `Search for recent news articles about "${query}" and provide a summary of the findings. 
+                   Focus on credible sources and recent developments.`
         });
     }
 

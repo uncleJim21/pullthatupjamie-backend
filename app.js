@@ -4,11 +4,14 @@ const { BatchPodcastProcessor } = require('./BatchPodcastProcessor');
 
 async function main() {
     try {
-        const feedUrl = 'https://feeds.megaphone.fm/GLT1412515089'; //JRE
-        const feedId = 550168; //JRE
+        // const feedUrl = 'https://feeds.megaphone.fm/GLT1412515089'; //JRE
+        // const feedId = 550168; //JRE
         // const feedUrl = 'https://feeds.npr.org/500005/podcast.xml';
         // const feedId = 55810;
-        const EPISODES_TO_PROCESS = 5;
+
+        const feedUrl = 'https://api.substack.com/feed/podcast/9895.rss'; // thriller bitcoin
+        const feedId = 3955537;//thriller bitcoin
+        const EPISODES_TO_PROCESS = 10;
         
         const processor = new BatchPodcastProcessor({
             batchSize: 20,
