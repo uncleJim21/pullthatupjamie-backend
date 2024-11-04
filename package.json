@@ -9,10 +9,14 @@
   "author": "uj21",
   "license": "ISC",
   "dependencies": {
+    "@langchain/community": "^0.3.11",
+    "@langchain/openai": "^0.3.11",
     "axios": "^1.7.7",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.5",
+    "langchain": "^0.3.5",
     "neo4j-driver": "^5.26.0",
-    "openai": "^4.70.2"
+    "openai": "^4.70.2",
+    "web-streams-polyfill": "^4.0.0"
   }
 }
