@@ -52,20 +52,21 @@ async function runDemo() {
         await agent.initialize();
 
         // Demo 1: Find conceptual connections
-        // console.log('🔍 Demo 1: Finding conceptual connections about "political elections"...');
-        // const connections = await agent.findConceptualConnections('political elections');
-        // console.log('\nConceptual Connections Results:');
-        // console.log(connections.output);
-        // saveOutputToFile(connections.output, 'conceptual-connections');
-        // console.log('\n' + '-'.repeat(80) + '\n');
+        const topic = "immigration"
+        console.log(`🔍 Demo 1: Finding conceptual connections about "${topic}"...`);
+        const connections = await agent.findConceptualConnections(topic);
+        console.log('\nConceptual Connections Results:');
+        console.log(connections.output);
+        saveOutputToFile(connections.output, 'conceptual-connections');
+        console.log('\n' + '-'.repeat(80) + '\n');
 
         // Demo 2: Analyze topic evolution
-        console.log('📈 Demo 2: Analyzing evolution of discussions about "artificial intelligence"...');
-        const evolution = await agent.analyzeTopicEvolution('artificial intelligence', 'P6M');
-        console.log('\nTopic Evolution Results:');
-        console.log(evolution.output);
-        saveOutputToFile(evolution.output, 'topic-evolution');
-        console.log('\n' + '-'.repeat(80) + '\n');
+        // console.log('📈 Demo 2: Analyzing evolution of discussions about "artificial intelligence"...');
+        // const evolution = await agent.analyzeTopicEvolution('artificial intelligence', 'P6M');
+        // console.log('\nTopic Evolution Results:');
+        // console.log(evolution.output);
+        // saveOutputToFile(evolution.output, 'topic-evolution');
+        // console.log('\n' + '-'.repeat(80) + '\n');
 
     } catch (error) {
         if (error.code?.includes('Neo.ClientError')) {

@@ -23,7 +23,7 @@ const neo4jTools = {
                        e.publishedDate as date,
                        similarity
                 ORDER BY similarity DESC
-                LIMIT 5
+                LIMIT 50
             `, { embedding, limit });
 
             return result.records.map(record => ({
@@ -38,12 +38,12 @@ const neo4jTools = {
         }
     },
 
-    findTimelineDiscussions: async ({ embedding, timeframe = 'P1Y' }) => {
+    findTimelineDiscussions: async ({ embedding, timeframe = 'P6M' }) => {
         const session = neo4jDriver.session();
         try {
             const result = await session.run(`
                 MATCH (e:Episode)-[:CONTAINS]->(s:Sentence)
-                WHERE datetime(e.publishedDate) > datetime() - duration("${timeframe}")
+                WHERE datetime(e.publishedDate) > datetime() - duration('P6M')
                     AND s.embedding IS NOT NULL
                 WITH e, s,
                      reduce(dot = 0.0, i in range(0, size($embedding)-1) | 
@@ -56,12 +56,13 @@ const neo4jTools = {
                 WHERE similarity > 0.7
                 WITH e, collect(s.text) as quotes, e.publishedDate as date
                 ORDER BY date
+                LIMIT 100
                 RETURN e.title as episode,
                        date,
                        quotes,
                        size(quotes) as mention_count
             `, { embedding });
-
+    
             return result.records.map(record => ({
                 episode: record.get('episode'),
                 date: record.get('date'),
@@ -72,6 +73,7 @@ const neo4jTools = {
             await session.close();
         }
     },
+    
 
     getStats: async () => {
         const session = neo4jDriver.session();

@@ -44,23 +44,23 @@ class PodcastAnalysisAgent {
                     }
                 }
             }),
-            new DynamicTool({
-                name: "find_timeline_discussions",
-                description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
-                func: async (input) => {
-                    try {
-                        const [topic, timeframe] = input.split(',').map(s => s.trim());
-                        const embedding = await this.embeddings.embedQuery(topic);
-                        const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
-                        // Format results into a descriptive string
-                        return results.map(r => 
-                            `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
-                        ).join('\n\n');
-                    } catch (error) {
-                        return `Error finding timeline discussions: ${error.message}`;
-                    }
-                }
-            }),
+            // new DynamicTool({
+            //     name: "find_timeline_discussions",
+            //     description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
+            //     func: async (input) => {
+            //         try {
+            //             const [topic, timeframe] = input.split(',').map(s => s.trim());
+            //             const embedding = await this.embeddings.embedQuery(topic);
+            //             const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
+            //             // Format results into a descriptive string
+            //             return results.map(r => 
+            //                 `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
+            //             ).join('\n\n');
+            //         } catch (error) {
+            //             return `Error finding timeline discussions: ${error.message}`;
+            //         }
+            //     }
+            // }),
             new DynamicTool({
                 name: "get_database_stats",
                 description: "Get statistics about the podcast database",
