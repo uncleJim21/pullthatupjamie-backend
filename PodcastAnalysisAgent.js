@@ -84,7 +84,7 @@ class PodcastAnalysisAgent {
                 {
                     agentType: "zero-shot-react-description",
                     verbose: true,
-                    maxIterations: 3,
+                    maxIterations: 10,
                     returnIntermediateSteps: true
                 }
             );

@@ -6,24 +6,24 @@ const neo4jTools = {
         const session = neo4jDriver.session();
         try {
             const result = await session.run(`
-                MATCH (e:Episode)-[:CONTAINS]->(s:Sentence)
-                WHERE s.embedding IS NOT NULL
-                WITH e, s, 
+                MATCH (e:Episode)-[:CONTAINS]->(p:Paragraph)
+                WHERE p.embedding IS NOT NULL
+                WITH e, p, 
                      reduce(dot = 0.0, i in range(0, size($embedding)-1) | 
-                        dot + $embedding[i] * s.embedding[i]) as dotProduct,
+                        dot + $embedding[i] * p.embedding[i]) as dotProduct,
                      sqrt(reduce(norm1 = 0.0, i in range(0, size($embedding)-1) | 
                         norm1 + $embedding[i] * $embedding[i])) as norm1,
-                     sqrt(reduce(norm2 = 0.0, i in range(0, size(s.embedding)-1) | 
-                        norm2 + s.embedding[i] * s.embedding[i])) as norm2
-                WITH e, s, dotProduct/(norm1*norm2) as similarity
+                     sqrt(reduce(norm2 = 0.0, i in range(0, size(p.embedding)-1) | 
+                        norm2 + p.embedding[i] * p.embedding[i])) as norm2
+                WITH e, p, dotProduct/(norm1*norm2) as similarity
                 WHERE similarity > 0.7
                 RETURN e.title as episode,
                        e.creator as creator,
-                       s.text as quote,
+                       p.text as quote,
                        e.publishedDate as date,
                        similarity
                 ORDER BY similarity DESC
-                LIMIT 50
+                LIMIT 20
             `, { embedding, limit });
 
             return result.records.map(record => ({
@@ -42,26 +42,26 @@ const neo4jTools = {
         const session = neo4jDriver.session();
         try {
             const result = await session.run(`
-                MATCH (e:Episode)-[:CONTAINS]->(s:Sentence)
-                WHERE datetime(e.publishedDate) > datetime() - duration('P6M')
-                    AND s.embedding IS NOT NULL
-                WITH e, s,
+                MATCH (e:Episode)-[:CONTAINS]->(p:Paragraph)
+                WHERE datetime(e.publishedDate) > datetime() - duration($timeframe)
+                    AND p.embedding IS NOT NULL
+                WITH e, p,
                      reduce(dot = 0.0, i in range(0, size($embedding)-1) | 
-                        dot + $embedding[i] * s.embedding[i]) as dotProduct,
+                        dot + $embedding[i] * p.embedding[i]) as dotProduct,
                      sqrt(reduce(norm1 = 0.0, i in range(0, size($embedding)-1) | 
                         norm1 + $embedding[i] * $embedding[i])) as norm1,
-                     sqrt(reduce(norm2 = 0.0, i in range(0, size(s.embedding)-1) | 
-                        norm2 + s.embedding[i] * s.embedding[i])) as norm2
-                WITH e, s, dotProduct/(norm1*norm2) as similarity
+                     sqrt(reduce(norm2 = 0.0, i in range(0, size(p.embedding)-1) | 
+                        norm2 + p.embedding[i] * p.embedding[i])) as norm2
+                WITH e, p, dotProduct/(norm1*norm2) as similarity
                 WHERE similarity > 0.7
-                WITH e, collect(s.text) as quotes, e.publishedDate as date
+                WITH e, collect(p.text) as quotes, e.publishedDate as date
                 ORDER BY date
                 LIMIT 100
                 RETURN e.title as episode,
                        date,
                        quotes,
                        size(quotes) as mention_count
-            `, { embedding });
+            `, { embedding, timeframe });
     
             return result.records.map(record => ({
                 episode: record.get('episode'),
@@ -74,23 +74,22 @@ const neo4jTools = {
         }
     },
     
-
     getStats: async () => {
         const session = neo4jDriver.session();
         try {
             const stats = await session.run(`
-                MATCH (e:Episode)-[:CONTAINS]->(s:Sentence)
+                MATCH (e:Episode)-[:CONTAINS]->(p:Paragraph)
                 WITH count(distinct e) as episodeCount,
-                     count(s) as sentenceCount,
+                     count(p) as paragraphCount,
                      count(distinct e.creator) as creatorCount,
-                     count(s.embedding) as embeddingCount
-                RETURN episodeCount, sentenceCount, creatorCount, embeddingCount
+                     count(p.embedding) as embeddingCount
+                RETURN episodeCount, paragraphCount, creatorCount, embeddingCount
             `);
             
             const record = stats.records[0];
             return {
                 episodeCount: record.get('episodeCount').toNumber(),
-                sentenceCount: record.get('sentenceCount').toNumber(),
+                paragraphCount: record.get('paragraphCount').toNumber(),
                 creatorCount: record.get('creatorCount').toNumber(),
                 embeddingCount: record.get('embeddingCount').toNumber()
             };
@@ -98,16 +97,15 @@ const neo4jTools = {
             await session.close();
         }
     }
-    
 };
 
 const validateEmbeddings = async () => {
     const session = neo4jDriver.session();
     try {
         const result = await session.run(`
-            MATCH (s:Sentence)
-            WITH count(s) as total,
-                 count(s.embedding) as withEmbedding
+            MATCH (p:Paragraph)
+            WITH count(p) as total,
+                 count(p.embedding) as withEmbedding
             RETURN total, withEmbedding
         `);
         
@@ -116,7 +114,7 @@ const validateEmbeddings = async () => {
         const withEmbedding = record.get('withEmbedding').toNumber();
         
         return {
-            totalSentences: total,
+            totalParagraphs: total,
             withEmbeddings: withEmbedding,
             percentageComplete: (withEmbedding / total * 100).toFixed(2) + '%'
         };

@@ -2,19 +2,17 @@ require('dotenv').config();
 const axios = require('axios');
 const crypto = require('crypto');
 const neo4jDriver = require('./mentionsNeo4jDriver');
-const { OpenAI } = require('openai');  // Fixed import syntax
+const { OpenAI } = require('openai');
 
 class BatchPodcastProcessor {
     constructor(options = {}) {
         this.SHARED_SECRET = process.env.SHARED_HMAC_SECRET;
         this.WHISPR_BASE_URL = 'https://whispr-v3-w-caching-ex8zk.ondigitalocean.app/WHSPR';
         
-        // Initialize OpenAI with new client format
         this.openai = new OpenAI({
             apiKey: process.env.OPENAI_API_KEY
         });
         
-        // Batch processing configuration
         this.BATCH_SIZE = options.batchSize || 20;
         this.CONCURRENT_BATCHES = options.concurrentBatches || 3;
         this.NEO4J_BATCH_SIZE = options.neo4jBatchSize || 50;
@@ -23,7 +21,6 @@ class BatchPodcastProcessor {
     async processFeed(feedUrl, feedId) {
         const session = neo4jDriver.session();
         try {
-            // Fetch feed metadata
             console.log('Fetching feed metadata...');
             const feedResponse = await axios.post('https://rss-extractor-app-yufbq.ondigitalocean.app/searchFeeds', {
                 podcastName: feedUrl
@@ -34,7 +31,6 @@ class BatchPodcastProcessor {
                 throw new Error(`Feed not found with ID ${feedId}`);
             }
 
-            // Store feed data
             await session.run(`
                 MERGE (f:Feed {feedId: $feedId})
                 ON CREATE SET
@@ -80,19 +76,16 @@ class BatchPodcastProcessor {
             console.log(`Processing episode: ${episode.itemTitle}`);
             const transcript = await this.getTranscript(audioUrl, episode.episodeGUID);
             
-            // Store episode data first
             await this.storeEpisodeData(episode, feedId);
 
-            // Process transcript if available
             if (transcript && transcript.channels && transcript.channels.length > 0) {
-                // Process transcript sentences
-                const sentences = this.extractSentences(transcript);
-                if (sentences.length > 0) {
-                    await this.batchProcessSentences(sentences, episode.episodeGUID, feedId);
-                    return { success: true, sentenceCount: sentences.length };
+                const paragraphs = this.extractParagraphs(transcript);
+                if (paragraphs.length > 0) {
+                    await this.batchProcessParagraphs(paragraphs, episode.episodeGUID, feedId);
+                    return { success: true, paragraphCount: paragraphs.length };
                 } else {
-                    console.warn(`No valid sentences found in transcript for episode: ${episode.itemTitle}`);
-                    return { success: false, sentenceCount: 0, reason: 'No valid sentences found' };
+                    console.warn(`No valid paragraphs found in transcript for episode: ${episode.itemTitle}`);
+                    return { success: false, paragraphCount: 0, reason: 'No valid paragraphs found' };
                 }
             } else {
                 console.warn(`Invalid transcript received for episode: ${episode.itemTitle}`);
@@ -212,78 +205,66 @@ class BatchPodcastProcessor {
         });
     }
 
-    extractSentences(transcript) {
+    extractParagraphs(transcript) {
         try {
-            // Validate transcript structure
             if (!transcript?.channels?.[0]?.alternatives?.[0]?.paragraphs?.paragraphs) {
                 console.warn('Invalid transcript structure:', JSON.stringify(transcript, null, 2));
                 return [];
             }
 
             const paragraphs = transcript.channels[0].alternatives[0].paragraphs.paragraphs;
-            
-            // Additional validation
+
             if (!Array.isArray(paragraphs)) {
                 console.warn('Paragraphs is not an array:', paragraphs);
                 return [];
             }
 
-            const sentences = paragraphs.flatMap(paragraph => {
+            return paragraphs.map(paragraph => {
                 if (!paragraph?.sentences || !Array.isArray(paragraph.sentences)) {
                     console.warn('Invalid paragraph structure:', paragraph);
-                    return [];
+                    return null;
                 }
 
-                return paragraph.sentences.map(sentence => {
-                    // Validate sentence structure
-                    if (!sentence?.text || !sentence?.start || !sentence?.end) {
-                        console.warn('Invalid sentence structure:', sentence);
-                        return null;
-                    }
-
-                    return {
-                        text: sentence.text,
-                        start_time: sentence.start,
-                        end_time: sentence.end,
-                        words: transcript.channels[0].words
-                            ?.filter(w => w.start >= sentence.start && w.end <= sentence.end) || []
-                    };
-                }).filter(Boolean); // Remove null sentences
-            });
-
-            console.log(`Extracted ${sentences.length} valid sentences`);
-            return sentences;
+                const paragraphText = paragraph.sentences.map(s => s.text).join(' ');
+                return {
+                    text: paragraphText,
+                    start_time: paragraph.start,
+                    end_time: paragraph.end,
+                    num_words: paragraph.num_words,
+                    words: transcript.channels[0].words?.filter(w => w.start >= paragraph.start && w.end <= paragraph.end) || []
+                };
+            }).filter(Boolean); // Remove null paragraphs
         } catch (error) {
-            console.error('Error extracting sentences:', error);
+            console.error('Error extracting paragraphs:', error);
             return [];
         }
     }
 
-    async batchProcessSentences(sentences, episodeGuid, feedId) {
-        const batches = this.chunkArray(sentences, this.BATCH_SIZE);
-        const embeddedSentences = [];
+    async batchProcessParagraphs(paragraphs, episodeGuid, feedId) {
+        const batches = this.chunkArray(paragraphs, this.BATCH_SIZE);
+        const embeddedParagraphs = [];
 
         for (let i = 0; i < batches.length; i += this.CONCURRENT_BATCHES) {
             const batchPromises = batches.slice(i, i + this.CONCURRENT_BATCHES)
                 .map(async batch => {
                     const batchEmbeddings = await this.getBatchEmbeddings(
-                        batch.map(s => s.text)
+                        batch.map(p => p.text)
                     );
-                    return batch.map((sentence, index) => ({
-                        ...sentence,
+                    return batch.map((paragraph, index) => ({
+                        ...paragraph,
                         embedding: batchEmbeddings[index]
                     }));
                 });
 
             const results = await Promise.all(batchPromises);
-            embeddedSentences.push(...results.flat());
+            embeddedParagraphs.push(...results.flat());
 
             if (i + this.CONCURRENT_BATCHES < batches.length) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
 
-        await this.batchInsertSentences(embeddedSentences, episodeGuid, feedId);
+        await this.batchInsertParagraphs(embeddedParagraphs, episodeGuid, feedId);
     }
 
     async getBatchEmbeddings(texts) {
@@ -294,41 +275,41 @@ class BatchPodcastProcessor {
         return response.data.map(item => item.embedding);
     }
 
-    async batchInsertSentences(sentences, episodeGuid, feedId) {
+    async batchInsertParagraphs(paragraphs, episodeGuid, feedId) {
         const session = neo4jDriver.session();
         try {
-            const batches = this.chunkArray(sentences, this.NEO4J_BATCH_SIZE);
+            const batches = this.chunkArray(paragraphs, this.NEO4J_BATCH_SIZE);
             
             for (let i = 0; i < batches.length; i++) {
                 const batch = batches[i];
                 
-                // Create sentences and relationships in one transaction
                 await session.run(`
                     MATCH (e:Episode {guid: $episodeGuid})
-                    UNWIND $sentences as sentence
-                    CREATE (s:Sentence {
+                    UNWIND $paragraphs as paragraph
+                    CREATE (p:Paragraph {
                         guid: apoc.create.uuid(),
-                        text: sentence.text,
-                        start_time: sentence.start_time,
-                        end_time: sentence.end_time,
-                        embedding: sentence.embedding,
+                        text: paragraph.text,
+                        start_time: paragraph.start_time,
+                        end_time: paragraph.end_time,
+                        embedding: paragraph.embedding,
+                        num_words: paragraph.num_words,
                         createdAt: datetime(),
                         updatedAt: datetime()
                     })
-                    CREATE (e)-[:CONTAINS]->(s)
-                    WITH s, sentence
-                    ORDER BY sentence.start_time
-                    WITH collect(s) as sentences
-                    FOREACH (i in range(0, size(sentences)-2) |
-                        FOREACH (s1 in [sentences[i]] |
-                            FOREACH (s2 in [sentences[i+1]] |
-                                CREATE (s1)-[:NEXT]->(s2)
+                    CREATE (e)-[:CONTAINS]->(p)
+                    WITH p, paragraph
+                    ORDER BY paragraph.start_time
+                    WITH collect(p) as paragraphs
+                    FOREACH (i in range(0, size(paragraphs)-2) |
+                        FOREACH (p1 in [paragraphs[i]] |
+                            FOREACH (p2 in [paragraphs[i+1]] |
+                                CREATE (p1)-[:NEXT]->(p2)
                             )
                         )
                     )
                 `, {
                     episodeGuid,
-                    sentences: batch
+                    paragraphs: batch
                 });
             }
         } finally {

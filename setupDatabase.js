@@ -18,8 +18,8 @@ async function setupDatabase() {
             `CREATE CONSTRAINT episode_guid_unique IF NOT EXISTS
              FOR (e:Episode) REQUIRE e.guid IS UNIQUE`,
             
-            `CREATE CONSTRAINT sentence_guid_unique IF NOT EXISTS
-             FOR (s:Sentence) REQUIRE s.guid IS UNIQUE`
+            `CREATE CONSTRAINT paragraph_guid_unique IF NOT EXISTS
+             FOR (p:Paragraph) REQUIRE p.guid IS UNIQUE`
         ];
 
         for (const constraint of constraints) {
@@ -40,8 +40,8 @@ async function setupDatabase() {
             `CREATE INDEX episode_feed_idx IF NOT EXISTS
              FOR (e:Episode) ON (e.feedId)`,
             
-            `CREATE INDEX sentence_episode_idx IF NOT EXISTS
-             FOR (s:Sentence) ON (s.episodeGuid)`
+            `CREATE INDEX paragraph_episode_idx IF NOT EXISTS
+             FOR (p:Paragraph) ON (p.episodeGuid)`
         ];
 
         for (const index of indexes) {
@@ -58,8 +58,8 @@ async function setupDatabase() {
         try {
             await session.run(`
                 CALL db.index.vector.createNodeIndex(
-                    'sentence_embedding_idx',
-                    'Sentence',
+                    'paragraph_embedding_idx',
+                    'Paragraph',
                     'embedding',
                     1536,
                     'cosine'
