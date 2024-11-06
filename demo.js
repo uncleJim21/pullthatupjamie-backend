@@ -52,13 +52,13 @@ async function runDemo() {
         await agent.initialize();
 
         // Demo 1: Find conceptual connections
-        const topic = "bitcoiner's take on election outcome"
-        console.log(`🔍 Demo 1: Finding conceptual connections about "${topic}"...`);
-        const connections = await agent.findConceptualConnections(topic);
-        console.log('\nConceptual Connections Results:');
-        console.log(connections.output);
-        saveOutputToFile(connections.output, 'conceptual-connections');
-        console.log('\n' + '-'.repeat(80) + '\n');
+        // const topic = "bitcoiner's take on election outcome"
+        // console.log(`🔍 Demo 1: Finding conceptual connections about "${topic}"...`);
+        // const connections = await agent.findConceptualConnections(topic);
+        // console.log('\nConceptual Connections Results:');
+        // console.log(connections.output);
+        // saveOutputToFile(connections.output, 'conceptual-connections');
+        // console.log('\n' + '-'.repeat(80) + '\n');
 
         // Demo 2: Analyze topic evolution
         // console.log('📈 Demo 2: Analyzing evolution of discussions about "artificial intelligence"...');
@@ -68,13 +68,13 @@ async function runDemo() {
         // saveOutputToFile(evolution.output, 'topic-evolution');
         // console.log('\n' + '-'.repeat(80) + '\n');
 
-        // console.log('🔍 Fetching top headlines...');
-        // const headlines = await agent.getTopHeadlines();
+        console.log('🔍 Fetching top headlines...');
+        const headlines = await agent.getTopHeadlines();
         
-        // console.log('\nTop Headlines Results:');
-        // console.log(headlines.output);
+        console.log('\nTop Headlines Results:');
+        console.log(headlines.output);
 
-        // saveOutputToFile(headlines.output,"headlines")
+        saveOutputToFile(headlines.output,"headlines")
 
     } catch (error) {
         if (error.code?.includes('Neo.ClientError')) {
