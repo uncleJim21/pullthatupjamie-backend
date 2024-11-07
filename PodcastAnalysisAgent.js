@@ -103,6 +103,18 @@ class PodcastAnalysisAgent {
                         return `Error fetching headlines: ${error.message}`;
                     }
                 }
+            }),
+            new DynamicTool({
+                name: "search",
+                description: "Search the web for any information. Returns a list of relevant results.",
+                func: async (query) => {
+                    try {
+                        const results = await this.searxng.search(query);
+                        return JSON.stringify(results, null, 2);
+                    } catch (error) {
+                        return `Search error: ${error.message}`;
+                    }
+                }
             })
         ];
     }
