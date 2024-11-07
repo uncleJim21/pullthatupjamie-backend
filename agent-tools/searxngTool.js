@@ -5,13 +5,23 @@ class SearxNGTool {
     constructor(config = {
         baseUrl: 'http://104.248.53.140',
         username: 'cascdr',
-        password: 'b895ef974e8c4814a65140bec30fbe60'
+        password: 'b895ef974e8c4814a65140bec30fbe60',
+        maxResults: 5,          // Limit number of results
+        snippetMaxLength: 250   // Limit snippet length
     }) {
         this.baseUrl = config.baseUrl;
         this.auth = {
             username: config.username,
             password: config.password
         };
+        this.maxResults = config.maxResults || 5;
+        this.snippetMaxLength = config.snippetMaxLength || 250;
+    }
+
+    truncateSnippet(text) {
+        if (!text) return '';
+        if (text.length <= this.snippetMaxLength) return text;
+        return text.substring(0, this.snippetMaxLength) + '...';
     }
 
     async search(query, options = {}) {
@@ -32,11 +42,17 @@ class SearxNGTool {
             });
 
             if (response.data.results) {
-                return response.data.results.map(result => ({
-                    title: result.title,
-                    url: result.url,
-                    snippet: result.content
-                }));
+                // Sort by relevance (score) and take top results
+                const sortedResults = response.data.results
+                    .sort((a, b) => (b.score || 0) - (a.score || 0))
+                    .slice(0, this.maxResults)
+                    .map(result => ({
+                        title: result.title,
+                        url: result.url,
+                        snippet: this.truncateSnippet(result.content)
+                    }));
+
+                return sortedResults;
             }
             return [];
         } catch (error) {
@@ -46,14 +62,13 @@ class SearxNGTool {
 
     async getTopHeadlines() {
         try {
-            // Search for recent news
             const results = await this.search('news', {
                 time_range: 'day',
                 categories: 'news',
                 language: 'en'
             });
             
-            return results.slice(0, 5); // Return top 5 headlines
+            return results.slice(0, this.maxResults);
         } catch (error) {
             throw new Error(`Failed to get top headlines: ${error.message}`);
         }

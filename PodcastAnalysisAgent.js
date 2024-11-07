@@ -106,16 +106,24 @@ class PodcastAnalysisAgent {
             }),
             new DynamicTool({
                 name: "search",
-                description: "Search the web for any information. Returns a list of relevant results.",
+                description: "Search the web for any information. Returns most relevant results.",
                 func: async (query) => {
                     try {
                         const results = await this.searxng.search(query);
-                        return JSON.stringify(results, null, 2);
+                        
+                        // Format results concisely
+                        const formattedResults = results.map((result, index) => 
+                            `[${index + 1}] ${result.title}\n` +
+                            `${result.snippet}\n` +
+                            `Source: ${result.url}\n`
+                        ).join('\n');
+
+                        return formattedResults;
                     } catch (error) {
                         return `Search error: ${error.message}`;
                     }
                 }
-            })
+            }),
         ];
     }
 
