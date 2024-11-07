@@ -1,3 +1,4 @@
+// PodcastAnalysisAgent.js
 require('web-streams-polyfill/polyfill');
 const { OpenAI } = require('@langchain/openai');
 const { OpenAIEmbeddings } = require('@langchain/openai');
@@ -5,7 +6,7 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { initializeAgentExecutorWithOptions } = require('langchain/agents');
 const { DynamicTool } = require('langchain/tools');
 const neo4jTools = require('./agent-tools/neo4jTools');
-const {SearxNGTool} = require('./agent-tools/searxngTool')
+const { SearxNGTool } = require('./agent-tools/searxngTool');
 
 class PodcastAnalysisAgent {
     constructor(openaiKey) {
@@ -31,6 +32,27 @@ class PodcastAnalysisAgent {
     createTools() {
         return [
             new DynamicTool({
+                name: "search",
+                description: "Search the web for any information. Returns a list of relevant results.",
+                func: async (query) => {
+                    try {
+                        const results = await this.searxng.search(query);
+                        // Take only top 4 results and truncate content
+                        const limitedResults = results
+                            .slice(0, 4)
+                            .map(result => ({
+                                title: result.title,
+                                url: result.url,
+                                snippet: result.snippet?.substring(0, 250) || '' // Limit snippet length
+                            }));
+                        return JSON.stringify(limitedResults, null, 2);
+                    } catch (error) {
+                        return `Search error: ${error.message}`;
+                    }
+                }
+            }),
+
+            new DynamicTool({
                 name: "find_similar_discussions",
                 description: "Find podcast discussions similar to a given topic",
                 func: async (topic) => {
@@ -45,23 +67,25 @@ class PodcastAnalysisAgent {
                     }
                 }
             }),
-                        // new DynamicTool({
-            //     name: "find_timeline_discussions",
-            //     description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
-            //     func: async (input) => {
-            //         try {
-            //             const [topic, timeframe] = input.split(',').map(s => s.trim());
-            //             const embedding = await this.embeddings.embedQuery(topic);
-            //             const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
-            //             // Format results into a descriptive string
-            //             return results.map(r => 
-            //                 `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
-            //             ).join('\n\n');
-            //         } catch (error) {
-            //             return `Error finding timeline discussions: ${error.message}`;
-            //         }
-            //     }
-            // }),
+
+            new DynamicTool({
+                name: "find_timeline_discussions",
+                description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
+                func: async (input) => {
+                    try {
+                        const [topic, timeframe] = input.split(',').map(s => s.trim());
+                        const embedding = await this.embeddings.embedQuery(topic);
+                        const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
+                        // Format results into a descriptive string
+                        return results.map(r => 
+                            `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
+                        ).join('\n\n');
+                    } catch (error) {
+                        return `Error finding timeline discussions: ${error.message}`;
+                    }
+                }
+            }),
+
             new DynamicTool({
                 name: "get_database_stats",
                 description: "Get statistics about the podcast database",
@@ -74,6 +98,7 @@ class PodcastAnalysisAgent {
                     }
                 }
             }),
+
             new DynamicTool({
                 name: "search_news",
                 description: "Search for recent news headlines and articles using SearxNG. You can specify topics or get general news.",
@@ -89,6 +114,7 @@ class PodcastAnalysisAgent {
                     }
                 }
             }),
+
             new DynamicTool({
                 name: "get_top_headlines",
                 description: "Get the current top news headlines from various sources",
@@ -101,18 +127,6 @@ class PodcastAnalysisAgent {
                         })), null, 2);
                     } catch (error) {
                         return `Error fetching headlines: ${error.message}`;
-                    }
-                }
-            }),
-            new DynamicTool({
-                name: "search",
-                description: "Search the web for any information. Returns a list of relevant results.",
-                func: async (query) => {
-                    try {
-                        const results = await this.searxng.search(query);
-                        return JSON.stringify(results, null, 2);
-                    } catch (error) {
-                        return `Search error: ${error.message}`;
                     }
                 }
             })
@@ -144,14 +158,14 @@ class PodcastAnalysisAgent {
         });
     }
 
-    // async analyzeTopicEvolution(topic, timeframe) {
-    //     await this.initialize();
-    //     return this.executor.call({
-    //         input: `Analyze how discussions about "${topic}" have evolved over ${timeframe}. 
-    //                First get timeline data, then analyze for trends and shifts in perspective.
-    //                Consider: key turning points, emerging themes, and changing approaches.`
-    //     });
-    // }
+    async analyzeTopicEvolution(topic, timeframe) {
+        await this.initialize();
+        return this.executor.call({
+            input: `Analyze how discussions about "${topic}" have evolved over ${timeframe}. 
+                   First get timeline data, then analyze for trends and shifts in perspective.
+                   Consider: key turning points, emerging themes, and changing approaches.`
+        });
+    }
 
     async getTopHeadlines() {
         await this.initialize();
@@ -167,6 +181,50 @@ class PodcastAnalysisAgent {
         return this.executor.call({
             input: `Search for recent news articles about "${query}" and provide a summary of the findings. 
                    Focus on credible sources and recent developments.`
+        });
+    }
+
+    async searchAndAnalyze(query) {
+        await this.initialize();
+        
+        const structuredPrompt = `Use the search tool to find information about "${query}" and provide a comprehensive analysis.
+
+Your response should be structured like this:
+
+**Overview**
+Provide a brief introduction to the topic.
+
+**Key Points**
+* Main point 1 with explanation
+* Main point 2 with explanation
+* Main point 3 with explanation
+
+**Practical Recommendations**
+1. First recommendation with details
+2. Second recommendation with details
+3. Third recommendation with details
+
+**Implementation Guide**
+* Step-by-step breakdown
+* Common pitfalls to avoid
+* Tips for success
+
+**Important Considerations**
+* Health aspects
+* Practical challenges
+* Expert opinions
+
+Format using:
+- Bold headers with **
+- Bullet points for lists
+- Numbers for sequential steps
+- Clear section breaks
+
+Base your analysis on the search results and organize the information in a clear, actionable way.
+Cite sources where relevant using [Source] notation.`;
+
+        return this.executor.call({
+            input: structuredPrompt
         });
     }
 

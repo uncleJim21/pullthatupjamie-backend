@@ -18,30 +18,28 @@ const agent = new PodcastAnalysisAgent(process.env.OPENAI_API_KEY);
 
 app.post('/api/search', async (req, res) => {
   try {
-    const { query, maxIterations = DEFAULT_MAX_ITERATIONS } = req.body;
-    
-    if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
-    }
+      const { query, maxIterations = process.env.DEFAULT_MAX_ITERATIONS || 5 } = req.body;
+      
+      if (!query) {
+          return res.status(400).json({ error: 'Query is required' });
+      }
 
-    // Initialize agent with custom iterations if provided
-    const initializedAgent = await agent.initialize();
-    initializedAgent.executor.maxIterations = maxIterations;
+      const initializedAgent = await agent.initialize();
+      initializedAgent.executor.maxIterations = maxIterations;
 
-    // Perform AI search
-    const result = await initializedAgent.searchNews(query);
+      const result = await initializedAgent.searchAndAnalyze(query);
 
-    res.json({
-      query,
-      result: result.output,
-      intermediateSteps: result.intermediateSteps
-    });
+      res.json({
+          query,
+          result: result.output,
+          intermediateSteps: result.intermediateSteps
+      });
   } catch (error) {
-    console.error('Search error:', error);
-    res.status(500).json({ 
-      error: 'Search failed', 
-      message: error.message 
-    });
+      console.error('Search error:', error);
+      res.status(500).json({ 
+          error: 'Search failed', 
+          message: error.message 
+      });
   }
 });
 
