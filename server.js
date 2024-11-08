@@ -2,6 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { PodcastAnalysisAgent } = require('./PodcastAnalysisAgent');
+const { Readable } = require('stream');
+const { SearxNGTool } = require('./agent-tools/searxngTool');
+const searxng = new SearxNGTool();
+const axios = require('axios');
+
 
 const app = express();
 
@@ -15,6 +20,98 @@ const DEFAULT_MAX_ITERATIONS = parseInt(process.env.DEFAULT_MAX_ITERATIONS) || 5
 
 // Initialize agent
 const agent = new PodcastAnalysisAgent(process.env.OPENAI_API_KEY);
+
+app.post('/api/stream-search', async (req, res) => {
+    const { query } = req.body;
+
+    if (!query) {
+        return res.status(400).json({ error: 'Query is required' });
+    }
+
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    try {
+        // Perform search
+        const searchResults = await searxng.search(query);
+        
+        // Send search results immediately
+        res.write(`data: ${JSON.stringify({
+            type: 'search',
+            data: searchResults
+        })}\n\n`);
+
+        // Start the inference stream
+        const prompt = `Please provide a comprehensive summary of the following search results about "${query}": ${JSON.stringify(searchResults)}`;
+        
+        const response = await axios({
+            method: 'post',
+            url: 'https://api.openai.com/v1/chat/completions',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+            },
+            data: {
+                model: 'gpt-4',
+                messages: [{
+                    role: 'user',
+                    content: prompt
+                }],
+                stream: true
+            },
+            responseType: 'stream'
+        });
+
+        response.data.on('data', (chunk) => {
+            const lines = chunk.toString().split('\n');
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        res.write(`data: [DONE]\n\n`);
+                        return;
+                    }
+                    
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.choices[0].delta.content) {
+                            res.write(`data: ${JSON.stringify({
+                                type: 'inference',
+                                data: parsed.choices[0].delta.content
+                            })}\n\n`);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing streaming response:', e);
+                    }
+                }
+            }
+        });
+
+        response.data.on('end', () => {
+            res.end();
+        });
+
+        response.data.on('error', (error) => {
+            console.error('Stream error:', error);
+            res.write(`data: ${JSON.stringify({
+                type: 'error',
+                data: error.message
+            })}\n\n`);
+            res.end();
+        });
+
+    } catch (error) {
+        console.error('Streaming search error:', error);
+        res.write(`data: ${JSON.stringify({
+            type: 'error',
+            data: error.message
+        })}\n\n`);
+        res.end();
+    }
+});
 
 app.post('/api/search', async (req, res) => {
   try {

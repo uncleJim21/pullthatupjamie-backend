@@ -52,52 +52,52 @@ class PodcastAnalysisAgent {
                 }
             }),
 
-            new DynamicTool({
-                name: "find_similar_discussions",
-                description: "Find podcast discussions similar to a given topic",
-                func: async (topic) => {
-                    try {
-                        const embedding = await this.embeddings.embedQuery(topic);
-                        const results = await neo4jTools.findSimilarDiscussions({ embedding });
-                        return results.map(r => 
-                            `Episode: "${r.episode}" by ${r.creator} (${r.date})\nQuote: "${r.quote}"\nSimilarity: ${r.similarity}`
-                        ).join('\n\n');
-                    } catch (error) {
-                        return `Error finding similar discussions: ${error.message}`;
-                    }
-                }
-            }),
+            // new DynamicTool({
+            //     name: "find_similar_discussions",
+            //     description: "Find podcast discussions similar to a given topic",
+            //     func: async (topic) => {
+            //         try {
+            //             const embedding = await this.embeddings.embedQuery(topic);
+            //             const results = await neo4jTools.findSimilarDiscussions({ embedding });
+            //             return results.map(r => 
+            //                 `Episode: "${r.episode}" by ${r.creator} (${r.date})\nQuote: "${r.quote}"\nSimilarity: ${r.similarity}`
+            //             ).join('\n\n');
+            //         } catch (error) {
+            //             return `Error finding similar discussions: ${error.message}`;
+            //         }
+            //     }
+            // }),
 
-            new DynamicTool({
-                name: "find_timeline_discussions",
-                description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
-                func: async (input) => {
-                    try {
-                        const [topic, timeframe] = input.split(',').map(s => s.trim());
-                        const embedding = await this.embeddings.embedQuery(topic);
-                        const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
-                        // Format results into a descriptive string
-                        return results.map(r => 
-                            `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
-                        ).join('\n\n');
-                    } catch (error) {
-                        return `Error finding timeline discussions: ${error.message}`;
-                    }
-                }
-            }),
+            // new DynamicTool({
+            //     name: "find_timeline_discussions",
+            //     description: "Find how a topic has been discussed over time. Input format: 'topic, timeframe' (e.g., 'AI, 6 months')",
+            //     func: async (input) => {
+            //         try {
+            //             const [topic, timeframe] = input.split(',').map(s => s.trim());
+            //             const embedding = await this.embeddings.embedQuery(topic);
+            //             const results = await neo4jTools.findTimelineDiscussions({ embedding, timeframe });
+            //             // Format results into a descriptive string
+            //             return results.map(r => 
+            //                 `Episode: "${r.episode}" (${r.date})\nQuotes:\n${r.quotes.map(q => `- "${q}"`).join('\n')}\nMention count: ${r.mentionCount}`
+            //             ).join('\n\n');
+            //         } catch (error) {
+            //             return `Error finding timeline discussions: ${error.message}`;
+            //         }
+            //     }
+            // }),
 
-            new DynamicTool({
-                name: "get_database_stats",
-                description: "Get statistics about the podcast database",
-                func: async () => {
-                    try {
-                        const stats = await neo4jTools.getStats();
-                        return `Database contains ${stats.episodeCount} episodes, ${stats.sentenceCount} sentences, and ${stats.creatorCount} unique creators.`;
-                    } catch (error) {
-                        return `Error getting database stats: ${error.message}`;
-                    }
-                }
-            }),
+            // new DynamicTool({
+            //     name: "get_database_stats",
+            //     description: "Get statistics about the podcast database",
+            //     func: async () => {
+            //         try {
+            //             const stats = await neo4jTools.getStats();
+            //             return `Database contains ${stats.episodeCount} episodes, ${stats.sentenceCount} sentences, and ${stats.creatorCount} unique creators.`;
+            //         } catch (error) {
+            //             return `Error getting database stats: ${error.message}`;
+            //         }
+            //     }
+            // }),
 
             new DynamicTool({
                 name: "search_news",
@@ -188,41 +188,29 @@ class PodcastAnalysisAgent {
         await this.initialize();
         
         const structuredPrompt = `Use the search tool to find information about "${query}" and provide a comprehensive analysis.
-
-Your response should be structured like this:
-
-**Overview**
-Provide a brief introduction to the topic.
-
-**Key Points**
-* Main point 1 with explanation
-* Main point 2 with explanation
-* Main point 3 with explanation
-
-**Practical Recommendations**
-1. First recommendation with details
-2. Second recommendation with details
-3. Third recommendation with details
-
-**Implementation Guide**
-* Step-by-step breakdown
-* Common pitfalls to avoid
-* Tips for success
-
-**Important Considerations**
-* Health aspects
-* Practical challenges
-* Expert opinions
-
-Format using:
-- Bold headers with **
-- Bullet points for lists
-- Numbers for sequential steps
-- Clear section breaks
-
-Base your analysis on the search results and organize the information in a clear, actionable way.
-Cite sources where relevant using [Source] notation.`;
-
+    Format your response using markdown, and include numbered citations to sources using this exact format: [[number](url)].
+    
+    Example format:
+    Tesla is an electric vehicle company [[1](https://example.com/source1)] founded by Elon Musk [[2](https://example.com/source2)].
+    
+    Structure your response with:
+    
+    **Overview**
+    Brief introduction with key citations.
+    
+    **Key Points**
+    * Point 1 with citations [[n](url)]
+    * Point 2 with citations [[n](url)]
+    * Point 3 with citations [[n](url)]
+    
+    **Implementation**
+    1. Step 1 with relevant citations
+    2. Step 2 with relevant citations
+    3. Step 3 with relevant citations
+    
+    Include citations for all major claims and recommendations.
+    Keep paragraphs focused and concise while maintaining depth.`;
+    
         return this.executor.call({
             input: structuredPrompt
         });
