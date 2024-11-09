@@ -44,7 +44,7 @@ app.post('/api/stream-search', async (req, res) => {
         })}\n\n`);
 
         // Start the inference stream
-        const prompt = `Please provide a comprehensive summary of the following search results about "${query}": ${JSON.stringify(searchResults)}`;
+        const prompt = `Please provide a comprehensive summary of the following search results about "${query}": ${JSON.stringify(searchResults)} Include citations for all major claims and recommendations. Please ennumerate citations and provide all results as markdown [[n](url)]`;
         
         const response = await axios({
             method: 'post',
