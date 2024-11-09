@@ -22,95 +22,124 @@ const DEFAULT_MAX_ITERATIONS = parseInt(process.env.DEFAULT_MAX_ITERATIONS) || 5
 const agent = new PodcastAnalysisAgent(process.env.OPENAI_API_KEY);
 
 app.post('/api/stream-search', async (req, res) => {
-    const { query } = req.body;
+  const { query } = req.body;
 
-    if (!query) {
-        return res.status(400).json({ error: 'Query is required' });
-    }
+  if (!query) {
+      return res.status(400).json({ error: 'Query is required' });
+  }
 
-    // Set headers for SSE
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
+  // Set headers for SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
-    try {
-        // Perform search
-        const searchResults = await searxng.search(query);
-        
-        // Send search results immediately
-        res.write(`data: ${JSON.stringify({
-            type: 'search',
-            data: searchResults
-        })}\n\n`);
+  try {
+      // Perform search
+      const searchResults = await searxng.search(query);
+      
+      // Send search results immediately
+      res.write(`data: ${JSON.stringify({
+          type: 'search',
+          data: searchResults
+      })}\n\n`);
 
-        // Start the inference stream
-        const prompt = `Please provide a comprehensive summary of the following search results about "${query}": ${JSON.stringify(searchResults)} Include citations for all major claims and recommendations. Please ennumerate citations and provide all results as markdown [[n](url)]`;
-        
-        const response = await axios({
-            method: 'post',
-            url: 'https://api.openai.com/v1/chat/completions',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-            },
-            data: {
-                model: 'gpt-4',
-                messages: [{
-                    role: 'user',
-                    content: prompt
-                }],
-                stream: true
-            },
-            responseType: 'stream'
-        });
+      // Format sources for reference
+      const sourcesContext = searchResults.map((result, index) => 
+          `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.snippet}\n`
+      ).join('\n');
 
-        response.data.on('data', (chunk) => {
-            const lines = chunk.toString().split('\n');
-            
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6);
-                    if (data === '[DONE]') {
-                        res.write(`data: [DONE]\n\n`);
-                        return;
-                    }
-                    
-                    try {
-                        const parsed = JSON.parse(data);
-                        if (parsed.choices[0].delta.content) {
-                            res.write(`data: ${JSON.stringify({
-                                type: 'inference',
-                                data: parsed.choices[0].delta.content
-                            })}\n\n`);
-                        }
-                    } catch (e) {
-                        console.error('Error parsing streaming response:', e);
-                    }
-                }
-            }
-        });
+      // Prepare the system message
+      const systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses. Format your response as follows:
+- Use clear, concise language
+- Use proper markdown formatting
+- Cite sources using [[n]](url) format, where n is the source number
+- Citations must be inline within sentences
+- Start with a brief overview
+- Use bullet points for multiple items
+- Bold key terms with **term**
+- Maintain professional tone
+- Do not say "according to sources" or similar phrases`;
 
-        response.data.on('end', () => {
-            res.end();
-        });
+      // Prepare the user message with both query and sources
+      const userMessage = `Please analyze the following query and provide a comprehensive response using the provided sources. Cite all claims using the [[n]](url) format.
 
-        response.data.on('error', (error) => {
-            console.error('Stream error:', error);
-            res.write(`data: ${JSON.stringify({
-                type: 'error',
-                data: error.message
-            })}\n\n`);
-            res.end();
-        });
+Query: "${query}"
 
-    } catch (error) {
-        console.error('Streaming search error:', error);
-        res.write(`data: ${JSON.stringify({
-            type: 'error',
-            data: error.message
-        })}\n\n`);
-        res.end();
-    }
+Sources for reference (cite using [[n]](sourceURL) format):
+${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')}`;
+
+      const response = await axios({
+          method: 'post',
+          url: 'https://api.openai.com/v1/chat/completions',
+          headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          data: {
+              model: 'gpt-4',
+              messages: [
+                  {
+                      role: 'system',
+                      content: systemMessage
+                  },
+                  {
+                      role: 'user',
+                      content: userMessage
+                  }
+              ],
+              stream: true,
+              temperature: 0.0
+          },
+          responseType: 'stream'
+      });
+
+      response.data.on('data', (chunk) => {
+          const lines = chunk.toString().split('\n');
+          
+          for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                  const data = line.slice(6);
+                  if (data === '[DONE]') {
+                      res.write(`data: [DONE]\n\n`);
+                      return;
+                  }
+                  
+                  try {
+                      const parsed = JSON.parse(data);
+                      if (parsed.choices[0].delta.content) {
+                          res.write(`data: ${JSON.stringify({
+                              type: 'inference',
+                              data: parsed.choices[0].delta.content
+                          })}\n\n`);
+                      }
+                  } catch (e) {
+                      console.error('Error parsing streaming response:', e);
+                  }
+              }
+          }
+      });
+
+      response.data.on('end', () => {
+          res.end();
+      });
+
+      response.data.on('error', (error) => {
+          console.error('Stream error:', error);
+          res.write(`data: ${JSON.stringify({
+              type: 'error',
+              data: error.message
+          })}\n\n`);
+          res.end();
+      });
+
+  } catch (error) {
+      console.error('Streaming search error:', error);
+      res.write(`data: ${JSON.stringify({
+          type: 'error',
+          data: error.message
+      })}\n\n`);
+      res.end();
+  }
 });
 
 app.post('/api/search', async (req, res) => {
