@@ -76,7 +76,7 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
               'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
           },
           data: {
-              model: 'gpt-4',
+              model: 'gpt-3.5-turbo',
               messages: [
                   {
                       role: 'system',
