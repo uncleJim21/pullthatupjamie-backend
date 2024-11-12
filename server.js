@@ -1,12 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { PodcastAnalysisAgent } = require('./PodcastAnalysisAgent');
-const { Readable } = require('stream');
-const { SearxNGTool } = require('./agent-tools/searxngTool');
-const searxng = new SearxNGTool();
 const axios = require('axios');
-
 
 const app = express();
 
@@ -16,16 +11,118 @@ app.use(express.json());
 
 // Environment variables with defaults
 const PORT = process.env.PORT || 3131;
-const DEFAULT_MAX_ITERATIONS = parseInt(process.env.DEFAULT_MAX_ITERATIONS) || 5;
+const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
-// Initialize agent
-const agent = new PodcastAnalysisAgent(process.env.OPENAI_API_KEY);
+// Model configurations
+const MODEL_CONFIGS = {
+    'gpt-3.5-turbo': {
+      apiUrl: 'https://api.openai.com/v1/chat/completions',
+      headers: (apiKey) => ({
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      }),
+      formatData: (messages) => ({
+        model: 'gpt-3.5-turbo',
+        messages,
+        stream: true,
+        temperature: 0.0
+      }),
+      parseContent: (parsed) => ({
+        content: parsed.choices[0].delta.content,
+        done: false
+      })
+    },
+    'claude-3-sonnet': {
+      apiUrl: 'https://api.anthropic.com/v1/messages',
+      headers: (apiKey) => ({
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      }),
+      formatData: (messages) => {
+        // Format system message and user message for Claude
+        const systemMessage = messages.find(m => m.role === 'system')?.content || '';
+        const userMessage = messages.find(m => m.role === 'user')?.content || '';
+        
+        return {
+          model: 'claude-3-sonnet-20240229',
+          max_tokens: 4096,
+          messages: [{
+            role: 'user',
+            content: `${systemMessage}\n\n${userMessage}`
+          }],
+          stream: true
+        };
+      },
+      parseContent: (parsed) => ({
+        content: parsed.delta?.text || '',
+        done: parsed.type === 'message_stop'
+      })
+    }
+  };
+
+// Initialize SearxNG with error handling
+let searxng = null;
+try {
+  const { SearxNGTool } = require('./agent-tools/searxngTool');
+  searxng = new SearxNGTool();
+  console.log('SearxNG initialized successfully');
+} catch (error) {
+  console.warn('Warning: Failed to initialize SearxNG:', error.message);
+}
+
+// Fallback search function
+const fallbackSearch = async (query) => {
+  console.log('Using fallback search for query:', query);
+  return [{
+    title: 'Fallback Result',
+    url: 'https://example.com',
+    snippet: 'SearxNG is currently unavailable. This is a fallback result.'
+  }];
+};
+
+// Buffer class for accumulating content
+class ContentBuffer {
+  constructor() {
+    this.buffer = '';
+    this.minSendLength = 50;  // Minimum characters to accumulate before sending
+  }
+
+  add(content) {
+    if (!content) return null;
+    this.buffer += content;
+    
+    if (this.buffer.length >= this.minSendLength) {
+      const toSend = this.buffer;
+      this.buffer = '';
+      return toSend;
+    }
+    return null;
+  }
+
+  flush() {
+    if (this.buffer.length > 0) {
+      const toSend = this.buffer;
+      this.buffer = '';
+      return toSend;
+    }
+    return null;
+  }
+}
 
 app.post('/api/stream-search', async (req, res) => {
-  const { query } = req.body;
+  const { 
+    query, 
+    model = DEFAULT_MODEL,
+    mode = 'default'
+  } = req.body;
 
   if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
+    return res.status(400).json({ error: 'Query is required' });
+  }
+
+  if (!MODEL_CONFIGS[model]) {
+    return res.status(400).json({ error: 'Invalid model specified' });
   }
 
   // Set headers for SSE
@@ -34,22 +131,23 @@ app.post('/api/stream-search', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
 
   try {
-      // Perform search
-      const searchResults = await searxng.search(query);
-      
-      // Send search results immediately
-      res.write(`data: ${JSON.stringify({
-          type: 'search',
-          data: searchResults
-      })}\n\n`);
+    // Perform search with fallback
+    const searchResults = searxng ? await searxng.search(query) : await fallbackSearch(query);
+    
+    // Send search results immediately
+    res.write(`data: ${JSON.stringify({
+      type: 'search',
+      data: searchResults
+    })}\n\n`);
 
-      // Format sources for reference
-      const sourcesContext = searchResults.map((result, index) => 
-          `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.snippet}\n`
-      ).join('\n');
-
-      // Prepare the system message
-      const systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses. Format your response as follows:
+    // Prepare messages with mode-specific instructions
+    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
+    
+    if (mode === 'quick') {
+      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
+    }
+    
+    systemMessage += ` Format your response as follows:
 - Use clear, concise language
 - Use proper markdown formatting
 - Cite sources using [[n]](url) format, where n is the source number
@@ -60,120 +158,119 @@ app.post('/api/stream-search', async (req, res) => {
 - Maintain professional tone
 - Do not say "according to sources" or similar phrases`;
 
-      // Prepare the user message with both query and sources
-      const userMessage = `Please analyze the following query and provide a comprehensive response using the provided sources. Cite all claims using the [[n]](url) format.
+    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
 
 Query: "${query}"
 
 Sources for reference (cite using [[n]](sourceURL) format):
 ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')}`;
 
-      const response = await axios({
-          method: 'post',
-          url: 'https://api.openai.com/v1/chat/completions',
-          headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-          },
-          data: {
-              model: 'gpt-3.5-turbo',
-              messages: [
-                  {
-                      role: 'system',
-                      content: systemMessage
-                  },
-                  {
-                      role: 'user',
-                      content: userMessage
-                  }
-              ],
-              stream: true,
-              temperature: 0.0
-          },
-          responseType: 'stream'
-      });
+    const modelConfig = MODEL_CONFIGS[model];
+    const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
+    const contentBuffer = new ContentBuffer();
 
-      response.data.on('data', (chunk) => {
-          const lines = chunk.toString().split('\n');
-          
-          for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                  const data = line.slice(6);
-                  if (data === '[DONE]') {
-                      res.write(`data: [DONE]\n\n`);
-                      return;
-                  }
-                  
-                  try {
-                      const parsed = JSON.parse(data);
-                      if (parsed.choices[0].delta.content) {
-                          res.write(`data: ${JSON.stringify({
-                              type: 'inference',
-                              data: parsed.choices[0].delta.content
-                          })}\n\n`);
-                      }
-                  } catch (e) {
-                      console.error('Error parsing streaming response:', e);
-                  }
+    const response = await axios({
+      method: 'post',
+      url: modelConfig.apiUrl,
+      headers: modelConfig.headers(apiKey),
+      data: modelConfig.formatData([
+        { role: 'system', content: systemMessage },
+        { role: 'user', content: userMessage }
+      ]),
+      responseType: 'stream'
+    });
+
+    response.data.on('data', (chunk) => {
+      try {
+        const lines = chunk.toString().split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              const finalContent = contentBuffer.flush();
+              if (finalContent) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'inference',
+                  data: finalContent
+                })}\n\n`);
               }
+              res.write(`data: [DONE]\n\n`);
+              return;
+            }
+            
+            try {
+              if (data.trim()) {  // Only parse non-empty data
+                const parsed = JSON.parse(data);
+                let content;
+
+                if (model.startsWith('gpt')) {
+                  content = parsed.choices?.[0]?.delta?.content;
+                } else {
+                  content = parsed.delta?.text;
+                }
+
+                if (content) {
+                  const bufferedContent = contentBuffer.add(content);
+                  if (bufferedContent) {
+                    res.write(`data: ${JSON.stringify({
+                      type: 'inference',
+                      data: bufferedContent
+                    })}\n\n`);
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('Error parsing streaming response:', e);
+            }
           }
-      });
+        }
+      } catch (error) {
+        console.error('Error processing chunk:', error);
+      }
+    });
 
-      response.data.on('end', () => {
-          res.end();
-      });
+    response.data.on('end', () => {
+      const finalContent = contentBuffer.flush();
+      if (finalContent) {
+        res.write(`data: ${JSON.stringify({
+          type: 'inference',
+          data: finalContent
+        })}\n\n`);
+      }
+      res.end();
+    });
 
-      response.data.on('error', (error) => {
-          console.error('Stream error:', error);
-          res.write(`data: ${JSON.stringify({
-              type: 'error',
-              data: error.message
-          })}\n\n`);
-          res.end();
-      });
-
-  } catch (error) {
-      console.error('Streaming search error:', error);
+    response.data.on('error', (error) => {
+      console.error('Stream error:', error);
       res.write(`data: ${JSON.stringify({
-          type: 'error',
-          data: error.message
+        type: 'error',
+        data: error.message
       })}\n\n`);
       res.end();
-  }
-});
+    });
 
-app.post('/api/search', async (req, res) => {
-  try {
-      const { query, maxIterations = process.env.DEFAULT_MAX_ITERATIONS || 5 } = req.body;
-      
-      if (!query) {
-          return res.status(400).json({ error: 'Query is required' });
-      }
-
-      const initializedAgent = await agent.initialize();
-      initializedAgent.executor.maxIterations = maxIterations;
-
-      const result = await initializedAgent.searchAndAnalyze(query);
-
-      res.json({
-          query,
-          result: result.output,
-          intermediateSteps: result.intermediateSteps
-      });
   } catch (error) {
-      console.error('Search error:', error);
-      res.status(500).json({ 
-          error: 'Search failed', 
-          message: error.message 
-      });
+    console.error('Streaming search error:', error);
+    if (error.response?.data) {
+      // Log the full error response for debugging
+      console.error('API Error Response:', error.response.data);
+    }
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      data: error.message
+    })}\n\n`);
+    res.end();
   }
 });
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString() 
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    availableModels: Object.keys(MODEL_CONFIGS),
+    searxngStatus: searxng ? 'connected' : 'disconnected'
   });
 });
 
@@ -183,7 +280,12 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('ANTHROPIC_API_KEY is required');
+  process.exit(1);
+}
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Max iterations set to ${DEFAULT_MAX_ITERATIONS}`);
+  console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
 });
