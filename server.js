@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { SearxNGTool } = require('./agent-tools/searxngTool');
+
 
 const app = express();
 
@@ -63,13 +65,6 @@ const MODEL_CONFIGS = {
 
 // Initialize SearxNG with error handling
 let searxng = null;
-try {
-  const { SearxNGTool } = require('./agent-tools/searxngTool');
-  searxng = new SearxNGTool();
-  console.log('SearxNG initialized successfully');
-} catch (error) {
-  console.warn('Warning: Failed to initialize SearxNG:', error.message);
-}
 
 // Fallback search function
 const fallbackSearch = async (query) => {
@@ -121,20 +116,42 @@ app.post('/api/stream-search', async (req, res) => {
     return res.status(400).json({ error: 'Query is required' });
   }
 
-  if (!MODEL_CONFIGS[model]) {
-    return res.status(400).json({ error: 'Invalid model specified' });
+  // Get credentials from Authorization header
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
-  // Set headers for SSE
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
   try {
-    // Perform search with fallback
-    const searchResults = searxng ? await searxng.search(query) : await fallbackSearch(query);
+    // Decode credentials
+    const base64Credentials = authHeader.split(' ')[1];
+    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+    const [username, password] = credentials.split(':');
+
+    if (!username || !password) {
+      return res.status(401).json({ error: 'Invalid credentials format' });
+    }
+
+    let searchResults = [];
+    try {
+      // Create a new SearxNG instance for this request
+      const searxng = new SearxNGTool({ username, password });
+      searchResults = await searxng.search(query);
+    } catch (searchError) {
+      console.error('Search error:', searchError);
+      searchResults = [{
+        title: 'Search Error',
+        url: 'https://example.com',
+        snippet: 'SearxNG search failed. Using fallback result.'
+      }];
+    }
+
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
     
-    // Send search results immediately
+    // Send search results
     res.write(`data: ${JSON.stringify({
       type: 'search',
       data: searchResults

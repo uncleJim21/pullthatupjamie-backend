@@ -1,63 +1,40 @@
 // agent-tools/searxngTool.js
-const axios = require('axios');
+const fetch = require('node-fetch'); // Add this import
 
 class SearxNGTool {
-    constructor(config = {
-        baseUrl: 'http://104.248.53.140',
-        username: 'cascdr',
-        password: 'b895ef974e8c4814a65140bec30fbe60'
-    }) {
-        this.baseUrl = config.baseUrl;
-        this.auth = {
-            username: config.username,
-            password: config.password
-        };
+  constructor({ username, password }) {
+    if (!username || !password) {
+      throw new Error('Username and password are required');
     }
+    this.authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+  }
 
-    async search(query, options = {}) {
-        try {
-            const response = await axios({
-                method: 'get',
-                url: `${this.baseUrl}/search`,
-                params: {
-                    q: query,
-                    format: 'json',
-                    ...options
-                },
-                auth: this.auth,
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'Mozilla/5.0'
-                }
-            });
+  async search(query) {
+    try {
+      const response = await fetch('http://104.248.53.140/search', {
+        method: 'POST',
+        headers: {
+          'Authorization': this.authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        body: new URLSearchParams({
+          q: query,
+          format: 'json'
+        })
+      });
 
-            if (response.data.results) {
-                return response.data.results.map(result => ({
-                    title: result.title,
-                    url: result.url,
-                    snippet: result.content
-                }));
-            }
-            return [];
-        } catch (error) {
-            throw new Error(`SearxNG search failed: ${error.message}`);
-        }
+      if (!response.ok) {
+        throw new Error(`Search failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('SearxNG search error:', error);
+      throw error;
     }
-
-    async getTopHeadlines() {
-        try {
-            // Search for recent news
-            const results = await this.search('news', {
-                time_range: 'day',
-                categories: 'news',
-                language: 'en'
-            });
-            
-            return results.slice(0, 5); // Return top 5 headlines
-        } catch (error) {
-            throw new Error(`Failed to get top headlines: ${error.message}`);
-        }
-    }
+  }
 }
 
 module.exports = { SearxNGTool };
