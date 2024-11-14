@@ -281,6 +281,56 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
   }
 });
 
+app.post('/api/feedback', async (req, res) => {
+  const { email, feedback, timestamp, mode } = req.body;
+
+  // Log the received feedback
+  console.log('Received feedback:', {
+    email,
+    feedback,
+    timestamp,
+    mode,
+    receivedAt: new Date().toISOString()
+  });
+
+  try {
+    // Validate required fields
+    if (!email || !feedback) {
+      return res.status(400).json({
+        error: 'Email and feedback are required'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        error: 'Invalid email format'
+      });
+    }
+
+    // Validate mode
+    if (mode && !['depth', 'expert'].includes(mode)) {
+      return res.status(400).json({
+        error: 'Invalid mode specified'
+      });
+    }
+
+    // For now, just return success
+    // You can add database storage or other processing here later
+    res.status(200).json({
+      message: 'Feedback received successfully',
+      id: crypto.randomUUID()
+    });
+
+  } catch (error) {
+    console.error('Error processing feedback:', error);
+    res.status(500).json({
+      error: 'Internal server error processing feedback'
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
