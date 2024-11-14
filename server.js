@@ -2,7 +2,30 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const crypto = require('crypto')
 const { SearxNGTool } = require('./agent-tools/searxngTool');
+const mongoose = require('mongoose');
+
+const mongoURI = process.env.MONGO_URI;
+
+mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
+
+const db = mongoose.connection;
+db.on("error", console.error.bind(console, "MongoDB connection error:"));
+db.once("open", () => {
+  console.log("Connected to MongoDB!");
+});
+
+const JamieFeedbackSchema = new mongoose.Schema({
+  email: String,
+  feedback: String,
+  timestamp: String,
+  mode: String,
+  status: String,
+  state: String
+});
+
+const JamieFeedback = mongoose.model("JamieFeedback", JamieFeedbackSchema);
 
 
 const app = express();
@@ -284,14 +307,13 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
 app.post('/api/feedback', async (req, res) => {
   const { email, feedback, timestamp, mode } = req.body;
 
-  // Log the received feedback
-  console.log('Received feedback:', {
-    email,
-    feedback,
-    timestamp,
-    mode,
-    receivedAt: new Date().toISOString()
-  });
+  // console.log('Received feedback:', {
+  //   email,
+  //   feedback,
+  //   timestamp,
+  //   mode,
+  //   receivedAt: new Date().toISOString()
+  // });
 
   try {
     // Validate required fields
@@ -309,18 +331,22 @@ app.post('/api/feedback', async (req, res) => {
       });
     }
 
-    // Validate mode
-    if (mode && !['depth', 'expert'].includes(mode)) {
-      return res.status(400).json({
-        error: 'Invalid mode specified'
-      });
-    }
+    // Create new feedback document
+    const newFeedback = new JamieFeedback({
+      email,
+      feedback,
+      timestamp,
+      mode,
+      status: 'RECEIVED',
+      state: 'NEW'
+    });
 
-    // For now, just return success
-    // You can add database storage or other processing here later
+    // Save to MongoDB
+    await newFeedback.save();
+
+    // Return success response
     res.status(200).json({
       message: 'Feedback received successfully',
-      id: crypto.randomUUID()
     });
 
   } catch (error) {
