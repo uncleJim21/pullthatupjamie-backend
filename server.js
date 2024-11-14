@@ -240,16 +240,24 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
             }
             
             try {
-              if (data.trim()) {  // Only parse non-empty data
-                const parsed = JSON.parse(data);
+              // Add validation check before parsing
+              if (data && data.trim() && data !== '[DONE]') {
+                let parsed;
+                try {
+                  parsed = JSON.parse(data);
+                } catch (parseError) {
+                  console.error('Parsing error for chunk:', data);
+                  console.error('Parse error details:', parseError);
+                  continue; // Skip this chunk and continue with the next one
+                }
+    
                 let content;
-
                 if (model.startsWith('gpt')) {
                   content = parsed.choices?.[0]?.delta?.content;
                 } else {
                   content = parsed.delta?.text;
                 }
-
+    
                 if (content) {
                   const bufferedContent = contentBuffer.add(content);
                   if (bufferedContent) {
@@ -261,13 +269,45 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
                 }
               }
             } catch (e) {
-              console.error('Error parsing streaming response:', e);
+              // Add more detailed error logging
+              console.error('Error processing data chunk:', {
+                chunk: data.substring(0, 100), // Log first 100 chars of problematic chunk
+                error: e.message,
+                model: model,
+                timestamp: new Date().toISOString()
+              });
             }
           }
         }
       } catch (error) {
-        console.error('Error processing chunk:', error);
+        // Add more detailed error logging for chunk processing
+        console.error('Error processing chunk:', {
+          error: error.message,
+          chunk: chunk.toString().substring(0, 100),  // Log first 100 chars
+          timestamp: new Date().toISOString()
+        });
       }
+    });
+    
+    // Also add error handling for the response itself
+    response.data.on('error', (error) => {
+      console.error('Stream error:', {
+        error: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Try to send error to client if we can
+      try {
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          data: 'Stream processing error occurred'
+        })}\n\n`);
+      } catch (e) {
+        console.error('Failed to send error to client:', e);
+      }
+      
+      res.end();
     });
 
     response.data.on('end', () => {
