@@ -132,7 +132,8 @@ app.post('/api/stream-search', async (req, res) => {
   const { 
     query, 
     model = DEFAULT_MODEL,
-    mode = 'default'
+    mode = 'default',
+    history = [] // Ensure we receive history from the request body
   } = req.body;
 
   if (!query) {
@@ -198,12 +199,12 @@ app.post('/api/stream-search', async (req, res) => {
 - Maintain professional tone
 - Do not say "according to sources" or similar phrases`;
 
-    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
-
-Query: "${query}"
-
-Sources for reference (cite using [[n]](sourceURL) format):
-${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')}`;
+    // Include the conversation history as part of the LLM input
+    const formattedMessages = [
+      { role: 'system', content: systemMessage },
+      ...history, // Append the conversation history received from the frontend
+      { role: 'user', content: query }
+    ];
 
     const modelConfig = MODEL_CONFIGS[model];
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
@@ -213,17 +214,13 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
       method: 'post',
       url: modelConfig.apiUrl,
       headers: modelConfig.headers(apiKey),
-      data: modelConfig.formatData([
-        { role: 'system', content: systemMessage },
-        { role: 'user', content: userMessage }
-      ]),
+      data: modelConfig.formatData(formattedMessages),
       responseType: 'stream'
     });
 
     response.data.on('data', (chunk) => {
       try {
         const lines = chunk.toString().split('\n');
-        
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
@@ -239,75 +236,25 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
               return;
             }
             
-            try {
-              // Add validation check before parsing
-              if (data && data.trim() && data !== '[DONE]') {
-                let parsed;
-                try {
-                  parsed = JSON.parse(data);
-                } catch (parseError) {
-                  console.error('Parsing error for chunk:', data);
-                  console.error('Parse error details:', parseError);
-                  continue; // Skip this chunk and continue with the next one
-                }
-    
-                let content;
-                if (model.startsWith('gpt')) {
-                  content = parsed.choices?.[0]?.delta?.content;
-                } else {
-                  content = parsed.delta?.text;
-                }
-    
-                if (content) {
-                  const bufferedContent = contentBuffer.add(content);
-                  if (bufferedContent) {
-                    res.write(`data: ${JSON.stringify({
-                      type: 'inference',
-                      data: bufferedContent
-                    })}\n\n`);
-                  }
-                }
+            let parsed = JSON.parse(data);
+            const content = model.startsWith('gpt')
+              ? parsed.choices?.[0]?.delta?.content
+              : parsed.delta?.text;
+
+            if (content) {
+              const bufferedContent = contentBuffer.add(content);
+              if (bufferedContent) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'inference',
+                  data: bufferedContent
+                })}\n\n`);
               }
-            } catch (e) {
-              // Add more detailed error logging
-              console.error('Error processing data chunk:', {
-                chunk: data.substring(0, 100), // Log first 100 chars of problematic chunk
-                error: e.message,
-                model: model,
-                timestamp: new Date().toISOString()
-              });
             }
           }
         }
       } catch (error) {
-        // Add more detailed error logging for chunk processing
-        console.error('Error processing chunk:', {
-          error: error.message,
-          chunk: chunk.toString().substring(0, 100),  // Log first 100 chars
-          timestamp: new Date().toISOString()
-        });
+        console.error('Error processing data chunk:', error);
       }
-    });
-    
-    // Also add error handling for the response itself
-    response.data.on('error', (error) => {
-      console.error('Stream error:', {
-        error: error.message,
-        stack: error.stack,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Try to send error to client if we can
-      try {
-        res.write(`data: ${JSON.stringify({
-          type: 'error',
-          data: 'Stream processing error occurred'
-        })}\n\n`);
-      } catch (e) {
-        console.error('Failed to send error to client:', e);
-      }
-      
-      res.end();
     });
 
     response.data.on('end', () => {
@@ -332,10 +279,6 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
 
   } catch (error) {
     console.error('Streaming search error:', error);
-    if (error.response?.data) {
-      // Log the full error response for debugging
-      console.error('API Error Response:', error.response.data);
-    }
     res.write(`data: ${JSON.stringify({
       type: 'error',
       data: error.message
@@ -343,6 +286,7 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
     res.end();
   }
 });
+
 
 app.post('/api/feedback', async (req, res) => {
   const { email, feedback, timestamp, mode } = req.body;
