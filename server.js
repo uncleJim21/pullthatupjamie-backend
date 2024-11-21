@@ -180,6 +180,14 @@ app.post('/api/stream-search', async (req, res) => {
       data: searchResults
     })}\n\n`);
 
+    // Enhanced source formatting to include titles and snippets
+    const formattedSources = searchResults.map((result, index) => {
+      return `${index + 1}. ${result.title}
+URL: ${result.url}
+Content: ${result.snippet}
+`;
+    }).join('\n');
+
     // Prepare messages with mode-specific instructions
     let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
     
@@ -196,19 +204,22 @@ app.post('/api/stream-search', async (req, res) => {
 - Use bullet points for multiple items
 - Bold key terms with **term**
 - Maintain professional tone
-- Do not say "according to sources" or similar phrases`;
+- Do not say "according to sources" or similar phrases
+- Use the provided title, URL, and content from each source to inform your response`;
 
     const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
 
 Query: "${query}"
 
-Sources for reference (cite using [[n]](sourceURL) format):
-${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')}`;
+Sources for reference:
+${formattedSources}
+
+Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
 
     const modelConfig = MODEL_CONFIGS[model];
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
     const contentBuffer = new ContentBuffer();
-
+    
     const response = await axios({
       method: 'post',
       url: modelConfig.apiUrl,
@@ -240,7 +251,6 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
             }
             
             try {
-              // Add validation check before parsing
               if (data && data.trim() && data !== '[DONE]') {
                 let parsed;
                 try {
@@ -248,7 +258,7 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
                 } catch (parseError) {
                   console.error('Parsing error for chunk:', data);
                   console.error('Parse error details:', parseError);
-                  continue; // Skip this chunk and continue with the next one
+                  continue;
                 }
     
                 let content;
@@ -269,9 +279,8 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
                 }
               }
             } catch (e) {
-              // Add more detailed error logging
               console.error('Error processing data chunk:', {
-                chunk: data.substring(0, 100), // Log first 100 chars of problematic chunk
+                chunk: data.substring(0, 100),
                 error: e.message,
                 model: model,
                 timestamp: new Date().toISOString()
@@ -280,16 +289,14 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
           }
         }
       } catch (error) {
-        // Add more detailed error logging for chunk processing
         console.error('Error processing chunk:', {
           error: error.message,
-          chunk: chunk.toString().substring(0, 100),  // Log first 100 chars
+          chunk: chunk.toString().substring(0, 100),
           timestamp: new Date().toISOString()
         });
       }
     });
     
-    // Also add error handling for the response itself
     response.data.on('error', (error) => {
       console.error('Stream error:', {
         error: error.message,
@@ -297,7 +304,6 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
         timestamp: new Date().toISOString()
       });
       
-      // Try to send error to client if we can
       try {
         res.write(`data: ${JSON.stringify({
           type: 'error',
@@ -321,19 +327,9 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n')
       res.end();
     });
 
-    response.data.on('error', (error) => {
-      console.error('Stream error:', error);
-      res.write(`data: ${JSON.stringify({
-        type: 'error',
-        data: error.message
-      })}\n\n`);
-      res.end();
-    });
-
   } catch (error) {
     console.error('Streaming search error:', error);
     if (error.response?.data) {
-      // Log the full error response for debugging
       console.error('API Error Response:', error.response.data);
     }
     res.write(`data: ${JSON.stringify({
