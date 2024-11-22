@@ -5,6 +5,8 @@ const axios = require('axios');
 const crypto = require('crypto')
 const { SearxNGTool } = require('./agent-tools/searxngTool');
 const mongoose = require('mongoose');
+const {JamieFeedback} = require('./models/JamieFeedback.js');
+const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
 
 const mongoURI = process.env.MONGO_URI;
 
@@ -16,16 +18,7 @@ db.once("open", () => {
   console.log("Connected to MongoDB!");
 });
 
-const JamieFeedbackSchema = new mongoose.Schema({
-  email: String,
-  feedback: String,
-  timestamp: String,
-  mode: String,
-  status: String,
-  state: String
-});
 
-const JamieFeedback = mongoose.model("JamieFeedback", JamieFeedbackSchema);
 
 
 const app = express();
@@ -316,7 +309,33 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
       res.end();
     });
 
-    response.data.on('end', () => {
+    response.data.on('end', async () => {
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+    
+        await JamieMetricLog.findOneAndUpdate(
+          {
+            userId: username,
+            timestamp: today
+          },
+          {
+            $setOnInsert: {
+              userId: username,
+              timestamp: today,
+              mode: mode,
+            },
+            $inc: { dailyRequestCount: 1 }
+          },
+          {
+            upsert: true,
+            new: true
+          }
+        );
+      } catch (logError) {
+        console.error('Error logging metrics:', logError);
+      }
+    
       const finalContent = contentBuffer.flush();
       if (finalContent) {
         res.write(`data: ${JSON.stringify({
