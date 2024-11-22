@@ -129,39 +129,39 @@ class ContentBuffer {
 }
 
 app.post('/api/stream-search', async (req, res) => {
-  const { query, model = DEFAULT_MODEL, mode = 'default', history = [] } = req.body;
+  const { 
+    query, 
+    model = DEFAULT_MODEL,
+    mode = 'default'
+  } = req.body;
 
   if (!query) {
     return res.status(400).json({ error: 'Query is required' });
   }
 
-  // Validate message history format
-  if (!Array.isArray(history) || !history.every(msg => msg.role && msg.content)) {
-    return res.status(400).json({ error: 'Invalid history format' });
-  }
-
-  console.log(`history:${JSON.stringify(history, null, 2)}`);
-
+  // Get credentials from Authorization header
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Basic ')) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
   try {
+    // Decode credentials
     const base64Credentials = authHeader.split(' ')[1];
     const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
     const [username, password] = credentials.split(':');
+
     if (!username || !password) {
       return res.status(401).json({ error: 'Invalid credentials format' });
     }
 
-    // Perform SearxNG Search
     let searchResults = [];
     try {
+      // Create a new SearxNG instance for this request
       const searxng = new SearxNGTool({ username, password });
       searchResults = await searxng.search(query);
     } catch (searchError) {
-      console.error('Search error:', JSON.stringify(searchError, null, 2));
+      console.error('Search error:', searchError);
       searchResults = [{
         title: 'Search Error',
         url: 'https://example.com',
@@ -169,20 +169,33 @@ app.post('/api/stream-search', async (req, res) => {
       }];
     }
 
-    // Format sources for prompt
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Send search results
+    res.write(`data: ${JSON.stringify({
+      type: 'search',
+      data: searchResults
+    })}\n\n`);
+
+    // Enhanced source formatting to include titles and snippets
     const formattedSources = searchResults.map((result, index) => {
-      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}`;
+      return `${index + 1}. ${result.title}
+URL: ${result.url}
+Content: ${result.snippet}
+`;
     }).join('\n');
 
-    // Prepare messages for GPT
+    // Prepare messages with mode-specific instructions
     let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
-
+    
     if (mode === 'quick') {
       systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
     }
-
-    systemMessage += `
-Format your response as follows:
+    
+    systemMessage += ` Format your response as follows:
 - Use clear, concise language
 - Use proper markdown formatting
 - Cite sources using [[n]](url) format, where n is the source number
@@ -203,243 +216,182 @@ ${formattedSources}
 
 Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
 
-    // Combine history and current query
-    const messages = [
-      { role: 'system', content: systemMessage },
-      ...history,
-      { role: 'user', content: userMessage }
-    ];
-
-    console.log(`messages:${JSON.stringify(messages, null, 2)}`);
-
-    // Send to GPT
     const modelConfig = MODEL_CONFIGS[model];
-    const apiKey = process.env.OPENAI_API_KEY;
-    const requestData = modelConfig.formatData(messages);
+    const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
     const contentBuffer = new ContentBuffer();
-
+    
     const response = await axios({
       method: 'post',
       url: modelConfig.apiUrl,
       headers: modelConfig.headers(apiKey),
-      data: requestData,
+      data: modelConfig.formatData([
+        { role: 'system', content: systemMessage },
+        { role: 'user', content: userMessage }
+      ]),
       responseType: 'stream'
     });
 
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // Stream GPT response
     response.data.on('data', (chunk) => {
-      const lines = chunk.toString().split('\n');
-      lines.forEach((line) => {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            const finalContent = contentBuffer.flush();
-            if (finalContent) {
-              res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
-            }
-            res.write(`data: [DONE]\n\n`);
-            return;
-          }
-
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || parsed.delta?.text;
-            if (content) {
-              const bufferedContent = contentBuffer.add(content);
-              if (bufferedContent) {
-                res.write(`data: ${JSON.stringify({ type: 'inference', data: bufferedContent })}\n\n`);
+      try {
+        const lines = chunk.toString().split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              const finalContent = contentBuffer.flush();
+              if (finalContent) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'inference',
+                  data: finalContent
+                })}\n\n`);
               }
+              res.write(`data: [DONE]\n\n`);
+              return;
             }
-          } catch (error) {
-            console.error('Error parsing GPT response:', JSON.stringify(error, null, 2));
+            
+            try {
+              if (data && data.trim() && data !== '[DONE]') {
+                let parsed;
+                try {
+                  parsed = JSON.parse(data);
+                } catch (parseError) {
+                  console.error('Parsing error for chunk:', data);
+                  console.error('Parse error details:', parseError);
+                  continue;
+                }
+    
+                let content;
+                if (model.startsWith('gpt')) {
+                  content = parsed.choices?.[0]?.delta?.content;
+                } else {
+                  content = parsed.delta?.text;
+                }
+    
+                if (content) {
+                  const bufferedContent = contentBuffer.add(content);
+                  if (bufferedContent) {
+                    res.write(`data: ${JSON.stringify({
+                      type: 'inference',
+                      data: bufferedContent
+                    })}\n\n`);
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('Error processing data chunk:', {
+                chunk: data.substring(0, 100),
+                error: e.message,
+                model: model,
+                timestamp: new Date().toISOString()
+              });
+            }
           }
         }
+      } catch (error) {
+        console.error('Error processing chunk:', {
+          error: error.message,
+          chunk: chunk.toString().substring(0, 100),
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+    
+    response.data.on('error', (error) => {
+      console.error('Stream error:', {
+        error: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
       });
+      
+      try {
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          data: 'Stream processing error occurred'
+        })}\n\n`);
+      } catch (e) {
+        console.error('Failed to send error to client:', e);
+      }
+      
+      res.end();
     });
 
     response.data.on('end', () => {
       const finalContent = contentBuffer.flush();
       if (finalContent) {
-        res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          type: 'inference',
+          data: finalContent
+        })}\n\n`);
       }
       res.end();
     });
 
-    response.data.on('error', (error) => {
-      console.error('Stream error:', JSON.stringify(error, null, 2));
-      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Error occurred while streaming response' })}\n\n`);
-      res.end();
-    });
   } catch (error) {
-    console.error('Streaming search error:', JSON.stringify(error, null, 2));
-    res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
+    console.error('Streaming search error:', error);
+    if (error.response?.data) {
+      console.error('API Error Response:', error.response.data);
+    }
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      data: error.message
+    })}\n\n`);
     res.end();
   }
 });
 
+app.post('/api/feedback', async (req, res) => {
+  const { email, feedback, timestamp, mode } = req.body;
 
-
-app.post('/api/stream-search', async (req, res) => {
-  const { query, model = DEFAULT_MODEL, mode = 'default', history = [] } = req.body;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Query is required' });
-  }
-
-  // Validate message history format
-  if (!Array.isArray(history) || !history.every(msg => msg.role && msg.content)) {
-    return res.status(400).json({ error: 'Invalid history format' });
-  }
-
-  console.log(`Received history: ${JSON.stringify(history, null, 2)}`);
-
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Basic ')) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
+  // console.log('Received feedback:', {
+  //   email,
+  //   feedback,
+  //   timestamp,
+  //   mode,
+  //   receivedAt: new Date().toISOString()
+  // });
 
   try {
-    const base64Credentials = authHeader.split(' ')[1];
-    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-    const [username, password] = credentials.split(':');
-    if (!username || !password) {
-      return res.status(401).json({ error: 'Invalid credentials format' });
-    }
-
-    // Query SearxNG for the current request
-    let searchResults = [];
-    try {
-      const searxng = new SearxNGTool({ username, password });
-      searchResults = await searxng.search(query);
-    } catch (searchError) {
-      console.error('SearxNG search error:', JSON.stringify(searchError, null, 2));
-      searchResults = [{
-        title: 'Search Error',
-        url: 'https://example.com',
-        snippet: 'SearxNG search failed. Using fallback result.'
-      }];
-    }
-
-    // Format sources for the assistant prompt
-    const formattedSources = searchResults.map((result, index) => {
-      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}`;
-    }).join('\n');
-
-    // Prepare messages for GPT
-    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
-
-    if (mode === 'quick') {
-      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
-    }
-
-    systemMessage += `
-Format your response as follows:
-- Use clear, concise language
-- Use proper markdown formatting
-- Cite sources using [[n]](url) format, where n is the source number
-- Citations must be inline within sentences
-- Start with a brief overview
-- Use bullet points for multiple items
-- Bold key terms with **term**
-- Maintain professional tone
-- Do not say "according to sources" or similar phrases
-- Use the provided title, URL, and content from each source to inform your response`;
-
-    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
-
-Query: "${query}
-
-In the scenario where the query is vague, heavily weight the results from the chat history to infer what is meant by the query in your response. Please stick to the above prescribed format regardless."
-
-Sources for reference:
-${formattedSources}
-
-Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
-
-    // Combine history with the current query
-    const messages = [
-      { role: 'system', content: systemMessage },
-      ...history,
-      { role: 'user', content: userMessage }
-    ];
-
-    console.log(`GPT Messages: ${JSON.stringify(messages, null, 2)}`);
-
-    // Send messages to GPT
-    const modelConfig = MODEL_CONFIGS[model];
-    const apiKey = process.env.OPENAI_API_KEY;
-    const requestData = modelConfig.formatData(messages);
-    const contentBuffer = new ContentBuffer();
-
-    const response = await axios({
-      method: 'post',
-      url: modelConfig.apiUrl,
-      headers: modelConfig.headers(apiKey),
-      data: requestData,
-      responseType: 'stream'
-    });
-
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // Stream GPT response
-    response.data.on('data', (chunk) => {
-      const lines = chunk.toString().split('\n');
-      lines.forEach((line) => {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            const finalContent = contentBuffer.flush();
-            if (finalContent) {
-              res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
-            }
-            res.write(`data: [DONE]\n\n`);
-            return;
-          }
-
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || parsed.delta?.text;
-            if (content) {
-              const bufferedContent = contentBuffer.add(content);
-              if (bufferedContent) {
-                res.write(`data: ${JSON.stringify({ type: 'inference', data: bufferedContent })}\n\n`);
-              }
-            }
-          } catch (error) {
-            console.error('Error parsing GPT response:', JSON.stringify(error, null, 2));
-          }
-        }
+    // Validate required fields
+    if (!email || !feedback) {
+      return res.status(400).json({
+        error: 'Email and feedback are required'
       });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        error: 'Invalid email format'
+      });
+    }
+
+    // Create new feedback document
+    const newFeedback = new JamieFeedback({
+      email,
+      feedback,
+      timestamp,
+      mode,
+      status: 'RECEIVED',
+      state: 'NEW'
     });
 
-    response.data.on('end', () => {
-      const finalContent = contentBuffer.flush();
-      if (finalContent) {
-        res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
-      }
-      res.end();
+    // Save to MongoDB
+    await newFeedback.save();
+
+    // Return success response
+    res.status(200).json({
+      message: 'Feedback received successfully',
     });
 
-    response.data.on('error', (error) => {
-      console.error('Stream error:', JSON.stringify(error, null, 2));
-      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Error occurred while streaming response' })}\n\n`);
-      res.end();
-    });
   } catch (error) {
-    console.error('Streaming search error:', JSON.stringify(error, null, 2));
-    res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
-    res.end();
+    console.error('Error processing feedback:', error);
+    res.status(500).json({
+      error: 'Internal server error processing feedback'
+    });
   }
 });
-
 
 // Health check endpoint
 app.get('/health', (req, res) => {
