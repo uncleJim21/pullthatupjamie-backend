@@ -135,17 +135,18 @@ app.post('/api/stream-search', async (req, res) => {
     return res.status(400).json({ error: 'Query is required' });
   }
 
-  // Validate message history format
   if (!Array.isArray(history) || !history.every(msg => msg.role && msg.content)) {
     return res.status(400).json({ error: 'Invalid history format' });
   }
 
-  console.log(`history:${JSON.stringify(history, null, 2)}`);
+  console.log(`Received history: ${JSON.stringify(history, null, 2)}`);
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Basic ')) {
     return res.status(401).json({ error: 'Authentication required' });
   }
+
+  const contentBuffer = new ContentBuffer();
 
   try {
     const base64Credentials = authHeader.split(' ')[1];
@@ -161,7 +162,7 @@ app.post('/api/stream-search', async (req, res) => {
       const searxng = new SearxNGTool({ username, password });
       searchResults = await searxng.search(query);
     } catch (searchError) {
-      console.error('Search error:', JSON.stringify(searchError, null, 2));
+      console.error('SearxNG search error:', JSON.stringify(searchError, null, 2));
       searchResults = [{
         title: 'Search Error',
         url: 'https://example.com',
@@ -169,20 +170,17 @@ app.post('/api/stream-search', async (req, res) => {
       }];
     }
 
-    // Format sources for prompt
+    // Format sources with numbers
     const formattedSources = searchResults.map((result, index) => {
-      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}`;
-    }).join('\n');
+      const safeSnippet = result.snippet ? result.snippet : 'No snippet available';
+      return `${index + 1}. **${result.title}**  
+URL: [${result.url}](${result.url})  
+Content: ${safeSnippet}`;
+    }).join('\n\n');
 
-    // Prepare messages for GPT
-    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
-
-    if (mode === 'quick') {
-      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
-    }
-
-    systemMessage += `
-Format your response as follows:
+    const systemMessage = `
+You are a helpful assistant that provides well-structured, markdown-formatted responses. Cite sources inline using the [[n]](url) format. Format your response as follows:
+Adhere to the following guidelines:
 - Use clear, concise language
 - Use proper markdown formatting
 - Cite sources using [[n]](url) format, where n is the source number
@@ -192,31 +190,31 @@ Format your response as follows:
 - Bold key terms with **term**
 - Maintain professional tone
 - Do not say "according to sources" or similar phrases
-- Use the provided title, URL, and content from each source to inform your response`;
+- Do not say Analysis of "Query" as the title. Instead structure it as Overview, key points etc
+- Use the provided title, URL, and content from each source to inform your response;
+- Be context-aware by leveraging conversation history.`;
 
-    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
-
-Query: "${query}"
-
-Sources for reference:
-${formattedSources}
-
-Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
-
-    // Combine history and current query
     const messages = [
       { role: 'system', content: systemMessage },
       ...history,
-      { role: 'user', content: userMessage }
+      { role: 'user', content: `Analyze the following query using the provided sources:\n\n${query}\n\nSources:\n${formattedSources}` }
     ];
 
-    console.log(`messages:${JSON.stringify(messages, null, 2)}`);
+    console.log(`GPT Messages: ${JSON.stringify(messages, null, 2)}`);
 
-    // Send to GPT
+    // Immediately send SearxNG search results to the client
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    res.write(`data: ${JSON.stringify({
+      type: 'search',
+      data: searchResults
+    })}\n\n`);
+
     const modelConfig = MODEL_CONFIGS[model];
     const apiKey = process.env.OPENAI_API_KEY;
     const requestData = modelConfig.formatData(messages);
-    const contentBuffer = new ContentBuffer();
 
     const response = await axios({
       method: 'post',
@@ -225,11 +223,6 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
       data: requestData,
       responseType: 'stream'
     });
-
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
 
     // Stream GPT response
     response.data.on('data', (chunk) => {
@@ -272,15 +265,28 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
 
     response.data.on('error', (error) => {
       console.error('Stream error:', JSON.stringify(error, null, 2));
-      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Error occurred while streaming response' })}\n\n`);
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', data: 'Error occurred while streaming response' })}\n\n`);
+      } catch (e) {
+        console.error('Failed to send error to client:', e);
+      }
       res.end();
     });
   } catch (error) {
     console.error('Streaming search error:', JSON.stringify(error, null, 2));
-    res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
-    res.end();
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
+      } catch (writeError) {
+        console.error('Failed to send error to client:', JSON.stringify(writeError, null, 2));
+      }
+    }
   }
 });
+
+
 
 
 
