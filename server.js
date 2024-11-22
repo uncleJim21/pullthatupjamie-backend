@@ -140,7 +140,7 @@ app.post('/api/stream-search', async (req, res) => {
     return res.status(400).json({ error: 'Invalid history format' });
   }
 
-  console.log(`history:${JSON.stringify(history,null,2)}`)
+  console.log(`history:${JSON.stringify(history, null, 2)}`);
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Basic ')) {
@@ -169,27 +169,49 @@ app.post('/api/stream-search', async (req, res) => {
       }];
     }
 
-    // Prepare GPT Messages
+    // Format sources for prompt
     const formattedSources = searchResults.map((result, index) => {
       return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}`;
     }).join('\n');
 
-    const systemMessage = `
-You are a helpful assistant that provides well-structured, markdown-formatted responses. Cite sources inline using the [[n]](url) format.
-Adhere to the following guidelines:
-- Provide concise, accurate information.
-- Use markdown for formatting.
-- Inline citations must use [[n]](url) where n corresponds to the source number.
-- Be context-aware by leveraging conversation history.`;
+    // Prepare messages for GPT
+    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
+
+    if (mode === 'quick') {
+      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
+    }
+
+    systemMessage += `
+Format your response as follows:
+- Use clear, concise language
+- Use proper markdown formatting
+- Cite sources using [[n]](url) format, where n is the source number
+- Citations must be inline within sentences
+- Start with a brief overview
+- Use bullet points for multiple items
+- Bold key terms with **term**
+- Maintain professional tone
+- Do not say "according to sources" or similar phrases
+- Use the provided title, URL, and content from each source to inform your response`;
+
+    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
+
+Query: "${query}"
+
+Sources for reference:
+${formattedSources}
+
+Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
 
     // Combine history and current query
     const messages = [
       { role: 'system', content: systemMessage },
       ...history,
-      { role: 'user', content: `Analyze the following query using the provided sources:\n\n${query}\n\nSources:\n${formattedSources}` }
+      { role: 'user', content: userMessage }
     ];
 
-    console.log(`messages:${JSON.stringify(messages,null,2)}`)
+    console.log(`messages:${JSON.stringify(messages, null, 2)}`);
+
     // Send to GPT
     const modelConfig = MODEL_CONFIGS[model];
     const apiKey = process.env.OPENAI_API_KEY;
@@ -261,58 +283,163 @@ Adhere to the following guidelines:
 });
 
 
-app.post('/api/feedback', async (req, res) => {
-  const { email, feedback, timestamp, mode } = req.body;
 
-  // console.log('Received feedback:', {
-  //   email,
-  //   feedback,
-  //   timestamp,
-  //   mode,
-  //   receivedAt: new Date().toISOString()
-  // });
+app.post('/api/stream-search', async (req, res) => {
+  const { query, model = DEFAULT_MODEL, mode = 'default', history = [] } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Query is required' });
+  }
+
+  // Validate message history format
+  if (!Array.isArray(history) || !history.every(msg => msg.role && msg.content)) {
+    return res.status(400).json({ error: 'Invalid history format' });
+  }
+
+  console.log(`Received history: ${JSON.stringify(history, null, 2)}`);
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
 
   try {
-    // Validate required fields
-    if (!email || !feedback) {
-      return res.status(400).json({
-        error: 'Email and feedback are required'
-      });
+    const base64Credentials = authHeader.split(' ')[1];
+    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+    const [username, password] = credentials.split(':');
+    if (!username || !password) {
+      return res.status(401).json({ error: 'Invalid credentials format' });
     }
 
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({
-        error: 'Invalid email format'
-      });
+    // Query SearxNG for the current request
+    let searchResults = [];
+    try {
+      const searxng = new SearxNGTool({ username, password });
+      searchResults = await searxng.search(query);
+    } catch (searchError) {
+      console.error('SearxNG search error:', JSON.stringify(searchError, null, 2));
+      searchResults = [{
+        title: 'Search Error',
+        url: 'https://example.com',
+        snippet: 'SearxNG search failed. Using fallback result.'
+      }];
     }
 
-    // Create new feedback document
-    const newFeedback = new JamieFeedback({
-      email,
-      feedback,
-      timestamp,
-      mode,
-      status: 'RECEIVED',
-      state: 'NEW'
+    // Format sources for the assistant prompt
+    const formattedSources = searchResults.map((result, index) => {
+      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}`;
+    }).join('\n');
+
+    // Prepare messages for GPT
+    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
+
+    if (mode === 'quick') {
+      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
+    }
+
+    systemMessage += `
+Format your response as follows:
+- Use clear, concise language
+- Use proper markdown formatting
+- Cite sources using [[n]](url) format, where n is the source number
+- Citations must be inline within sentences
+- Start with a brief overview
+- Use bullet points for multiple items
+- Bold key terms with **term**
+- Maintain professional tone
+- Do not say "according to sources" or similar phrases
+- Use the provided title, URL, and content from each source to inform your response`;
+
+    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
+
+Query: "${query}
+
+In the scenario where the query is vague, heavily weight the results from the chat history to infer what is meant by the query in your response. Please stick to the above prescribed format regardless."
+
+Sources for reference:
+${formattedSources}
+
+Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
+
+    // Combine history with the current query
+    const messages = [
+      { role: 'system', content: systemMessage },
+      ...history,
+      { role: 'user', content: userMessage }
+    ];
+
+    console.log(`GPT Messages: ${JSON.stringify(messages, null, 2)}`);
+
+    // Send messages to GPT
+    const modelConfig = MODEL_CONFIGS[model];
+    const apiKey = process.env.OPENAI_API_KEY;
+    const requestData = modelConfig.formatData(messages);
+    const contentBuffer = new ContentBuffer();
+
+    const response = await axios({
+      method: 'post',
+      url: modelConfig.apiUrl,
+      headers: modelConfig.headers(apiKey),
+      data: requestData,
+      responseType: 'stream'
     });
 
-    // Save to MongoDB
-    await newFeedback.save();
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    // Return success response
-    res.status(200).json({
-      message: 'Feedback received successfully',
+    // Stream GPT response
+    response.data.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n');
+      lines.forEach((line) => {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            const finalContent = contentBuffer.flush();
+            if (finalContent) {
+              res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
+            }
+            res.write(`data: [DONE]\n\n`);
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content || parsed.delta?.text;
+            if (content) {
+              const bufferedContent = contentBuffer.add(content);
+              if (bufferedContent) {
+                res.write(`data: ${JSON.stringify({ type: 'inference', data: bufferedContent })}\n\n`);
+              }
+            }
+          } catch (error) {
+            console.error('Error parsing GPT response:', JSON.stringify(error, null, 2));
+          }
+        }
+      });
     });
 
+    response.data.on('end', () => {
+      const finalContent = contentBuffer.flush();
+      if (finalContent) {
+        res.write(`data: ${JSON.stringify({ type: 'inference', data: finalContent })}\n\n`);
+      }
+      res.end();
+    });
+
+    response.data.on('error', (error) => {
+      console.error('Stream error:', JSON.stringify(error, null, 2));
+      res.write(`data: ${JSON.stringify({ type: 'error', data: 'Error occurred while streaming response' })}\n\n`);
+      res.end();
+    });
   } catch (error) {
-    console.error('Error processing feedback:', error);
-    res.status(500).json({
-      error: 'Internal server error processing feedback'
-    });
+    console.error('Streaming search error:', JSON.stringify(error, null, 2));
+    res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
+    res.end();
   }
 });
+
 
 // Health check endpoint
 app.get('/health', (req, res) => {
