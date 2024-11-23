@@ -152,7 +152,7 @@ app.post('/api/stream-search', async (req, res) => {
     try {
       // Create a new SearxNG instance for this request
       const searxng = new SearxNGTool({ username, password });
-      searchResults = await searxng.search(query);
+      searchResults = (await searxng.search(query)).slice(0, 10);
     } catch (searchError) {
       console.error('Search error:', searchError);
       searchResults = [{
@@ -189,20 +189,20 @@ Content: ${result.snippet}
     }
     
     systemMessage += ` Format your response as follows:
-- Use clear, concise language
-- Use proper markdown formatting
-- Cite sources using [[n]](url) format, where n is the source number
-- Citations must be inline within sentences
-- Start with a brief overview
-- Use bullet points for multiple items
-- Bold key terms with **term**
-- Maintain professional tone
-- Do not say "according to sources" or similar phrases
-- Use the provided title, URL, and content from each source to inform your response`;
+    - Use clear, concise language
+    - Use proper markdown formatting
+    - Cite sources using [[n]](url) format, where n is the source number
+    - Citations must be inline within sentences
+    - Start with a brief overview
+    - Use bullet points for multiple items
+    - Bold key terms with **term**
+    - Maintain professional tone
+    - Do not say "according to sources" or similar phrases
+    - Use the provided title, URL, and content from each source to inform your response`;
 
     const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
 
-Query: "${query}"
+    Query: "${query}"
 
 Sources for reference:
 ${formattedSources}
