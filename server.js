@@ -3,6 +3,13 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { SearxNGTool } = require('./agent-tools/searxngTool');
+const { OpenAI } = require('openai');
+const {findSimilarDiscussions} = require('./agent-tools/neo4jTools.js')
+
+// Initialize OpenAI client (add near your other initializations)
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
 
 
 const app = express();
@@ -104,6 +111,68 @@ class ContentBuffer {
     return null;
   }
 }
+
+app.post('/api/search-quotes', async (req, res) => {
+  const { query, limit = 5 } = req.body;
+
+  // Get credentials from Authorization header
+  // const authHeader = req.headers.authorization;
+  // if (!authHeader || !authHeader.startsWith('Basic ')) {
+  //   return res.status(401).json({ error: 'Authentication required' });
+  // }
+
+  try {
+    // Decode credentials
+    // const base64Credentials = authHeader.split(' ')[1];
+    // const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+    // const [username, password] = credentials.split(':');
+
+    // if (!username || !password) {
+    //   return res.status(401).json({ error: 'Invalid credentials format' });
+    // }
+
+    // Create embedding for the query using the same model as ingestion
+    const embeddingResponse = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: query
+    });
+    
+    const embedding = embeddingResponse.data[0].embedding;
+
+    // Search for similar discussions using the embedding
+    const similarDiscussions = await findSimilarDiscussions({
+      embedding,
+      limit
+    });
+
+    // Format and return the results
+    const results = similarDiscussions.map(discussion => ({
+      quote: discussion.quote,
+      episode: discussion.episode,
+      creator: discussion.creator,
+      date: discussion.date,
+      similarity: parseFloat(discussion.similarity.toFixed(4)), // Format to 4 decimal places
+      timeContext: {
+        start_time: discussion.start_time,
+        end_time: discussion.end_time
+      }
+    }));
+
+    res.json({
+      query,
+      results,
+      total: results.length,
+      model: "text-embedding-ada-002" // Include model info for reference
+    });
+
+  } catch (error) {
+    console.error('Search quotes error:', error);
+    res.status(500).json({ 
+      error: 'Failed to search quotes',
+      details: error.message 
+    });
+  }
+});
 
 app.post('/api/stream-search', async (req, res) => {
   const { 

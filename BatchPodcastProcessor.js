@@ -74,10 +74,17 @@ class BatchPodcastProcessor {
     async processAudioUrl(audioUrl, episode, feedId) {
         try {
             console.log(`Processing episode: ${episode.itemTitle}`);
-            const transcript = await this.getTranscript(audioUrl, episode.episodeGUID);
             
+            // First check if episode exists
+            const episodeExists = await this.checkEpisodeExists(episode.episodeGUID);
+            if (episodeExists) {
+                console.log(`Episode ${episode.itemTitle} already exists, skipping...`);
+                return { success: false, reason: 'Episode already exists' };
+            }
+    
+            const transcript = await this.getTranscript(audioUrl, episode.episodeGUID);
             await this.storeEpisodeData(episode, feedId);
-
+    
             if (transcript && transcript.channels && transcript.channels.length > 0) {
                 const paragraphs = this.extractParagraphs(transcript);
                 if (paragraphs.length > 0) {
@@ -96,28 +103,43 @@ class BatchPodcastProcessor {
             return { success: false, error: error.message };
         }
     }
-
+    
+    // Add this new method to check if episode exists
+    async checkEpisodeExists(episodeGuid) {
+        const session = neo4jDriver.session();
+        try {
+            const result = await session.run(`
+                MATCH (e:Episode {guid: $guid})
+                RETURN count(e) as count
+            `, {
+                guid: episodeGuid
+            });
+            return result.records[0].get('count') > 0;
+        } finally {
+            await session.close();
+        }
+    }
+    
     async storeEpisodeData(episode, feedId) {
         const session = neo4jDriver.session();
         try {
             await session.run(`
                 MATCH (f:Feed {feedId: $feedId})
-                MERGE (e:Episode {guid: $guid})
-                ON CREATE SET
-                    e.feedId = $feedId,
-                    e.title = $title,
-                    e.description = $description,
-                    e.publishedDate = datetime($publishedDate),
-                    e.duration = $duration,
-                    e.creator = $creator,
-                    e.episodeNumber = $episodeNumber,
-                    e.imageUrl = $imageUrl,
-                    e.audioUrl = $audioUrl,
-                    e.createdAt = datetime(),
-                    e.updatedAt = datetime()
-                ON MATCH SET
-                    e.updatedAt = datetime()
-                MERGE (f)-[:CONTAINS]->(e)
+                CREATE (e:Episode {
+                    guid: $guid,
+                    feedId: $feedId,
+                    title: $title,
+                    description: $description,
+                    publishedDate: datetime($publishedDate),
+                    duration: $duration,
+                    creator: $creator,
+                    episodeNumber: $episodeNumber,
+                    imageUrl: $imageUrl,
+                    audioUrl: $audioUrl,
+                    createdAt: datetime(),
+                    updatedAt: datetime()
+                })
+                CREATE (f)-[:CONTAINS]->(e)
                 RETURN e
             `, {
                 feedId: String(feedId),

@@ -21,23 +21,26 @@ const neo4jTools = {
                        e.creator as creator,
                        p.text as quote,
                        e.publishedDate as date,
+                       p.start_time as start_time,
+                       p.end_time as end_time,
                        similarity
                 ORDER BY similarity DESC
-                LIMIT 20
+                LIMIT toInteger($limit)
             `, { embedding, limit });
-
+    
             return result.records.map(record => ({
                 episode: record.get('episode'),
                 creator: record.get('creator'),
                 quote: record.get('quote'),
                 date: record.get('date'),
+                start_time: record.get('start_time'),
+                end_time: record.get('end_time'),
                 similarity: record.get('similarity')
             }));
         } finally {
             await session.close();
         }
     },
-
     findTimelineDiscussions: async ({ embedding, timeframe = 'P6M' }) => {
         const session = neo4jDriver.session();
         try {

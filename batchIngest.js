@@ -9,9 +9,14 @@ async function main() {
         // const feedUrl = 'https://feeds.npr.org/500005/podcast.xml';
         // const feedId = 55810;
 
-        const feedUrl = 'https://api.substack.com/feed/podcast/9895.rss'; // thriller bitcoin
-        const feedId = 3955537;//thriller bitcoin
-        const EPISODES_TO_PROCESS = 10;
+        // const feedUrl = 'https://api.substack.com/feed/podcast/9895.rss'; // thriller bitcoin
+        // const feedId = 3955537;//thriller bitcoin
+
+        const feedUrl = 'https://anchor.fm/s/8168b150/podcast/rss'//green candle
+        const feedId = 5015946;
+
+
+        const EPISODES_TO_PROCESS = 26;
         
         const processor = new BatchPodcastProcessor({
             batchSize: 20,
