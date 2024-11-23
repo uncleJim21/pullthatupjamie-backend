@@ -210,6 +210,7 @@ ${formattedSources}
 Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
 
     const modelConfig = MODEL_CONFIGS[model];
+    console.log(`model:${model}`)
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
     const contentBuffer = new ContentBuffer();
     
@@ -311,18 +312,25 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
 
     response.data.on('end', async () => {
       try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        // Create start and end of day timestamps
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
     
         await JamieMetricLog.findOneAndUpdate(
           {
             userId: username,
-            timestamp: today
+            timestamp: {
+              $gte: startOfDay,
+              $lte: endOfDay
+            }
           },
           {
             $setOnInsert: {
               userId: username,
-              timestamp: today,
+              timestamp: startOfDay,
               mode: mode,
             },
             $inc: { dailyRequestCount: 1 }
