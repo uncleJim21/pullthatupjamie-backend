@@ -150,13 +150,14 @@ app.post('/api/search-quotes', async (req, res) => {
       quote: discussion.quote,
       episode: discussion.episode,
       creator: discussion.creator,
+      audioUrl: discussion.audioUrl,
       date: discussion.date,
-      similarity: parseFloat(discussion.similarity.toFixed(4)), // Format to 4 decimal places
+      similarity: parseFloat(discussion.similarity.toFixed(4)),
       timeContext: {
-        start_time: discussion.start_time,
-        end_time: discussion.end_time
+          start_time: discussion.start_time,
+          end_time: discussion.end_time
       }
-    }));
+  }));
 
     res.json({
       query,
