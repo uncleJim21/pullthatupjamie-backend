@@ -11,9 +11,26 @@ function getLNURL() {
     return `https://${domain}/.well-known/lnurlp/${username}`;
 }
 
+function validatePreimage(preimageHex, paymentHashHex) {
+  // Convert the preimage hex string to a Buffer
+  const preimageBuffer = Buffer.from(preimageHex, 'hex');
+
+  // Hash the preimage using SHA256
+  const hash = crypto.createHash('sha256');
+  hash.update(preimageBuffer);
+  const computedHashHex = hash.digest('hex');
+
+  // Compare the computed hash to the payment hash from the invoice
+  const result = computedHashHex === paymentHashHex;
+  console.log("preImage:",preimageHex,"paymentHash:",paymentHashHex,"result:",result)
+  return result;
+}
+
 async function getIsInvoicePaid(paymentHash) {
-    const isPaid = false
+    const preimage = (authHeader && authHeader[0] === ':') ? authHeader.substring(1) : false;
     const invoice = "";
+    const isPaid = validatePreimage(preimage,paymentHash)
+
     return { isPaid, invoice };//{ isPaid, invoice };
 }
 

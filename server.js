@@ -9,6 +9,7 @@ const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
 const {generateInvoice} = require('./utils/lightning-utils')
 const mongoURI = process.env.MONGO_URI;
+const invoicePoolSize = 5;
 
 mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
 
@@ -30,6 +31,7 @@ const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
 const jamieAuthMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization;
+  console.log(`jamieAuthMiddleware`)
   if (!authHeader.startsWith('Basic ')) {
     const bolt11Preimage = authHeader;
     if (!bolt11Preimage) {
@@ -54,8 +56,6 @@ const jamieAuthMiddleware = (req, res, next) => {
   next();
 };
 
-
-app.use(jamieAuthMiddleware)
 
 // Model configurations
 const MODEL_CONFIGS = {
@@ -146,6 +146,22 @@ class ContentBuffer {
     return null;
   }
 }
+
+app.get('/invoice-pool', async (req, res) => {
+  try {
+    // Create invoices in parallel using promises
+    const invoicePromises = Array.from({ length: invoicePoolSize }, () => generateInvoice());
+    
+    const invoices = await Promise.all(invoicePromises);
+
+    // Respond with the generated invoices
+    res.status(200).json({ invoices });
+  } catch (error) {
+    console.error('Error generating invoice pool:', error);
+    res.status(500).json({ error: 'Failed to generate invoices' });
+  }
+});
+
 
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
