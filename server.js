@@ -18,9 +18,6 @@ db.once("open", () => {
   console.log("Connected to MongoDB!");
 });
 
-
-
-
 const app = express();
 
 // Middleware
@@ -30,6 +27,35 @@ app.use(express.json());
 // Environment variables with defaults
 const PORT = process.env.PORT || 3131;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
+
+const jamieAuthMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    const bolt11Preimage = req.headers['x-bolt11-preimage'];
+    if (!bolt11Preimage) {
+      return res.status(401).json({ error: 'Authentication required or valid Bolt11 preimage missing' });
+    }
+    // Allow request to proceed with Bolt11 preimage present
+    console.log('Proceeding with Bolt11 preimage:', bolt11Preimage);
+    return next();
+  }
+
+  // Decode credentials from Authorization header
+  const base64Credentials = authHeader.split(' ')[1];
+  const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+  const [username, password] = credentials.split(':');
+
+  if (!username || !password) {
+    return res.status(401).json({ error: 'Invalid credentials format' });
+  }
+
+  // Proceed with valid credentials
+  req.auth = { username, password };
+  next();
+};
+
+
+app.use(jamieAuthMiddleware)
 
 // Model configurations
 const MODEL_CONFIGS = {
@@ -121,38 +147,25 @@ class ContentBuffer {
   }
 }
 
-app.post('/api/stream-search', async (req, res) => {
-  const { 
-    query, 
-    model = DEFAULT_MODEL,
-    mode = 'default'
-  } = req.body;
+app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
+  const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
 
   if (!query) {
     return res.status(400).json({ error: 'Query is required' });
   }
 
-  // Get credentials from Authorization header
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Basic ')) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-
   try {
-    // Decode credentials
-    const base64Credentials = authHeader.split(' ')[1];
-    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-    const [username, password] = credentials.split(':');
-
-    if (!username || !password) {
-      return res.status(401).json({ error: 'Invalid credentials format' });
-    }
-
     let searchResults = [];
+    const { username, password } = req.auth || {};
+
     try {
       // Create a new SearxNG instance for this request
-      const searxng = new SearxNGTool({ username, password });
-      searchResults = (await searxng.search(query)).slice(0, 10);
+      if (username && password) {
+        const searxng = new SearxNGTool({ username, password });
+        searchResults = (await searxng.search(query)).slice(0, 10);
+      } else {
+        throw new Error('No valid SearxNG credentials available');
+      }
     } catch (searchError) {
       console.error('Search error:', searchError);
       searchResults = [{
@@ -166,22 +179,19 @@ app.post('/api/stream-search', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    
+
     // Send search results
     res.write(`data: ${JSON.stringify({
       type: 'search',
       data: searchResults
     })}\n\n`);
 
-    // Enhanced source formatting to include titles and snippets
+    // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
-      return `${index + 1}. ${result.title}
-URL: ${result.url}
-Content: ${result.snippet}
-`;
+      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}\n`;
     }).join('\n');
 
-    // Prepare messages with mode-specific instructions
+    // Construct messages for LLM
     let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
     
     if (mode === 'quick') {
@@ -199,21 +209,12 @@ Content: ${result.snippet}
     - Maintain professional tone
     - Do not say "according to sources" or similar phrases
     - Use the provided title, URL, and content from each source to inform your response`;
-
-    const userMessage = `Please analyze the following query and provide a ${mode === 'quick' ? 'brief ' : ''}response using the provided sources. Cite all claims using the [[n]](url) format.
-
-    Query: "${query}"
-
-Sources for reference:
-${formattedSources}
-
-Remember to cite claims using [[n]](sourceURL) format, where n corresponds to the source number above.`;
+    const userMessage = `Query: "${query}"\n\nSources:\n${formattedSources}`;
 
     const modelConfig = MODEL_CONFIGS[model];
-    console.log(`model:${model}`)
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
     const contentBuffer = new ContentBuffer();
-    
+
     const response = await axios({
       method: 'post',
       url: modelConfig.apiUrl,
@@ -226,124 +227,40 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
     });
 
     response.data.on('data', (chunk) => {
-      try {
-        const lines = chunk.toString().split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') {
-              const finalContent = contentBuffer.flush();
-              if (finalContent) {
-                res.write(`data: ${JSON.stringify({
-                  type: 'inference',
-                  data: finalContent
-                })}\n\n`);
-              }
-              res.write(`data: [DONE]\n\n`);
-              return;
+      const lines = chunk.toString().split('\n');
+      lines.forEach((line) => {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            const finalContent = contentBuffer.flush();
+            if (finalContent) {
+              res.write(`data: ${JSON.stringify({
+                type: 'inference',
+                data: finalContent
+              })}\n\n`);
             }
-            
-            try {
-              if (data && data.trim() && data !== '[DONE]') {
-                let parsed;
-                try {
-                  parsed = JSON.parse(data);
-                } catch (parseError) {
-                  console.error('Parsing error for chunk:', data);
-                  console.error('Parse error details:', parseError);
-                  continue;
-                }
-    
-                let content;
-                if (model.startsWith('gpt')) {
-                  content = parsed.choices?.[0]?.delta?.content;
-                } else {
-                  content = parsed.delta?.text;
-                }
-    
-                if (content) {
-                  const bufferedContent = contentBuffer.add(content);
-                  if (bufferedContent) {
-                    res.write(`data: ${JSON.stringify({
-                      type: 'inference',
-                      data: bufferedContent
-                    })}\n\n`);
-                  }
-                }
-              }
-            } catch (e) {
-              console.error('Error processing data chunk:', {
-                chunk: data.substring(0, 100),
-                error: e.message,
-                model: model,
-                timestamp: new Date().toISOString()
-              });
+            res.write('data: [DONE]\n\n');
+            res.end();
+            return;
+          }
+          const parsed = JSON.parse(data);
+          const content = model.startsWith('gpt')
+            ? parsed.choices?.[0]?.delta?.content
+            : parsed.delta?.text;
+          if (content) {
+            const bufferedContent = contentBuffer.add(content);
+            if (bufferedContent) {
+              res.write(`data: ${JSON.stringify({
+                type: 'inference',
+                data: bufferedContent
+              })}\n\n`);
             }
           }
         }
-      } catch (error) {
-        console.error('Error processing chunk:', {
-          error: error.message,
-          chunk: chunk.toString().substring(0, 100),
-          timestamp: new Date().toISOString()
-        });
-      }
-    });
-    
-    response.data.on('error', (error) => {
-      console.error('Stream error:', {
-        error: error.message,
-        stack: error.stack,
-        timestamp: new Date().toISOString()
       });
-      
-      try {
-        res.write(`data: ${JSON.stringify({
-          type: 'error',
-          data: 'Stream processing error occurred'
-        })}\n\n`);
-      } catch (e) {
-        console.error('Failed to send error to client:', e);
-      }
-      
-      res.end();
     });
 
-    response.data.on('end', async () => {
-      try {
-        // Create start and end of day timestamps
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-        
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
-    
-        await JamieMetricLog.findOneAndUpdate(
-          {
-            userId: username,
-            timestamp: {
-              $gte: startOfDay,
-              $lte: endOfDay
-            }
-          },
-          {
-            $setOnInsert: {
-              userId: username,
-              timestamp: startOfDay,
-              mode: mode,
-            },
-            $inc: { dailyRequestCount: 1 }
-          },
-          {
-            upsert: true,
-            new: true
-          }
-        );
-      } catch (logError) {
-        console.error('Error logging metrics:', logError);
-      }
-    
+    response.data.on('end', () => {
       const finalContent = contentBuffer.flush();
       if (finalContent) {
         res.write(`data: ${JSON.stringify({
@@ -354,16 +271,17 @@ Remember to cite claims using [[n]](sourceURL) format, where n corresponds to th
       res.end();
     });
 
+    response.data.on('error', (error) => {
+      console.error('Stream error:', error);
+      res.write(`data: ${JSON.stringify({
+        type: 'error',
+        data: 'Stream processing error occurred'
+      })}\n\n`);
+      res.end();
+    });
   } catch (error) {
     console.error('Streaming search error:', error);
-    if (error.response?.data) {
-      console.error('API Error Response:', error.response.data);
-    }
-    res.write(`data: ${JSON.stringify({
-      type: 'error',
-      data: error.message
-    })}\n\n`);
-    res.end();
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
