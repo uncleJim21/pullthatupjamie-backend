@@ -11,7 +11,8 @@
   "dependencies": {
     "@langchain/community": "^0.3.11",
     "@langchain/openai": "^0.3.11",
-    "axios": "^1.7.7",
+    "axios": "^1.7.9",
+    "bolt11": "^1.4.1",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.5",

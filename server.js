@@ -7,7 +7,7 @@ const { SearxNGTool } = require('./agent-tools/searxngTool');
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
-
+const {generateInvoice} = require('./utils/lightning-utils')
 const mongoURI = process.env.MONGO_URI;
 
 mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
@@ -30,8 +30,8 @@ const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
 const jamieAuthMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Basic ')) {
-    const bolt11Preimage = req.headers['x-bolt11-preimage'];
+  if (!authHeader.startsWith('Basic ')) {
+    const bolt11Preimage = authHeader;
     if (!bolt11Preimage) {
       return res.status(401).json({ error: 'Authentication required or valid Bolt11 preimage missing' });
     }
@@ -359,7 +359,9 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
+  // const invoice = await generateInvoice();
+  // console.log(`invoice:${JSON.stringify(invoice,null,2)}`)
 });
