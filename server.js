@@ -8,10 +8,12 @@ const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
+const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
+const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeDB } = require('./utils/invoice-db');
 
 const mongoURI = process.env.MONGO_URI;
-const invoicePoolSize = 5;
+const invoicePoolSize = 2;
 
 mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
 
@@ -163,13 +165,22 @@ class ContentBuffer {
 
 app.get('/invoice-pool', async (req, res) => {
   try {
-    // Create invoices in parallel using promises
-    const invoicePromises = Array.from({ length: invoicePoolSize }, () => generateInvoice());
-    
-    const invoices = await Promise.all(invoicePromises);
+    const invoices = await invoiceGenerator.generateInvoicePool(
+      invoicePoolSize,
+      generateInvoice
+    );
 
-    // Respond with the generated invoices
-    res.status(200).json({ invoices });
+    if (invoices.length === 0) {
+      return res.status(503).json({ 
+        error: 'Failed to generate any invoices, please try again later' 
+      });
+    }
+
+    // Return whatever invoices we managed to generate
+    res.status(200).json({ 
+      invoices,
+      poolSize: invoices.length 
+    });
   } catch (error) {
     console.error('Error generating invoice pool:', error);
     res.status(500).json({ error: 'Failed to generate invoices' });

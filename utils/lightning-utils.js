@@ -77,41 +77,67 @@ async function getPaymentHash(invoice) {
 }
   
 async function generateInvoice() {
-  console.log("generateInvoice started..")
+  console.log("generateInvoice started..");
   const msats = process.env.SERVICE_PRICE_MILLISATS;
-  console.log("getServicePrice msats:", msats)
-  
+  console.log("getServicePrice msats:", msats);
+
   try {
-      const lnurlResponse = await axios.get(getLNURL(), {
-          headers: {
-              Accept: "application/json",
-          },
-      });
+    // Get the LNURL data
+    const lnurlResponse = await axios.get(getLNURL(), {
+      headers: {
+        Accept: "application/json",
+      },
+    });
 
-      const lnAddress = lnurlResponse.data;
+    const lnAddress = lnurlResponse.data;
+    console.log("LNURL response:", JSON.stringify(lnAddress, null, 2));
 
-      if (msats > lnAddress.maxSendable || msats < lnAddress.minSendable) {
-          throw new Error(
-              `${msats} msats not in sendable range of ${lnAddress.minSendable} - ${lnAddress.maxSendable}`
-          );
-      }
+    if (!lnAddress || !lnAddress.callback) {
+      throw new Error(`Invalid LNURL response: ${JSON.stringify(lnAddress)}`);
+    }
 
-      // Set expiry to 24 hours from now
-      const expiryTimestamp = Math.floor(Date.now() / 1000) + (3600 * 24);
-      
-      const url = `${lnAddress.callback}?amount=${msats}&expiry=${expiryTimestamp}`;
-      const invoiceResponse = await axios.get(url);
-      const invoiceData = invoiceResponse.data;
+    if (msats > lnAddress.maxSendable || msats < lnAddress.minSendable) {
+      throw new Error(
+        `${msats} msats not in sendable range of ${lnAddress.minSendable} - ${lnAddress.maxSendable}`
+      );
+    }
 
-      const paymentHash = await getPaymentHash(invoiceData.pr);
-      
-      // Store in database with same expiry we sent to LNURL
-      await storeInvoice(paymentHash, invoiceData.pr, expiryTimestamp);
-      
-      return { ...invoiceData, paymentHash };
+    const expiration = new Date(Date.now() + (3600 * 1000 * 24));
+    const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
+      expiration.getTime() / 1000
+    )}`;
+
+    console.log("Requesting invoice from:", url);
+    const invoiceResponse = await axios.get(url);
+    console.log("Invoice response:", JSON.stringify(invoiceResponse.data, null, 2));
+
+    const invoiceData = invoiceResponse.data;
+    if (!invoiceData.pr) {
+      console.error("Failed invoice response:", invoiceData);
+      throw new Error(`No payment request in invoice response: ${JSON.stringify(invoiceData)}`);
+    }
+
+    const paymentHash = await getPaymentHash(invoiceData.pr);
+    return { ...invoiceData, paymentHash };
+
   } catch (error) {
-      console.error('Error generating invoice:', error);
-      throw error;
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      console.error("Error response from server:", {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      });
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error("No response received:", error.request);
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      console.error("Error setting up request:", error.message);
+    }
+    console.error("Error config:", error.config);
+    throw error;
   }
 }
 
