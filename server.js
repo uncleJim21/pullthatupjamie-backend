@@ -8,6 +8,8 @@ const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
+const { initializeDB } = require('./utils/invoice-db');
+
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 5;
 
@@ -432,6 +434,8 @@ if (!process.env.ANTHROPIC_API_KEY) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
+  await initializeDB();
+  console.log('Invoice database initialized');
   // const invoice = await generateInvoice();
   // console.log(`invoice:${JSON.stringify(invoice,null,2)}`)
 });
