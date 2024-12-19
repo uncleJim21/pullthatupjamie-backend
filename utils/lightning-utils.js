@@ -1,6 +1,8 @@
 const axios = require("axios");
 const bolt11 = require("bolt11");
 const crypto = require('crypto'); 
+const { isPaymentHashValid, recordPayment, storeInvoice } = require('./invoice-db');
+
 
 function getLNURL() {
     const parts = process.env.LN_ADDRESS.split("@");
@@ -14,26 +16,31 @@ function getLNURL() {
 
 async function getIsInvoicePaid(preimage, paymentHash) {
   if (!preimage || !paymentHash) {
-      console.log('Missing preimage or paymentHash');
-      return false;
+    console.log('Missing preimage or paymentHash');
+    return false;
   }
 
   try {
-      // Ensure preimage doesn't start with ':'
-      const cleanPreimage = preimage.startsWith(':') ? preimage.substring(1) : preimage;
-      
-      // Validate the preimage against the payment hash
-      const isValid = validatePreimage(cleanPreimage, paymentHash);
-      console.log('Payment validation result:', {
-          preimage: cleanPreimage,
-          paymentHash,
-          isValid
-      });
-
-      return isValid;
-  } catch (error) {
-      console.error('Error validating payment:', error);
+    // First verify this payment hash exists in our database
+    const isValid = await isPaymentHashValid(paymentHash);
+    if (!isValid) {
+      console.log('Payment hash not found in database or expired');
       return false;
+    }
+
+    // Clean preimage and validate
+    const cleanPreimage = preimage.startsWith(':') ? preimage.substring(1) : preimage;
+    const isValidPreimage = validatePreimage(cleanPreimage, paymentHash);
+    
+    if (isValidPreimage) {
+      // Record the successful payment
+      await recordPayment(paymentHash, cleanPreimage);
+    }
+
+    return isValidPreimage;
+  } catch (error) {
+    console.error('Error validating payment:', error);
+    return false;
   }
 }
 
@@ -69,37 +76,43 @@ async function getPaymentHash(invoice) {
     return paymentHashTag;
 }
   
-async function generateInvoice(service) {
-    console.log("generateInvoice started..")
-    const msats = process.env.SERVICE_PRICE_MILLISATS;
-    console.log("getServicePrice msats:",msats)
-    const lnurlResponse = await axios.get(getLNURL(), {
-      headers: {
-        Accept: "application/json",
-      },
-    });
+async function generateInvoice() {
+  console.log("generateInvoice started..")
+  const msats = process.env.SERVICE_PRICE_MILLISATS;
+  console.log("getServicePrice msats:", msats)
   
-    const lnAddress = lnurlResponse.data;
-  
-    if (msats > lnAddress.maxSendable || msats < lnAddress.minSendable) {
-      throw new Error(
-        `${msats} msats not in sendable range of ${lnAddress.minSendable} - ${lnAddress.maxSendable}`
-      );
-    }
-  
-    const expiration = new Date(Date.now() + (3600 * 1000 * 24)); // 24 hours from now
-    const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
-      expiration.getTime() / 1000
-    )}`;
-  
-    const invoiceResponse = await axios.get(url);
-    const invoiceData = invoiceResponse.data;
-  
-    const paymentHash = await getPaymentHash(invoiceData.pr);  
-    const invoice = { ...invoiceData, paymentHash };
-  
-  
-    return invoice;
+  try {
+      const lnurlResponse = await axios.get(getLNURL(), {
+          headers: {
+              Accept: "application/json",
+          },
+      });
+
+      const lnAddress = lnurlResponse.data;
+
+      if (msats > lnAddress.maxSendable || msats < lnAddress.minSendable) {
+          throw new Error(
+              `${msats} msats not in sendable range of ${lnAddress.minSendable} - ${lnAddress.maxSendable}`
+          );
+      }
+
+      // Set expiry to 24 hours from now
+      const expiryTimestamp = Math.floor(Date.now() / 1000) + (3600 * 24);
+      
+      const url = `${lnAddress.callback}?amount=${msats}&expiry=${expiryTimestamp}`;
+      const invoiceResponse = await axios.get(url);
+      const invoiceData = invoiceResponse.data;
+
+      const paymentHash = await getPaymentHash(invoiceData.pr);
+      
+      // Store in database with same expiry we sent to LNURL
+      await storeInvoice(paymentHash, invoiceData.pr, expiryTimestamp);
+      
+      return { ...invoiceData, paymentHash };
+  } catch (error) {
+      console.error('Error generating invoice:', error);
+      throw error;
+  }
 }
 
 module.exports = {
