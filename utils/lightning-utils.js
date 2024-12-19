@@ -1,5 +1,6 @@
 const axios = require("axios");
 const bolt11 = require("bolt11");
+const crypto = require('crypto'); 
 
 function getLNURL() {
     const parts = process.env.LN_ADDRESS.split("@");
@@ -11,27 +12,53 @@ function getLNURL() {
     return `https://${domain}/.well-known/lnurlp/${username}`;
 }
 
-function validatePreimage(preimageHex, paymentHashHex) {
-  // Convert the preimage hex string to a Buffer
-  const preimageBuffer = Buffer.from(preimageHex, 'hex');
+async function getIsInvoicePaid(preimage, paymentHash) {
+  if (!preimage || !paymentHash) {
+      console.log('Missing preimage or paymentHash');
+      return false;
+  }
 
-  // Hash the preimage using SHA256
-  const hash = crypto.createHash('sha256');
-  hash.update(preimageBuffer);
-  const computedHashHex = hash.digest('hex');
+  try {
+      // Ensure preimage doesn't start with ':'
+      const cleanPreimage = preimage.startsWith(':') ? preimage.substring(1) : preimage;
+      
+      // Validate the preimage against the payment hash
+      const isValid = validatePreimage(cleanPreimage, paymentHash);
+      console.log('Payment validation result:', {
+          preimage: cleanPreimage,
+          paymentHash,
+          isValid
+      });
 
-  // Compare the computed hash to the payment hash from the invoice
-  const result = computedHashHex === paymentHashHex;
-  console.log("preImage:",preimageHex,"paymentHash:",paymentHashHex,"result:",result)
-  return result;
+      return isValid;
+  } catch (error) {
+      console.error('Error validating payment:', error);
+      return false;
+  }
 }
 
-async function getIsInvoicePaid(paymentHash) {
-    const preimage = (authHeader && authHeader[0] === ':') ? authHeader.substring(1) : false;
-    const invoice = "";
-    const isPaid = validatePreimage(preimage,paymentHash)
+function validatePreimage(preimageHex, paymentHashHex) {
+  try {
+      // Convert the preimage hex string to a Buffer
+      const preimageBuffer = Buffer.from(preimageHex, 'hex');
 
-    return { isPaid, invoice };//{ isPaid, invoice };
+      // Hash the preimage using SHA256
+      const hash = crypto.createHash('sha256');
+      hash.update(preimageBuffer);
+      const computedHashHex = hash.digest('hex');
+
+      // Add debug logging
+      console.log('Validation details:', {
+          preimageHex,
+          paymentHashHex,
+          computedHashHex,
+      });
+
+      return computedHashHex === paymentHashHex;
+  } catch (error) {
+      console.error('Error in validatePreimage:', error);
+      return false;
+  }
 }
 
 async function getPaymentHash(invoice) {
@@ -60,7 +87,7 @@ async function generateInvoice(service) {
       );
     }
   
-    const expiration = new Date(Date.now() + 3600 * 1000); // One hour from now
+    const expiration = new Date(Date.now() + (3600 * 1000 * 24)); // 24 hours from now
     const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
       expiration.getTime() / 1000
     )}`;

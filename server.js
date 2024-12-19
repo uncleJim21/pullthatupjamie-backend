@@ -7,7 +7,7 @@ const { SearxNGTool } = require('./agent-tools/searxngTool');
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
-const {generateInvoice} = require('./utils/lightning-utils')
+const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 5;
 
@@ -29,20 +29,33 @@ app.use(express.json());
 const PORT = process.env.PORT || 3131;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
-const jamieAuthMiddleware = (req, res, next) => {
+const jamieAuthMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  console.log(`jamieAuthMiddleware`)
+  console.log(`jamieAuthMiddleware`);
+  
   if (!authHeader.startsWith('Basic ')) {
-    const bolt11Preimage = authHeader;
-    if (!bolt11Preimage) {
-      return res.status(401).json({ error: 'Authentication required or valid Bolt11 preimage missing' });
+    const [preimage, paymentHash] = authHeader.split(':');
+    if (!preimage || !paymentHash) {
+      return res.status(401).json({ 
+        error: 'Authentication required: missing preimage or payment hash' 
+      });
     }
-    // Allow request to proceed with Bolt11 preimage present
-    console.log('Proceeding with Bolt11 preimage:', bolt11Preimage);
+
+    // Validate the preimage
+    const isValid = await getIsInvoicePaid(preimage, paymentHash);
+    if (!isValid) {
+      return res.status(401).json({ 
+        error: 'Invalid payment credentials' 
+      });
+    }
+
+    // Store validated credentials
+    req.auth = { preimage, paymentHash };
+    console.log('Proceeding with valid lightning payment:', { preimage, paymentHash });
     return next();
   }
 
-  // Decode credentials from Authorization header
+  // Basic auth handling remains the same
   const base64Credentials = authHeader.split(' ')[1];
   const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
   const [username, password] = credentials.split(':');
@@ -51,7 +64,6 @@ const jamieAuthMiddleware = (req, res, next) => {
     return res.status(401).json({ error: 'Invalid credentials format' });
   }
 
-  // Proceed with valid credentials
   req.auth = { username, password };
   next();
 };
@@ -165,23 +177,37 @@ app.get('/invoice-pool', async (req, res) => {
 
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
-
+ 
   if (!query) {
     return res.status(400).json({ error: 'Query is required' });
   }
-
+ 
   try {
     let searchResults = [];
-    const { username, password } = req.auth || {};
-
+    const { username, password, preimage, paymentHash } = req.auth || {};
+ 
     try {
-      // Create a new SearxNG instance for this request
-      if (username && password) {
-        const searxng = new SearxNGTool({ username, password });
-        searchResults = (await searxng.search(query)).slice(0, 10);
+      // Create a new SearxNG instance
+      let searxngConfig;
+      
+      if (preimage && paymentHash) {
+        // Lightning user - use server credentials
+        searxngConfig = {
+          username: process.env.LN_AUTH_USERNAME,
+          password: process.env.LN_AUTH_PW
+        };
+      } else if (username && password) {
+        // Basic auth user - use their credentials
+        searxngConfig = {
+          username,
+          password
+        };
       } else {
-        throw new Error('No valid SearxNG credentials available');
+        throw new Error('No valid authentication provided');
       }
+ 
+      const searxng = new SearxNGTool(searxngConfig);
+      searchResults = (await searxng.search(query)).slice(0, 10);
     } catch (searchError) {
       console.error('Search error:', searchError);
       searchResults = [{
@@ -190,23 +216,23 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
         snippet: 'SearxNG search failed. Using fallback result.'
       }];
     }
-
+ 
     // Set headers for SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-
+ 
     // Send search results
     res.write(`data: ${JSON.stringify({
       type: 'search',
       data: searchResults
     })}\n\n`);
-
+ 
     // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
       return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}\n`;
     }).join('\n');
-
+ 
     // Construct messages for LLM
     let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
     
@@ -224,13 +250,14 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     - Bold key terms with **term**
     - Maintain professional tone
     - Do not say "according to sources" or similar phrases
+    - Pay very close attention to numerical figures given. Be certain to not misinterpret those. Simply write those exactly as written.
     - Use the provided title, URL, and content from each source to inform your response`;
     const userMessage = `Query: "${query}"\n\nSources:\n${formattedSources}`;
-
+ 
     const modelConfig = MODEL_CONFIGS[model];
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
     const contentBuffer = new ContentBuffer();
-
+ 
     const response = await axios({
       method: 'post',
       url: modelConfig.apiUrl,
@@ -241,7 +268,7 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
       ]),
       responseType: 'stream'
     });
-
+ 
     response.data.on('data', (chunk) => {
       const lines = chunk.toString().split('\n');
       lines.forEach((line) => {
@@ -259,23 +286,50 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
             res.end();
             return;
           }
-          const parsed = JSON.parse(data);
-          const content = model.startsWith('gpt')
-            ? parsed.choices?.[0]?.delta?.content
-            : parsed.delta?.text;
-          if (content) {
-            const bufferedContent = contentBuffer.add(content);
-            if (bufferedContent) {
-              res.write(`data: ${JSON.stringify({
-                type: 'inference',
-                data: bufferedContent
-              })}\n\n`);
+    
+          try {
+            const parsed = JSON.parse(data);
+            let content;
+            
+            if (model.startsWith('gpt')) {
+              content = parsed.choices?.[0]?.delta?.content;
+            } else {
+              // Handle Claude format
+              if (parsed.type === 'content_block_start') {
+                return; // Skip content block start messages
+              }
+              if (parsed.type === 'content_block_stop') {
+                return; // Skip content block stop messages
+              }
+              if (parsed.type === 'ping') {
+                return; // Skip ping messages
+              }
+              content = parsed.delta?.text;
             }
+    
+            if (content) {
+              const bufferedContent = contentBuffer.add(content);
+              if (bufferedContent) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'inference',
+                  data: bufferedContent
+                })}\n\n`);
+              }
+            }
+          } catch (e) {
+            if (e instanceof SyntaxError) {
+              console.error('JSON Parse Error:', {
+                data: data.substring(0, 100),
+                error: e.message
+              });
+              return; // Skip malformed JSON
+            }
+            throw e;
           }
         }
       });
     });
-
+ 
     response.data.on('end', () => {
       const finalContent = contentBuffer.flush();
       if (finalContent) {
@@ -286,7 +340,7 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
       }
       res.end();
     });
-
+ 
     response.data.on('error', (error) => {
       console.error('Stream error:', error);
       res.write(`data: ${JSON.stringify({
@@ -299,7 +353,7 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     console.error('Streaming search error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-});
+ });
 
 app.post('/api/feedback', async (req, res) => {
   const { email, feedback, timestamp, mode } = req.body;
