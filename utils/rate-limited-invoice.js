@@ -2,7 +2,7 @@
 class RateLimitedInvoiceGenerator {
   constructor() {
     this.lastInvoiceTime = 0;
-    this.minIntervalMs = 1000; // Minimum 1 second between requests
+    this.minIntervalMs = 300; // Minimum 1 second between requests
     this.retryDelayMs = 2000;  // Start with 2 second retry delay
     this.maxRetries = 3;
   }
