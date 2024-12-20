@@ -82,7 +82,6 @@ async function generateInvoice() {
   console.log("getServicePrice msats:", msats);
 
   try {
-    // Get the LNURL data
     const lnurlResponse = await axios.get(getLNURL(), {
       headers: {
         Accept: "application/json",
@@ -118,22 +117,27 @@ async function generateInvoice() {
     }
 
     const paymentHash = await getPaymentHash(invoiceData.pr);
+    
+    // Get expiry from bolt11 invoice
+    const decodedInvoice = bolt11.decode(invoiceData.pr);
+    const expirySeconds = decodedInvoice.tags.find(tag => tag.tagName === 'expire_time')?.data || 3600;
+    const expiryTimestamp = (decodedInvoice.timestamp + expirySeconds);
+    
+    // Store the invoice in the database
+    await storeInvoice(paymentHash, invoiceData.pr, expiryTimestamp);
+
     return { ...invoiceData, paymentHash };
 
   } catch (error) {
     if (error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
       console.error("Error response from server:", {
         status: error.response.status,
         data: error.response.data,
         headers: error.response.headers
       });
     } else if (error.request) {
-      // The request was made but no response was received
       console.error("No response received:", error.request);
     } else {
-      // Something happened in setting up the request that triggered an Error
       console.error("Error setting up request:", error.message);
     }
     console.error("Error config:", error.config);
