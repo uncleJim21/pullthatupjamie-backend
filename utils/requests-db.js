@@ -48,6 +48,8 @@ const freeRequestMiddleware = async (req, res, next) => {
     const currentWeekStart = getCurrentWeekStart();
 
     try {
+        console.log(`[INFO] Free request middleware started for IP: ${clientIp}`);
+
         const row = await withTimeout(
             sqliteDb.get(
                 `SELECT * FROM ip_requests WHERE ip = ?`,
@@ -57,36 +59,39 @@ const freeRequestMiddleware = async (req, res, next) => {
         );
 
         if (!row) {
-            // Insert new record for the IP
+            console.log(`[INFO] No record found for IP: ${clientIp}, creating a new one.`);
             await sqliteDb.run(
                 `INSERT INTO ip_requests (ip, request_count, week_start) VALUES (?, 1, ?)`,
                 [clientIp, currentWeekStart]
             );
-            return next();
-        }
-
-        if (row.week_start < currentWeekStart) {
-            // Reset count for a new week
+        } else if (row.week_start < currentWeekStart) {
+            console.log(`[INFO] Resetting request count for new week for IP: ${clientIp}`);
             await sqliteDb.run(
                 `UPDATE ip_requests SET request_count = 1, week_start = ? WHERE ip = ?`,
                 [currentWeekStart, clientIp]
             );
-            return next();
-        }
-
-        if (row.request_count >= process.env.MAX_FREE_REQUESTS_PER_WEEK) {
-            // Free request limit exceeded
+        } else if (row.request_count >= process.env.MAX_FREE_REQUESTS_PER_WEEK) {
+            console.log(`[INFO] Free request limit exceeded for IP: ${clientIp}`);
             return res.status(429).json({ error: 'Free request limit exceeded' });
+        } else {
+            console.log(`[INFO] Incrementing request count for IP: ${clientIp}`);
+            await sqliteDb.run(
+                `UPDATE ip_requests SET request_count = request_count + 1 WHERE ip = ?`,
+                [clientIp]
+            );
         }
 
-        // Increment request count
-        await sqliteDb.run(
-            `UPDATE ip_requests SET request_count = request_count + 1 WHERE ip = ?`,
-            [clientIp]
-        );
+        console.log(`[INFO] Free request processed for IP: ${clientIp}`);
+
+        // Attach default authentication details for free tier
+        req.auth = {
+            username: process.env.ANON_AUTH_USERNAME || 'default_user',
+            password: process.env.ANON_AUTH_PW || 'default_pass',
+        };
+
         next();
     } catch (err) {
-        console.error('[ERROR] Middleware database error:', err);
+        console.error(`[ERROR] Middleware error for IP: ${clientIp}:`, err);
         return res.status(500).json({ error: 'Internal server error' });
     }
 };

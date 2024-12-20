@@ -11,7 +11,7 @@ const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeInvoiceDB } = require('./utils/invoice-db');
-const {initializeRequestsDB, checkFreeEligibility} = require('./utils/requests-db')
+const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -36,42 +36,52 @@ const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
 const jamieAuthMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  console.log(`jamieAuthMiddleware`);
-  
-  if (!authHeader.startsWith('Basic ')) {
-    const [preimage, paymentHash] = authHeader.split(':');
-    if (!preimage || !paymentHash) {
-      return res.status(401).json({ 
-        error: 'Authentication required: missing preimage or payment hash' 
-      });
+
+  console.log('[INFO] Checking Jamie authentication...');
+
+  if (authHeader) {
+    // Handle preimage or Basic auth
+    if (!authHeader.startsWith('Basic ')) {
+      const [preimage, paymentHash] = authHeader.split(':');
+      if (!preimage || !paymentHash) {
+        return res.status(401).json({
+          error: 'Authentication required: missing preimage or payment hash',
+        });
+      }
+
+      // Validate the preimage
+      const isValid = await getIsInvoicePaid(preimage, paymentHash);
+      if (!isValid) {
+        return res.status(401).json({
+          error: 'Invalid payment credentials',
+        });
+      }
+
+      // Store validated credentials
+      req.auth = { preimage, paymentHash };
+      console.log('[INFO] Valid lightning payment credentials provided.');
+      return next();
     }
 
-    // Validate the preimage
-    const isValid = await getIsInvoicePaid(preimage, paymentHash);
-    if (!isValid) {
-      return res.status(401).json({ 
-        error: 'Invalid payment credentials' 
-      });
+    // Basic auth handling
+    const base64Credentials = authHeader.split(' ')[1];
+    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+    const [username, password] = credentials.split(':');
+
+    if (!username || !password) {
+      return res.status(401).json({ error: 'Invalid credentials format' });
     }
 
-    // Store validated credentials
-    req.auth = { preimage, paymentHash };
-    console.log('Proceeding with valid lightning payment:', { preimage, paymentHash });
+    req.auth = { username, password };
+    console.log('[INFO] Valid Basic auth credentials provided.');
     return next();
   }
 
-  // Basic auth handling remains the same
-  const base64Credentials = authHeader.split(' ')[1];
-  const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-  const [username, password] = credentials.split(':');
-
-  if (!username || !password) {
-    return res.status(401).json({ error: 'Invalid credentials format' });
-  }
-
-  req.auth = { username, password };
-  next();
+  // Fallback to free request middleware
+  console.log('[INFO] No authentication provided. Falling back to free eligibility.');
+  return freeRequestMiddleware(req, res, next);
 };
+
 
 
 // Model configurations
@@ -210,8 +220,8 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
       if (preimage && paymentHash) {
         // Lightning user - use server credentials
         searxngConfig = {
-          username: process.env.LN_AUTH_USERNAME,
-          password: process.env.LN_AUTH_PW
+          username: process.env.ANON_AUTH_USERNAME,
+          password: process.env.ANON_AUTH_PW
         };
       } else if (username && password) {
         // Basic auth user - use their credentials
