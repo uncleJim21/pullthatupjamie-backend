@@ -5,7 +5,7 @@ const path = require('path');
 
 let db;
 
-async function initializeDB() {
+async function initializeInvoiceDB() {
   db = await open({
     filename: path.join(process.env.DATABASE_PATH || '.', 'invoices.db'),
     driver: sqlite3.Database
@@ -136,7 +136,7 @@ async function getInvoiceDetails(paymentHash) {
 }
 
 module.exports = {
-  initializeDB,
+  initializeInvoiceDB,
   storeInvoice,
   recordPayment,
   isPaymentHashValid,

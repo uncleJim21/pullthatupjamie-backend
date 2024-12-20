@@ -10,7 +10,8 @@ const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
-const { initializeDB } = require('./utils/invoice-db');
+const { initializeInvoiceDB } = require('./utils/invoice-db');
+const {initializeRequestsDB, checkFreeEligibility} = require('./utils/requests-db')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -162,6 +163,9 @@ class ContentBuffer {
     return null;
   }
 }
+
+app.get('/check-free-eligibility', checkFreeEligibility);
+
 
 app.get('/invoice-pool', async (req, res) => {
   try {
@@ -445,8 +449,64 @@ if (!process.env.ANTHROPIC_API_KEY) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
-  await initializeDB();
+  await initializeInvoiceDB();
+  await initializeRequestsDB();
   console.log('Invoice database initialized');
-  // const invoice = await generateInvoice();
-  // console.log(`invoice:${JSON.stringify(invoice,null,2)}`)
+
+  // SQLite database test (create table, write, and read)
+  // const sqlite3 = require('sqlite3').verbose();
+  // const path = require('path');
+
+  // const dbPath = path.resolve(__dirname, 'requests.db');
+  // const db = new sqlite3.Database(dbPath, (err) => {
+  //     if (err) {
+  //         return console.error('Error opening database:', err.message);
+  //     }
+  //     console.log('Connected to SQLite database.');
+  // });
+
+  // db.serialize(() => {
+  //     // Create the table if it doesn't exist
+  //     db.run(
+  //         `CREATE TABLE IF NOT EXISTS requests (
+  //             id INTEGER PRIMARY KEY AUTOINCREMENT,
+  //             request_body TEXT,
+  //             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  //         )`,
+  //         (err) => {
+  //             if (err) {
+  //                 return console.error('Error creating table:', err.message);
+  //             }
+  //             console.log('Requests table ensured.');
+
+  //             // Write to the database
+  //             const testRequestBody = "Test request body";
+  //             db.run(
+  //                 `INSERT INTO requests (request_body) VALUES (?)`,
+  //                 [testRequestBody],
+  //                 function (err) {
+  //                     if (err) {
+  //                         console.error('Error inserting into RequestsDB:', err.message);
+  //                         return;
+  //                     }
+  //                     console.log('Test row inserted with ID:', this.lastID);
+
+  //                     // Read from the database
+  //                     db.all(
+  //                         `SELECT * FROM requests WHERE id = ?`,
+  //                         [this.lastID],
+  //                         (err, rows) => {
+  //                             if (err) {
+  //                                 console.error('Error reading from RequestsDB:', err.message);
+  //                             } else {
+  //                                 console.log('Test query result:', rows);
+  //                             }
+  //                         }
+  //                     );
+  //                 }
+  //             );
+  //         }
+  //     );
+  // });
 });
+
