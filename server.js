@@ -174,7 +174,7 @@ class ContentBuffer {
   }
 }
 
-app.get('/check-free-eligibility', checkFreeEligibility);
+app.get('/api/check-free-eligibility', checkFreeEligibility);
 
 
 app.get('/invoice-pool', async (req, res) => {
