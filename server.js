@@ -261,23 +261,10 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
  
     try {
       // Create a new SearxNG instance
-      let searxngConfig;
-      
-      if (preimage && paymentHash) {
-        // Lightning user - use server credentials
-        searxngConfig = {
-          username: process.env.ANON_AUTH_USERNAME,
-          password: process.env.ANON_AUTH_PW
-        };
-      } else if (email) {
-        // Basic auth user - use their credentials
-        searxngConfig = {
-          username: process.env.ANON_AUTH_USERNAME,
-          password: process.env.ANON_AUTH_PW
-        };
-      } else {
-        throw new Error('No valid authentication provided');
-      }
+      const searxngConfig = {
+        username: process.env.ANON_AUTH_USERNAME,
+        password: process.env.ANON_AUTH_PW
+      };
  
       const searxng = new SearxNGTool(searxngConfig);
       searchResults = (await searxng.search(query)).slice(0, 10);
