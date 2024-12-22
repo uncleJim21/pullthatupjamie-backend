@@ -7,7 +7,7 @@ let db;
 
 async function initializeInvoiceDB() {
   db = await open({
-    filename: path.join('./dbs', 'invoices.db'),
+    filename: path.join('.', 'invoices.db'),
     driver: sqlite3.Database
   });
 

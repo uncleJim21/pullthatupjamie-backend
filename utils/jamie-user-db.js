@@ -7,7 +7,7 @@ let sqliteDb;
 
 async function initializeJamieUserDB() {
     sqliteDb = await open({
-        filename: path.join('./dbs', 'jamie-user.db'),
+        filename: path.join('.', 'jamie-user.db'),
         driver: sqlite3.Database,
     });
 
