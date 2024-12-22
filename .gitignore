@@ -3,3 +3,4 @@
 /node_modules
 *.db
 invoices.db
+utils/invoice-db.js

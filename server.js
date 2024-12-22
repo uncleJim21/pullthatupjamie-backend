@@ -12,6 +12,7 @@ const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeInvoiceDB } = require('./utils/invoice-db');
 const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
+const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -40,46 +41,47 @@ const jamieAuthMiddleware = async (req, res, next) => {
   console.log('[INFO] Checking Jamie authentication...');
 
   if (authHeader) {
-    // Handle preimage or Basic auth
-    if (!authHeader.startsWith('Basic ')) {
-      const [preimage, paymentHash] = authHeader.split(':');
-      if (!preimage || !paymentHash) {
-        return res.status(401).json({
-          error: 'Authentication required: missing preimage or payment hash',
-        });
+      // Handle preimage or Basic auth
+      if (!authHeader.startsWith('Basic ')) {
+          const [preimage, paymentHash] = authHeader.split(':');
+          if (!preimage || !paymentHash) {
+              return res.status(401).json({
+                  error: 'Authentication required: missing preimage or payment hash',
+              });
+          }
+
+          // Validate the preimage
+          const isValid = await getIsInvoicePaid(preimage, paymentHash);
+          if (!isValid) {
+              return res.status(401).json({
+                  error: 'Invalid payment credentials',
+              });
+          }
+
+          // Store validated credentials
+          req.auth = { preimage, paymentHash };
+          console.log('[INFO] Valid lightning payment credentials provided.');
+          return next();
       }
 
-      // Validate the preimage
-      const isValid = await getIsInvoicePaid(preimage, paymentHash);
-      if (!isValid) {
-        return res.status(401).json({
-          error: 'Invalid payment credentials',
-        });
+      // Try Square auth first
+      await squareRequestMiddleware(req, res, () => {
+          // Only proceed to free middleware if Square auth didn't set isValidSquareAuth
+          if (!req.auth?.isValidSquareAuth) {
+              console.log('[INFO] Square auth failed, trying free tier');
+              return freeRequestMiddleware(req, res, next);
+          }
+      });
+      
+      // If we got valid Square auth, we're done
+      if (req.auth?.isValidSquareAuth) {
+          return next();
       }
-
-      // Store validated credentials
-      req.auth = { preimage, paymentHash };
-      console.log('[INFO] Valid lightning payment credentials provided.');
-      return next();
-    }
-
-    // Basic auth handling
-    const base64Credentials = authHeader.split(' ')[1];
-    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-    const [username, password] = credentials.split(':');
-
-    if (!username || !password) {
-      return res.status(401).json({ error: 'Invalid credentials format' });
-    }
-
-    req.auth = { username, password };
-    console.log('[INFO] Valid Basic auth credentials provided.');
-    return next();
+  } else {
+      // No auth header, fallback to free request middleware
+      console.log('[INFO] No authentication provided. Falling back to free eligibility.');
+      return freeRequestMiddleware(req, res, next);
   }
-
-  // Fallback to free request middleware
-  console.log('[INFO] No authentication provided. Falling back to free eligibility.');
-  return freeRequestMiddleware(req, res, next);
 };
 
 
@@ -201,6 +203,50 @@ app.get('/invoice-pool', async (req, res) => {
   }
 });
 
+// Add to your main server file
+app.post('/register-sub', async (req, res) => {
+  try {
+      const { email, token } = req.body;
+      
+      if (!email || !token) {
+          return res.status(400).json({ error: 'Email and token are required' });
+      }
+
+      // First validate with auth server using axios
+      const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
+          headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+          }
+      });
+
+      const authData = authResponse.data;
+
+      if (!authData.subscriptionValid) {
+          return res.status(403).json({ error: 'Subscription not active' });
+      }
+
+      // If validated, register/update user in jamie-users db
+      await upsertJamieUser(email, 'active');
+
+      console.log(`[INFO] Registered subscription for validated email: ${email}`);
+      res.status(201).json({ 
+          message: 'Subscription registered successfully',
+          email 
+      });
+  } catch (error) {
+      console.error('[ERROR] Failed to register subscription:', error);
+      if (error.response) {
+          // Error response from auth server
+          return res.status(error.response.status).json({ 
+              error: 'Auth server validation failed',
+              details: error.response.data
+          });
+      }
+      res.status(500).json({ error: 'Failed to register subscription' });
+  }
+});
+
 
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
@@ -211,7 +257,7 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
  
   try {
     let searchResults = [];
-    const { username, password, preimage, paymentHash } = req.auth || {};
+    const { email, preimage, paymentHash } = req.auth || {};
  
     try {
       // Create a new SearxNG instance
@@ -223,11 +269,11 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
           username: process.env.ANON_AUTH_USERNAME,
           password: process.env.ANON_AUTH_PW
         };
-      } else if (username && password) {
+      } else if (email) {
         // Basic auth user - use their credentials
         searxngConfig = {
-          username,
-          password
+          username: process.env.ANON_AUTH_USERNAME,
+          password: process.env.ANON_AUTH_PW
         };
       } else {
         throw new Error('No valid authentication provided');
@@ -461,8 +507,7 @@ app.listen(PORT, async () => {
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
   await initializeInvoiceDB();
   await initializeRequestsDB();
-  console.log('Invoice database initialized');
-
+  await initializeJamieUserDB();
   // SQLite database test (create table, write, and read)
   // const sqlite3 = require('sqlite3').verbose();
   // const path = require('path');
