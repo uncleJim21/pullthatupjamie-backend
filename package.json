@@ -4,6 +4,7 @@
   "description": "an agent that has the ability to reason about previous podcast (graph rag)",
   "main": "app.js",
   "scripts": {
+    "prebuild": "mkdir -p dbs && chmod 755 dbs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "uj21",

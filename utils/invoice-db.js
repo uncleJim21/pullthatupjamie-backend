@@ -7,7 +7,7 @@ let db;
 
 async function initializeInvoiceDB() {
   db = await open({
-    filename: path.join(process.env.DATABASE_PATH || '.', 'invoices.db'),
+    filename: path.join('./dbs', 'invoices.db'),
     driver: sqlite3.Database
   });
 
@@ -25,6 +25,8 @@ async function initializeInvoiceDB() {
   await cleanupExpiredInvoices();
   // Schedule regular cleanup
   setInterval(cleanupExpiredInvoices, 1000 * 60 * 15); // Run every 15 minutes
+  console.log('Invoice database initialized');
+
   return db;
 }
 
