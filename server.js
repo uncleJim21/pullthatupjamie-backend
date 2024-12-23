@@ -13,6 +13,8 @@ const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeInvoiceDB } = require('./utils/invoice-db');
 const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
+const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
+const path = require('path');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -34,6 +36,46 @@ app.use(express.json());
 // Environment variables with defaults
 const PORT = process.env.PORT || 3131;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
+
+const validateSpacesConfig = () => {
+  const required = [
+    'SPACES_ENDPOINT',
+    'SPACES_ACCESS_KEY_ID',
+    'SPACES_SECRET_ACCESS_KEY',
+    'SPACES_BUCKET_NAME'
+  ];
+
+  console.log('Environment variables loaded:', {
+    hasSpacesEndpoint: !!process.env.SPACES_ENDPOINT,
+    hasAccessKeyId: !!process.env.SPACES_ACCESS_KEY_ID,
+    hasSecretKey: !!process.env.SPACES_SECRET_ACCESS_KEY,
+    hasBucketName: !!process.env.SPACES_BUCKET_NAME
+  });
+  
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.error('Missing required environment variables:', missing.join(', '));
+    return false;
+  }
+  
+  return true;
+};
+
+const dbBackupManager = new DatabaseBackupManager({
+  spacesEndpoint: process.env.SPACES_ENDPOINT,
+  accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
+  secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
+  bucketName: process.env.SPACES_BUCKET_NAME,
+  backupInterval: 1000 * 60 * 60 * 24, // 24 hours
+  // Optional: customize database paths if needed
+  dbPaths: {
+    'invoices.db': path.join('.', 'invoices.db'),
+    'jamie-user.db': path.join('.', 'jamie-user.db'),
+    'requests.db': path.join('.', 'requests.db')
+  }
+});
+
 
 const jamieAuthMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -492,63 +534,33 @@ if (!process.env.ANTHROPIC_API_KEY) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
-  await initializeInvoiceDB();
-  await initializeRequestsDB();
-  await initializeJamieUserDB();
-  // SQLite database test (create table, write, and read)
-  // const sqlite3 = require('sqlite3').verbose();
-  // const path = require('path');
-
-  // const dbPath = path.resolve(__dirname, 'requests.db');
-  // const db = new sqlite3.Database(dbPath, (err) => {
-  //     if (err) {
-  //         return console.error('Error opening database:', err.message);
-  //     }
-  //     console.log('Connected to SQLite database.');
-  // });
-
-  // db.serialize(() => {
-  //     // Create the table if it doesn't exist
-  //     db.run(
-  //         `CREATE TABLE IF NOT EXISTS requests (
-  //             id INTEGER PRIMARY KEY AUTOINCREMENT,
-  //             request_body TEXT,
-  //             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  //         )`,
-  //         (err) => {
-  //             if (err) {
-  //                 return console.error('Error creating table:', err.message);
-  //             }
-  //             console.log('Requests table ensured.');
-
-  //             // Write to the database
-  //             const testRequestBody = "Test request body";
-  //             db.run(
-  //                 `INSERT INTO requests (request_body) VALUES (?)`,
-  //                 [testRequestBody],
-  //                 function (err) {
-  //                     if (err) {
-  //                         console.error('Error inserting into RequestsDB:', err.message);
-  //                         return;
-  //                     }
-  //                     console.log('Test row inserted with ID:', this.lastID);
-
-  //                     // Read from the database
-  //                     db.all(
-  //                         `SELECT * FROM requests WHERE id = ?`,
-  //                         [this.lastID],
-  //                         (err, rows) => {
-  //                             if (err) {
-  //                                 console.error('Error reading from RequestsDB:', err.message);
-  //                             } else {
-  //                                 console.log('Test query result:', rows);
-  //                             }
-  //                         }
-  //                     );
-  //                 }
-  //             );
-  //         }
-  //     );
-  // });
+  
+  try {
+    if (!validateSpacesConfig()) {
+      console.warn('Database backup system disabled due to missing configuration');
+    } else {
+      const dbBackupManager = new DatabaseBackupManager({
+        spacesEndpoint: process.env.SPACES_ENDPOINT,
+        accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
+        secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
+        bucketName: process.env.SPACES_BUCKET_NAME,
+        backupInterval: 1000 * 60 * 60 * 24 // 24 hours
+      });
+      
+      await dbBackupManager.initialize();
+      console.log('Database backup system initialized successfully');
+    }
+    
+    // Initialize databases
+    await initializeInvoiceDB();
+    await initializeRequestsDB();
+    await initializeJamieUserDB();
+    
+    console.log('All systems initialized successfully');
+  } catch (error) {
+    console.error('Error during initialization:', error);
+    // Don't exit the process, just log the error and continue without backups
+    console.warn('Continuing without backup system...');
+  }
 });
 

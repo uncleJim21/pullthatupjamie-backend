@@ -10,6 +10,8 @@
   "author": "uj21",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.717.0",
+    "@aws-sdk/s3-request-presigner": "^3.717.0",
     "@langchain/community": "^0.3.11",
     "@langchain/openai": "^0.3.11",
     "axios": "^1.7.9",
