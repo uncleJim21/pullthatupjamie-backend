@@ -43,8 +43,10 @@ const withTimeout = (promise, timeoutMs) => {
 
 // Middleware to track free requests
 const freeRequestMiddleware = async (req, res, next) => {
-    const clientIp =
-        req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
+                 req.headers['x-real-ip'] || 
+                 req.ip ||
+                 req.connection.remoteAddress;
     const currentWeekStart = getCurrentWeekStart();
 
     try {
