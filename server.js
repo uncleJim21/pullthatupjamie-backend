@@ -31,6 +31,7 @@ const app = express();
 
 // Middleware
 app.use(cors());
+app.enable('trust proxy');
 app.set('trust proxy', true);
 app.use(express.json());
 
