@@ -42,7 +42,7 @@ const withTimeout = (promise, timeoutMs) => {
 };
 
 // Middleware to track free requests
-const freeRequestMiddleware = async (req, res, next) => {
+const freeRequestMiddleware = async (req, res, next) => {//checks if user is eligible for free usage
     const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
                  req.headers['x-real-ip'] || 
                  req.ip ||
