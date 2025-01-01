@@ -2,11 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const crypto = require('crypto')
 const { SearxNGTool } = require('./agent-tools/searxngTool');
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
-const {JamieMetricLog, getDailyRequestCount} = require('./models/JamieMetricLog.js')
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
@@ -15,6 +13,7 @@ const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = requ
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
+const {DEBUG_MODE} = require('./constants.js')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -69,24 +68,20 @@ const dbBackupManager = new DatabaseBackupManager({
   accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
   secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
   bucketName: process.env.SPACES_BUCKET_NAME,
-  backupInterval: 1000 * 60 * 60 * 24, // 24 hours
-  // Optional: customize database paths if needed
-  dbPaths: {
-    'invoices.db': path.join('.', 'invoices.db'),
-    'jamie-user.db': path.join('.', 'jamie-user.db'),
-    'requests.db': path.join('.', 'requests.db')
-  }
+  backupInterval: 1000 * 60 * 60 * 1 // 1 hour
 });
 
-
+//Validates user meets one of three requirements:
+//1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
+//2. The user has a valid subscription through CASCDR's square payment gateway
+//3. The user is eligible for free usage based on their IP address
 const jamieAuthMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   console.log('[INFO] Checking Jamie authentication...');
 
   if (authHeader) {
-      // Handle preimage or Basic auth
-      if (!authHeader.startsWith('Basic ')) {
+      if (!authHeader.startsWith('Basic ')) {//checks for BOLT11 (1 above)
           const [preimage, paymentHash] = authHeader.split(':');
           if (!preimage || !paymentHash) {
               return res.status(401).json({
@@ -108,12 +103,12 @@ const jamieAuthMiddleware = async (req, res, next) => {
           return next();
       }
 
-      // Try Square auth first
-      await squareRequestMiddleware(req, res, () => {
+      // Try subscription auth with square
+      await squareRequestMiddleware(req, res, () => {//Checks if user has valid sub based on email provided in header
           // Only proceed to free middleware if Square auth didn't set isValidSquareAuth
           if (!req.auth?.isValidSquareAuth) {
               console.log('[INFO] Square auth failed, trying free tier');
-              return freeRequestMiddleware(req, res, next);
+              return freeRequestMiddleware(req, res, next);// If not check if the user requests from an IP eligible
           }
       });
       
@@ -181,16 +176,6 @@ const MODEL_CONFIGS = {
 // Initialize SearxNG with error handling
 let searxng = null;
 
-// Fallback search function
-const fallbackSearch = async (query) => {
-  console.log('Using fallback search for query:', query);
-  return [{
-    title: 'Fallback Result',
-    url: 'https://example.com',
-    snippet: 'SearxNG is currently unavailable. This is a fallback result.'
-  }];
-};
-
 // Buffer class for accumulating content
 class ContentBuffer {
   constructor() {
@@ -220,9 +205,11 @@ class ContentBuffer {
   }
 }
 
+//check if the user is eligible for free usage based on IP address
 app.get('/api/check-free-eligibility', checkFreeEligibility);
 
 
+//get a pool of BOLT11 invoices to store in the client and use for auth as needed
 app.get('/invoice-pool', async (req, res) => {
   try {
     const invoices = await invoiceGenerator.generateInvoicePool(
@@ -247,7 +234,7 @@ app.get('/invoice-pool', async (req, res) => {
   }
 });
 
-// Add to your main server file
+//Syncs remote auth server with this server for future request validation
 app.post('/register-sub', async (req, res) => {
   try {
       const { email, token } = req.body;
@@ -292,6 +279,7 @@ app.post('/register-sub', async (req, res) => {
 });
 
 
+//main "business" endpoint that provides search + LLM analysis
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
  
@@ -459,17 +447,9 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   }
  });
 
+//collects data from user submitted feedback form
 app.post('/api/feedback', async (req, res) => {
   const { email, feedback, timestamp, mode } = req.body;
-
-  // console.log('Received feedback:', {
-  //   email,
-  //   feedback,
-  //   timestamp,
-  //   mode,
-  //   receivedAt: new Date().toISOString()
-  // });
-
   try {
     // Validate required fields
     if (!email || !feedback) {
@@ -536,21 +516,17 @@ if (!process.env.ANTHROPIC_API_KEY) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
-  
+
+  //Initialize local dbs for speedy auth
   try {
     if (!validateSpacesConfig()) {
       console.warn('Database backup system disabled due to missing configuration');
     } else {
-      const dbBackupManager = new DatabaseBackupManager({
-        spacesEndpoint: process.env.SPACES_ENDPOINT,
-        accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
-        secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
-        bucketName: process.env.SPACES_BUCKET_NAME,
-        backupInterval: 1000 * 60 * 60 * 24 // 24 hours
-      });
       
-      await dbBackupManager.initialize();
-      console.log('Database backup system initialized successfully');
+      if(!DEBUG_MODE){
+        await dbBackupManager.initialize();
+        console.log('Database backup system initialized successfully');
+      }
     }
     
     // Initialize databases

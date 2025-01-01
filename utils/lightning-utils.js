@@ -2,6 +2,7 @@ const axios = require("axios");
 const bolt11 = require("bolt11");
 const crypto = require('crypto'); 
 const { isPaymentHashValid, recordPayment, storeInvoice } = require('./invoice-db');
+const { DEBUG_MODE } = require("../constants");
 
 
 function getLNURL() {
@@ -101,7 +102,8 @@ async function generateInvoice() {
       );
     }
 
-    const expiration = new Date(Date.now() + (3600 * 1000 * 24));
+    const expiryMs = DEBUG_MODE ? (3600 * 1000 * 24) : (1000 * 60);
+    const expiration = new Date(Date.now() + (expiryMs));
     const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
       expiration.getTime() / 1000
     )}`;
