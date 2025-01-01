@@ -13,6 +13,7 @@ const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = requ
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
+const {DEBUG_MODE} = require('./constants.js')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -522,8 +523,10 @@ app.listen(PORT, async () => {
       console.warn('Database backup system disabled due to missing configuration');
     } else {
       
-      await dbBackupManager.initialize();
-      console.log('Database backup system initialized successfully');
+      if(!DEBUG_MODE){
+        await dbBackupManager.initialize();
+        console.log('Database backup system initialized successfully');
+      }
     }
     
     // Initialize databases

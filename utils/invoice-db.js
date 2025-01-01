@@ -2,6 +2,7 @@
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
+const FOURTEEN_DAYS_IN_SECONDS = 14 * 24 * 60 * 60;
 
 let db;
 
@@ -114,11 +115,12 @@ async function deleteInvoice(paymentHash) {
 
 async function cleanupExpiredInvoices() {
   const now = Math.floor(Date.now() / 1000);
+  const cutoffTime = now - FOURTEEN_DAYS_IN_SECONDS;
   
   try {
     const result = await db.run(
       'DELETE FROM invoices WHERE expires_at <= ?',
-      [now]
+      [cutoffTime]
     );
     
     if (result.changes > 0) {
