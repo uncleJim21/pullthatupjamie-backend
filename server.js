@@ -515,6 +515,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
 
   //Initialize local dbs for speedy auth

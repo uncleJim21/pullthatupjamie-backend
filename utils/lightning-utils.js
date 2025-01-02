@@ -102,7 +102,7 @@ async function generateInvoice() {
       );
     }
 
-    const expiryMs = DEBUG_MODE ? (3600 * 1000 * 24) : (1000 * 60);
+    const expiryMs = DEBUG_MODE ? (1000 * 60) : (3600 * 1000 * 24);//shorter time to allow for testing corner cases in debug
     const expiration = new Date(Date.now() + (expiryMs));
     const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
       expiration.getTime() / 1000
