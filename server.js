@@ -2,6 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { OpenAI } = require('openai');
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
 const { SearxNGTool } = require('./agent-tools/searxngTool');
 const {findSimilarDiscussions} = require('./agent-tools/neo4jTools.js')
 const mongoose = require('mongoose');
@@ -271,12 +275,172 @@ app.post('/api/search-quotes', async (req, res) => {
   }
 });
 
-app.post('/api/stream-search', async (req, res) => {
-  const { 
-    query, 
-    model = DEFAULT_MODEL,
-    mode = 'default'
-  } = req.body;
+app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
+  const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
+ 
+  if (!query) {
+    return res.status(400).json({ error: 'Query is required' });
+  }
+ 
+  try {
+    let searchResults = [];
+    const { email, preimage, paymentHash } = req.auth || {};
+ 
+    try {
+      // Create a new SearxNG instance
+      const searxngConfig = {
+        username: process.env.ANON_AUTH_USERNAME,
+        password: process.env.ANON_AUTH_PW
+      };
+ 
+      const searxng = new SearxNGTool(searxngConfig);
+      searchResults = (await searxng.search(query)).slice(0, 10);
+    } catch (searchError) {
+      console.error('Search error:', searchError);
+      searchResults = [{
+        title: 'Search Error',
+        url: 'https://example.com',
+        snippet: 'SearxNG search failed. Using fallback result.'
+      }];
+    }
+ 
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+ 
+    // Send search results
+    res.write(`data: ${JSON.stringify({
+      type: 'search',
+      data: searchResults
+    })}\n\n`);
+ 
+    // Prepare formatted sources
+    const formattedSources = searchResults.map((result, index) => {
+      return `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet}\n`;
+    }).join('\n');
+ 
+    // Construct messages for LLM
+    let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
+    
+    if (mode === 'quick') {
+      systemMessage += ` Provide brief, concise summaries focusing on the most important points.`;
+    }
+    
+    systemMessage += ` Format your response as follows:
+    - Use clear, concise language
+    - Use proper markdown formatting
+    - Cite sources using [[n]](url) format, where n is the source number
+    - Citations must be inline within sentences
+    - Start with a brief overview
+    - Use bullet points for multiple items
+    - Bold key terms with **term**
+    - Maintain professional tone
+    - Do not say "according to sources" or similar phrases
+    - Pay very close attention to numerical figures given. Be certain to not misinterpret those. Simply write those exactly as written.
+    - Use the provided title, URL, and content from each source to inform your response`;
+    const userMessage = `Query: "${query}"\n\nSources:\n${formattedSources}`;
+ 
+    const modelConfig = MODEL_CONFIGS[model];
+    const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
+    const contentBuffer = new ContentBuffer();
+ 
+    const response = await axios({
+      method: 'post',
+      url: modelConfig.apiUrl,
+      headers: modelConfig.headers(apiKey),
+      data: modelConfig.formatData([
+        { role: 'system', content: systemMessage },
+        { role: 'user', content: userMessage }
+      ]),
+      responseType: 'stream'
+    });
+ 
+    response.data.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n');
+      lines.forEach((line) => {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            const finalContent = contentBuffer.flush();
+            if (finalContent) {
+              res.write(`data: ${JSON.stringify({
+                type: 'inference',
+                data: finalContent
+              })}\n\n`);
+            }
+            res.write('data: [DONE]\n\n');
+            res.end();
+            return;
+          }
+    
+          try {
+            const parsed = JSON.parse(data);
+            let content;
+            
+            if (model.startsWith('gpt')) {
+              content = parsed.choices?.[0]?.delta?.content;
+            } else {
+              // Handle Claude format
+              if (parsed.type === 'content_block_start') {
+                return; // Skip content block start messages
+              }
+              if (parsed.type === 'content_block_stop') {
+                return; // Skip content block stop messages
+              }
+              if (parsed.type === 'ping') {
+                return; // Skip ping messages
+              }
+              content = parsed.delta?.text;
+            }
+    
+            if (content) {
+              const bufferedContent = contentBuffer.add(content);
+              if (bufferedContent) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'inference',
+                  data: bufferedContent
+                })}\n\n`);
+              }
+            }
+          } catch (e) {
+            if (e instanceof SyntaxError) {
+              console.error('JSON Parse Error:', {
+                data: data.substring(0, 100),
+                error: e.message
+              });
+              return; // Skip malformed JSON
+            }
+            throw e;
+          }
+        }
+      });
+    });
+ 
+    response.data.on('end', () => {
+      const finalContent = contentBuffer.flush();
+      if (finalContent) {
+        res.write(`data: ${JSON.stringify({
+          type: 'inference',
+          data: finalContent
+        })}\n\n`);
+      }
+      res.end();
+    });
+ 
+    response.data.on('error', (error) => {
+      console.error('Stream error:', error);
+      res.write(`data: ${JSON.stringify({
+        type: 'error',
+        data: 'Stream processing error occurred'
+      })}\n\n`);
+      res.end();
+    });
+  } catch (error) {
+    console.error('Streaming search error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+ });
 
 //check if the user is eligible for free usage based on IP address
 app.get('/api/check-free-eligibility', checkFreeEligibility);

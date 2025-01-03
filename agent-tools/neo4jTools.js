@@ -1,4 +1,4 @@
-const neo4jDriver = require('../mentionsNeo4jDriver');
+const neo4jDriver = require('./mentionsNeo4jDriver');
 
 // Neo4j query tools - each does exactly one thing
 const neo4jTools = {
