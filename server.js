@@ -18,7 +18,7 @@ const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = requ
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
-const {DEBUG_MODE} = require('./constants.js')
+const {DEBUG_MODE, printLog} = require('./constants.js')
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -246,11 +246,16 @@ app.post('/api/search-quotes', async (req, res) => {
     });
 
     // Format and return the results
-    const results = similarDiscussions.map(discussion => ({
+    printLog(`---------------------------`)
+    printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
+    printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
+    const results = similarDiscussions.map(
+      discussion => ({
       quote: discussion.quote,
       episode: discussion.episode,
       creator: discussion.creator,
       audioUrl: discussion.audioUrl,
+      episodeImage: discussion.artworkUrl,
       date: discussion.date,
       similarity: parseFloat(discussion.similarity.toFixed(4)),
       timeContext: {

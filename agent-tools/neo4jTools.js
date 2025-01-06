@@ -21,7 +21,7 @@ const neo4jTools = {
                     RETURN e.title as episode,
                         e.creator as creator,
                         e.audioUrl as audioUrl,
-                        e.artworkUrl as artworkUrl, // Add artworkUrl to the return
+                        e.imageUrl as artworkUrl, // Add artworkUrl to the return
                         p.text as quote,
                         e.publishedDate as date,
                         p.start_time as start_time,
