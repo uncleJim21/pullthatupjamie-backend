@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions} = require('./agent-tools/neo4jTools.js')
+const {findSimilarDiscussions} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -213,7 +213,9 @@ class ContentBuffer {
 
 
 app.post('/api/search-quotes', async (req, res) => {
-  const { query, limit = 5 } = req.body;
+  let { query, limit = 20 } = req.body;
+  limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
+  printLog(`/api/search-quotes req:`,req)
 
   // Get credentials from Authorization header
   // const authHeader = req.headers.authorization;
