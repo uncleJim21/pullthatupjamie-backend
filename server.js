@@ -258,6 +258,7 @@ app.post('/api/search-quotes', async (req, res) => {
       creator: discussion.creator,
       audioUrl: discussion.audioUrl,
       episodeImage: discussion.episodeImage,
+      listenLink:discussion.listenLink,
       date: discussion.date,
       similarity: parseFloat(discussion.similarity.toFixed(4)),
       timeContext: discussion.timeContext

@@ -31,6 +31,7 @@ const pineconeTools = {
     
             // Format the results with all metadata fields
             return queryResult.matches.map((match) => ({
+                listenLink: match.metadata.listenLink || "",
                 quote: match.metadata.text || "Quote unavailable",
                 episode: match.metadata.episode || "Unknown episode",
                 creator: match.metadata.creator || "Creator not specified",
