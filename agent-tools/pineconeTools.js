@@ -24,25 +24,33 @@ const pineconeTools = {
             const queryResult = await index.query({
                 vector: embedding,
                 topK: limit,
-                includeMetadata: true, // Include metadata for formatting
+                includeMetadata: true, // Ensure metadata is included
             });
 
-            // Filter and format the results
-            return queryResult.matches
-                .filter(match => match.score >= 0.7) // Filter based on similarity threshold
-                .map(match => ({
-                    episode: match.metadata.episode_title,
-                    creator: match.metadata.creator,
-                    audioUrl: match.metadata.audio_url,
-                    artworkUrl: match.metadata.artwork_url,
-                    quote: match.metadata.text,
-                    date: match.metadata.published_date,
-                    start_time: match.metadata.start_time,
-                    end_time: match.metadata.end_time,
-                    similarity: parseFloat(match.score.toFixed(4)), // Format similarity for display
-                }));
+            console.log(`queryResult.matches:${JSON.stringify(queryResult.matches,null,2)}`)
+    
+            // Format the results with all metadata fields
+            return queryResult.matches.map((match) => ({
+                quote: match.metadata.text || "Quote unavailable",
+                episode: match.metadata.episode || "Unknown episode",
+                creator: match.metadata.creator || "Creator not specified",
+                audioUrl: match.metadata.audioUrl || "URL unavailable",
+                episodeImage: match.metadata.episodeImage || "Image unavailable",
+                date: match.metadata.publishedDate || "Date not provided",
+                similarity: parseFloat(match.score.toFixed(4)),
+                timeContext: {
+                    start_time: match.metadata.start_time || null,
+                    end_time: match.metadata.end_time || null,
+                },
+                additionalFields: {
+                    feedId: match.metadata.feedId || null,
+                    guid: match.metadata.guid || null,
+                    sequence: match.metadata.sequence || null,
+                    num_words: match.metadata.num_words || null,
+                },
+            }));
         } catch (error) {
-            console.error('Error in findSimilarDiscussions:', error);
+            console.error("Error in findSimilarDiscussions:", error);
             throw error;
         }
     },
