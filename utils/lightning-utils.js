@@ -77,7 +77,7 @@ async function getPaymentHash(invoice) {
     return paymentHashTag;
 }
   
-async function generateInvoice() {
+async function generateInvoice(service='PTUJ Quick Search') {
   console.log("generateInvoice started..");
   const msats = process.env.SERVICE_PRICE_MILLISATS;
   console.log("getServicePrice msats:", msats);
@@ -104,7 +104,11 @@ async function generateInvoice() {
 
     const expiryMs = DEBUG_MODE ? (1000 * 60) : (3600 * 1000 * 24);//shorter time to allow for testing corner cases in debug
     const expiration = new Date(Date.now() + (expiryMs));
-    const url = `${lnAddress.callback}?amount=${msats}&expiry=${Math.floor(
+
+    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const description = encodeURIComponent(`Invoice for ${service} at ${timestamp}`);
+    
+    const url = `${lnAddress.callback}?amount=${msats*11}&comment=${description}&expiry=${Math.floor(
       expiration.getTime() / 1000
     )}`;
 
