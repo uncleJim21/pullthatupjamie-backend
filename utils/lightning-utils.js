@@ -108,7 +108,7 @@ async function generateInvoice(service='PTUJ Quick Search') {
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
     const description = encodeURIComponent(`Invoice for ${service} at ${timestamp}`);
     
-    const url = `${lnAddress.callback}?amount=${msats*11}&comment=${description}&expiry=${Math.floor(
+    const url = `${lnAddress.callback}?amount=${msats}&comment=${description}&expiry=${Math.floor(
       expiration.getTime() / 1000
     )}`;
 
