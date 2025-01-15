@@ -23,6 +23,7 @@ const pineconeTools = {
         try {
             const queryResult = await index.query({
                 vector: embedding,
+                filter: {type:"paragraph"},
                 topK: limit,
                 includeMetadata: true, // Ensure metadata is included
             });
