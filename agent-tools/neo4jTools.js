@@ -1,43 +1,51 @@
-const neo4jDriver = require('../mentionsNeo4jDriver');
+const neo4jDriver = require('./mentionsNeo4jDriver');
 
 // Neo4j query tools - each does exactly one thing
 const neo4jTools = {
-    findSimilarDiscussions: async ({ embedding, limit = 5 }) => {
-        const session = neo4jDriver.session();
-        try {
-            const result = await session.run(`
-                MATCH (e:Episode)-[:CONTAINS]->(p:Paragraph)
-                WHERE p.embedding IS NOT NULL
-                WITH e, p, 
-                     reduce(dot = 0.0, i in range(0, size($embedding)-1) | 
-                        dot + $embedding[i] * p.embedding[i]) as dotProduct,
-                     sqrt(reduce(norm1 = 0.0, i in range(0, size($embedding)-1) | 
-                        norm1 + $embedding[i] * $embedding[i])) as norm1,
-                     sqrt(reduce(norm2 = 0.0, i in range(0, size(p.embedding)-1) | 
-                        norm2 + p.embedding[i] * p.embedding[i])) as norm2
-                WITH e, p, dotProduct/(norm1*norm2) as similarity
-                WHERE similarity > 0.7
-                RETURN e.title as episode,
-                       e.creator as creator,
-                       p.text as quote,
-                       e.publishedDate as date,
-                       similarity
-                ORDER BY similarity DESC
-                LIMIT 20
-            `, { embedding, limit });
+    // Update the findSimilarDiscussions query in neo4jTools.js
+        findSimilarDiscussions : async ({ embedding, limit = 5 }) => {
+            const session = neo4jDriver.session();
+            try {
+                const result = await session.run(`
+                    MATCH (e:Episode)-[:CONTAINS]->(p:Paragraph)
+                    WHERE p.embedding IS NOT NULL
+                    WITH e, p, 
+                        reduce(dot = 0.0, i in range(0, size($embedding)-1) | 
+                            dot + $embedding[i] * p.embedding[i]) as dotProduct,
+                        sqrt(reduce(norm1 = 0.0, i in range(0, size($embedding)-1) | 
+                            norm1 + $embedding[i] * $embedding[i])) as norm1,
+                        sqrt(reduce(norm2 = 0.0, i in range(0, size(p.embedding)-1) | 
+                                norm2 + p.embedding[i] * p.embedding[i])) as norm2
+                    WITH e, p, dotProduct/(norm1*norm2) as similarity
+                    WHERE similarity > 0.7
+                    RETURN e.title as episode,
+                        e.creator as creator,
+                        e.audioUrl as audioUrl,
+                        e.imageUrl as artworkUrl, // Add artworkUrl to the return
+                        p.text as quote,
+                        e.publishedDate as date,
+                        p.start_time as start_time,
+                        p.end_time as end_time,
+                        similarity
+                    ORDER BY similarity DESC
+                    LIMIT toInteger($limit)
+                `, { embedding, limit });
 
-            return result.records.map(record => ({
-                episode: record.get('episode'),
-                creator: record.get('creator'),
-                quote: record.get('quote'),
-                date: record.get('date'),
-                similarity: record.get('similarity')
-            }));
-        } finally {
-            await session.close();
-        }
-    },
-
+                return result.records.map(record => ({
+                    episode: record.get('episode'),
+                    creator: record.get('creator'),
+                    audioUrl: record.get('audioUrl'),
+                    artworkUrl: record.get('artworkUrl'),
+                    quote: record.get('quote'),
+                    date: record.get('date'),
+                    start_time: record.get('start_time'),
+                    end_time: record.get('end_time'),
+                    similarity: record.get('similarity')
+                }));
+            } finally {
+                await session.close();
+            }
+        },
     findTimelineDiscussions: async ({ embedding, timeframe = 'P6M' }) => {
         const session = neo4jDriver.session();
         try {

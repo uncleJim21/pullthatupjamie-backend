@@ -2,7 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { OpenAI } = require('openai');
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
 const { SearxNGTool } = require('./agent-tools/searxngTool');
+const {findSimilarDiscussions, getFeedsDetails} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -13,7 +18,8 @@ const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = requ
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
-const {DEBUG_MODE} = require('./constants.js')
+const {DEBUG_MODE, printLog} = require('./constants.js')
+
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -205,81 +211,66 @@ class ContentBuffer {
   }
 }
 
-//check if the user is eligible for free usage based on IP address
-app.get('/api/check-free-eligibility', checkFreeEligibility);
 
+app.get('/api/get-available-feeds', async (req,res) => {
+  console.log('get-available-feeds')
+  const results = await getFeedsDetails();
+  res.json({results, count:results.length})
+})
 
-//get a pool of BOLT11 invoices to store in the client and use for auth as needed
-app.get('/invoice-pool', async (req, res) => {
+app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
+  let { query,feedIds=[], limit = 20 } = req.body;
+  limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
+  printLog(`/api/search-quotes req:`,req)
+
   try {
-    const invoices = await invoiceGenerator.generateInvoicePool(
-      invoicePoolSize,
-      generateInvoice
-    );
-
-    if (invoices.length === 0) {
-      return res.status(503).json({ 
-        error: 'Failed to generate any invoices, please try again later' 
-      });
-    }
-
-    // Return whatever invoices we managed to generate
-    res.status(200).json({ 
-      invoices,
-      poolSize: invoices.length 
+    const embeddingResponse = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: query
     });
+    
+    const embedding = embeddingResponse.data[0].embedding;
+
+    // Search for similar discussions using the embedding
+    const similarDiscussions = await findSimilarDiscussions({
+      embedding,
+      feedIds,
+      limit
+    });
+
+    // Format and return the results
+    printLog(`---------------------------`)
+    printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
+    printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
+    const results = similarDiscussions.map(
+      discussion => ({
+      quote: discussion.quote,
+      episode: discussion.episode,
+      creator: discussion.creator,
+      audioUrl: discussion.audioUrl,
+      episodeImage: discussion.episodeImage,
+      listenLink:discussion.listenLink,
+      date: discussion.date,
+      similarity: parseFloat(discussion.similarity.toFixed(4)),
+      timeContext: discussion.timeContext
+  }));
+
+    res.json({
+      query,
+      results,
+      total: results.length,
+      model: "text-embedding-ada-002" // Include model info for reference
+    });
+
   } catch (error) {
-    console.error('Error generating invoice pool:', error);
-    res.status(500).json({ error: 'Failed to generate invoices' });
+    console.error('Search quotes error:', error);
+    res.status(500).json({ 
+      error: 'Failed to search quotes',
+      details: error.message 
+    });
   }
 });
 
-//Syncs remote auth server with this server for future request validation
-app.post('/register-sub', async (req, res) => {
-  try {
-      const { email, token } = req.body;
-      
-      if (!email || !token) {
-          return res.status(400).json({ error: 'Email and token are required' });
-      }
-
-      // First validate with auth server using axios
-      const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
-          headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-          }
-      });
-
-      const authData = authResponse.data;
-
-      if (!authData.subscriptionValid) {
-          return res.status(403).json({ error: 'Subscription not active' });
-      }
-
-      // If validated, register/update user in jamie-users db
-      await upsertJamieUser(email, 'active');
-
-      console.log(`[INFO] Registered subscription for validated email: ${email}`);
-      res.status(201).json({ 
-          message: 'Subscription registered successfully',
-          email 
-      });
-  } catch (error) {
-      console.error('[ERROR] Failed to register subscription:', error);
-      if (error.response) {
-          // Error response from auth server
-          return res.status(error.response.status).json({ 
-              error: 'Auth server validation failed',
-              details: error.response.data
-          });
-      }
-      res.status(500).json({ error: 'Failed to register subscription' });
-  }
-});
-
-
-//main "business" endpoint that provides search + LLM analysis
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
  
@@ -446,6 +437,81 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
  });
+
+//check if the user is eligible for free usage based on IP address
+app.get('/api/check-free-eligibility', checkFreeEligibility);
+
+
+
+//get a pool of BOLT11 invoices to store in the client and use for auth as needed
+app.get('/invoice-pool', async (req, res) => {
+  try {
+    const invoices = await invoiceGenerator.generateInvoicePool(
+      invoicePoolSize,
+      generateInvoice
+    );
+
+    if (invoices.length === 0) {
+      return res.status(503).json({ 
+        error: 'Failed to generate any invoices, please try again later' 
+      });
+    }
+
+    // Return whatever invoices we managed to generate
+    res.status(200).json({ 
+      invoices,
+      poolSize: invoices.length 
+    });
+  } catch (error) {
+    console.error('Error generating invoice pool:', error);
+    res.status(500).json({ error: 'Failed to generate invoices' });
+  }
+});
+
+//Syncs remote auth server with this server for future request validation
+app.post('/register-sub', async (req, res) => {
+  try {
+      const { email, token } = req.body;
+      
+      if (!email || !token) {
+          return res.status(400).json({ error: 'Email and token are required' });
+      }
+
+      // First validate with auth server using axios
+      const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
+          headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+          }
+      });
+
+      const authData = authResponse.data;
+
+      if (!authData.subscriptionValid) {
+          return res.status(403).json({ error: 'Subscription not active' });
+      }
+
+      // If validated, register/update user in jamie-users db
+      await upsertJamieUser(email, 'active');
+
+      console.log(`[INFO] Registered subscription for validated email: ${email}`);
+      res.status(201).json({ 
+          message: 'Subscription registered successfully',
+          email 
+      });
+  } catch (error) {
+      console.error('[ERROR] Failed to register subscription:', error);
+      if (error.response) {
+          // Error response from auth server
+          return res.status(error.response.status).json({ 
+              error: 'Auth server validation failed',
+              details: error.response.data
+          });
+      }
+      res.status(500).json({ error: 'Failed to register subscription' });
+  }
+});
+
 
 //collects data from user submitted feedback form
 app.post('/api/feedback', async (req, res) => {
