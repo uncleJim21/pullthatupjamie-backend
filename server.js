@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -212,8 +212,14 @@ class ContentBuffer {
 }
 
 
+app.get('/api/get-available-feeds', async (req,res) => {
+  console.log('get-available-feeds')
+  const results = await getFeedsDetails();
+  res.json({results, count:results.length})
+})
+
 app.post('/api/search-quotes', async (req, res) => {
-  let { query, limit = 20 } = req.body;
+  let { query,feedIds=[], limit = 20 } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
   printLog(`/api/search-quotes req:`,req)
 
@@ -244,6 +250,7 @@ app.post('/api/search-quotes', async (req, res) => {
     // Search for similar discussions using the embedding
     const similarDiscussions = await findSimilarDiscussions({
       embedding,
+      feedIds,
       limit
     });
 

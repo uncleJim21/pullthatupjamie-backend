@@ -19,11 +19,36 @@ const pinecone = new Pinecone({
 const index = pinecone.index(PINECONE_INDEX);
 
 const pineconeTools = {
-    findSimilarDiscussions: async ({ embedding, limit = 5 }) => {
+    getFeedsDetails : async() => {
+        const dummyVector = Array(1536).fill(0);
+        const queryResult = await index.query({
+            vector: dummyVector,
+            filter: {type:"feed"},
+            topK: 100,
+            includeMetadata: true, // Ensure metadata is included
+        });
+        console.log(`getFeedsDetails:`,JSON.stringify(queryResult,null,2))
+        return queryResult.matches.map((match) => ({
+            feedImage:match.metadata.imageUrl || "no image",
+            title: match.metadata.title || "Unknown Title",
+            description: match.metadata.description || "",
+            feedId: match.metadata.feedId || ""
+        }));
+    },
+    findSimilarDiscussions: async ({ embedding,feedIds, limit = 5 }) => {
         try {
+            // Ensure feedIds are integers
+            const intFeedIds = feedIds.map(feedId => parseInt(feedId, 10)).filter(id => !isNaN(id));
+            
+            // Build the filter with feedIds
+            const filter = {
+                type: "paragraph",
+                ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }), // Add feedIds conditionally
+            };
+            
             const queryResult = await index.query({
                 vector: embedding,
-                filter: {type:"paragraph"},
+                filter,
                 topK: limit,
                 includeMetadata: true, // Ensure metadata is included
             });
