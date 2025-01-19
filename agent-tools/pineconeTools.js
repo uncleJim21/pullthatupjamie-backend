@@ -106,19 +106,21 @@ const pineconeTools = {
     
             // Calculate hybrid scores and rerank
             const hybridResults = queryResult.matches.map((match, index) => {
-                // Vector similarity score (normalized)
+                // Vector similarity score is already normalized between 0 and 1
                 const vectorScore = match.score;
                 
-                // Keyword similarity score (normalized)
-                const keywordScore = tfidf.tfidf(
-                    tokenizer.tokenize(query.toLowerCase()),
-                    index + 1
+                // Normalize TF-IDF scores relative to the maximum score in the set
+                const rawKeywordScores = queryResult.matches.map((m, i) => 
+                    tfidf.tfidf(tokenizer.tokenize(query.toLowerCase()), i + 1)
                 );
+                const maxKeywordScore = Math.max(...rawKeywordScores);
+                const keywordScore = maxKeywordScore > 0 
+                    ? (tfidf.tfidf(tokenizer.tokenize(query.toLowerCase()), index + 1) / maxKeywordScore)
+                    : 0;
                 
-                // Combine scores using weighted average
-                const hybridScore = (vectorScore * hybridWeight) + 
-                                  (keywordScore * (1 - hybridWeight));
-                                  
+                // Combine scores - both are now normalized between 0 and 1
+                const hybridScore = (vectorScore * hybridWeight) + (keywordScore * (1 - hybridWeight));
+                
                 return {
                     ...match,
                     originalScore: match.score,
