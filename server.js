@@ -219,7 +219,7 @@ app.get('/api/get-available-feeds', async (req,res) => {
 })
 
 app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
-  let { query,feedIds=[], limit = 10 } = req.body;
+  let { query,feedIds=[], limit = 5 } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
   printLog(`/api/search-quotes req:`,req)
 
