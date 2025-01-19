@@ -38,8 +38,38 @@ const pineconeTools = {
             feedId: match.metadata.feedId || ""
         }));
     },
+    getClipById: async (clipId) => {
+        try {
+            // Use the correct fetch API format
+            const fetchResult = await index.fetch([clipId]);
+    
+            // Check if we got results
+            if (!fetchResult || !fetchResult.records || !fetchResult.records[clipId]) {
+                console.log('No results found for clipId:', clipId);
+                return null;
+            }
+    
+            // Format the single result using the existing formatter
+            const match = {
+                id: clipId,
+                metadata: fetchResult.records[clipId].metadata,
+                score: 1, // Direct lookup gets perfect score
+                values: fetchResult.records[clipId].values
+            };
+    
+            const formattedResults = pineconeTools.formatResults([match]);
+            return formattedResults[0];
+    
+        } catch (error) {
+            console.error('Error in getClipById:', error);
+            throw new Error(`Failed to fetch clip: ${error.message}`);
+        }
+    },
     formatResults : (matches) => {
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
         return matches.map((match) => ({
+            shareLink: match.id,
+            shareUrl: `${baseUrl}/share?clip=${match.id}`,
             listenLink: match.metadata.listenLink || "",
             quote: match.metadata.text || "Quote unavailable",
             episode: match.metadata.episode || "Unknown episode",

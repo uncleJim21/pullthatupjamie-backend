@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -218,6 +218,32 @@ app.get('/api/get-available-feeds', async (req,res) => {
   res.json({results, count:results.length})
 })
 
+app.get('/api/clip/:id', async (req, res) => {
+  try {
+      const clipId = req.params.id;
+      console.log('Fetching clip:', clipId);
+      
+      const clip = await getClipById(clipId);
+      
+      if (!clip) {
+          console.log('Clip not found:', clipId);
+          return res.status(404).json({ 
+              error: 'Clip not found',
+              clipId 
+          });
+      }
+
+      res.json({ clip });
+  } catch (error) {
+      console.error('Error fetching clip:', error);
+      res.status(500).json({ 
+          error: 'Failed to fetch clip',
+          details: error.message,
+          clipId: req.params.id
+      });
+  }
+});
+
 app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
   let { query,feedIds=[], limit = 5 } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
@@ -244,6 +270,8 @@ app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
     printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
     printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
     const results = similarDiscussions.map(discussion => ({
+      shareUrl: discussion.shareUrl,
+      shareLink:discussion.shareLink,
       quote: discussion.quote,
       episode: discussion.episode,
       creator: discussion.creator,
