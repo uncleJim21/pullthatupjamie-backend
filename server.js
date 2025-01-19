@@ -219,7 +219,7 @@ app.get('/api/get-available-feeds', async (req,res) => {
 })
 
 app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
-  let { query,feedIds=[], limit = 20 } = req.body;
+  let { query,feedIds=[], limit = 10 } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
   printLog(`/api/search-quotes req:`,req)
 
@@ -235,23 +235,26 @@ app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
     const similarDiscussions = await findSimilarDiscussions({
       embedding,
       feedIds,
-      limit
+      limit,
+      query
     });
 
     // Format and return the results
     printLog(`---------------------------`)
     printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
     printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
-    const results = similarDiscussions.map(
-      discussion => ({
+    const results = similarDiscussions.map(discussion => ({
       quote: discussion.quote,
       episode: discussion.episode,
       creator: discussion.creator,
       audioUrl: discussion.audioUrl,
       episodeImage: discussion.episodeImage,
-      listenLink:discussion.listenLink,
+      listenLink: discussion.listenLink,
       date: discussion.date,
-      similarity: parseFloat(discussion.similarity.toFixed(4)),
+      similarity: {
+          combined: discussion.similarity.combined,
+          vector: discussion.similarity.vector
+      },
       timeContext: discussion.timeContext
   }));
 
