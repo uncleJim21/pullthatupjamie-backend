@@ -2,6 +2,9 @@
 const fetch = require('node-fetch');
 require('dotenv').config();
 const { Pinecone } = require('@pinecone-database/pinecone');
+const natural = require('natural');
+const tokenizer = new natural.WordTokenizer();
+const TfIdf = natural.TfIdf;
 
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = process.env.PINECONE_INDEX;
@@ -35,53 +38,137 @@ const pineconeTools = {
             feedId: match.metadata.feedId || ""
         }));
     },
-    findSimilarDiscussions: async ({ embedding,feedIds, limit = 5 }) => {
+    getClipById: async (clipId) => {
         try {
-            // Ensure feedIds are integers
+            // Use the correct fetch API format
+            const fetchResult = await index.fetch([clipId]);
+    
+            // Check if we got results
+            if (!fetchResult || !fetchResult.records || !fetchResult.records[clipId]) {
+                console.log('No results found for clipId:', clipId);
+                return null;
+            }
+    
+            // Format the single result using the existing formatter
+            const match = {
+                id: clipId,
+                metadata: fetchResult.records[clipId].metadata,
+                score: 1, // Direct lookup gets perfect score
+                values: fetchResult.records[clipId].values
+            };
+    
+            const formattedResults = pineconeTools.formatResults([match]);
+            return formattedResults[0];
+    
+        } catch (error) {
+            console.error('Error in getClipById:', error);
+            throw new Error(`Failed to fetch clip: ${error.message}`);
+        }
+    },
+    formatResults : (matches) => {
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+        return matches.map((match) => ({
+            shareLink: match.id,
+            shareUrl: `${baseUrl}/share?clip=${match.id}`,
+            listenLink: match.metadata.listenLink || "",
+            quote: match.metadata.text || "Quote unavailable",
+            episode: match.metadata.episode || "Unknown episode",
+            creator: match.metadata.creator || "Creator not specified",
+            audioUrl: match.metadata.audioUrl || "URL unavailable",
+            episodeImage: match.metadata.episodeImage || "Image unavailable",
+            date: match.metadata.publishedDate || "Date not provided",
+            similarity: {
+                combined: parseFloat(match.score.toFixed(4)),
+                vector: parseFloat(match.originalScore?.toFixed(4)) || parseFloat(match.score.toFixed(4)),
+            },
+            timeContext: {
+                start_time: match.metadata.start_time || null,
+                end_time: match.metadata.end_time || null,
+            },
+            additionalFields: {
+                feedId: match.metadata.feedId || null,
+                guid: match.metadata.guid || null,
+                sequence: match.metadata.sequence || null,
+                num_words: match.metadata.num_words || null,
+            },
+        }));
+    },
+    findSimilarDiscussions : async ({ 
+        embedding,
+        feedIds, 
+        limit = 5,
+        query = '', // Optional text query for keyword matching
+        hybridWeight = 0.7 // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
+    }) => {
+        try {
             const intFeedIds = feedIds.map(feedId => parseInt(feedId, 10)).filter(id => !isNaN(id));
             
-            // Build the filter with feedIds
             const filter = {
                 type: "paragraph",
-                ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }), // Add feedIds conditionally
+                ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
             };
+            
+            // Get more results than needed to allow for hybrid reranking
+            const vectorLimit = Math.min(limit * 3, 20);
             
             const queryResult = await index.query({
                 vector: embedding,
                 filter,
-                topK: limit,
-                includeMetadata: true, // Ensure metadata is included
+                topK: vectorLimit,
+                includeMetadata: true,
             });
-
-            console.log(`queryResult.matches:${JSON.stringify(queryResult.matches,null,2)}`)
     
-            // Format the results with all metadata fields
-            return queryResult.matches.map((match) => ({
-                listenLink: match.metadata.listenLink || "",
-                quote: match.metadata.text || "Quote unavailable",
-                episode: match.metadata.episode || "Unknown episode",
-                creator: match.metadata.creator || "Creator not specified",
-                audioUrl: match.metadata.audioUrl || "URL unavailable",
-                episodeImage: match.metadata.episodeImage || "Image unavailable",
-                date: match.metadata.publishedDate || "Date not provided",
-                similarity: parseFloat(match.score.toFixed(4)),
-                timeContext: {
-                    start_time: match.metadata.start_time || null,
-                    end_time: match.metadata.end_time || null,
-                },
-                additionalFields: {
-                    feedId: match.metadata.feedId || null,
-                    guid: match.metadata.guid || null,
-                    sequence: match.metadata.sequence || null,
-                    num_words: match.metadata.num_words || null,
-                },
-            }));
+            // If no text query provided, return original vector results
+            if (!query.trim()) {
+                return pineconeTools.formatResults(queryResult.matches.slice(0, limit));
+            }
+    
+            // Calculate keyword relevance scores
+            const tfidf = new TfIdf();
+            
+            // Add query to TF-IDF
+            tfidf.addDocument(tokenizer.tokenize(query.toLowerCase()));
+            
+            // Add all retrieved documents
+            queryResult.matches.forEach(match => {
+                tfidf.addDocument(tokenizer.tokenize(match.metadata.text.toLowerCase()));
+            });
+    
+            // Calculate hybrid scores and rerank
+            const hybridResults = queryResult.matches.map((match, index) => {
+                // Vector similarity score is already normalized between 0 and 1
+                const vectorScore = match.score;
+                
+                // Normalize TF-IDF scores relative to the maximum score in the set
+                const rawKeywordScores = queryResult.matches.map((m, i) => 
+                    tfidf.tfidf(tokenizer.tokenize(query.toLowerCase()), i + 1)
+                );
+                const maxKeywordScore = Math.max(...rawKeywordScores);
+                const keywordScore = maxKeywordScore > 0 
+                    ? (tfidf.tfidf(tokenizer.tokenize(query.toLowerCase()), index + 1) / maxKeywordScore)
+                    : 0;
+                
+                // Combine scores - both are now normalized between 0 and 1
+                const hybridScore = (vectorScore * hybridWeight) + (keywordScore * (1 - hybridWeight));
+                
+                return {
+                    ...match,
+                    originalScore: match.score,
+                    score: hybridScore
+                };
+            });
+    
+            // Sort by hybrid score and take top results
+            const rerankedResults = hybridResults
+                .sort((a, b) => b.score - a.score)
+                .slice(0, limit);
+    
+            return pineconeTools.formatResults(rerankedResults);
         } catch (error) {
             console.error("Error in findSimilarDiscussions:", error);
             throw error;
         }
     },
-
     findTimelineDiscussions: async ({ embedding, timeframe = 'P6M' }) => {
         try {
             // Calculate the date threshold
@@ -135,7 +222,6 @@ const pineconeTools = {
             throw error;
         }
     },
-
     getUniqueMetadataCount: async (metadataField) => {
         try {
             const sampleSize = 10000; // Adjust based on your dataset size

@@ -23,6 +23,7 @@
     "express": "^4.21.1",
     "langchain": "^0.3.5",
     "mongoose": "^8.8.1",
+    "natural": "^8.0.1",
     "neo4j-driver": "^5.26.0",
     "node-fetch": "^2.7.0",
     "openai": "^4.70.2",
