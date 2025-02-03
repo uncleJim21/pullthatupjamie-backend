@@ -19,10 +19,14 @@ const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = requir
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
 const {DEBUG_MODE, printLog} = require('./constants.js')
+const ClipUtils = require('./utils/ClipUtils');
 
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
+
+const processingCache = new Map();
+const resultCache = new Map();
 
 mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
 
@@ -76,6 +80,8 @@ const dbBackupManager = new DatabaseBackupManager({
   bucketName: process.env.SPACES_BUCKET_NAME,
   backupInterval: 1000 * 60 * 60 * 1 // 1 hour
 });
+
+const clipUtils = new ClipUtils();
 
 //Validates user meets one of three requirements:
 //1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
@@ -217,6 +223,95 @@ app.get('/api/get-available-feeds', async (req,res) => {
   const results = await getFeedsDetails();
   res.json({results, count:results.length})
 })
+
+app.post('/api/make-clip', async (req, res) => {
+  const { clipId, timestamps } = req.body;
+  
+  // Check if we already have the result cached
+  const cachedResult = resultCache.get(clipId);
+  if (cachedResult) {
+    return res.json({ url: cachedResult });
+  }
+
+  // Check if this clip is already being processed
+  if (processingCache.get(clipId)) {
+    return res.status(202).json({
+      status: 'processing',
+      message: 'Video generation in progress'
+    });
+  }
+
+  const clip = await getClipById(clipId);
+  if (!clip) {
+    console.log('Clip not found:', clipId);
+    return res.status(404).json({ 
+      error: 'Clip not found',
+      clipId 
+    });
+  }
+
+  // Set processing flag
+  processingCache.set(clipId, true);
+
+  // Start processing in background
+  processClip(clip, timestamps)
+    .then(url => {
+      resultCache.set(clipId, url);
+      processingCache.delete(clipId);
+      
+      // Cache cleanup after 1 hour
+      setTimeout(() => {
+        resultCache.delete(clipId);
+      }, 3600000);
+    })
+    .catch(error => {
+      console.error('Error processing clip:', error);
+      processingCache.delete(clipId);
+    });
+
+  // Immediately return to client
+  res.status(202).json({
+    status: 'processing',
+    message: 'Video generation started',
+    pollUrl: `/api/clip-status/${clipId}`
+  });
+});
+
+// Status check endpoint
+app.get('/api/clip-status/:clipId', (req, res) => {
+  const { clipId } = req.params;
+  
+  const url = resultCache.get(clipId);
+  if (url) {
+    return res.json({ status: 'completed', url });
+  }
+
+  if (processingCache.get(clipId)) {
+    return res.json({ status: 'processing' });
+  }
+
+  res.status(404).json({ status: 'not_found' });
+});
+
+async function processClip(clip, timestamps) {
+  try {
+    console.log(`Processing clip with clipId:${clip.shareLink}`);
+    
+    // If timestamps provided, update clip time context
+    if (timestamps?.length >= 2) {
+      clip.timeContext = {
+        start_time: timestamps[0],
+        end_time: timestamps[1]
+      };
+    }
+
+    const videoUrl = await clipUtils.processClip(clip);
+    return videoUrl;
+  } catch (error) {
+    console.error('Error in processClip:', error);
+    throw error;
+  }
+}
 
 app.get('/api/clip/:id', async (req, res) => {
   try {
