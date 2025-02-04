@@ -112,6 +112,131 @@ class VideoGenerator {
     this.ctx.restore();
   }
 
+  createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage) {
+    const tempCanvas = createCanvas(profileImage.width, profileImage.height);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(profileImage, 0, 0);
+  
+    // Helper to convert RGB to HSL
+    const rgbToHsl = (r, g, b) => {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      let h, s, l = (max + min) / 2;
+  
+      if (max === min) {
+        h = s = 0;
+      } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+      }
+      return [h * 360, s * 100, l * 100];
+    };
+  
+    // Helper to check if a color is vibrant and distinct
+    const isVibrantColor = (r, g, b) => {
+      const [h, s, l] = rgbToHsl(r, g, b);
+      
+      // Require good saturation
+      const hasGoodSaturation = s > 50;
+      
+      // Avoid too dark or too light colors
+      const hasGoodLightness = l > 25 && l < 75;
+      
+      // Avoid greyish colors by checking RGB differences
+      const maxDiff = Math.max(
+        Math.abs(r - g),
+        Math.abs(r - b),
+        Math.abs(g - b)
+      );
+      const hasDistinctChannels = maxDiff > 30;
+  
+      return hasGoodSaturation && hasGoodLightness && hasDistinctChannels;
+    };
+  
+    // Get dominant vibrant color
+    const getDominantColor = () => {
+      const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
+      let colorMap = new Map();
+      
+      // Sample every few pixels for performance
+      for (let i = 0; i < imageData.length; i += 16) {
+        const r = imageData[i];
+        const g = imageData[i + 1];
+        const b = imageData[i + 2];
+        
+        if (!isVibrantColor(r, g, b)) continue;
+        
+        // Create color key with slight reduction in precision
+        const key = `${Math.round(r/5)},${Math.round(g/5)},${Math.round(b/5)}`;
+        colorMap.set(key, (colorMap.get(key) || 0) + 1);
+      }
+  
+      // Find most common vibrant color
+      let maxCount = 0;
+      let dominantColor = '#f84c1f'; // Fallback color if nothing vibrant is found
+  
+      for (const [key, count] of colorMap) {
+        if (count > maxCount) {
+          maxCount = count;
+          const [r, g, b] = key.split(',').map(x => x * 5);
+          dominantColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+        }
+      }
+      
+      return dominantColor;
+    };
+  
+    const dominantColor = getDominantColor();
+    
+    // Create gradient
+    const gradient = ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
+    gradient.addColorStop(0, '#FFFFFF');
+    gradient.addColorStop(0.4, this.blendColors('#FFFFFF', dominantColor, 0.3));
+    gradient.addColorStop(0.75, this.blendColors('#FFFFFF', dominantColor, 0.7));
+    gradient.addColorStop(1, dominantColor);
+  
+    return gradient;
+  }
+  
+  // Helper method to blend colors
+  blendColors(color1, color2, ratio) {
+    const hex2rgb = hex => {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+      ] : null;
+    };
+  
+    const rgb2hex = rgb => {
+      return '#' + rgb.map(x => {
+        const hex = Math.floor(x).toString(16);
+        return hex.length === 1 ? '0' + hex : hex;
+      }).join('');
+    };
+  
+    const c1 = hex2rgb(color1);
+    const c2 = hex2rgb(color2);
+    
+    if (!c1 || !c2) return color1;
+  
+    const blend = c1.map((c, i) => {
+      return c * (1 - ratio) + c2[i] * ratio;
+    });
+  
+    return rgb2hex(blend);
+  }
+
   renderFrame(profileImage, watermarkImage, frequencyData) {
     const { width, height } = this.canvas;
   
@@ -179,17 +304,7 @@ class VideoGenerator {
     const maxWaveHeight = waveformHeight / 2;
   
     // Create gradient
-    const gradient = this.ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
-    gradient.addColorStop(0, '#FFFFFF');
-    gradient.addColorStop(0.4, '#fff1e6');
-    gradient.addColorStop(0.75, '#ffa366');  // Soft orange
-    gradient.addColorStop(1, '#f84c1f');    // Original deep red-orange
-
-    // const gradient = this.ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
-    // gradient.addColorStop(0, '#FFFFFF');
-    // gradient.addColorStop(0.4, '#e6ffe6');
-    // gradient.addColorStop(0.75, '#66ffb3');  // Soft mint green
-    // gradient.addColorStop(1, '#00804d');    // Deep emerald
+    const gradient = this.createGradientFromImage(this.ctx, waveformCenterY, maxWaveHeight, profileImage);
   
     this.ctx.fillStyle = gradient;
     this.ctx.beginPath();

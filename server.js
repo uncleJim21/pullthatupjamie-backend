@@ -45,7 +45,7 @@ app.set('trust proxy', true);
 app.use(express.json());
 
 // Environment variables with defaults
-const PORT = process.env.PORT || 3131;
+const PORT = process.env.PORT || 4131;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
 
 const validateSpacesConfig = () => {
