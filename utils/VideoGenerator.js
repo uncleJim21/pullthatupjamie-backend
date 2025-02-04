@@ -117,7 +117,6 @@ class VideoGenerator {
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
   
-    // Helper to convert RGB to HSL
     const rgbToHsl = (r, g, b) => {
       r /= 255;
       g /= 255;
@@ -136,76 +135,65 @@ class VideoGenerator {
           case g: h = (b - r) / d + 2; break;
           case b: h = (r - g) / d + 4; break;
         }
-        h /= 6;
+        h *= 60;
       }
-      return [h * 360, s * 100, l * 100];
+      return [h, s * 100, l * 100];
     };
   
-    // Helper to check if a color is vibrant and distinct
-    const isVibrantColor = (r, g, b) => {
+    const isNonNeutralColor = (r, g, b) => {
       const [h, s, l] = rgbToHsl(r, g, b);
-      
-      // Require good saturation
-      const hasGoodSaturation = s > 50;
-      
-      // Avoid too dark or too light colors
-      const hasGoodLightness = l > 25 && l < 75;
-      
-      // Avoid greyish colors by checking RGB differences
-      const maxDiff = Math.max(
-        Math.abs(r - g),
-        Math.abs(r - b),
-        Math.abs(g - b)
-      );
-      const hasDistinctChannels = maxDiff > 30;
   
-      return hasGoodSaturation && hasGoodLightness && hasDistinctChannels;
+      return (
+        !(r === g && g === b) &&  // Avoid grayscale (neutral) colors
+        s > 30 &&                 // Ensure sufficient saturation (avoid washed-out colors)
+        l > 15 && l < 85          // Avoid extremes of brightness (too dark or too light)
+      );
     };
   
-    // Get dominant vibrant color
     const getDominantColor = () => {
       const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
-      let colorMap = new Map();
-      
-      // Sample every few pixels for performance
-      for (let i = 0; i < imageData.length; i += 16) {
+      const colorMap = new Map();
+  
+      for (let i = 0; i < imageData.length; i += 4) {
         const r = imageData[i];
         const g = imageData[i + 1];
         const b = imageData[i + 2];
-        
-        if (!isVibrantColor(r, g, b)) continue;
-        
-        // Create color key with slight reduction in precision
-        const key = `${Math.round(r/5)},${Math.round(g/5)},${Math.round(b/5)}`;
+  
+        if (!isNonNeutralColor(r, g, b)) continue;
+  
+        const key = `${r},${g},${b}`;
         colorMap.set(key, (colorMap.get(key) || 0) + 1);
       }
   
-      // Find most common vibrant color
       let maxCount = 0;
-      let dominantColor = '#f84c1f'; // Fallback color if nothing vibrant is found
+      let dominantColor = [248, 76, 31]; // Fallback (orange-red)
   
       for (const [key, count] of colorMap) {
         if (count > maxCount) {
           maxCount = count;
-          const [r, g, b] = key.split(',').map(x => x * 5);
-          dominantColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+          dominantColor = key.split(',').map(Number);
         }
       }
-      
+  
       return dominantColor;
     };
   
-    const dominantColor = getDominantColor();
-    
-    // Create gradient
+    const [r, g, b] = getDominantColor();
+    const baseColor = `rgb(${r},${g},${b})`;
+  
+    // Generate lighter and darker shades for depth
+    const lighten = `rgba(${Math.min(r + 40, 255)}, ${Math.min(g + 40, 255)}, ${Math.min(b + 40, 255)}, 1)`;
+    const darken = `rgba(${Math.max(r - 40, 0)}, ${Math.max(g - 40, 0)}, ${Math.max(b - 40, 0)}, 1)`;
+  
+    // Create a more balanced gradient that centers the dominant color
     const gradient = ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
-    gradient.addColorStop(0, '#FFFFFF');
-    gradient.addColorStop(0.4, this.blendColors('#FFFFFF', dominantColor, 0.3));
-    gradient.addColorStop(0.75, this.blendColors('#FFFFFF', dominantColor, 0.7));
-    gradient.addColorStop(1, dominantColor);
+    gradient.addColorStop(0, lighten);
+    gradient.addColorStop(0.5, baseColor);
+    gradient.addColorStop(1, darken);
   
     return gradient;
   }
+  
   
   // Helper method to blend colors
   blendColors(color1, color2, ratio) {
