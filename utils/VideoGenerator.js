@@ -18,7 +18,7 @@ class VideoGenerator {
 
     // Optional configurations
     this.frameRate = options.frameRate || 20;
-    this.canvas = createCanvas(1280, 720);
+    this.canvas = createCanvas(720, 720); // Change from 1280x720 to 720x720
     this.ctx = this.canvas.getContext('2d');
     this.framesDir = join(__dirname, 'frames');
     this.tempWavPath = join(__dirname, 'temp.wav');
@@ -228,92 +228,74 @@ class VideoGenerator {
   renderFrame(profileImage, watermarkImage, frequencyData) {
     const { width, height } = this.canvas;
   
-    // Clear canvas
+    // **Clear the canvas (background)**
     this.ctx.fillStyle = '#000000';
     this.ctx.fillRect(0, 0, width, height);
   
-    // Adjust everything on the left side to shift up 40px
-    const shiftUp = -40;
+    // **Divide the canvas into two equal halves**
+    const topHalfHeight = height / 2;  // Profile + text
+    const bottomHalfHeight = height / 2; // Waveform
   
-    // Draw profile image with border radius and outline
-    const padding = 40;
-    const profileImageAreaWidth = width / 2; // Left half of the screen
-    const profileImageWidth = profileImageAreaWidth * (2 / 3); // Take up 2/3 of the left half
-    const profileImageHeight = profileImageWidth; // Square image
-    const profileImageX = (profileImageAreaWidth - profileImageWidth) / 2; // Center horizontally in the left half
-    const profileImageY = (height - profileImageHeight) / 2 + shiftUp; // Center vertically with shift up
+    // ─────────────────────────────────────────────────────────────
+    // **🔵 TOP HALF: Profile Image + Text**
+    // ─────────────────────────────────────────────────────────────
   
+    // **Size the profile image properly (centered)**
+    const profileImageSize = width * 0.4;  // 40% of canvas width
+    const profileImageX = (width - profileImageSize) / 2; // Center horizontally
+    const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20; // Center vertically
+  
+    // **Draw Profile Image**
     this.drawRoundedImage(
       profileImage,
       profileImageX,
       profileImageY,
-      profileImageWidth,
-      profileImageHeight,
+      profileImageSize,
+      profileImageSize,
       this.profileImageRadius,
       this.profileImageBorderColor,
       this.profileImageBorderWidth
     );
   
-    // Draw watermark in top right with correct aspect ratio
-    const watermarkWidth = 200; // Adjust as needed for your canvas size
-    const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth; // Maintain aspect ratio
-    const watermarkPadding = 20;
-    this.ctx.drawImage(
-      watermarkImage,
-      width - watermarkWidth - watermarkPadding,
-      watermarkPadding,
-      watermarkWidth,
-      watermarkHeight
-    );
-  
-    // Center text (title and subtitle) relative to the profile image
+    // **Title & Subtitle Adjustments**
     this.ctx.textAlign = 'center';
     this.ctx.fillStyle = this.textColor;
   
-    // Draw title centered above the profile image
-    this.ctx.font = 'bold 30px Arial';
-    const titleY = profileImageY + profileImageHeight + 40; // Slightly above the profile image
-    this.ctx.fillText(this.title, profileImageX + profileImageWidth / 2, titleY);
+    this.ctx.font = 'bold 32px Arial';
+    const titleY = profileImageY + profileImageSize + 40; // Position text below image
+    this.ctx.fillText(this.title, width / 2, titleY);
   
-    // Draw subtitle centered below the profile image
     this.ctx.font = '24px Arial';
-    const subtitleY = profileImageY + profileImageHeight + 80; // Slightly below the profile image
-    this.ctx.fillText(this.subtitle, profileImageX + profileImageWidth / 2, subtitleY);
+    const subtitleY = titleY + 50;  // Space below title
+    this.ctx.fillText(this.subtitle, width / 2, subtitleY);
   
-    // Position waveform in the right half of the screen
-    const waveAreaWidth = width / 2 - padding * 2; // Use half the screen width (right half)
-    const startX = width / 2 + padding; // Start after the midpoint with padding
-    const waveformHeight = (2 / 3) * height; // Make the waveform 2/3 the height of the canvas
-    const waveformCenterY = height / 2; // Center vertically
+    // ─────────────────────────────────────────────────────────────
+    // **🔴 BOTTOM HALF: Waveform**
+    // ─────────────────────────────────────────────────────────────
+  
+    const waveformCenterY = topHalfHeight + bottomHalfHeight / 2; // Center waveform in bottom half
     const pointCount = frequencyData.length;
-    const pointSpacing = waveAreaWidth / (pointCount - 1);
+    const pointSpacing = width / (pointCount - 1); // Ensure it spans FULL width
   
-    // Max height of the waveform
-    const maxWaveHeight = waveformHeight / 2;
-  
-    // Create gradient
+    const maxWaveHeight = bottomHalfHeight * 0.4; // Make it fit within bottom half
     const gradient = this.createGradientFromImage(this.ctx, waveformCenterY, maxWaveHeight, profileImage);
   
     this.ctx.fillStyle = gradient;
     this.ctx.beginPath();
   
-    // Amplification factor
+    // **Generate Waveform Points**
     const amplification = 2.0;
     const smoothingFactor = 0.4;
-  
-    // Generate points for top curve
     const points = [];
+  
     for (let i = 0; i < pointCount; i++) {
-      const x = startX + (i * pointSpacing);
+      const x = i * pointSpacing;
       const normalizedAmplitude = Math.min(frequencyData[i] * amplification, 1);
       const amplitude = normalizedAmplitude * maxWaveHeight;
-      points.push({
-        x: x,
-        y: waveformCenterY - amplitude
-      });
+      points.push({ x: x, y: waveformCenterY - amplitude });
     }
   
-    // Draw top curve
+    // **Draw Top Waveform Curve**
     this.ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length - 2; i++) {
       const xc = (points[i].x + points[i + 1].x) / 2;
@@ -327,7 +309,6 @@ class VideoGenerator {
       this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
   
-    // Connect to last point of top curve
     this.ctx.quadraticCurveTo(
       points[points.length - 2].x,
       points[points.length - 2].y,
@@ -335,7 +316,7 @@ class VideoGenerator {
       points[points.length - 1].y
     );
   
-    // Generate and draw bottom curve (mirror of top)
+    // **Generate and Draw Bottom Mirrored Curve**
     const bottomPoints = points.map(p => ({
       x: p.x,
       y: waveformCenterY + (waveformCenterY - p.y)
@@ -364,7 +345,7 @@ class VideoGenerator {
     this.ctx.fill();
   }
   
-
+  
   async generateFrames() {
     const audioData = await this.getAudioData();
     const [profileImage, watermarkImage] = await Promise.all([
