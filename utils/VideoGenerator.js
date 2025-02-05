@@ -1,13 +1,18 @@
 const { createCanvas, loadImage } = require('canvas');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
-const { join } = require('path');
+const path = require('path');
 const wav = require('wav');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
+const { v4: uuidv4 } = require('uuid');
+const os = require('os');
 
 class VideoGenerator {
   constructor(options) {
+    // Generate unique instance ID
+    this.instanceId = uuidv4();
+    
     // Required options
     this.audioPath = options.audioPath;
     this.profileImagePath = options.profileImagePath;
@@ -18,22 +23,49 @@ class VideoGenerator {
 
     // Optional configurations
     this.frameRate = options.frameRate || 20;
-    this.canvas = createCanvas(720, 720); // Change from 1280x720 to 720x720
+    this.canvas = createCanvas(720, 720);
     this.ctx = this.canvas.getContext('2d');
-    this.framesDir = join(__dirname, 'frames');
-    this.tempWavPath = join(__dirname, 'temp.wav');
 
-    // Design configurations
-    this.profileImageSize = 200;  // Size of the profile image
-    this.profileImageRadius = 50;  // Border radius
+    // Create instance-specific working directories
+    this.workingDir = path.join(os.tmpdir(), `video-gen-${this.instanceId}`);
+    this.framesDir = path.join(this.workingDir, 'frames');
+    this.tempWavPath = path.join(this.workingDir, `temp-${this.instanceId}.wav`);
+
+    // Design configurations remain the same
+    this.profileImageSize = 200;
+    this.profileImageRadius = 50;
     this.profileImageBorderColor = '#333333';
     this.profileImageBorderWidth = 4;
     this.textColor = '#FFFFFF';
+
+    // Ensure working directories exist
+    this.initializeWorkingDirectories();
+  }
+
+  initializeWorkingDirectories() {
+    // Create working directories if they don't exist
+    if (!fs.existsSync(this.workingDir)) {
+        fs.mkdirSync(this.workingDir, { recursive: true });
+    }
+    if (!fs.existsSync(this.framesDir)) {
+        fs.mkdirSync(this.framesDir, { recursive: true });
+    }
+  }
+
+  async cleanup() {
+      try {
+          // Clean up working directory and all contents
+          if (fs.existsSync(this.workingDir)) {
+              await fs.promises.rm(this.workingDir, { recursive: true, force: true });
+          }
+      } catch (error) {
+          console.error(`Error cleaning up working directory for instance ${this.instanceId}:`, error);
+      }
   }
 
   async convertToWav() {
-    await exec(`ffmpeg -y -i "${this.audioPath}" -acodec pcm_s16le -ar 44100 -map_metadata -1 "${this.tempWavPath}"`);
-    return this.tempWavPath;
+      await exec(`ffmpeg -y -i "${this.audioPath}" -acodec pcm_s16le -ar 44100 -map_metadata -1 "${this.tempWavPath}"`);
+      return this.tempWavPath;
   }
 
   async getDuration(filePath) {
@@ -380,74 +412,68 @@ class VideoGenerator {
   async generateFrames() {
     const audioData = await this.getAudioData();
     const [profileImage, watermarkImage] = await Promise.all([
-      loadImage(this.profileImagePath),
-      loadImage(this.watermarkPath)
+        loadImage(this.profileImagePath),
+        loadImage(this.watermarkPath)
     ]);
-    
-    if (!fs.existsSync(this.framesDir)) {
-      fs.mkdirSync(this.framesDir);
-    }
 
     const exactDuration = await this.getDuration(this.audioPath);
     const totalFrames = Math.floor(exactDuration * this.frameRate);
     const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
-    
-    console.log(`Duration: ${exactDuration}s, Frames: ${totalFrames}, Samples per frame: ${samplesPerFrame}`);
+
+    console.log(`[Instance ${this.instanceId}] Generating ${totalFrames} frames`);
 
     for (let frame = 0; frame < totalFrames; frame++) {
-      if (frame % 20 === 0) {
-        console.log(`Processing frame ${frame}/${totalFrames} (${Math.round(frame/totalFrames*100)}%)`);
-      }
-      
-      const startSample = frame * samplesPerFrame;
-      const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
-      const frequencies = this.calculateFrequencies(frameData, 64);
-      
-      this.renderFrame(profileImage, watermarkImage, frequencies);
-      
-      const frameFile = join(this.framesDir, `frame-${frame.toString().padStart(6, '0')}.png`);
-      const out = fs.createWriteStream(frameFile);
-      const stream = this.canvas.createPNGStream();
-      await new Promise(resolve => stream.pipe(out).on('finish', resolve));
+        if (frame % 20 === 0) {
+            console.log(`[Instance ${this.instanceId}] Processing frame ${frame}/${totalFrames} (${Math.round(frame/totalFrames*100)}%)`);
+        }
+
+        const startSample = frame * samplesPerFrame;
+        const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
+        const frequencies = this.calculateFrequencies(frameData, 64);
+
+        this.renderFrame(profileImage, watermarkImage, frequencies);
+
+        const frameFile = path.join(this.framesDir, `frame-${frame.toString().padStart(6, '0')}.png`);
+        const out = fs.createWriteStream(frameFile);
+        const stream = this.canvas.createPNGStream();
+        await new Promise(resolve => stream.pipe(out).on('finish', resolve));
     }
   }
 
   async generateVideo() {
     try {
-      const wavPath = await this.convertToWav();
-      this.audioPath = wavPath;
-      await this.generateFrames();
-      
-      return new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(join(this.framesDir, 'frame-%06d.png'))
-          .inputFPS(this.frameRate)
-          .input(this.audioPath)
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .outputOptions([
-            '-pix_fmt', 'yuv420p',
-            '-shortest',
-            '-movflags', '+faststart'
-          ])
-          .output(this.outputPath)
-          .on('end', () => {
-            // Cleanup
-            fs.rmSync(this.framesDir, { recursive: true });
-            fs.unlinkSync(this.tempWavPath);
-            resolve();
-          })
-          .on('error', reject)
-          .run();
-      });
+        const wavPath = await this.convertToWav();
+        this.audioPath = wavPath;
+        await this.generateFrames();
+
+        return new Promise((resolve, reject) => {
+            ffmpeg()
+                .input(path.join(this.framesDir, 'frame-%06d.png'))
+                .inputFPS(this.frameRate)
+                .input(this.audioPath)
+                .videoCodec('libx264')
+                .audioCodec('aac')
+                .outputOptions([
+                    '-pix_fmt', 'yuv420p',
+                    '-shortest',
+                    '-movflags', '+faststart'
+                ])
+                .output(this.outputPath)
+                .on('end', async () => {
+                    await this.cleanup();
+                    resolve();
+                })
+                .on('error', async (err) => {
+                    await this.cleanup();
+                    reject(err);
+                })
+                .run();
+        });
     } catch (error) {
-      // Cleanup on error
-      if (fs.existsSync(this.tempWavPath)) {
-        fs.unlinkSync(this.tempWavPath);
-      }
-      throw error;
+        await this.cleanup();
+        throw error;
     }
-  }
+}
 }
 
 module.exports = VideoGenerator;

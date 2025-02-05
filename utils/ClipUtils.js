@@ -90,47 +90,47 @@ class ClipUtils {
 
   async generateShareableVideo(clipData, audioPath) {
     let profileImagePath = null;
-    console.log('Starting video generation process');
+    let videoGenerator = null;
     
     try {
-      console.log('Downloading profile image...');
-      profileImagePath = await this.downloadImage(clipData.episodeImage);
-      
-      const watermarkPath = path.join(__dirname, '../assets/watermark.png');
-      console.log('Checking watermark existence...');
-      if (!fs.existsSync(watermarkPath)) {
-        throw new Error('Watermark file not found at: ' + watermarkPath);
-      }
-
-      const outputPath = path.join(os.tmpdir(), `${clipData.shareLink}.mp4`);
-      console.log('Video will be saved to:', outputPath);
-
-      const generator = new VideoGenerator({
-        audioPath,
-        profileImagePath,
-        watermarkPath,
-        title: this.truncateMiddle(clipData.creator,40),
-        subtitle: this.truncateMiddle(clipData.episode,80),
-        outputPath
-      });
-
-      console.log('Starting video generation...');
-      await generator.generateVideo();
-      console.log('Video generation completed');
-      
-      return outputPath;
-    } catch (error) {
-      console.error('Error in video generation:', error);
-      throw error;
-    } finally {
-      if (profileImagePath && fs.existsSync(profileImagePath)) {
-        try {
-          await fs.promises.unlink(profileImagePath);
-          console.log('Cleaned up profile image:', profileImagePath);
-        } catch (err) {
-          console.error('Error cleaning up profile image:', err);
+        console.log('Downloading profile image...');
+        profileImagePath = await this.downloadImage(clipData.episodeImage);
+        
+        const watermarkPath = path.join(__dirname, '../assets/watermark.png');
+        if (!fs.existsSync(watermarkPath)) {
+            throw new Error('Watermark file not found at: ' + watermarkPath);
         }
-      }
+
+        const outputPath = path.join(os.tmpdir(), `${clipData.shareLink}.mp4`);
+        
+        // Create new instance for this specific video
+        videoGenerator = new VideoGenerator({
+            audioPath,
+            profileImagePath,
+            watermarkPath,
+            title: this.truncateMiddle(clipData.creator, 40),
+            subtitle: this.truncateMiddle(clipData.episode, 80),
+            outputPath
+        });
+
+        console.log('Starting video generation...');
+        await videoGenerator.generateVideo();
+        console.log('Video generation completed');
+        
+        return outputPath;
+    } catch (error) {
+        console.error('Error in video generation:', error);
+        throw error;
+    } finally {
+        // Clean up downloaded profile image
+        if (profileImagePath && fs.existsSync(profileImagePath)) {
+            try {
+                await fs.promises.unlink(profileImagePath);
+                console.log('Cleaned up profile image:', profileImagePath);
+            } catch (err) {
+                console.error('Error cleaning up profile image:', err);
+            }
+        }
     }
   }
 
