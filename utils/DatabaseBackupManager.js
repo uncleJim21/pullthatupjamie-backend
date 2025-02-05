@@ -29,9 +29,15 @@ class DatabaseBackupManager {
     }
 
     this.spacesManager = new DigitalOceanSpacesManager(
-      spacesEndpoint,
-      accessKeyId,
-      secretAccessKey
+        spacesEndpoint,
+        accessKeyId,
+        secretAccessKey,
+        {
+            maxRetries: 3,
+            baseDelay: 1000,
+            maxDelay: 10000,
+            timeout: 30000
+        }
     );
     this.bucketName = bucketName;
     this.backupInterval = backupInterval;

@@ -14,7 +14,13 @@ class ClipUtils {
     this.spacesManager = new DigitalOceanSpacesManager(
       process.env.SPACES_ENDPOINT,
       process.env.SPACES_CLIP_ACCESS_KEY_ID,
-      process.env.SPACES_CLIP_SECRET_KEY
+      process.env.SPACES_CLIP_SECRET_KEY,
+      {
+          maxRetries: 3,
+          baseDelay: 1000,
+          maxDelay: 10000,
+          timeout: 30000
+      }
     );
   }
 

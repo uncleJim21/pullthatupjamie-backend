@@ -285,7 +285,7 @@ async function processClip(clip, timestamps) {
       };
     }
 
-    const videoUrl = await clipUtils.processClip(clip);
+    const videoUrl = await clipUtils.processClip(clip,timestamps);
     return videoUrl;
   } catch (error) {
     console.error('Error in processClip:', error);
