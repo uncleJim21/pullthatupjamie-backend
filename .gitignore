@@ -6,3 +6,4 @@ invoices.db
 utils/invoice-db.js
 /utils/frames
 utils/temp.wav
+*.txt

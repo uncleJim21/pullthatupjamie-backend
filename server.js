@@ -226,71 +226,50 @@ app.get('/api/get-available-feeds', async (req,res) => {
 
 app.post('/api/make-clip', async (req, res) => {
   const { clipId, timestamps } = req.body;
-  
-  // Check if we already have the result cached
-  const cachedResult = resultCache.get(clipId);
-  if (cachedResult) {
-    return res.json({ url: cachedResult });
+
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId is required' });
   }
 
-  // Check if this clip is already being processed
-  if (processingCache.get(clipId)) {
+  const clipData = await getClipById(clipId);
+  if (!clipData) {
+    return res.status(404).json({ error: 'Clip not found', clipId });
+  }
+
+  try {
+    const result = await clipUtils.processClip(clipData, timestamps);
+
     return res.status(202).json({
       status: 'processing',
-      message: 'Video generation in progress'
+      lookupHash: result.lookupHash,
+      pollUrl: `/api/clip-status/${result.lookupHash}`,
     });
+  } catch (error) {
+    console.error('Error in make-clip:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  const clip = await getClipById(clipId);
-  if (!clip) {
-    console.log('Clip not found:', clipId);
-    return res.status(404).json({ 
-      error: 'Clip not found',
-      clipId 
-    });
-  }
-
-  // Set processing flag
-  processingCache.set(clipId, true);
-
-  // Start processing in background
-  processClip(clip, timestamps)
-    .then(url => {
-      resultCache.set(clipId, url);
-      processingCache.delete(clipId);
-      
-      // Cache cleanup after 1 hour
-      setTimeout(() => {
-        resultCache.delete(clipId);
-      }, 3600000);
-    })
-    .catch(error => {
-      console.error('Error processing clip:', error);
-      processingCache.delete(clipId);
-    });
-
-  // Immediately return to client
-  res.status(202).json({
-    status: 'processing',
-    message: 'Video generation started',
-    pollUrl: `/api/clip-status/${clipId}`
-  });
 });
 
 // Status check endpoint
-app.get('/api/clip-status/:clipId', (req, res) => {
-  const { clipId } = req.params;
-  
-  const url = resultCache.get(clipId);
-  if (url) {
-    return res.json({ status: 'completed', url });
-  }
+app.get('/api/clip-status/:lookupHash', async (req, res) => {
+  const { lookupHash } = req.params;
 
-  if (processingCache.get(clipId)) {
+  try {
+    const clip = await WorkProductV2.findOne({ lookupHash });
+
+    if (!clip) {
+      return res.status(404).json({ status: 'not_found' });
+    }
+
+    if (clip.cdnFileId) {
+      return res.json({ status: 'completed', url: clip.cdnFileId });
+    }
+
     return res.json({ status: 'processing' });
+  } catch (error) {
+    console.error('Error checking clip status:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  res.status(404).json({ status: 'not_found' });
 });
 
 async function processClip(clip, timestamps) {

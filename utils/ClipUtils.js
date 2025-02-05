@@ -6,6 +6,8 @@ const fs = require('fs');
 const axios = require('axios');
 const VideoGenerator = require('./VideoGenerator');
 const DigitalOceanSpacesManager = require('./DigitalOceanSpacesManager');
+const { WorkProductV2, calculateLookupHash } = require('../models/WorkProductV2');
+
 
 class ClipUtils {
   constructor() {
@@ -34,33 +36,37 @@ class ClipUtils {
     return `${front}${ellipsis}${back}`;
   }
 
-  async extractAudioClip(audioUrl, startTime, endTime, outputPath) {
-    console.log('Starting audio extraction...', { startTime, endTime });
-    
+  async extractAudioClip(audioUrl, startTime, endTime) {
+    console.log('[DEBUG] extractAudioClip - Inputs:', { audioUrl, startTime, endTime });
+
+    const outputPath = `/tmp/clip-${Date.now()}.mp3`; // Ensure temp path is valid
+    console.log(`[DEBUG] Extracting audio to: ${outputPath}`);
+
     return new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(audioUrl)
-        .setStartTime(startTime)
-        .setDuration(endTime - startTime)
-        .audioCodec('libmp3lame')
-        .toFormat('mp3')
-        .on('start', command => {
-          console.log('FFmpeg process started:', command);
-        })
-        .on('progress', progress => {
-          console.log('Audio extraction progress:', progress.percent?.toFixed(2) + '%');
-        })
-        .on('end', () => {
-          console.log('Audio extraction completed');
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .save(outputPath);
+        if (!audioUrl) {
+            console.error('[ERROR] extractAudioClip - Missing audio URL!');
+            return reject(new Error('extractAudioClip failed: Missing audio URL'));
+        }
+
+        ffmpeg(audioUrl)
+            .setStartTime(startTime)
+            .setDuration(endTime - startTime)
+            .audioCodec('libmp3lame')
+            .toFormat('mp3')
+            .on('start', command => console.log('[DEBUG] FFmpeg started:', command))
+            .on('progress', progress => console.log('[DEBUG] FFmpeg progress:', progress.percent?.toFixed(2) + '%'))
+            .on('error', err => {
+                console.error('[ERROR] FFmpeg processing failed:', err);
+                reject(new Error(`FFmpeg failed: ${err.message}`));
+            })
+            .on('end', () => {
+                console.log('[DEBUG] FFmpeg extraction completed:', outputPath);
+                resolve(outputPath);
+            })
+            .save(outputPath);
     });
   }
+
 
   async downloadImage(url) {
     console.log('Downloading image:', url);
@@ -128,71 +134,108 @@ class ClipUtils {
     }
   }
 
-  async processClip(clipData) {
-    console.log('Starting clip processing:', clipData.shareLink);
-    const tmpDir = os.tmpdir();
-    const audioPath = path.join(tmpDir, `${clipData.shareLink}.mp3`);
-    let videoPath = null;
-    
+  /**
+   * Handles the full lifecycle of clip generation.
+   * Returns a `lookupHash` immediately and starts processing asynchronously.
+   *
+   * @param {Object} clipData - The clip metadata.
+   * @param {Array} timestamps - Optional override timestamps.
+   * @returns {string} - lookupHash to poll.
+   */
+  async processClip(clipData, timestamps = null) {
+    console.log(`[DEBUG] processClip started for: ${JSON.stringify(clipData,null,2)}`);
+
+    // Compute lookupHash
+    const lookupHash = calculateLookupHash(clipData, timestamps);
+    console.log(`[DEBUG] Generated lookupHash: ${lookupHash}`);
+
     try {
-      // Step 1: Extract audio
-      console.log('Step 1: Extracting audio clip');
-      await this.extractAudioClip(
-        clipData.audioUrl,
-        clipData.timeContext.start_time,
-        clipData.timeContext.end_time,
-        audioPath
-      );
+        // Check MongoDB for existing clip
+        let existingClip = await WorkProductV2.findOne({ lookupHash });
 
-      // Step 2: Generate video
-      console.log('Step 2: Generating shareable video');
-      videoPath = await this.generateShareableVideo(clipData, audioPath);
+        if (existingClip) {
+            if (existingClip.cdnFileId) {
+                console.log(`[DEBUG] Clip already exists, returning cached URL: ${existingClip.cdnFileId}`);
+                return existingClip.cdnFileId;
+            } else {
+                console.log(`[DEBUG] Clip is still processing, returning lookupHash: ${lookupHash}`);
+                return { status: 'processing', lookupHash };
+            }
+        }
 
-      // Step 3: Upload to CDN
-      console.log('Step 3: Uploading to CDN');
-      const fileName = `clips/${clipData.shareLink}.mp4`;
-      const videoBuffer = await fs.promises.readFile(videoPath);
-      console.log('Video file read, size:', videoBuffer.length);
-      
-      const videoUrl = await this.spacesManager.uploadFile(
-        process.env.SPACES_CLIP_BUCKET_NAME,
-        fileName,
-        videoBuffer,
-        'video/mp4'
-      );
-      
-      console.log('Upload completed:', videoUrl);
-      return videoUrl;
-    } catch (error) {
-      console.error('Error processing clip:', error);
-      throw error;
-    } finally {
-      // Cleanup
-      const cleanupPromises = [];
-      
-      if (fs.existsSync(audioPath)) {
-        cleanupPromises.push(
-          fs.promises.unlink(audioPath)
-            .then(() => console.log('Cleaned up audio file:', audioPath))
-            .catch(err => console.error('Error cleaning up audio:', err))
-        );
-      }
-      
-      if (videoPath && fs.existsSync(videoPath)) {
-        cleanupPromises.push(
-          fs.promises.unlink(videoPath)
-            .then(() => console.log('Cleaned up video file:', videoPath))
-            .catch(err => console.error('Error cleaning up video:', err))
-        );
-      }
-      
-      if (cleanupPromises.length > 0) {
-        await Promise.all(cleanupPromises).catch(error => {
-          console.error('Cleanup error:', error);
+        // ✅ Create MongoDB entry to track processing
+        await WorkProductV2.create({
+            type: 'ptuj-clip',
+            lookupHash,
+            cdnFileId: null,
         });
-      }
+
+        console.log(`[DEBUG] WorkProductV2 entry created for ${lookupHash}`);
+
+        // ✅ Return lookupHash immediately
+        const response = { status: 'processing', lookupHash };
+
+        // 🚀 Force background job to run immediately
+        this._backgroundProcessClip(clipData, timestamps, lookupHash).catch(err => {
+            console.error(`[ERROR] _backgroundProcessClip FAILED:`, err);
+        });
+
+        return response;
+    } catch (error) {
+        console.error(`[ERROR] processClip failed:`, error);
+        throw error;
     }
   }
+
+  
+
+  /**
+   * Handles actual audio extraction, video processing, and CDN upload.
+   *
+   * @param {Object} clipData
+   * @param {Array} timestamps
+   * @param {string} lookupHash
+   */
+  async _backgroundProcessClip(clipData, timestamps, lookupHash) {
+    console.log(`[DEBUG] _backgroundProcessClip STARTED for ${lookupHash}`);
+    
+    try {
+        console.log(`[HARD DEBUG] _backgroundProcessClip running at:`, new Date().toISOString());
+
+        // Force an initial log to prove it's running
+        console.log(`[DEBUG] Extracting audio for ${lookupHash}`);
+
+        const audioPath = await this.extractAudioClip(
+            clipData.audioUrl,
+            timestamps?.[0] || clipData.timeContext.start_time,
+            timestamps?.[1] || clipData.timeContext.end_time
+        );
+
+        console.log(`[DEBUG] Generating video for ${lookupHash}`);
+        const videoPath = await this.generateShareableVideo(clipData, audioPath);
+
+        console.log(`[DEBUG] Uploading to CDN for ${lookupHash}`);
+        const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}-clip.mp4`;
+
+        const videoBuffer = await fs.promises.readFile(videoPath);
+        const uploadedUrl = await this.spacesManager.uploadFile(
+            process.env.SPACES_CLIP_BUCKET_NAME,
+            cdnFileId,
+            videoBuffer,
+            'video/mp4'
+        );
+
+        console.log(`[DEBUG] Upload successful for ${lookupHash}: ${uploadedUrl}`);
+
+        // ✅ Update MongoDB with final URL
+        await WorkProductV2.findOneAndUpdate({ lookupHash }, { cdnFileId: uploadedUrl });
+
+        console.log(`[DEBUG] Processing complete for ${lookupHash}`);
+    } catch (error) {
+        console.error(`[ERROR] _backgroundProcessClip CRASHED for ${lookupHash}:`, error);
+    }
+  }
+
 }
 
 module.exports = ClipUtils;
