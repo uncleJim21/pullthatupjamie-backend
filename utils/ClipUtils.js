@@ -156,7 +156,7 @@ class ClipUtils {
         if (existingClip) {
             if (existingClip.cdnFileId) {
                 console.log(`[DEBUG] Clip already exists, returning cached URL: ${existingClip.cdnFileId}`);
-                return existingClip.cdnFileId;
+                return { status: 'done', lookupHash };
             } else {
                 console.log(`[DEBUG] Clip is still processing, returning lookupHash: ${lookupHash}`);
                 return { status: 'processing', lookupHash };

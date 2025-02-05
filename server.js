@@ -20,6 +20,7 @@ const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
 const {DEBUG_MODE, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
+const {WorkProductV2} = require('./models/WorkProductV2')
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -240,7 +241,7 @@ app.post('/api/make-clip', async (req, res) => {
     const result = await clipUtils.processClip(clipData, timestamps);
 
     return res.status(202).json({
-      status: 'processing',
+      status: result.status,
       lookupHash: result.lookupHash,
       pollUrl: `/api/clip-status/${result.lookupHash}`,
     });
