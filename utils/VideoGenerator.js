@@ -253,6 +253,17 @@ class VideoGenerator {
         this.profileImageBorderWidth
     );
 
+    const watermarkWidth = 160; // Adjust as needed for your canvas size
+    const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth; // Maintain aspect ratio
+    const watermarkPadding = 10;
+    this.ctx.drawImage(
+      watermarkImage,
+      width - watermarkWidth - watermarkPadding,
+      watermarkPadding,
+      watermarkWidth,
+      watermarkHeight
+    );
+
     // **Title & Subtitle Adjustments**
     this.ctx.textAlign = 'center';
     this.ctx.fillStyle = this.textColor;
