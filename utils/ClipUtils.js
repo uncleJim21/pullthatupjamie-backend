@@ -110,7 +110,7 @@ class ClipUtils {
         profileImagePath,
         watermarkPath,
         title: this.truncateMiddle(clipData.creator,40),
-        subtitle: this.truncateMiddle(clipData.episode,40),
+        subtitle: this.truncateMiddle(clipData.episode,80),
         outputPath
       });
 
@@ -215,7 +215,7 @@ class ClipUtils {
         const videoPath = await this.generateShareableVideo(clipData, audioPath);
 
         console.log(`[DEBUG] Uploading to CDN for ${lookupHash}`);
-        const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}-clip.mp4`;
+        const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}/${lookupHash}-clip.mp4`;
 
         const videoBuffer = await fs.promises.readFile(videoPath);
         const uploadedUrl = await this.spacesManager.uploadFile(

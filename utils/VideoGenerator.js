@@ -227,123 +227,143 @@ class VideoGenerator {
 
   renderFrame(profileImage, watermarkImage, frequencyData) {
     const { width, height } = this.canvas;
-  
+
     // **Clear the canvas (background)**
     this.ctx.fillStyle = '#000000';
     this.ctx.fillRect(0, 0, width, height);
-  
+
     // **Divide the canvas into two equal halves**
     const topHalfHeight = height / 2;  // Profile + text
     const bottomHalfHeight = height / 2; // Waveform
-  
-    // ─────────────────────────────────────────────────────────────
-    // **🔵 TOP HALF: Profile Image + Text**
-    // ─────────────────────────────────────────────────────────────
-  
+
     // **Size the profile image properly (centered)**
     const profileImageSize = width * 0.4;  // 40% of canvas width
     const profileImageX = (width - profileImageSize) / 2; // Center horizontally
     const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20; // Center vertically
-  
+
     // **Draw Profile Image**
     this.drawRoundedImage(
-      profileImage,
-      profileImageX,
-      profileImageY,
-      profileImageSize,
-      profileImageSize,
-      this.profileImageRadius,
-      this.profileImageBorderColor,
-      this.profileImageBorderWidth
+        profileImage,
+        profileImageX,
+        profileImageY,
+        profileImageSize,
+        profileImageSize,
+        this.profileImageRadius,
+        this.profileImageBorderColor,
+        this.profileImageBorderWidth
     );
-  
+
     // **Title & Subtitle Adjustments**
     this.ctx.textAlign = 'center';
     this.ctx.fillStyle = this.textColor;
-  
+
+    // **Title**
     this.ctx.font = 'bold 32px Arial';
     const titleY = profileImageY + profileImageSize + 40; // Position text below image
     this.ctx.fillText(this.title, width / 2, titleY);
-  
+
+    // **Process subtitle for multiline**
+    const maxLength = 80;
+    let subtitle = this.subtitle.length > maxLength ? this.subtitle.substring(0, maxLength - 3) + '...' : this.subtitle;
+
+    let subtitleLines = [];
+    if (subtitle.length > 40) {
+        const splitIndex = subtitle.lastIndexOf(' ', 40); // Find the nearest space before 40 chars
+        if (splitIndex !== -1) {
+            subtitleLines.push(subtitle.substring(0, splitIndex).trim());
+            subtitleLines.push(subtitle.substring(splitIndex + 1).trim());
+        } else {
+            subtitleLines.push(subtitle);
+        }
+    } else {
+        subtitleLines.push(subtitle);
+    }
+
+    // **Subtitle Rendering**
     this.ctx.font = '24px Arial';
-    const subtitleY = titleY + 50;  // Space below title
-    this.ctx.fillText(this.subtitle, width / 2, subtitleY);
-  
+    const subtitleY = titleY + 40;  // Space below title
+    this.ctx.fillText(subtitleLines[0], width / 2, subtitleY);
+
+    if (subtitleLines.length > 1) {
+        this.ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30); // Add second line
+    }
+
     // ─────────────────────────────────────────────────────────────
     // **🔴 BOTTOM HALF: Waveform**
     // ─────────────────────────────────────────────────────────────
-  
+
     const waveformCenterY = topHalfHeight + bottomHalfHeight / 2; // Center waveform in bottom half
     const pointCount = frequencyData.length;
     const pointSpacing = width / (pointCount - 1); // Ensure it spans FULL width
-  
+
     const maxWaveHeight = bottomHalfHeight * 0.4; // Make it fit within bottom half
     const gradient = this.createGradientFromImage(this.ctx, waveformCenterY, maxWaveHeight, profileImage);
-  
+
     this.ctx.fillStyle = gradient;
     this.ctx.beginPath();
-  
+
     // **Generate Waveform Points**
     const amplification = 2.0;
     const smoothingFactor = 0.4;
     const points = [];
-  
+
     for (let i = 0; i < pointCount; i++) {
-      const x = i * pointSpacing;
-      const normalizedAmplitude = Math.min(frequencyData[i] * amplification, 1);
-      const amplitude = normalizedAmplitude * maxWaveHeight;
-      points.push({ x: x, y: waveformCenterY - amplitude });
+        const x = i * pointSpacing;
+        const normalizedAmplitude = Math.min(frequencyData[i] * amplification, 1);
+        const amplitude = normalizedAmplitude * maxWaveHeight;
+        points.push({ x: x, y: waveformCenterY - amplitude });
     }
-  
+
     // **Draw Top Waveform Curve**
     this.ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length - 2; i++) {
-      const xc = (points[i].x + points[i + 1].x) / 2;
-      const yc = (points[i].y + points[i + 1].y) / 2;
-  
-      const ctrl1x = points[i].x - (points[i].x - points[i - 1].x) * smoothingFactor;
-      const ctrl1y = points[i].y - (points[i].y - points[i - 1].y) * smoothingFactor;
-      const ctrl2x = xc - (xc - points[i].x) * smoothingFactor;
-      const ctrl2y = yc - (yc - points[i].y) * smoothingFactor;
-  
-      this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
+        const xc = (points[i].x + points[i + 1].x) / 2;
+        const yc = (points[i].y + points[i + 1].y) / 2;
+
+        const ctrl1x = points[i].x - (points[i].x - points[i - 1].x) * smoothingFactor;
+        const ctrl1y = points[i].y - (points[i].y - points[i - 1].y) * smoothingFactor;
+        const ctrl2x = xc - (xc - points[i].x) * smoothingFactor;
+        const ctrl2y = yc - (yc - points[i].y) * smoothingFactor;
+
+        this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
-  
+
     this.ctx.quadraticCurveTo(
-      points[points.length - 2].x,
-      points[points.length - 2].y,
-      points[points.length - 1].x,
-      points[points.length - 1].y
+        points[points.length - 2].x,
+        points[points.length - 2].y,
+        points[points.length - 1].x,
+        points[points.length - 1].y
     );
-  
+
     // **Generate and Draw Bottom Mirrored Curve**
     const bottomPoints = points.map(p => ({
-      x: p.x,
-      y: waveformCenterY + (waveformCenterY - p.y)
+        x: p.x,
+        y: waveformCenterY + (waveformCenterY - p.y)
     })).reverse();
-  
+
     for (let i = 1; i < bottomPoints.length - 2; i++) {
-      const xc = (bottomPoints[i].x + bottomPoints[i + 1].x) / 2;
-      const yc = (bottomPoints[i].y + bottomPoints[i + 1].y) / 2;
-  
-      const ctrl1x = bottomPoints[i].x - (bottomPoints[i].x - bottomPoints[i - 1].x) * smoothingFactor;
-      const ctrl1y = bottomPoints[i].y - (bottomPoints[i].y - bottomPoints[i - 1].y) * smoothingFactor;
-      const ctrl2x = xc - (xc - bottomPoints[i].x) * smoothingFactor;
-      const ctrl2y = yc - (yc - bottomPoints[i].y) * smoothingFactor;
-  
-      this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
+        const xc = (bottomPoints[i].x + bottomPoints[i + 1].x) / 2;
+        const yc = (bottomPoints[i].y + bottomPoints[i + 1].y) / 2;
+
+        const ctrl1x = bottomPoints[i].x - (bottomPoints[i].x - bottomPoints[i - 1].x) * smoothingFactor;
+        const ctrl1y = bottomPoints[i].y - (bottomPoints[i].y - bottomPoints[i - 1].y) * smoothingFactor;
+        const ctrl2x = xc - (xc - bottomPoints[i].x) * smoothingFactor;
+        const ctrl2y = yc - (yc - bottomPoints[i].y) * smoothingFactor;
+
+        this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
-  
+
     this.ctx.quadraticCurveTo(
-      bottomPoints[bottomPoints.length - 2].x,
-      bottomPoints[bottomPoints.length - 2].y,
-      bottomPoints[bottomPoints.length - 1].x,
-      bottomPoints[bottomPoints.length - 1].y
+        bottomPoints[bottomPoints.length - 2].x,
+        bottomPoints[bottomPoints.length - 2].y,
+        bottomPoints[bottomPoints.length - 1].x,
+        bottomPoints[bottomPoints.length - 1].y
     );
-  
+
     this.ctx.closePath();
     this.ctx.fill();
-  }
+}
+
   
   
   async generateFrames() {
