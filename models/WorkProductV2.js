@@ -46,11 +46,12 @@ const calculateLookupHash = (clipData, timestamps = null) => {
     else {
         timeData = `${clipData.timeContext.start_time}-${clipData.timeContext.start_time}`
     }
-
-    return crypto
-        .createHash('sha256')
-        .update(`${feedId}-${guid}-${timeData}`)
-        .digest('hex');
+    const lookupHash = crypto
+    .createHash('sha256')
+    .update(`${feedId}-${guid}-${timeData}`)
+    .digest('hex');
+    console.log(`calculated lookupHash:${lookupHash}`)
+    return lookupHash
 };
 
 const WorkProductV2 = mongoose.model('WorkProductV2', WorkProductV2Schema);

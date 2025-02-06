@@ -45,7 +45,15 @@ class ClipUtils {
   async extractAudioClip(audioUrl, startTime, endTime) {
     console.log('[DEBUG] extractAudioClip - Inputs:', { audioUrl, startTime, endTime });
 
-    const outputPath = `/tmp/clip-${Date.now()}.mp3`; // Ensure temp path is valid
+    // Add validation for start and end times
+    if (startTime === undefined || startTime === null) {
+        startTime = 0;
+    }
+    if (endTime === undefined || endTime === null) {
+        throw new Error('End time is required for clip extraction');
+    }
+
+    const outputPath = `/tmp/clip-${Date.now()}.mp3`; 
     console.log(`[DEBUG] Extracting audio to: ${outputPath}`);
 
     return new Promise((resolve, reject) => {
@@ -54,9 +62,13 @@ class ClipUtils {
             return reject(new Error('extractAudioClip failed: Missing audio URL'));
         }
 
+        // Ensure start time is formatted correctly for ffmpeg
+        const formattedStartTime = startTime.toFixed(2);
+        const duration = (endTime - startTime).toFixed(2);
+
         ffmpeg(audioUrl)
-            .setStartTime(startTime)
-            .setDuration(endTime - startTime)
+            .setStartTime(formattedStartTime)
+            .setDuration(duration)
             .audioCodec('libmp3lame')
             .toFormat('mp3')
             .on('start', command => console.log('[DEBUG] FFmpeg started:', command))
@@ -71,7 +83,7 @@ class ClipUtils {
             })
             .save(outputPath);
     });
-  }
+}
 
 
   async downloadImage(url) {
@@ -212,11 +224,10 @@ class ClipUtils {
         console.log(`[DEBUG] Extracting audio for ${lookupHash}`);
 
         const audioPath = await this.extractAudioClip(
-            clipData.audioUrl,
-            timestamps?.[0] || clipData.timeContext.start_time,
-            timestamps?.[1] || clipData.timeContext.end_time
-        );
-
+          clipData.audioUrl,
+          timestamps?.[0] ?? clipData.timeContext?.start_time ?? 0,
+          timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30) // fallback to 30 sec clip
+      );
         console.log(`[DEBUG] Generating video for ${lookupHash}`);
         const videoPath = await this.generateShareableVideo(clipData, audioPath);
 
