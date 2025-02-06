@@ -20,8 +20,8 @@ const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
 const {DEBUG_MODE, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
-const {WorkProductV2} = require('./models/WorkProductV2')
-
+const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
+const ClipQueueManager = require('./utils/ClipQueueManager');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -83,6 +83,10 @@ const dbBackupManager = new DatabaseBackupManager({
 });
 
 const clipUtils = new ClipUtils();
+const clipQueueManager = new ClipQueueManager({
+  maxConcurrent: 2,
+  maxQueueSize: 100
+}, clipUtils);
 
 //Validates user meets one of three requirements:
 //1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
@@ -229,26 +233,33 @@ app.post('/api/make-clip', async (req, res) => {
   const { clipId, timestamps } = req.body;
 
   if (!clipId) {
-    return res.status(400).json({ error: 'clipId is required' });
+      return res.status(400).json({ error: 'clipId is required' });
   }
 
   const clipData = await getClipById(clipId);
   if (!clipData) {
-    return res.status(404).json({ error: 'Clip not found', clipId });
+      return res.status(404).json({ error: 'Clip not found', clipId });
   }
 
   try {
-    const result = await clipUtils.processClip(clipData, timestamps);
+      const lookupHash = calculateLookupHash(clipData, timestamps);
+      const result = await clipQueueManager.enqueueClip(clipData, timestamps, lookupHash);
 
-    return res.status(202).json({
-      status: result.status,
-      lookupHash: result.lookupHash,
-      pollUrl: `/api/clip-status/${result.lookupHash}`,
-    });
+      return res.status(202).json({
+          status: result.status,
+          lookupHash: result.lookupHash,
+          pollUrl: `/api/clip-status/${result.lookupHash}`,
+      });
   } catch (error) {
-    console.error('Error in make-clip:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+      console.error('Error in make-clip:', error);
+      return res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+app.get('/api/clip-queue-status/:lookupHash', async (req, res) => {
+  const { lookupHash } = req.params;
+  const estimatedWait = await clipQueueManager.getEstimatedWaitTime(lookupHash);
+  res.json({ estimatedWait });
 });
 
 // Status check endpoint
