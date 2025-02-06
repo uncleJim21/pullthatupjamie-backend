@@ -242,14 +242,51 @@ app.post('/api/make-clip', async (req, res) => {
   }
 
   try {
+      // Calculate lookup hash ONCE, at the beginning
       const lookupHash = calculateLookupHash(clipData, timestamps);
-      const result = await clipQueueManager.enqueueClip(clipData, timestamps, lookupHash);
 
-      return res.status(202).json({
-          status: result.status,
-          lookupHash: result.lookupHash,
-          pollUrl: `/api/clip-status/${result.lookupHash}`,
+      // Check if this exists already
+      const existingClip = await WorkProductV2.findOne({ lookupHash });
+      if (existingClip) {
+          if (existingClip.cdnFileId) {
+              return res.status(200).json({
+                  status: 'completed',
+                  lookupHash,
+                  url: existingClip.cdnFileId
+              });
+          }
+          return res.status(202).json({
+              status: 'processing',
+              lookupHash,
+              pollUrl: `/api/clip-status/${lookupHash}`
+          });
+      }
+
+      // Create initial record
+      await WorkProductV2.create({
+          type: 'ptuj-clip',
+          lookupHash,
+          status: 'queued',
+          cdnFileId: null
       });
+
+      // Queue the job WITHOUT awaiting
+      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash).catch(err => {
+          console.error('Error queuing clip:', err);
+          // Update DB with error status if queue fails
+          WorkProductV2.findOneAndUpdate(
+              { lookupHash },
+              { status: 'failed', error: err.message }
+          ).catch(console.error);
+      });
+
+      // Return immediately
+      return res.status(202).json({
+          status: 'processing',
+          lookupHash,
+          pollUrl: `/api/clip-status/${lookupHash}`
+      });
+
   } catch (error) {
       console.error('Error in make-clip:', error);
       return res.status(500).json({ error: 'Internal server error' });
@@ -267,20 +304,31 @@ app.get('/api/clip-status/:lookupHash', async (req, res) => {
   const { lookupHash } = req.params;
 
   try {
-    const clip = await WorkProductV2.findOne({ lookupHash });
+      const clip = await WorkProductV2.findOne({ lookupHash });
 
-    if (!clip) {
-      return res.status(404).json({ status: 'not_found' });
-    }
+      if (!clip) {
+          return res.status(404).json({ status: 'not_found' });
+      }
 
-    if (clip.cdnFileId) {
-      return res.json({ status: 'completed', url: clip.cdnFileId });
-    }
+      if (clip.cdnFileId) {
+          return res.json({
+              status: 'completed',
+              url: clip.cdnFileId
+          });
+      }
 
-    return res.json({ status: 'processing' });
+      // Get queue position if still processing
+      const queueStatus = await clipQueueManager.getEstimatedWaitTime(lookupHash);
+      
+      return res.json({
+          status: clip.status || 'processing',
+          queuePosition: queueStatus,
+          lookupHash
+      });
+
   } catch (error) {
-    console.error('Error checking clip status:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+      console.error('Error checking clip status:', error);
+      return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

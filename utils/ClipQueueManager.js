@@ -91,17 +91,17 @@ class ClipQueueManager extends EventEmitter {
         while (job.attempts < job.maxAttempts) {
             try {
                 job.attempts++;
+                // Use the hash that was passed in
                 await this.clipUtils._backgroundProcessClip(
                     job.clipData,
                     job.timestamps,
-                    job.lookupHash
+                    job.lookupHash  // Using passed-in hash
                 );
                 return;
             } catch (error) {
                 if (job.attempts >= job.maxAttempts) {
                     throw error;
                 }
-                // Wait before retry with exponential backoff
                 await new Promise(resolve => 
                     setTimeout(resolve, Math.pow(2, job.attempts) * 1000)
                 );

@@ -32,23 +32,25 @@ const WorkProductV2Schema = new mongoose.Schema({
  * @returns {string} - A unique hash for the clip.
  */
 const calculateLookupHash = (clipData, timestamps = null) => {
-    // console.log(`calculateLookupHash for clipData:${JSON.stringify(clipData,null,2)}`)
-  let { feedId, guid, start_time, end_time, shareLink } = clipData;
+    console.log(`calculateLookupHash for clipData:${JSON.stringify(clipData,null,2)}`)
+    console.log(`calculateLookupHash for timestamps:${JSON.stringify(timestamps,null,2)}`)
+    
+    // Correctly get feedId and guid from additionalFields
+    const { feedId, guid } = clipData.additionalFields;
+    const { shareLink } = clipData;
 
-  let timeData = shareLink || ""//either tether time data to clipId if that's all we have or timestamps if timestamp override happens
-  if (timestamps && timestamps.length >= 2) {
-    start_time = timestamps[0];
-    end_time = timestamps[1];
-    timeData = `${start_time}-${end_time}`
-  }
-  else{
-    timeData = `${clipData.timeContext.start_time}-${clipData.timeContext.start_time}`//add this to ensure if they accidentally revert, we still capture that
-  }
+    let timeData = shareLink || ""
+    if (timestamps && timestamps.length >= 2) {
+        timeData = `${timestamps[0]}-${timestamps[1]}`
+    }
+    else {
+        timeData = `${clipData.timeContext.start_time}-${clipData.timeContext.start_time}`
+    }
 
-  return crypto
-    .createHash('sha256')
-    .update(`${feedId}-${guid}-${timeData}`)
-    .digest('hex');
+    return crypto
+        .createHash('sha256')
+        .update(`${feedId}-${guid}-${timeData}`)
+        .digest('hex');
 };
 
 const WorkProductV2 = mongoose.model('WorkProductV2', WorkProductV2Schema);
