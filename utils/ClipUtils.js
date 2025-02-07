@@ -53,6 +53,11 @@ class ClipUtils {
         throw new Error('End time is required for clip extraction');
     }
 
+    // Validate times are within reasonable bounds
+    if (startTime < 0 || endTime < 0 || endTime <= startTime) {
+        throw new Error('Invalid time range');
+    }
+
     const outputPath = `/tmp/clip-${Date.now()}.mp3`; 
     console.log(`[DEBUG] Extracting audio to: ${outputPath}`);
 
@@ -62,19 +67,30 @@ class ClipUtils {
             return reject(new Error('extractAudioClip failed: Missing audio URL'));
         }
 
-        // Ensure start time is formatted correctly for ffmpeg
-        const formattedStartTime = startTime.toFixed(2);
-        const duration = (endTime - startTime).toFixed(2);
+        // Round to nearest whole number
+        const formattedStartTime = Math.round(startTime);
+        const duration = Math.round(endTime - startTime);
+
+        console.log('[DEBUG] Using rounded times:', { formattedStartTime, duration });
 
         ffmpeg(audioUrl)
-            .setStartTime(formattedStartTime)
-            .setDuration(duration)
-            .audioCodec('libmp3lame')
+            .seekInput(formattedStartTime)
+            .duration(duration)
+            .outputOptions([
+                '-y',                    // Overwrite output files
+                '-vn',                   // Disable video
+                '-acodec', 'libmp3lame', // Use MP3 codec
+                '-ar', '44100',          // Set audio rate
+                '-ac', '2',              // Set audio channels (stereo)
+                '-b:a', '128k'           // Set bitrate
+            ])
             .toFormat('mp3')
             .on('start', command => console.log('[DEBUG] FFmpeg started:', command))
+            .on('stderr', stderrLine => console.log('[DEBUG] FFmpeg stderr:', stderrLine))
             .on('progress', progress => console.log('[DEBUG] FFmpeg progress:', progress.percent?.toFixed(2) + '%'))
             .on('error', err => {
                 console.error('[ERROR] FFmpeg processing failed:', err);
+                console.error('[ERROR] FFmpeg error details:', err.message);
                 reject(new Error(`FFmpeg failed: ${err.message}`));
             })
             .on('end', () => {
@@ -88,21 +104,39 @@ class ClipUtils {
 
   async downloadImage(url) {
     console.log('Downloading image:', url);
-    try {
-      const response = await axios({
-        url,
-        responseType: 'arraybuffer',
-        timeout: 10000, // 10 second timeout
-        validateStatus: status => status === 200 // Only accept 200 status
-      });
-      
-      const tempPath = path.join(os.tmpdir(), `temp-${Date.now()}.jpg`);
-      await fs.promises.writeFile(tempPath, response.data);
-      console.log('Image downloaded successfully to:', tempPath);
-      return tempPath;
-    } catch (error) {
-      console.error('Error downloading image:', error.message);
-      throw new Error(`Failed to download image: ${error.message}`);
+    
+    const maxRetries = 3;
+    const timeoutMs = 30000; // 30 seconds timeout
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await axios({
+                url,
+                responseType: 'arraybuffer',
+                timeout: timeoutMs,
+                validateStatus: status => status === 200 
+            });
+            
+            const tempPath = path.join(os.tmpdir(), `temp-${Date.now()}.jpg`);
+            await fs.promises.writeFile(tempPath, response.data);
+            console.log('Image downloaded successfully to:', tempPath);
+            return tempPath;
+        } catch (error) {
+            console.error(`Error downloading image (attempt ${attempt}/${maxRetries}):`, error.message);
+            
+            if (attempt === maxRetries) {
+                // Use fallback image on final retry
+                const fallbackImagePath = path.join(__dirname, '../assets/default-episode-image.jpg');
+                if (fs.existsSync(fallbackImagePath)) {
+                    console.log('Using fallback image');
+                    return fallbackImagePath;
+                }
+                throw new Error(`Failed to download image after ${maxRetries} attempts: ${error.message}`);
+            }
+            
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+        }
     }
   }
 
