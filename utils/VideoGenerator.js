@@ -158,75 +158,38 @@ class VideoGenerator {
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
   
-    const rgbToHsl = (r, g, b) => {
-      r /= 255;
-      g /= 255;
-      b /= 255;
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      let h, s, l = (max + min) / 2;
+    // Extract color data
+    const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
   
-      if (max === min) {
-        h = s = 0;
-      } else {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-          case g: h = (b - r) / d + 2; break;
-          case b: h = (r - g) / d + 4; break;
-        }
-        h *= 60;
+    let dominantColor = [255, 215, 0]; // Default to gold
+    const colorCounts = {};
+  
+    for (let i = 0; i < imageData.length; i += 4) {
+      const r = imageData[i];
+      const g = imageData[i + 1];
+      const b = imageData[i + 2];
+  
+      // Ignore fully transparent pixels
+      if (imageData[i + 3] === 0) continue;
+  
+      const key = `${r},${g},${b}`;
+      colorCounts[key] = (colorCounts[key] || 0) + 1;
+    }
+  
+    // Determine dominant color
+    let maxCount = 0;
+    for (const [key, count] of Object.entries(colorCounts)) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantColor = key.split(',').map(Number);
       }
-      return [h, s * 100, l * 100];
-    };
+    }
   
-    const isNonNeutralColor = (r, g, b) => {
-      const [h, s, l] = rgbToHsl(r, g, b);
-  
-      return (
-        !(r === g && g === b) &&  // Avoid grayscale (neutral) colors
-        s > 30 &&                 // Ensure sufficient saturation (avoid washed-out colors)
-        l > 15 && l < 85          // Avoid extremes of brightness (too dark or too light)
-      );
-    };
-  
-    const getDominantColor = () => {
-      const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
-      const colorMap = new Map();
-  
-      for (let i = 0; i < imageData.length; i += 4) {
-        const r = imageData[i];
-        const g = imageData[i + 1];
-        const b = imageData[i + 2];
-  
-        if (!isNonNeutralColor(r, g, b)) continue;
-  
-        const key = `${r},${g},${b}`;
-        colorMap.set(key, (colorMap.get(key) || 0) + 1);
-      }
-  
-      let maxCount = 0;
-      let dominantColor = [248, 76, 31]; // Fallback (orange-red)
-  
-      for (const [key, count] of colorMap) {
-        if (count > maxCount) {
-          maxCount = count;
-          dominantColor = key.split(',').map(Number);
-        }
-      }
-  
-      return dominantColor;
-    };
-  
-    const [r, g, b] = getDominantColor();
+    const [r, g, b] = dominantColor;
     const baseColor = `rgb(${r},${g},${b})`;
+    const lighten = `rgb(${Math.min(r + 40, 255)}, ${Math.min(g + 40, 255)}, ${Math.min(b + 40, 255)})`;
+    const darken = `rgb(${Math.max(r - 40, 0)}, ${Math.max(g - 40, 0)}, ${Math.max(b - 40, 0)})`;
   
-    // Generate lighter and darker shades for depth
-    const lighten = `rgba(${Math.min(r + 40, 255)}, ${Math.min(g + 40, 255)}, ${Math.min(b + 40, 255)}, 1)`;
-    const darken = `rgba(${Math.max(r - 40, 0)}, ${Math.max(g - 40, 0)}, ${Math.max(b - 40, 0)}, 1)`;
-  
-    // Create a more balanced gradient that centers the dominant color
     const gradient = ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
     gradient.addColorStop(0, lighten);
     gradient.addColorStop(0.5, baseColor);
@@ -234,6 +197,8 @@ class VideoGenerator {
   
     return gradient;
   }
+  
+  
   
   
   // Helper method to blend colors
@@ -506,64 +471,62 @@ class VideoGenerator {
   // Pre-compute gradient
   this.staticElements.gradient = this.createGradientFromImage(tempCtx, 360, 140, profileImage);
 
-  // Pre-render watermark with correct dimensions
+  // Pre-render watermark
   const watermarkWidth = 160;
-  const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
-  const watermarkCanvas = createCanvas(watermarkWidth, Math.ceil(watermarkHeight));
+  const watermarkHeight = Math.ceil((watermarkImage.height / watermarkImage.width) * watermarkWidth);
+
+  const watermarkCanvas = createCanvas(watermarkWidth, watermarkHeight);
   const watermarkCtx = watermarkCanvas.getContext('2d');
   watermarkCtx.drawImage(watermarkImage, 0, 0, watermarkWidth, watermarkHeight);
-  this.staticElements.watermarkBuffer = watermarkCanvas.toBuffer('raw', {
-      colorSpace: 'srgb',
-      enableAlpha: true
-  });
+
+  // Store pre-rendered watermark buffer as PNG (avoiding RAW buffer issues)
+  this.staticElements.watermarkBuffer = await sharp(watermarkCanvas.toBuffer())
+    .png()
+    .toBuffer();
 
   // Pre-render profile image
   const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
   const profileCtx = profileCanvas.getContext('2d');
   this.drawRoundedImage(
-      profileCtx,
-      profileImage,
-      0,
-      0,
-      this.profileImageSize,
-      this.profileImageSize,
-      this.profileImageRadius,
-      this.profileImageBorderColor,
-      this.profileImageBorderWidth
+    profileCtx,
+    profileImage,
+    0,
+    0,
+    this.profileImageSize,
+    this.profileImageSize,
+    this.profileImageRadius,
+    this.profileImageBorderColor,
+    this.profileImageBorderWidth
   );
-  this.staticElements.profileImageBuffer = profileCanvas.toBuffer('raw', {
-      colorSpace: 'srgb',
-      enableAlpha: true
-  });
+  this.staticElements.profileImageBuffer = await sharp(profileCanvas.toBuffer())
+    .png()
+    .toBuffer();
 }
+
 
 async saveFrame(canvas, filePath) {
   try {
-      const rawBuffer = canvas.toBuffer('raw', {
-          colorSpace: 'srgb',
-          enableAlpha: true
-      });
-      
-      await sharp(rawBuffer, {
-          raw: {
-              width: canvas.width,
-              height: canvas.height,
-              channels: 4,  // RGBA
-              colorSpace: 'srgb'
-          }
-      })
-      .png({
-          compressionLevel: 3,
-          effort: 1,
-          palette: true,
-          colors: 256  // Preserve color fidelity
-      })
+    const rawBuffer = canvas.toBuffer('raw', {
+      colorSpace: 'srgb',
+      enableAlpha: true
+    });
+
+    // Explicitly define raw buffer structure
+    await sharp(rawBuffer, {
+      raw: {
+        width: canvas.width,
+        height: canvas.height,
+        channels: 4 // RGBA
+      }
+    })
+      .png()
       .toFile(filePath);
   } catch (error) {
-      console.error(`Error saving frame: ${error}`);
-      throw error;
+    console.error(`Error saving frame: ${error}`);
+    throw error;
   }
 }
+
 
   async generateFrames() {
     const audioData = await this.getAudioData();
