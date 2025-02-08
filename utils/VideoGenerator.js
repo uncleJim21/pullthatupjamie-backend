@@ -267,61 +267,85 @@ class VideoGenerator {
   }
 
   renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx) {
-    // Replace all this.canvas with canvas
     const { width, height } = canvas;
     
-    // Replace all this.ctx with ctx
+    // Background
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, width, height);
     
     const topHalfHeight = height / 2;
     const bottomHalfHeight = height / 2;
 
-    // **Size the profile image properly (centered)**
-    const profileImageSize = width * 0.4;  // 40% of canvas width
-    const profileImageX = (width - profileImageSize) / 2; // Center horizontally
-    const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20; // Center vertically
+    // Use pre-computed profile image
+    if (this.staticElements.profileImageBuffer) {
+        const profileImageSize = width * 0.4;
+        const profileImageX = (width - profileImageSize) / 2;
+        const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
+        
+        // Convert buffer back to image data
+        const img = new Uint8ClampedArray(this.staticElements.profileImageBuffer);
+        const imageData = ctx.createImageData(this.profileImageSize, this.profileImageSize);
+        imageData.data.set(img);
+        ctx.putImageData(imageData, profileImageX, profileImageY);
+    } else {
+        // Fallback to original method if buffer not available
+        this.drawRoundedImage(
+            ctx,
+            profileImage,
+            (width - width * 0.4) / 2,
+            (topHalfHeight - width * 0.4) / 2 - 20,
+            width * 0.4,
+            width * 0.4,
+            this.profileImageRadius,
+            this.profileImageBorderColor,
+            this.profileImageBorderWidth
+        );
+    }
 
-    // **Draw Profile Image**
-    this.drawRoundedImage(
-      ctx,  // Add this as first parameter
-      profileImage,
-      profileImageX,
-      profileImageY,
-      profileImageSize,
-      profileImageSize,
-      this.profileImageRadius,
-      this.profileImageBorderColor,
-      this.profileImageBorderWidth
-  );
+    // Use pre-computed watermark
+    if (this.staticElements.watermarkBuffer) {
+        const watermarkWidth = 160;
+        const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
+        const watermarkPadding = 10;
+        
+        const img = new Uint8ClampedArray(this.staticElements.watermarkBuffer);
+        const imageData = ctx.createImageData(watermarkWidth, watermarkHeight);
+        imageData.data.set(img);
+        ctx.putImageData(imageData, width - watermarkWidth - watermarkPadding, watermarkPadding);
+    } else {
+        // Fallback to original method
+        const watermarkWidth = 160;
+        const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
+        const watermarkPadding = 10;
+        ctx.drawImage(
+            watermarkImage,
+            width - watermarkWidth - watermarkPadding,
+            watermarkPadding,
+            watermarkWidth,
+            watermarkHeight
+        );
+    }
 
-    const watermarkWidth = 160; // Adjust as needed for your canvas size
-    const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth; // Maintain aspect ratio
-    const watermarkPadding = 10;
-    ctx.drawImage(
-      watermarkImage,
-      width - watermarkWidth - watermarkPadding,
-      watermarkPadding,
-      watermarkWidth,
-      watermarkHeight
-    );
-
-    // **Title & Subtitle Adjustments**
+    // Text rendering
     ctx.textAlign = 'center';
     ctx.fillStyle = this.textColor;
 
-    // **Title**
+    // Title
+    const profileImageSize = width * 0.4;
+    const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
+    const titleY = profileImageY + profileImageSize + 40;
     ctx.font = 'bold 32px Arial';
-    const titleY = profileImageY + profileImageSize + 40; // Position text below image
     ctx.fillText(this.title, width / 2, titleY);
 
-    // **Process subtitle for multiline**
+    // Subtitle processing and rendering
     const maxLength = 80;
-    let subtitle = this.subtitle.length > maxLength ? this.subtitle.substring(0, maxLength - 3) + '...' : this.subtitle;
+    let subtitle = this.subtitle.length > maxLength ? 
+        this.subtitle.substring(0, maxLength - 3) + '...' : 
+        this.subtitle;
 
     let subtitleLines = [];
     if (subtitle.length > 40) {
-        const splitIndex = subtitle.lastIndexOf(' ', 40); // Find the nearest space before 40 chars
+        const splitIndex = subtitle.lastIndexOf(' ', 40);
         if (splitIndex !== -1) {
             subtitleLines.push(subtitle.substring(0, splitIndex).trim());
             subtitleLines.push(subtitle.substring(splitIndex + 1).trim());
@@ -332,30 +356,26 @@ class VideoGenerator {
         subtitleLines.push(subtitle);
     }
 
-    // **Subtitle Rendering**
     ctx.font = '24px Arial';
-    const subtitleY = titleY + 40;  // Space below title
+    const subtitleY = titleY + 40;
     ctx.fillText(subtitleLines[0], width / 2, subtitleY);
-
     if (subtitleLines.length > 1) {
-        ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30); // Add second line
+        ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // **🔴 BOTTOM HALF: Waveform**
-    // ─────────────────────────────────────────────────────────────
-
-    const waveformCenterY = topHalfHeight + bottomHalfHeight / 2; // Center waveform in bottom half
+    // Waveform rendering
+    const waveformCenterY = topHalfHeight + bottomHalfHeight / 2;
     const pointCount = frequencyData.length;
-    const pointSpacing = width / (pointCount - 1); // Ensure it spans FULL width
+    const pointSpacing = width / (pointCount - 1);
+    const maxWaveHeight = bottomHalfHeight * 0.4;
 
-    const maxWaveHeight = bottomHalfHeight * 0.4; // Make it fit within bottom half
-    const gradient = this.createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage);
+    // Use pre-computed gradient if available
+    ctx.fillStyle = this.staticElements.gradient || 
+        this.createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage);
 
-    ctx.fillStyle = gradient;
     ctx.beginPath();
 
-    // **Generate Waveform Points**
+    // Generate and draw waveform
     const amplification = 2.0;
     const smoothingFactor = 0.4;
     const points = [];
@@ -367,7 +387,7 @@ class VideoGenerator {
         points.push({ x: x, y: waveformCenterY - amplitude });
     }
 
-    // **Draw Top Waveform Curve**
+    // Draw top curve
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length - 2; i++) {
         const xc = (points[i].x + points[i + 1].x) / 2;
@@ -388,7 +408,7 @@ class VideoGenerator {
         points[points.length - 1].y
     );
 
-    // **Generate and Draw Bottom Mirrored Curve**
+    // Draw bottom mirrored curve
     const bottomPoints = points.map(p => ({
         x: p.x,
         y: waveformCenterY + (waveformCenterY - p.y)
