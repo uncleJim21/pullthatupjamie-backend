@@ -157,77 +157,78 @@ class VideoGenerator {
     const tempCanvas = createCanvas(profileImage.width, profileImage.height);
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
-  
-    // Convert RGB to HSL
-    const rgbToHsl = (r, g, b) => {
-      r /= 255;
-      g /= 255;
-      b /= 255;
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      let h, s, l = (max + min) / 2;
-  
-      if (max === min) {
-        h = s = 0; // Grayscale
-      } else {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-          case g: h = (b - r) / d + 2; break;
-          case b: h = (r - g) / d + 4; break;
-        }
-        h *= 60;
-      }
-      return [h, s * 100, l * 100];
-    };
-  
-    // Filter and prioritize dominant colors
-    const isNonNeutralColor = (r, g, b) => {
-      const [h, s, l] = rgbToHsl(r, g, b);
-      return (
-        !(Math.abs(r - g) < 10 && Math.abs(g - b) < 10) && // Not grayscale
-        s > 30 && l > 20 && l < 80 &&                    // Vibrant and balanced
-        (h >= 45 && h <= 75)                            // Prefer yellows
-      );
-    };
-  
+
+    // Extract color data
     const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
     const colorCounts = new Map();
-  
+
     for (let i = 0; i < imageData.length; i += 4) {
-      const r = imageData[i];
-      const g = imageData[i + 1];
-      const b = imageData[i + 2];
-      if (isNonNeutralColor(r, g, b)) {
-        const key = `${r},${g},${b}`;
-        colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
-      }
+        const r = imageData[i];
+        const g = imageData[i + 1];
+        const b = imageData[i + 2];
+        const a = imageData[i + 3];
+
+        // Ignore fully transparent pixels
+        if (a === 0) continue;
+
+        // Convert to HSL to filter out low-saturation colors (gray, brown, white, black)
+        const [h, s, l] = this.rgbToHsl(r, g, b);
+
+        if (s > 30 && l > 20 && l < 80) { // Only accept vibrant, non-neutral colors
+            const key = `${r},${g},${b}`;
+            colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
+        }
     }
-  
-    // Default to a fallback color if no valid dominant color is found
+
+    // Default fallback color in case no vibrant color is found
     let dominantColor = [255, 215, 0]; // Gold fallback
     let maxCount = 0;
-  
+
     for (const [key, count] of colorCounts) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantColor = key.split(',').map(Number);
-      }
+        if (count > maxCount) {
+            maxCount = count;
+            dominantColor = key.split(',').map(Number);
+        }
     }
-  
+
     const [r, g, b] = dominantColor;
+
+    // Generate gradient based on the dominant color
     const baseColor = `rgb(${r},${g},${b})`;
     const lighten = `rgb(${Math.min(r + 40, 255)}, ${Math.min(g + 40, 255)}, ${Math.min(b + 40, 255)})`;
     const darken = `rgb(${Math.max(r - 40, 0)}, ${Math.max(g - 40, 0)}, ${Math.max(b - 40, 0)})`;
-  
+
     const gradient = ctx.createLinearGradient(0, waveformCenterY - maxWaveHeight, 0, waveformCenterY + maxWaveHeight);
     gradient.addColorStop(0, lighten);
     gradient.addColorStop(0.5, baseColor);
     gradient.addColorStop(1, darken);
-  
+
     return gradient;
-  }
+}
+
+// Utility function to convert RGB to HSL
+rgbToHsl(r, g, b) {
+    r /= 255, g /= 255, b /= 255;
+    let max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+
+    if (max === min) {
+        h = s = 0; // Achromatic
+    } else {
+        let d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h *= 60;
+    }
+
+    return [h, s * 100, l * 100]; // Returns [hue, saturation, lightness]
+}
+
+
   
 
   renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx) {
