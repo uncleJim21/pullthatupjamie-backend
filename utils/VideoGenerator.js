@@ -12,6 +12,7 @@ class VideoGenerator {
   constructor(options) {
     // Generate unique instance ID
     this.instanceId = uuidv4();
+    this.maxConcurrentFrames = 10;
     
     // Required options
     this.audioPath = options.audioPath;
@@ -407,36 +408,54 @@ class VideoGenerator {
     this.ctx.fill();
 }
 
-  
-  
+ async saveFrame(canvas, filePath) {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(filePath);
+    const stream = canvas.createPNGStream();
+    stream.pipe(out)
+      .on('finish', resolve)
+      .on('error', reject);
+  });
+}
+
   async generateFrames() {
     const audioData = await this.getAudioData();
     const [profileImage, watermarkImage] = await Promise.all([
-        loadImage(this.profileImagePath),
-        loadImage(this.watermarkPath)
+      loadImage(this.profileImagePath),
+      loadImage(this.watermarkPath)
     ]);
 
     const exactDuration = await this.getDuration(this.audioPath);
     const totalFrames = Math.floor(exactDuration * this.frameRate);
     const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
 
-    console.log(`[Instance ${this.instanceId}] Generating ${totalFrames} frames`);
+    console.log(`[Instance ${this.instanceId}] Processing ${totalFrames} frames in batches of ${this.maxConcurrentFrames}`);
 
-    for (let frame = 0; frame < totalFrames; frame++) {
-        if (frame % 20 === 0) {
-            console.log(`[Instance ${this.instanceId}] Processing frame ${frame}/${totalFrames} (${Math.round(frame/totalFrames*100)}%)`);
-        }
+    for (let batchStart = 0; batchStart < totalFrames; batchStart += this.maxConcurrentFrames) {
+      const batchEnd = Math.min(batchStart + this.maxConcurrentFrames, totalFrames);
+      const batchPromises = [];
 
-        const startSample = frame * samplesPerFrame;
-        const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
-        const frequencies = this.calculateFrequencies(frameData, 64);
+      for (let frame = batchStart; frame < batchEnd; frame++) {
+        batchPromises.push((async () => {
+          const frameCanvas = createCanvas(720, 720);
+          const frameCtx = frameCanvas.getContext('2d');
+          
+          const startSample = frame * samplesPerFrame;
+          const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
+          const frequencies = this.calculateFrequencies(frameData, 64);
 
-        this.renderFrame(profileImage, watermarkImage, frequencies);
+          this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
 
-        const frameFile = path.join(this.framesDir, `frame-${frame.toString().padStart(6, '0')}.png`);
-        const out = fs.createWriteStream(frameFile);
-        const stream = this.canvas.createPNGStream();
-        await new Promise(resolve => stream.pipe(out).on('finish', resolve));
+          const frameFile = path.join(this.framesDir, `frame-${frame.toString().padStart(6, '0')}.png`);
+          await this.saveFrame(frameCanvas, frameFile);
+
+          if (frame % 20 === 0) {
+            console.log(`[Instance ${this.instanceId}] Processed frame ${frame}/${totalFrames} (${Math.round(frame/totalFrames*100)}%)`);
+          }
+        })());
+      }
+
+      await Promise.all(batchPromises);
     }
   }
 
