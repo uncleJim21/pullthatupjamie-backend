@@ -22,7 +22,7 @@ class VideoGenerator {
     this.watermarkPath = options.watermarkPath;
 
     // Optional configurations
-    this.frameRate = options.frameRate || 20;
+    this.frameRate = options.frameRate || 10;
     this.canvas = createCanvas(720, 720);
     this.ctx = this.canvas.getContext('2d');
 
