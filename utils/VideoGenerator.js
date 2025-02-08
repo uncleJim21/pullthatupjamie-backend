@@ -158,27 +158,58 @@ class VideoGenerator {
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
   
-    // Extract color data
-    const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
+    // Convert RGB to HSL
+    const rgbToHsl = (r, g, b) => {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      let h, s, l = (max + min) / 2;
   
-    let dominantColor = [255, 215, 0]; // Default to gold
-    const colorCounts = {};
+      if (max === min) {
+        h = s = 0; // Grayscale
+      } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h *= 60;
+      }
+      return [h, s * 100, l * 100];
+    };
+  
+    // Filter and prioritize dominant colors
+    const isNonNeutralColor = (r, g, b) => {
+      const [h, s, l] = rgbToHsl(r, g, b);
+      return (
+        !(Math.abs(r - g) < 10 && Math.abs(g - b) < 10) && // Not grayscale
+        s > 30 && l > 20 && l < 80 &&                    // Vibrant and balanced
+        (h >= 45 && h <= 75)                            // Prefer yellows
+      );
+    };
+  
+    const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
+    const colorCounts = new Map();
   
     for (let i = 0; i < imageData.length; i += 4) {
       const r = imageData[i];
       const g = imageData[i + 1];
       const b = imageData[i + 2];
-  
-      // Ignore fully transparent pixels
-      if (imageData[i + 3] === 0) continue;
-  
-      const key = `${r},${g},${b}`;
-      colorCounts[key] = (colorCounts[key] || 0) + 1;
+      if (isNonNeutralColor(r, g, b)) {
+        const key = `${r},${g},${b}`;
+        colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
+      }
     }
   
-    // Determine dominant color
+    // Default to a fallback color if no valid dominant color is found
+    let dominantColor = [255, 215, 0]; // Gold fallback
     let maxCount = 0;
-    for (const [key, count] of Object.entries(colorCounts)) {
+  
+    for (const [key, count] of colorCounts) {
       if (count > maxCount) {
         maxCount = count;
         dominantColor = key.split(',').map(Number);
@@ -198,38 +229,6 @@ class VideoGenerator {
     return gradient;
   }
   
-  
-  
-  
-  // Helper method to blend colors
-  blendColors(color1, color2, ratio) {
-    const hex2rgb = hex => {
-      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-      return result ? [
-        parseInt(result[1], 16),
-        parseInt(result[2], 16),
-        parseInt(result[3], 16)
-      ] : null;
-    };
-  
-    const rgb2hex = rgb => {
-      return '#' + rgb.map(x => {
-        const hex = Math.floor(x).toString(16);
-        return hex.length === 1 ? '0' + hex : hex;
-      }).join('');
-    };
-  
-    const c1 = hex2rgb(color1);
-    const c2 = hex2rgb(color2);
-    
-    if (!c1 || !c2) return color1;
-  
-    const blend = c1.map((c, i) => {
-      return c * (1 - ratio) + c2[i] * ratio;
-    });
-  
-    return rgb2hex(blend);
-  }
 
   renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx) {
     const { width, height } = canvas;
