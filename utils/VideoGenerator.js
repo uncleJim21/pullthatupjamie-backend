@@ -506,13 +506,23 @@ class VideoGenerator {
 
 async saveFrame(canvas, filePath) {
   try {
+    // Generate raw buffer
     const rawBuffer = canvas.toBuffer('raw', {
       colorSpace: 'srgb',
       enableAlpha: true
     });
 
-    // Explicitly define raw buffer structure
-    await sharp(rawBuffer, {
+    // Fix potential BGRA inversion by swapping channels if needed
+    const fixedBuffer = Buffer.alloc(rawBuffer.length);
+    for (let i = 0; i < rawBuffer.length; i += 4) {
+      fixedBuffer[i] = rawBuffer[i + 2];     // Red -> Blue
+      fixedBuffer[i + 1] = rawBuffer[i + 1]; // Green -> Green
+      fixedBuffer[i + 2] = rawBuffer[i];     // Blue -> Red
+      fixedBuffer[i + 3] = rawBuffer[i + 3]; // Alpha
+    }
+
+    // Use sharp to write PNG
+    await sharp(fixedBuffer, {
       raw: {
         width: canvas.width,
         height: canvas.height,
@@ -526,6 +536,7 @@ async saveFrame(canvas, filePath) {
     throw error;
   }
 }
+
 
 
   async generateFrames() {
