@@ -295,7 +295,7 @@ class VideoGenerator {
     const waveformCenterY = height * 0.75;
     const pointCount = frequencyData.length;
     const pointSpacing = width / (pointCount - 1);
-    const maxWaveHeight = height * 0.2;
+    const maxWaveHeight = height * 0.18;
 
     // Set waveform gradient
     ctx.fillStyle = this.staticElements.gradient || this.createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage);
