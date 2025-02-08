@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "4131:4131"
+    environment:
+      - NODE_ENV=production
+      - PORT=4131
+    env_file:
+      - .env
+    volumes:
+      - ./dbs:/usr/src/app/dbs
+    restart: unless-stopped
