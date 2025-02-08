@@ -7,6 +7,8 @@ const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
+const sharp = require('sharp');
+
 
 class VideoGenerator {
   constructor(options) {
@@ -29,7 +31,7 @@ class VideoGenerator {
 
     // Create instance-specific working directories
     this.workingDir = path.join(os.tmpdir(), `video-gen-${this.instanceId}`);
-    this.framesDir = path.join(this.workingDir, 'frames');
+    this.framesDir = process.env.FRAMES_DIR || path.join(this.workingDir, 'frames');
     this.tempWavPath = path.join(this.workingDir, `temp-${this.instanceId}.wav`);
 
     // Design configurations remain the same
@@ -38,6 +40,12 @@ class VideoGenerator {
     this.profileImageBorderColor = '#333333';
     this.profileImageBorderWidth = 4;
     this.textColor = '#FFFFFF';
+
+    this.staticElements = {
+        gradient: null,
+        watermarkBuffer: null,
+        profileImageBuffer: null
+    };
 
     // Ensure working directories exist
     this.initializeWorkingDirectories();
@@ -409,14 +417,59 @@ class VideoGenerator {
     ctx.fill();
 }
 
- async saveFrame(canvas, filePath) {
-  return new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(filePath);
-    const stream = canvas.createPNGStream();
-    stream.pipe(out)
-      .on('finish', resolve)
-      .on('error', reject);
-  });
+async initializeStaticElements(profileImage, watermarkImage) {
+  const tempCanvas = createCanvas(720, 720);
+  const tempCtx = tempCanvas.getContext('2d');
+
+  // Pre-compute gradient
+  this.staticElements.gradient = this.createGradientFromImage(tempCtx, 360, 140, profileImage);
+
+  // Pre-render watermark
+  const watermarkCanvas = createCanvas(160, 160);
+  const watermarkCtx = watermarkCanvas.getContext('2d');
+  watermarkCtx.drawImage(watermarkImage, 0, 0, 160, 160);
+  this.staticElements.watermarkBuffer = watermarkCanvas.toBuffer('raw');
+
+  // Pre-render profile image with rounded corners
+  const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
+  const profileCtx = profileCanvas.getContext('2d');
+  this.drawRoundedImage(
+      profileCtx,
+      profileImage,
+      0,
+      0,
+      this.profileImageSize,
+      this.profileImageSize,
+      this.profileImageRadius,
+      this.profileImageBorderColor,
+      this.profileImageBorderWidth
+  );
+  this.staticElements.profileImageBuffer = profileCanvas.toBuffer('raw');
+}
+
+async saveFrame(canvas, filePath) {
+  try {
+    // Get raw buffer from canvas
+    const rawBuffer = canvas.toBuffer('raw');
+    
+    // Use sharp for faster PNG encoding
+    await sharp(rawBuffer, {
+      raw: {
+        width: canvas.width,
+        height: canvas.height,
+        channels: 4  // RGBA
+      }
+    })
+    .png({
+      compressionLevel: 3,  // Lower compression for faster encoding (range 0-9)
+      effort: 1,           // Minimal effort for fastest encoding (range 1-10)
+      palette: true        // Use palette-based optimization
+    })
+    .toFile(filePath);
+  } catch (error) {
+    console.error(`Error saving frame: ${error}`);
+    throw error;
+  }
 }
 
   async generateFrames() {
@@ -425,6 +478,9 @@ class VideoGenerator {
       loadImage(this.profileImagePath),
       loadImage(this.watermarkPath)
     ]);
+
+    // Initialize static elements
+    await this.initializeStaticElements(profileImage, watermarkImage);
 
     const exactDuration = await this.getDuration(this.audioPath);
     const totalFrames = Math.floor(exactDuration * this.frameRate);
