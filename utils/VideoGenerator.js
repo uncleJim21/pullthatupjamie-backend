@@ -12,7 +12,7 @@ class VideoGenerator {
   constructor(options) {
     // Generate unique instance ID
     this.instanceId = uuidv4();
-    this.maxConcurrentFrames = 10;
+    this.maxConcurrentFrames = 40;
     
     // Required options
     this.audioPath = options.audioPath;
