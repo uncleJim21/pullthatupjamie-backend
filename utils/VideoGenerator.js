@@ -275,7 +275,7 @@ class VideoGenerator {
     
     const topHalfHeight = height / 2;
     const bottomHalfHeight = height / 2;
-
+ 
     // Use pre-computed profile image - with proper size checking
     if (this.staticElements.profileImageBuffer) {
         try {
@@ -283,11 +283,25 @@ class VideoGenerator {
             const profileImageX = (width - profileImageSize) / 2;
             const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
             
-            // Create a temporary canvas to handle the resizing
+            // Create a temporary canvas matching the original buffer size
             const tempCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
             const tempCtx = tempCanvas.getContext('2d');
+            
+            // Calculate the correct buffer size
+            const bufferSize = this.profileImageSize * this.profileImageSize * 4; // 4 channels (RGBA)
+            if (this.staticElements.profileImageBuffer.length !== bufferSize) {
+                // Fallback to original method if buffer size doesn't match
+                throw new Error('Buffer size mismatch');
+            }
+            
+            // Create ImageData with correct dimensions
             const tempImageData = tempCtx.createImageData(this.profileImageSize, this.profileImageSize);
-            tempImageData.data.set(new Uint8ClampedArray(this.staticElements.profileImageBuffer));
+            
+            // Copy buffer data
+            for (let i = 0; i < this.staticElements.profileImageBuffer.length; i++) {
+                tempImageData.data[i] = this.staticElements.profileImageBuffer[i];
+            }
+            
             tempCtx.putImageData(tempImageData, 0, 0);
             
             // Draw the temp canvas to main canvas
@@ -321,17 +335,45 @@ class VideoGenerator {
             this.profileImageBorderWidth
         );
     }
-
+ 
     // Use pre-computed watermark
     if (this.staticElements.watermarkBuffer) {
-        const watermarkWidth = 160;
-        const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
-        const watermarkPadding = 10;
-        
-        const img = new Uint8ClampedArray(this.staticElements.watermarkBuffer);
-        const imageData = ctx.createImageData(watermarkWidth, watermarkHeight);
-        imageData.data.set(img);
-        ctx.putImageData(imageData, width - watermarkWidth - watermarkPadding, watermarkPadding);
+        try {
+            const watermarkWidth = 160;
+            const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
+            const watermarkPadding = 10;
+            
+            // Create a temporary canvas with correct dimensions
+            const tempCanvas = createCanvas(watermarkWidth, watermarkHeight);
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Calculate the correct buffer size
+            const bufferSize = watermarkWidth * watermarkHeight * 4; // 4 channels (RGBA)
+            if (this.staticElements.watermarkBuffer.length !== bufferSize) {
+                throw new Error('Buffer size mismatch');
+            }
+            
+            const imageData = tempCtx.createImageData(watermarkWidth, watermarkHeight);
+            for (let i = 0; i < this.staticElements.watermarkBuffer.length; i++) {
+                imageData.data[i] = this.staticElements.watermarkBuffer[i];
+            }
+            
+            tempCtx.putImageData(imageData, 0, 0);
+            ctx.drawImage(tempCanvas, width - watermarkWidth - watermarkPadding, watermarkPadding);
+        } catch (error) {
+            console.error('Error rendering watermark buffer:', error);
+            // Fallback to original method
+            const watermarkWidth = 160;
+            const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
+            const watermarkPadding = 10;
+            ctx.drawImage(
+                watermarkImage,
+                width - watermarkWidth - watermarkPadding,
+                watermarkPadding,
+                watermarkWidth,
+                watermarkHeight
+            );
+        }
     } else {
         // Fallback to original method
         const watermarkWidth = 160;
@@ -345,24 +387,24 @@ class VideoGenerator {
             watermarkHeight
         );
     }
-
+ 
     // Text rendering
     ctx.textAlign = 'center';
     ctx.fillStyle = this.textColor;
-
+ 
     // Title
     const profileImageSize = width * 0.4;
     const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
     const titleY = profileImageY + profileImageSize + 40;
     ctx.font = 'bold 32px Arial';
     ctx.fillText(this.title, width / 2, titleY);
-
+ 
     // Subtitle processing and rendering
     const maxLength = 80;
     let subtitle = this.subtitle.length > maxLength ? 
         this.subtitle.substring(0, maxLength - 3) + '...' : 
         this.subtitle;
-
+ 
     let subtitleLines = [];
     if (subtitle.length > 40) {
         const splitIndex = subtitle.lastIndexOf(' ', 40);
@@ -375,105 +417,107 @@ class VideoGenerator {
     } else {
         subtitleLines.push(subtitle);
     }
-
+ 
     ctx.font = '24px Arial';
     const subtitleY = titleY + 40;
     ctx.fillText(subtitleLines[0], width / 2, subtitleY);
     if (subtitleLines.length > 1) {
         ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30);
     }
-
+ 
     // Waveform rendering
     const waveformCenterY = topHalfHeight + bottomHalfHeight / 2;
     const pointCount = frequencyData.length;
     const pointSpacing = width / (pointCount - 1);
     const maxWaveHeight = bottomHalfHeight * 0.4;
-
+ 
     // Use pre-computed gradient if available
     ctx.fillStyle = this.staticElements.gradient || 
         this.createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage);
-
+ 
     ctx.beginPath();
-
+ 
     // Generate and draw waveform
     const amplification = 2.0;
     const smoothingFactor = 0.4;
     const points = [];
-
+ 
     for (let i = 0; i < pointCount; i++) {
         const x = i * pointSpacing;
         const normalizedAmplitude = Math.min(frequencyData[i] * amplification, 1);
         const amplitude = normalizedAmplitude * maxWaveHeight;
         points.push({ x: x, y: waveformCenterY - amplitude });
     }
-
+ 
     // Draw top curve
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length - 2; i++) {
         const xc = (points[i].x + points[i + 1].x) / 2;
         const yc = (points[i].y + points[i + 1].y) / 2;
-
+ 
         const ctrl1x = points[i].x - (points[i].x - points[i - 1].x) * smoothingFactor;
         const ctrl1y = points[i].y - (points[i].y - points[i - 1].y) * smoothingFactor;
         const ctrl2x = xc - (xc - points[i].x) * smoothingFactor;
         const ctrl2y = yc - (yc - points[i].y) * smoothingFactor;
-
+ 
         ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
-
+ 
     ctx.quadraticCurveTo(
         points[points.length - 2].x,
         points[points.length - 2].y,
         points[points.length - 1].x,
         points[points.length - 1].y
     );
-
+ 
     // Draw bottom mirrored curve
     const bottomPoints = points.map(p => ({
         x: p.x,
         y: waveformCenterY + (waveformCenterY - p.y)
     })).reverse();
-
+ 
     for (let i = 1; i < bottomPoints.length - 2; i++) {
         const xc = (bottomPoints[i].x + bottomPoints[i + 1].x) / 2;
         const yc = (bottomPoints[i].y + bottomPoints[i + 1].y) / 2;
-
+ 
         const ctrl1x = bottomPoints[i].x - (bottomPoints[i].x - bottomPoints[i - 1].x) * smoothingFactor;
         const ctrl1y = bottomPoints[i].y - (bottomPoints[i].y - bottomPoints[i - 1].y) * smoothingFactor;
         const ctrl2x = xc - (xc - bottomPoints[i].x) * smoothingFactor;
         const ctrl2y = yc - (yc - bottomPoints[i].y) * smoothingFactor;
-
+ 
         ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
-
+ 
     ctx.quadraticCurveTo(
         bottomPoints[bottomPoints.length - 2].x,
         bottomPoints[bottomPoints.length - 2].y,
         bottomPoints[bottomPoints.length - 1].x,
         bottomPoints[bottomPoints.length - 1].y
     );
-
+ 
     ctx.closePath();
     ctx.fill();
-}
+ }
 
-async initializeStaticElements(profileImage, watermarkImage) {
+ async initializeStaticElements(profileImage, watermarkImage) {
   const tempCanvas = createCanvas(720, 720);
   const tempCtx = tempCanvas.getContext('2d');
 
   // Pre-compute gradient
   this.staticElements.gradient = this.createGradientFromImage(tempCtx, 360, 140, profileImage);
 
-  // Pre-render watermark - preserve color information
-  const watermarkCanvas = createCanvas(160, 160);
+  // Pre-render watermark with correct dimensions
+  const watermarkWidth = 160;
+  const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth;
+  const watermarkCanvas = createCanvas(watermarkWidth, Math.ceil(watermarkHeight));
   const watermarkCtx = watermarkCanvas.getContext('2d');
-  watermarkCtx.drawImage(watermarkImage, 0, 0, 160, 160);
+  watermarkCtx.drawImage(watermarkImage, 0, 0, watermarkWidth, watermarkHeight);
   this.staticElements.watermarkBuffer = watermarkCanvas.toBuffer('raw', {
       colorSpace: 'srgb',
       enableAlpha: true
   });
 
-  // Pre-render profile image with rounded corners
+  // Pre-render profile image
   const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
   const profileCtx = profileCanvas.getContext('2d');
   this.drawRoundedImage(
