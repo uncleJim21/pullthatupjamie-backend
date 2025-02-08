@@ -276,19 +276,39 @@ class VideoGenerator {
     const topHalfHeight = height / 2;
     const bottomHalfHeight = height / 2;
 
-    // Use pre-computed profile image
+    // Use pre-computed profile image - with proper size checking
     if (this.staticElements.profileImageBuffer) {
-        const profileImageSize = width * 0.4;
-        const profileImageX = (width - profileImageSize) / 2;
-        const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
-        
-        // Convert buffer back to image data
-        const img = new Uint8ClampedArray(this.staticElements.profileImageBuffer);
-        const imageData = ctx.createImageData(this.profileImageSize, this.profileImageSize);
-        imageData.data.set(img);
-        ctx.putImageData(imageData, profileImageX, profileImageY);
+        try {
+            const profileImageSize = width * 0.4;
+            const profileImageX = (width - profileImageSize) / 2;
+            const profileImageY = (topHalfHeight - profileImageSize) / 2 - 20;
+            
+            // Create a temporary canvas to handle the resizing
+            const tempCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
+            const tempCtx = tempCanvas.getContext('2d');
+            const tempImageData = tempCtx.createImageData(this.profileImageSize, this.profileImageSize);
+            tempImageData.data.set(new Uint8ClampedArray(this.staticElements.profileImageBuffer));
+            tempCtx.putImageData(tempImageData, 0, 0);
+            
+            // Draw the temp canvas to main canvas
+            ctx.drawImage(tempCanvas, profileImageX, profileImageY, profileImageSize, profileImageSize);
+        } catch (error) {
+            console.error('Error rendering profile image buffer:', error);
+            // Fallback to original method
+            this.drawRoundedImage(
+                ctx,
+                profileImage,
+                (width - width * 0.4) / 2,
+                (topHalfHeight - width * 0.4) / 2 - 20,
+                width * 0.4,
+                width * 0.4,
+                this.profileImageRadius,
+                this.profileImageBorderColor,
+                this.profileImageBorderWidth
+            );
+        }
     } else {
-        // Fallback to original method if buffer not available
+        // Original method as fallback
         this.drawRoundedImage(
             ctx,
             profileImage,
@@ -444,11 +464,14 @@ async initializeStaticElements(profileImage, watermarkImage) {
   // Pre-compute gradient
   this.staticElements.gradient = this.createGradientFromImage(tempCtx, 360, 140, profileImage);
 
-  // Pre-render watermark
+  // Pre-render watermark - preserve color information
   const watermarkCanvas = createCanvas(160, 160);
   const watermarkCtx = watermarkCanvas.getContext('2d');
   watermarkCtx.drawImage(watermarkImage, 0, 0, 160, 160);
-  this.staticElements.watermarkBuffer = watermarkCanvas.toBuffer('raw');
+  this.staticElements.watermarkBuffer = watermarkCanvas.toBuffer('raw', {
+      colorSpace: 'srgb',
+      enableAlpha: true
+  });
 
   // Pre-render profile image with rounded corners
   const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
@@ -464,31 +487,37 @@ async initializeStaticElements(profileImage, watermarkImage) {
       this.profileImageBorderColor,
       this.profileImageBorderWidth
   );
-  this.staticElements.profileImageBuffer = profileCanvas.toBuffer('raw');
+  this.staticElements.profileImageBuffer = profileCanvas.toBuffer('raw', {
+      colorSpace: 'srgb',
+      enableAlpha: true
+  });
 }
 
 async saveFrame(canvas, filePath) {
   try {
-    // Get raw buffer from canvas
-    const rawBuffer = canvas.toBuffer('raw');
-    
-    // Use sharp for faster PNG encoding
-    await sharp(rawBuffer, {
-      raw: {
-        width: canvas.width,
-        height: canvas.height,
-        channels: 4  // RGBA
-      }
-    })
-    .png({
-      compressionLevel: 3,  // Lower compression for faster encoding (range 0-9)
-      effort: 1,           // Minimal effort for fastest encoding (range 1-10)
-      palette: true        // Use palette-based optimization
-    })
-    .toFile(filePath);
+      const rawBuffer = canvas.toBuffer('raw', {
+          colorSpace: 'srgb',
+          enableAlpha: true
+      });
+      
+      await sharp(rawBuffer, {
+          raw: {
+              width: canvas.width,
+              height: canvas.height,
+              channels: 4,  // RGBA
+              colorSpace: 'srgb'
+          }
+      })
+      .png({
+          compressionLevel: 3,
+          effort: 1,
+          palette: true,
+          colors: 256  // Preserve color fidelity
+      })
+      .toFile(filePath);
   } catch (error) {
-    console.error(`Error saving frame: ${error}`);
-    throw error;
+      console.error(`Error saving frame: ${error}`);
+      throw error;
   }
 }
 
