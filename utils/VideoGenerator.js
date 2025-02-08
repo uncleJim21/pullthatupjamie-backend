@@ -117,32 +117,32 @@ class VideoGenerator {
     return frequencies;
   }
 
-  drawRoundedImage(image, x, y, width, height, radius, borderColor, borderWidth) {
-    this.ctx.save();
+  drawRoundedImage(ctx, image, x, y, width, height, radius, borderColor, borderWidth) {
+    ctx.save();
     
     // Create clipping path for rounded corners
-    this.ctx.beginPath();
-    this.ctx.moveTo(x + radius, y);
-    this.ctx.lineTo(x + width - radius, y);
-    this.ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-    this.ctx.lineTo(x + width, y + height - radius);
-    this.ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-    this.ctx.lineTo(x + radius, y + height);
-    this.ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-    this.ctx.lineTo(x, y + radius);
-    this.ctx.quadraticCurveTo(x, y, x + radius, y);
-    this.ctx.closePath();
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
     
     // Draw border
-    this.ctx.strokeStyle = borderColor;
-    this.ctx.lineWidth = borderWidth;
-    this.ctx.stroke();
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = borderWidth;
+    ctx.stroke();
     
     // Clip and draw image
-    this.ctx.clip();
-    this.ctx.drawImage(image, x, y, width, height);
+    ctx.clip();
+    ctx.drawImage(image, x, y, width, height);
     
-    this.ctx.restore();
+    ctx.restore();
   }
 
   createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage) {
@@ -258,16 +258,16 @@ class VideoGenerator {
     return rgb2hex(blend);
   }
 
-  renderFrame(profileImage, watermarkImage, frequencyData) {
-    const { width, height } = this.canvas;
-
-    // **Clear the canvas (background)**
-    this.ctx.fillStyle = '#000000';
-    this.ctx.fillRect(0, 0, width, height);
-
-    // **Divide the canvas into two equal halves**
-    const topHalfHeight = height / 2;  // Profile + text
-    const bottomHalfHeight = height / 2; // Waveform
+  renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx) {
+    // Replace all this.canvas with canvas
+    const { width, height } = canvas;
+    
+    // Replace all this.ctx with ctx
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, width, height);
+    
+    const topHalfHeight = height / 2;
+    const bottomHalfHeight = height / 2;
 
     // **Size the profile image properly (centered)**
     const profileImageSize = width * 0.4;  // 40% of canvas width
@@ -276,20 +276,21 @@ class VideoGenerator {
 
     // **Draw Profile Image**
     this.drawRoundedImage(
-        profileImage,
-        profileImageX,
-        profileImageY,
-        profileImageSize,
-        profileImageSize,
-        this.profileImageRadius,
-        this.profileImageBorderColor,
-        this.profileImageBorderWidth
-    );
+      ctx,  // Add this as first parameter
+      profileImage,
+      profileImageX,
+      profileImageY,
+      profileImageSize,
+      profileImageSize,
+      this.profileImageRadius,
+      this.profileImageBorderColor,
+      this.profileImageBorderWidth
+  );
 
     const watermarkWidth = 160; // Adjust as needed for your canvas size
     const watermarkHeight = (watermarkImage.height / watermarkImage.width) * watermarkWidth; // Maintain aspect ratio
     const watermarkPadding = 10;
-    this.ctx.drawImage(
+    ctx.drawImage(
       watermarkImage,
       width - watermarkWidth - watermarkPadding,
       watermarkPadding,
@@ -298,13 +299,13 @@ class VideoGenerator {
     );
 
     // **Title & Subtitle Adjustments**
-    this.ctx.textAlign = 'center';
-    this.ctx.fillStyle = this.textColor;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = this.textColor;
 
     // **Title**
-    this.ctx.font = 'bold 32px Arial';
+    ctx.font = 'bold 32px Arial';
     const titleY = profileImageY + profileImageSize + 40; // Position text below image
-    this.ctx.fillText(this.title, width / 2, titleY);
+    ctx.fillText(this.title, width / 2, titleY);
 
     // **Process subtitle for multiline**
     const maxLength = 80;
@@ -324,12 +325,12 @@ class VideoGenerator {
     }
 
     // **Subtitle Rendering**
-    this.ctx.font = '24px Arial';
+    ctx.font = '24px Arial';
     const subtitleY = titleY + 40;  // Space below title
-    this.ctx.fillText(subtitleLines[0], width / 2, subtitleY);
+    ctx.fillText(subtitleLines[0], width / 2, subtitleY);
 
     if (subtitleLines.length > 1) {
-        this.ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30); // Add second line
+        ctx.fillText(subtitleLines[1], width / 2, subtitleY + 30); // Add second line
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -341,10 +342,10 @@ class VideoGenerator {
     const pointSpacing = width / (pointCount - 1); // Ensure it spans FULL width
 
     const maxWaveHeight = bottomHalfHeight * 0.4; // Make it fit within bottom half
-    const gradient = this.createGradientFromImage(this.ctx, waveformCenterY, maxWaveHeight, profileImage);
+    const gradient = this.createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage);
 
-    this.ctx.fillStyle = gradient;
-    this.ctx.beginPath();
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
 
     // **Generate Waveform Points**
     const amplification = 2.0;
@@ -359,7 +360,7 @@ class VideoGenerator {
     }
 
     // **Draw Top Waveform Curve**
-    this.ctx.moveTo(points[0].x, points[0].y);
+    ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length - 2; i++) {
         const xc = (points[i].x + points[i + 1].x) / 2;
         const yc = (points[i].y + points[i + 1].y) / 2;
@@ -369,10 +370,10 @@ class VideoGenerator {
         const ctrl2x = xc - (xc - points[i].x) * smoothingFactor;
         const ctrl2y = yc - (yc - points[i].y) * smoothingFactor;
 
-        this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
+        ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
 
-    this.ctx.quadraticCurveTo(
+    ctx.quadraticCurveTo(
         points[points.length - 2].x,
         points[points.length - 2].y,
         points[points.length - 1].x,
@@ -394,18 +395,18 @@ class VideoGenerator {
         const ctrl2x = xc - (xc - bottomPoints[i].x) * smoothingFactor;
         const ctrl2y = yc - (yc - bottomPoints[i].y) * smoothingFactor;
 
-        this.ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
+        ctx.bezierCurveTo(ctrl1x, ctrl1y, ctrl2x, ctrl2y, xc, yc);
     }
 
-    this.ctx.quadraticCurveTo(
+    ctx.quadraticCurveTo(
         bottomPoints[bottomPoints.length - 2].x,
         bottomPoints[bottomPoints.length - 2].y,
         bottomPoints[bottomPoints.length - 1].x,
         bottomPoints[bottomPoints.length - 1].y
     );
 
-    this.ctx.closePath();
-    this.ctx.fill();
+    ctx.closePath();
+    ctx.fill();
 }
 
  async saveFrame(canvas, filePath) {
