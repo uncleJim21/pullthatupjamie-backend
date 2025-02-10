@@ -576,9 +576,15 @@ async initializeStaticElements(profileImage, watermarkImage) {
   const watermarkCanvas = createCanvas(watermarkWidth, watermarkHeight);
   const watermarkCtx = watermarkCanvas.getContext('2d');
   watermarkCtx.drawImage(watermarkImage, 0, 0, watermarkWidth, watermarkHeight);
+  // In initializeStaticElements, modify watermark processing:
   this.staticElements.watermarkBuffer = await sharp(watermarkCanvas.toBuffer())
-      .png()
-      .toBuffer();
+  .png()
+  .sharpen({ 
+      sigma: 1.5,
+      m1: 1,  // flat areas
+      m2: 1.5 // jagged areas
+  })
+  .toBuffer();
 
   // Pre-render profile image
   const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
