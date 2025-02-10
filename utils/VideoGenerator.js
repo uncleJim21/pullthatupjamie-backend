@@ -36,7 +36,7 @@ class VideoGenerator {
 
     // Design configurations remain the same
     this.profileImageSize = 200;
-    this.profileImageRadius = 50;
+    this.profileImageRadius = 24;
     this.profileImageBorderColor = '#333333';
     this.profileImageBorderWidth = 4;
     this.textColor = '#FFFFFF';
@@ -126,31 +126,45 @@ class VideoGenerator {
   }
 
   drawRoundedImage(ctx, image, x, y, width, height, radius, borderColor, borderWidth) {
-    ctx.save();
-    
-    // Create clipping path for rounded corners
-    ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.lineTo(x + width - radius, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-    ctx.lineTo(x + width, y + height - radius);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-    ctx.lineTo(x + radius, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-    ctx.lineTo(x, y + radius);
-    ctx.quadraticCurveTo(x, y, x + radius, y);
-    ctx.closePath();
-    
-    // Draw border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = borderWidth;
-    ctx.stroke();
-    
-    // Clip and draw image
-    ctx.clip();
-    ctx.drawImage(image, x, y, width, height);
-    
-    ctx.restore();
+      ctx.save();
+      
+      // Create path for rounded corners
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      
+      // Draw image first
+      ctx.clip();
+      ctx.drawImage(image, x, y, width, height);
+      
+      // Restore context and redraw path for border
+      ctx.restore();
+      
+      // Draw border path again
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      
+      // Draw border
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = borderWidth;
+      ctx.stroke();
   }
 
   createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage) {
@@ -214,28 +228,6 @@ class VideoGenerator {
 
     return gradient;
 }
-
-// Utility function to convert RGB to HSL
-rgbToHsl(r, g, b) {
-    r /= 255, g /= 255, b /= 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    let h, s, l = (max + min) / 2;
-
-    if (max === min) {
-        h = s = 0; // Achromatic
-    } else {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-            case g: h = (b - r) / d + 2; break;
-            case b: h = (r - g) / d + 4; break;
-        }
-        h = Math.round(h * 60);
-    }
-    return [h, s * 100, l * 100];
-}
-
 
 // Utility function to convert RGB to HSL
 rgbToHsl(r, g, b) {
@@ -383,13 +375,34 @@ rgbToHsl(r, g, b) {
 
     // Subtitle text
     const subtitleMaxLength = 80;
-    let subtitle = this.subtitle.length > subtitleMaxLength ? this.subtitle.substring(0, subtitleMaxLength - 3) + '...' : this.subtitle;
+    let subtitle = this.subtitle.length > subtitleMaxLength ? 
+      this.subtitle.substring(0, subtitleMaxLength - 3) + '...' : 
+      this.subtitle;    
     let subtitleLines = subtitle.length > 40 ? [subtitle.substring(0, 40).trim(), subtitle.substring(40).trim()] : [subtitle];
+    let firstLine = '';
+    let secondLine = '';
 
+    if (subtitle.length > 40) {
+      // Find the last space before or at position 40
+      const splitIndex = subtitle.substring(0, 40).lastIndexOf(' ');
+      
+      if (splitIndex === -1) {
+        // No spaces found, force the split at 40
+        firstLine = subtitle.substring(0, 40);
+        secondLine = subtitle.substring(40);
+      } else {
+        firstLine = subtitle.substring(0, splitIndex);
+        secondLine = subtitle.substring(splitIndex + 1);
+      }
+    } else {
+      firstLine = subtitle;
+    }
+    
     ctx.font = '24px Arial';
-    ctx.fillText(subtitleLines[0], width / 2, profileImageY + profileImageSize + 80);
-    if (subtitleLines.length > 1) ctx.fillText(subtitleLines[1], width / 2, profileImageY + profileImageSize + 110);
-
+    ctx.fillText(firstLine.trim(), width / 2, profileImageY + profileImageSize + 80);
+    if (secondLine) {
+      ctx.fillText(secondLine.trim(), width / 2, profileImageY + profileImageSize + 110);
+    }
     // Waveform settings
     const waveformCenterY = height * 0.75;
     const pointCount = frequencyData.length;
