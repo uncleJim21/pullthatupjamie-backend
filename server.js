@@ -229,6 +229,9 @@ app.get('/api/get-available-feeds', async (req,res) => {
   res.json({results, count:results.length})
 })
 
+
+///Clips related
+
 app.post('/api/make-clip', async (req, res) => {
   const { clipId, timestamps } = req.body;
 
@@ -377,6 +380,92 @@ app.get('/api/clip/:id', async (req, res) => {
       });
   }
 });
+
+
+app.get('/api/render-clip/:lookupHash', async (req, res) => {
+  const { lookupHash } = req.params;
+
+  try {
+    // Find the clip in WorkProductV2
+    const clip = await WorkProductV2.findOne({ lookupHash });
+
+    if (!clip) {
+      return res.status(404).json({ 
+        error: 'Clip not found',
+        lookupHash 
+      });
+    }
+
+    // If clip is not yet processed
+    if (!clip.cdnFileId) {
+      return res.status(202).json({
+        status: 'processing',
+        message: 'Clip is still being processed',
+        lookupHash
+      });
+    }
+
+    // Set content type for HTML
+    res.setHeader('Content-Type', 'text/html');
+    
+    // Return HTML with embedded video player optimized for Twitter
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="twitter:card" content="player">
+          <meta name="twitter:title" content="Video Clip">
+          <meta name="twitter:player" content="${clip.cdnFileId}">
+          <meta name="twitter:player:width" content="1280">
+          <meta name="twitter:player:height" content="720">
+          <meta property="og:video" content="${clip.cdnFileId}">
+          <meta property="og:video:type" content="video/mp4">
+          <meta property="og:video:width" content="1280">
+          <meta property="og:video:height" content="720">
+          <style>
+            body, html {
+              margin: 0;
+              padding: 0;
+              width: 100%;
+              height: 100%;
+              background: #000;
+            }
+            .video-container {
+              width: 100%;
+              height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            video {
+              max-width: 100%;
+              max-height: 100%;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="video-container">
+            <video controls playsinline autoplay muted>
+              <source src="${clip.cdnFileId}" type="video/mp4">
+              Your browser does not support the video tag.
+            </video>
+          </div>
+        </body>
+      </html>
+    `);
+
+  } catch (error) {
+    console.error('Error rendering clip:', error);
+    res.status(500).json({ 
+      error: 'Failed to render clip',
+      details: error.message 
+    });
+  }
+});
+
+
+///Podcast Search
 
 app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
   let { query,feedIds=[], limit = 5 } = req.body;
