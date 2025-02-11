@@ -744,6 +744,14 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
+process.on('uncaughtException', (err) => {
+  console.error("🔥 Uncaught Exception:", err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error("🚨 Unhandled Promise Rejection:", reason);
+});
+
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
