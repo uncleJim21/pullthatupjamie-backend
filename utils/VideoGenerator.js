@@ -31,7 +31,7 @@ class VideoGenerator {
 
     // Create instance-specific working directories
     this.workingDir = path.join(os.tmpdir(), `video-gen-${this.instanceId}`);
-    this.framesDir = process.env.FRAMES_DIR || path.join(this.workingDir, 'frames');
+    this.framesDir = path.join(this.workingDir, `frames-${this.instanceId}`);
     this.tempWavPath = path.join(this.workingDir, `temp-${this.instanceId}.wav`);
 
     // Design configurations remain the same
@@ -62,15 +62,15 @@ class VideoGenerator {
   }
 
   async cleanup() {
-      try {
-          // Clean up working directory and all contents
-          if (fs.existsSync(this.workingDir)) {
-              await fs.promises.rm(this.workingDir, { recursive: true, force: true });
-          }
-      } catch (error) {
-          console.error(`Error cleaning up working directory for instance ${this.instanceId}:`, error);
-      }
-  }
+    try {
+        if (fs.existsSync(this.workingDir)) {
+            await fs.promises.rm(this.workingDir, { recursive: true, force: true });
+        }
+    } catch (error) {
+        console.error(`Error cleaning up working directory for instance ${this.instanceId}:`, error);
+    }
+}
+
 
   async convertToWav() {
       await exec(`ffmpeg -y -i "${this.audioPath}" -acodec pcm_s16le -ar 44100 -map_metadata -1 "${this.tempWavPath}"`);
@@ -722,7 +722,7 @@ async saveFrame(canvas, filePath) {
 
         return new Promise((resolve, reject) => {
             ffmpeg()
-                .input(path.join(this.framesDir, 'frame-%06d.png'))
+                 .input(path.join(this.framesDir, `frame-${this.instanceId}-%06d.png`))
                 .inputFPS(this.frameRate)
                 .input(this.audioPath)
                 .videoCodec('libx264')
