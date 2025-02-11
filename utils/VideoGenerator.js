@@ -657,49 +657,51 @@ async saveFrame(canvas, filePath) {
 
 
 
-  async generateFrames() {
-    const audioData = await this.getAudioData();
-    const [profileImage, watermarkImage] = await Promise.all([
+async generateFrames() {
+  const audioData = await this.getAudioData();
+  const [profileImage, watermarkImage] = await Promise.all([
       loadImage(this.profileImagePath),
       loadImage(this.watermarkPath)
-    ]);
+  ]);
 
-    // Initialize static elements
-    await this.initializeStaticElements(profileImage, watermarkImage);
+  // Initialize static elements
+  await this.initializeStaticElements(profileImage, watermarkImage);
 
-    const exactDuration = await this.getDuration(this.audioPath);
-    const totalFrames = Math.floor(exactDuration * this.frameRate);
-    const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
+  const exactDuration = await this.getDuration(this.audioPath);
+  const totalFrames = Math.floor(exactDuration * this.frameRate);
+  const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
 
-    console.log(`[Instance ${this.instanceId}] Processing ${totalFrames} frames in batches of ${this.maxConcurrentFrames}`);
+  console.log(`[Instance ${this.instanceId}] Processing ${totalFrames} frames in batches of ${this.maxConcurrentFrames}`);
 
-    for (let batchStart = 0; batchStart < totalFrames; batchStart += this.maxConcurrentFrames) {
+  for (let batchStart = 0; batchStart < totalFrames; batchStart += this.maxConcurrentFrames) {
       const batchEnd = Math.min(batchStart + this.maxConcurrentFrames, totalFrames);
-      const batchPromises = [];
+      const batchPromises = []; // ✅ Declare batchPromises properly
 
-      for (let frame = batchStart; frame < batchEnd; frame++) {
-        batchPromises.push((async () => {
-          const frameCanvas = createCanvas(720, 720);
-          const frameCtx = frameCanvas.getContext('2d');
-          
-          const startSample = frame * samplesPerFrame;
-          const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
-          const frequencies = this.calculateFrequencies(frameData, 64);
+      for (let frame = batchStart; frame < batchEnd; frame++) { 
+          batchPromises.push((async () => {
+              const frameCanvas = createCanvas(720, 720);
+              const frameCtx = frameCanvas.getContext('2d');
 
-          this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
+              const startSample = frame * samplesPerFrame;
+              const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
+              const frequencies = this.calculateFrequencies(frameData, 64);
 
-          const frameFile = path.join(this.framesDir, `frame-${frame.toString().padStart(6, '0')}.png`);
-          await this.saveFrame(frameCanvas, frameFile);
+              this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
 
-          if (frame % 20 === 0) {
-            console.log(`[Instance ${this.instanceId}] Processed frame ${frame}/${totalFrames} (${Math.round(frame/totalFrames*100)}%)`);
-          }
-        })());
+              // ✅ Use unique frame names with instanceId
+              const uniqueFrameFile = path.join(this.framesDir, `frame-${this.instanceId}-${frame.toString().padStart(6, '0')}.png`);
+              await this.saveFrame(frameCanvas, uniqueFrameFile);
+
+              if (frame % 20 === 0) {
+                  console.log(`[Instance ${this.instanceId}] Processed frame ${frame}/${totalFrames} (${Math.round((frame / totalFrames) * 100)}%)`);
+              }
+          })());
       }
 
-      await Promise.all(batchPromises);
-    }
+      await Promise.all(batchPromises); // ✅ Await batch completion to avoid memory overload
   }
+}
+
 
   createGradient(r, g, b, ctx, waveformCenterY, maxWaveHeight) {
     const baseColor = `rgb(${r},${g},${b})`;
@@ -719,6 +721,29 @@ async saveFrame(canvas, filePath) {
         const wavPath = await this.convertToWav();
         this.audioPath = wavPath;
         await this.generateFrames();
+
+        const sequentialDir = path.join(this.framesDir, `sequential-${this.instanceId}`);
+        if (!fs.existsSync(sequentialDir)) {
+            fs.mkdirSync(sequentialDir, { recursive: true });
+        }
+
+        const frameFiles = fs.readdirSync(this.framesDir)
+            .filter(file => file.startsWith(`frame-${this.instanceId}-`) && file.endsWith('.png'))
+            .sort((a, b) => parseInt(a.match(/(\d+)\.png$/)[1]) - parseInt(b.match(/(\d+)\.png$/)[1])); // Sort by frame number
+
+        frameFiles.forEach((file, index) => {
+            const sourcePath = path.join(this.framesDir, file);
+            const symlinkPath = path.join(sequentialDir, `frame-${index.toString().padStart(6, '0')}.png`);
+            
+            try {
+                if (fs.existsSync(symlinkPath)) {
+                    fs.unlinkSync(symlinkPath); // Remove old symlink if needed
+                }
+                fs.symlinkSync(sourcePath, symlinkPath);
+            } catch (err) {
+                console.error(`[ERROR] Failed to create symlink for ${file}:`, err);
+            }
+        });
 
         return new Promise((resolve, reject) => {
             ffmpeg()
