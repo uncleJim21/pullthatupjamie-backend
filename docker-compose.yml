@@ -12,3 +12,4 @@ services:
     volumes:
       - ./dbs:/usr/src/app/dbs
     restart: unless-stopped
+    mem_limit: 2g
