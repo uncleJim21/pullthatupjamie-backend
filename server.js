@@ -419,6 +419,8 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
           <meta name="twitter:player" content="${clip.cdnFileId}">
           <meta name="twitter:player:width" content="1280">
           <meta name="twitter:player:height" content="720">
+          <meta property="og:image" content="${clip.previewImageId}">
+          <meta name="twitter:image" content="${clip.previewImageId}">
           <meta property="og:video" content="${clip.cdnFileId}">
           <meta property="og:video:type" content="video/mp4">
           <meta property="og:video:width" content="1280">

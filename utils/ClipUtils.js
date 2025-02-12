@@ -169,7 +169,7 @@ class ClipUtils {
         await videoGenerator.generateVideo();
         console.log('Video generation completed');
         
-        return outputPath;
+        return { videoPath: outputPath, videoGenerator };
     } catch (error) {
         console.error('Error in video generation:', error);
         throw error;
@@ -184,7 +184,8 @@ class ClipUtils {
             }
         }
     }
-  }
+}
+
 
   /**
    * Handles the full lifecycle of clip generation.
@@ -263,7 +264,8 @@ class ClipUtils {
           timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30) // fallback to 30 sec clip
       );
         console.log(`[DEBUG] Generating video for ${lookupHash}`);
-        const videoPath = await this.generateShareableVideo(clipData, audioPath);
+        const { videoPath, videoGenerator } = await this.generateShareableVideo(clipData, audioPath);
+
 
         console.log(`[DEBUG] Uploading to CDN for ${lookupHash}`);
         const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}/${lookupHash}-clip.mp4`;
@@ -276,11 +278,52 @@ class ClipUtils {
             'video/mp4'
         );
 
-        console.log(`[DEBUG] Upload successful for ${lookupHash}: ${uploadedUrl}`);
+        console.log(`[DEBUG] Video upload successful for ${lookupHash}: ${uploadedUrl}`);
+
+        console.log(`[DEBUG] Saving preview image for ${lookupHash}`);
 
         // ✅ Update MongoDB with final URL
         await WorkProductV2.findOneAndUpdate({ lookupHash }, { cdnFileId: uploadedUrl });
 
+        // Determine first frame
+        console.log(`[DEBUG] Saving preview image for ${lookupHash}`);
+
+        // Define preview filename based on video path
+        const previewFileName = `${lookupHash}-preview.png`;
+        const previewCdnFileId = cdnFileId.replace('.mp4', '-preview.png');
+
+        // Determine first frame
+        const previewFramePath = videoPath.replace('.mp4', '-preview.png');
+        const previewImagePath = path.join(os.tmpdir(), previewFileName);
+
+        // Copy the frame as a preview image
+        if (fs.existsSync(previewFramePath)) {
+            fs.copyFileSync(previewFramePath, previewImagePath);
+            console.log(`[INFO] Preview frame saved: ${previewImagePath}`);
+        } else {
+            console.warn(`[WARN] First frame missing: ${previewFramePath}`);
+        }
+
+        if (fs.existsSync(previewImagePath)) {
+            const previewBuffer = await fs.promises.readFile(previewImagePath);
+            const previewUploadedUrl = await this.spacesManager.uploadFile(
+                process.env.SPACES_CLIP_BUCKET_NAME,
+                previewCdnFileId,
+                previewBuffer,
+                'image/png'
+            );
+        
+            console.log(`[DEBUG] Preview uploaded for ${lookupHash}: ${previewUploadedUrl}`);
+        
+            // ✅ Update MongoDB with preview URL
+            await WorkProductV2.findOneAndUpdate(
+                { lookupHash },
+                { cdnFileId: uploadedUrl, previewImageId: previewUploadedUrl }
+            );
+        } else {
+            console.warn(`[WARN] No preview image found for ${lookupHash}, skipping upload.`);
+        }        
+        
         console.log(`[DEBUG] Processing complete for ${lookupHash}`);
     } catch (error) {
         console.error(`[ERROR] _backgroundProcessClip CRASHED for ${lookupHash}:`, error);

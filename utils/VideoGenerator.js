@@ -658,50 +658,59 @@ async saveFrame(canvas, filePath) {
 
 
 async generateFrames() {
-  const audioData = await this.getAudioData();
-  const [profileImage, watermarkImage] = await Promise.all([
-      loadImage(this.profileImagePath),
-      loadImage(this.watermarkPath)
-  ]);
+    const audioData = await this.getAudioData();
+    const [profileImage, watermarkImage] = await Promise.all([
+        loadImage(this.profileImagePath),
+        loadImage(this.watermarkPath)
+    ]);
 
-  // Initialize static elements
-  await this.initializeStaticElements(profileImage, watermarkImage);
+    // Initialize static elements
+    await this.initializeStaticElements(profileImage, watermarkImage);
 
-  const exactDuration = await this.getDuration(this.audioPath);
-  const totalFrames = Math.floor(exactDuration * this.frameRate);
-  const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
+    const exactDuration = await this.getDuration(this.audioPath);
+    const totalFrames = Math.floor(exactDuration * this.frameRate);
+    const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
 
-  console.log(`[Instance ${this.instanceId}] Processing ${totalFrames} frames in batches of ${this.maxConcurrentFrames}`);
+    console.log(`[Instance ${this.instanceId}] Processing ${totalFrames} frames in batches of ${this.maxConcurrentFrames}`);
 
-  for (let batchStart = 0; batchStart < totalFrames; batchStart += this.maxConcurrentFrames) {
-      const batchEnd = Math.min(batchStart + this.maxConcurrentFrames, totalFrames);
-      const batchPromises = []; // ✅ Declare batchPromises properly
+    let firstFrameGenerated = false;
 
-      for (let frame = batchStart; frame < batchEnd; frame++) { 
-          batchPromises.push((async () => {
-              const frameCanvas = createCanvas(720, 720);
-              const frameCtx = frameCanvas.getContext('2d');
+    for (let batchStart = 0; batchStart < totalFrames; batchStart += this.maxConcurrentFrames) {
+        const batchEnd = Math.min(batchStart + this.maxConcurrentFrames, totalFrames);
+        const batchPromises = [];
 
-              const startSample = frame * samplesPerFrame;
-              const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
-              const frequencies = this.calculateFrequencies(frameData, 64);
+        for (let frame = batchStart; frame < batchEnd; frame++) {
+            batchPromises.push((async () => {
+                const frameCanvas = createCanvas(720, 720);
+                const frameCtx = frameCanvas.getContext('2d');
 
-              this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
+                const startSample = frame * samplesPerFrame;
+                const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
+                const frequencies = this.calculateFrequencies(frameData, 64);
 
-              // ✅ Use unique frame names with instanceId
-              const uniqueFrameFile = path.join(this.framesDir, `frame-${this.instanceId}-${frame.toString().padStart(6, '0')}.png`);
-              await this.saveFrame(frameCanvas, uniqueFrameFile);
+                this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
 
-              if (frame % 20 === 0) {
-                  console.log(`[Instance ${this.instanceId}] Processed frame ${frame}/${totalFrames} (${Math.round((frame / totalFrames) * 100)}%)`);
-              }
-          })());
-      }
+                // ✅ Ensure first frame is saved properly
+                const uniqueFrameFile = path.join(this.framesDir, `frame-${this.instanceId}-${frame.toString().padStart(6, '0')}.png`);
+                await this.saveFrame(frameCanvas, uniqueFrameFile);
 
-      await Promise.all(batchPromises); // ✅ Await batch completion to avoid memory overload
-  }
+                // ✅ Explicitly save first frame to preview path
+                if (frame === 0 && !firstFrameGenerated) {
+                    const previewImagePath = this.outputPath.replace('.mp4', '-preview.png');
+                    fs.copyFileSync(uniqueFrameFile, previewImagePath);
+                    console.log(`[INFO] First frame copied as preview: ${previewImagePath}`);
+                    firstFrameGenerated = true;
+                }
+
+                if (frame % 20 === 0) {
+                    console.log(`[Instance ${this.instanceId}] Processed frame ${frame}/${totalFrames} (${Math.round((frame / totalFrames) * 100)}%)`);
+                }
+            })());
+        }
+
+        await Promise.all(batchPromises);
+    }
 }
-
 
   createGradient(r, g, b, ctx, waveformCenterY, maxWaveHeight) {
     const baseColor = `rgb(${r},${g},${b})`;
