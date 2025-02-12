@@ -405,55 +405,95 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
       });
     }
 
-    console.log(`rendering clip: ${JSON.stringify(clip,null,2)}`)
+    console.log(`Rendering clip: ${JSON.stringify(clip, null, 2)}`);
 
     // Set content type for HTML
     res.setHeader('Content-Type', 'text/html');
-    
-    // Return HTML with embedded video player optimized for Twitter
+
+    // Extract preview image if available
+    const previewImage = clip.result?.previewImageId || clip.cdnFileId.replace('.mp4', '-preview.png');
+
+    // Return HTML with embedded video player optimized for TikTok-style viewing
     res.send(`
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
         <head>
           <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+          
           <meta name="twitter:card" content="player">
-          <meta name="twitter:title" content="Video Clip">
+          <meta name="twitter:title" content="Trending Video Clip">
+          <meta name="twitter:description" content="Watch this short clip now!">
           <meta name="twitter:player" content="${clip.cdnFileId}">
-          <meta name="twitter:player:width" content="1280">
-          <meta name="twitter:player:height" content="720">
-          <meta property="og:image" content="${clip.result?.previewImageId}">
-          <meta name="twitter:image" content="${clip.result?.previewImageId}">
+          <meta name="twitter:player:width" content="720">
+          <meta name="twitter:player:height" content="1280">
+          <meta name="twitter:image" content="${previewImage}">
+          
+          <meta property="og:title" content="Trending Video Clip">
+          <meta property="og:description" content="Watch this short video now!">
+          <meta property="og:image" content="${previewImage}">
           <meta property="og:video" content="${clip.cdnFileId}">
           <meta property="og:video:type" content="video/mp4">
-          <meta property="og:video:width" content="1280">
-          <meta property="og:video:height" content="720">
+          <meta property="og:video:width" content="720">
+          <meta property="og:video:height" content="1280">
+          
           <style>
             body, html {
               margin: 0;
               padding: 0;
               width: 100%;
               height: 100%;
-              background: #000;
-            }
-            .video-container {
-              width: 100%;
-              height: 100vh;
+              background: black;
               display: flex;
               align-items: center;
               justify-content: center;
+              overflow: hidden;
+              font-family: Arial, sans-serif;
+            }
+            .video-wrapper {
+              position: relative;
+              width: 100vw;
+              height: 100vh;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              overflow: hidden;
+            }
+            .background {
+              position: absolute;
+              width: 100%;
+              height: 100%;
+              background: url('${previewImage}') center center / cover no-repeat;
+              filter: blur(20px) brightness(0.5);
+              z-index: 1;
+            }
+            .video-container {
+              position: relative;
+              z-index: 2;
+              width: 90%;
+              max-width: 450px;
+              height: auto;
+              border-radius: 12px;
+              overflow: hidden;
+              box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
             }
             video {
-              max-width: 100%;
-              max-height: 100%;
+              width: 100%;
+              height: auto;
+              border-radius: 12px;
+              object-fit: cover;
             }
           </style>
         </head>
         <body>
-          <div class="video-container">
-            <video controls playsinline autoplay oncanplay="this.muted=false; this.play();">
-              <source src="${clip.cdnFileId}" type="video/mp4">
-              Your browser does not support the video tag.
-            </video>
+          <div class="video-wrapper">
+            <div class="background"></div>
+            <div class="video-container">
+              <video controls playsinline autoplay loop muted>
+                <source src="${clip.cdnFileId}" type="video/mp4">
+                Your browser does not support the video tag.
+              </video>
+            </div>
           </div>
         </body>
       </html>
@@ -467,6 +507,7 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
     });
   }
 });
+
 
 
 ///Podcast Search
