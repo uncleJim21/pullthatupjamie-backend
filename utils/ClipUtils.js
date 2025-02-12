@@ -316,10 +316,12 @@ class ClipUtils {
             console.log(`[DEBUG] Preview uploaded for ${lookupHash}: ${previewUploadedUrl}`);
         
             // ✅ Update MongoDB with preview URL
-            await WorkProductV2.findOneAndUpdate(
+            const updatedClip = await WorkProductV2.findOneAndUpdate(
                 { lookupHash },
-                { cdnFileId: uploadedUrl, previewImageId: previewUploadedUrl }
+                { $set: { cdnFileId: uploadedUrl, previewImageId: previewUploadedUrl } },
+                { new: true, upsert: false }
             );
+            console.log(`[DEBUG] Updated MongoDB entry:`, updatedClip);            
         } else {
             console.warn(`[WARN] No preview image found for ${lookupHash}, skipping upload.`);
         }        
