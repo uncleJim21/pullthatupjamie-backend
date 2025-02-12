@@ -284,6 +284,7 @@ class ClipUtils {
 
         // ✅ Update MongoDB with final URL
         await WorkProductV2.findOneAndUpdate({ lookupHash }, { cdnFileId: uploadedUrl });
+        
 
         // Determine first frame
         console.log(`[DEBUG] Saving preview image for ${lookupHash}`);
@@ -318,10 +319,15 @@ class ClipUtils {
             // ✅ Update MongoDB with preview URL
             const updatedClip = await WorkProductV2.findOneAndUpdate(
                 { lookupHash },
-                { $set: { cdnFileId: uploadedUrl, previewImageId: previewUploadedUrl } },
-                { new: true, upsert: false }
+                { 
+                    $set: { 
+                        cdnFileId: uploadedUrl, // ✅ Keep cdnFileId at the top level
+                        "result.previewImageId": previewUploadedUrl // ✅ Store previewImageId inside result
+                    }
+                },
+                { new: true, upsert: true }
             );
-            console.log(`[DEBUG] Updated MongoDB entry:`, updatedClip);            
+            console.log(`[DEBUG] Updated MongoDB entry:`, updatedClip);                        
         } else {
             console.warn(`[WARN] No preview image found for ${lookupHash}, skipping upload.`);
         }        
