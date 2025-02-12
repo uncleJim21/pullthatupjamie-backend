@@ -381,6 +381,7 @@ app.get('/api/clip/:id', async (req, res) => {
   }
 });
 
+
 app.get('/api/render-clip/:lookupHash', async (req, res) => {
   const { lookupHash } = req.params;
 
@@ -449,7 +450,6 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
               overflow: hidden;
               font-family: Arial, sans-serif;
             }
-
             .video-wrapper {
               position: relative;
               width: 100vw;
@@ -459,7 +459,6 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
               align-items: center;
               overflow: hidden;
             }
-
             .background {
               position: absolute;
               width: 100%;
@@ -468,24 +467,21 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
               filter: blur(20px) brightness(0.5);
               z-index: 1;
             }
-
             .video-container {
               position: relative;
               z-index: 2;
-              width: 100vw; /* Full width */
-              height: 100vh; /* Full height */
-              max-width: 100vw;
-              max-height: 100vh;
+              width: 90%;
+              max-width: 450px;
+              height: auto;
+              border-radius: 12px;
               overflow: hidden;
-              display: flex;
-              justify-content: center;
-              align-items: center;
+              box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
             }
-
             video {
               width: 100%;
-              height: 100vh; /* Full height */
-              object-fit: cover; /* Ensures TikTok-like effect */
+              height: auto;
+              border-radius: 12px;
+              object-fit: cover;
             }
           </style>
         </head>
@@ -511,8 +507,6 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
     });
   }
 });
-
-
 
 
 
