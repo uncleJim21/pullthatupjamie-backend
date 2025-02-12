@@ -7,3 +7,4 @@ utils/invoice-db.js
 /utils/frames
 utils/temp.wav
 *.txt
+/sessions

@@ -446,7 +446,7 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
         </head>
         <body>
           <div class="video-container">
-            <video controls playsinline autoplay muted>
+            <video controls playsinline autoplay oncanplay="this.muted=false; this.play();">
               <source src="${clip.cdnFileId}" type="video/mp4">
               Your browser does not support the video tag.
             </video>
