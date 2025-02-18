@@ -76,6 +76,70 @@ async function getPaymentHash(invoice) {
     ).data;
     return paymentHashTag;
 }
+
+async function generateInvoiceAlbyAPI(service='PTUJ Quick Search') {
+  console.log("generateInvoiceAlbyAPI started..");
+  const msats = process.env.SERVICE_PRICE_MILLISATS;
+  console.log("getServicePrice msats:", msats);
+
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const description = `Invoice for ${service} at ${timestamp}`;
+    
+    // Convert msats to sats for Alby API
+    const amount = Math.floor(msats / 1000);
+
+    const response = await axios.post('https://api.getalby.com/invoices', {
+      description: description,
+      amount: amount
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.ALBY_WALLET_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const invoiceData = response.data;
+    
+    if (!invoiceData.payment_request) {
+      console.error("Failed invoice response:", invoiceData);
+      throw new Error(`No payment request in invoice response: ${JSON.stringify(invoiceData)}`);
+    }
+
+    // Format the response to match the original function's return value
+    // Get expiry from bolt11 invoice
+    const decodedInvoice = bolt11.decode(invoiceData.payment_request);
+    const expirySeconds = decodedInvoice.tags.find(tag => tag.tagName === 'expire_time')?.data || 3600;
+    const expiryTimestamp = (decodedInvoice.timestamp + expirySeconds);
+    
+    // Store the invoice in the database
+    await storeInvoice(invoiceData.payment_hash, invoiceData.payment_request, expiryTimestamp);
+
+    return {
+      pr: invoiceData.payment_request,
+      paymentHash: invoiceData.payment_hash,
+      // Including additional fields that match the Alby response
+      // but weren't in the original response
+      routes: [],
+      status: "OK"
+    };
+
+  } catch (error) {
+    if (error.response) {
+      console.error("Error response from server:", {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      });
+    } else if (error.request) {
+      console.error("No response received:", error.request);
+    } else {
+      console.error("Error setting up request:", error.message);
+    }
+    console.error("Error config:", error.config);
+    throw error;
+  }
+}
   
 async function generateInvoice(service='PTUJ Quick Search') {
   console.log("generateInvoice started..");
@@ -155,4 +219,5 @@ module.exports = {
     getLNURL,
     getIsInvoicePaid,
     generateInvoice,
+    generateInvoiceAlbyAPI
 }

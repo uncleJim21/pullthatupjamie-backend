@@ -10,7 +10,7 @@ const { SearxNGTool } = require('./agent-tools/searxngTool');
 const {findSimilarDiscussions, getFeedsDetails, getClipById} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
-const {generateInvoice,getIsInvoicePaid} = require('./utils/lightning-utils')
+const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeInvoiceDB } = require('./utils/invoice-db');
@@ -748,7 +748,7 @@ app.get('/invoice-pool', async (req, res) => {
   try {
     const invoices = await invoiceGenerator.generateInvoicePool(
       invoicePoolSize,
-      generateInvoice
+      generateInvoiceAlbyAPI
     );
 
     if (invoices.length === 0) {
