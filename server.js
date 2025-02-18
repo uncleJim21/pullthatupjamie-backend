@@ -94,6 +94,7 @@ const clipQueueManager = new ClipQueueManager({
 //3. The user is eligible for free usage based on their IP address
 const jamieAuthMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
+  const route = req.path;
 
   console.log('[INFO] Checking Jamie authentication...');
 
@@ -232,7 +233,7 @@ app.get('/api/get-available-feeds', async (req,res) => {
 
 ///Clips related
 
-app.post('/api/make-clip', async (req, res) => {
+app.post('/api/make-clip',jamieAuthMiddleware, async (req, res) => {
   const { clipId, timestamps } = req.body;
 
   if (!clipId) {
@@ -512,7 +513,7 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
 
 ///Podcast Search
 
-app.post('/api/search-quotes', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/search-quotes', async (req, res) => {
   let { query,feedIds=[], limit = 5 } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
   printLog(`/api/search-quotes req:`,req)
