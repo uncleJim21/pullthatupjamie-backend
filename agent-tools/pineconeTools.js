@@ -22,21 +22,62 @@ const pinecone = new Pinecone({
 const index = pinecone.index(PINECONE_INDEX);
 
 const pineconeTools = {
-    getFeedsDetails : async() => {
+    getFeedsDetails: async () => {
         const dummyVector = Array(1536).fill(0);
-        const queryResult = await index.query({
-            vector: dummyVector,
-            filter: {type:"feed"},
-            topK: 100,
-            includeMetadata: true, // Ensure metadata is included
-        });
-        console.log(`getFeedsDetails:`,JSON.stringify(queryResult,null,2))
-        return queryResult.matches.map((match) => ({
-            feedImage:match.metadata.imageUrl || "no image",
-            title: match.metadata.title || "Unknown Title",
-            description: match.metadata.description || "",
-            feedId: match.metadata.feedId || ""
-        }));
+        let allFeeds = [];
+        let processedFeedIds = new Set();  // Track processed feedIds
+        const batchSize = 30;  // Number of feeds per query batch
+        let hasMoreFeeds = true;
+    
+        while (hasMoreFeeds) {
+            try {
+                // Create a filter to exclude already processed feedIds
+                const filter = processedFeedIds.size > 0 
+                    ? { type: "feed", feedId: { $nin: [...processedFeedIds] } } 
+                    : { type: "feed" };
+    
+                // Query Pinecone with the filter to exclude processed feedIds
+                const queryResult = await index.query({
+                    vector: dummyVector,
+                    filter: filter,
+                    topK: batchSize,
+                    includeMetadata: true,
+                });
+    
+                // Log the query result for debugging
+                console.log(`Query Batch Result:`, JSON.stringify(queryResult, null, 2));
+    
+                if (!queryResult.matches || queryResult.matches.length === 0) {
+                    console.warn('No more matches found for the query.');
+                    break;  // Exit the loop if no more results are returned
+                }
+    
+                // Add the new feeds to the result list
+                allFeeds = [
+                    ...allFeeds,
+                    ...queryResult.matches.map(match => ({
+                        feedImage: match.metadata.imageUrl || "no image",
+                        title: match.metadata.title || "Unknown Title",
+                        description: match.metadata.description || "",
+                        feedId: match.metadata.feedId || ""
+                    }))
+                ];
+    
+                // Add the new feedIds to the processed set
+                queryResult.matches.forEach(match => processedFeedIds.add(match.metadata.feedId));
+    
+                // If fewer than batchSize results were returned, stop the loop
+                if (queryResult.matches.length < batchSize) {
+                    hasMoreFeeds = false;
+                }
+    
+            } catch (error) {
+                console.error("Error fetching feeds details:", error);
+                break;  // Exit loop on error
+            }
+        }
+    
+        return allFeeds;
     },
     getClipById: async (clipId) => {
         try {
