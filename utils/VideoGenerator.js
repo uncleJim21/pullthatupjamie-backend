@@ -466,130 +466,94 @@ rgbToHsl(r, g, b) {
 
 // Updated color selection logic with hard exclusion for tones similar to #9b4a37
 async initializeStaticElements(profileImage, watermarkImage) {
-  const tempCanvas = createCanvas(profileImage.width, profileImage.height);
-  const tempCtx = tempCanvas.getContext('2d');
-  tempCtx.drawImage(profileImage, 0, 0);
-
-  const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
-
-  let dominantColor = null;
-  let maxVibrancyScore = 0;
-  const evaluatedColors = new Set();
-  const colorLog = [];
-
-  // Helper: Convert RGB to HSL
-  const rgbToHsl = (r, g, b) => {
-      r /= 255; g /= 255; b /= 255;
-      const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      let h, s, l = (max + min) / 2;
-
-      if (max === min) {
-          h = s = 0; // Achromatic
-      } else {
-          const d = max - min;
-          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-          switch (max) {
-              case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-              case g: h = (b - r) / d + 2; break;
-              case b: h = (r - g) / d + 4; break;
-          }
-          h *= 60;
+    const tempCanvas = createCanvas(profileImage.width, profileImage.height);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(profileImage, 0, 0);
+  
+    const imageData = tempCtx.getImageData(0, 0, profileImage.width, profileImage.height).data;
+    let dominantColor = null;
+    let maxVibrancyScore = 0;
+  
+    // Combined RGB to HSV conversion (single conversion for both checks)
+    const rgbToHsv = (r, g, b) => {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const d = max - min;
+      const s = max === 0 ? 0 : d / max;
+      const v = max;
+      let h = 0;
+      
+      if (max !== min) {
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
       }
-      return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
-  };
-
-  // Helper: Calculate Euclidean distance in RGB space
-  const rgbDistance = (r1, g1, b1, r2, g2, b2) => {
-      return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
-  };
-
-  // Helper: Determine if a color is similar to excluded tones
-  const isExcludedColor = (r, g, b) => {
-      const excludedColor = { r: 155, g: 74, b: 55 }; // #9b4a37
-      const threshold = 50; // Adjust this value as needed to widen or narrow the exclusion
-      return rgbDistance(r, g, b, excludedColor.r, excludedColor.g, excludedColor.b) < threshold;
-  };
-
-  // Helper: Determine if a color is vibrant
-  const isVibrantColor = (h, s, l) => {
-      const isNeutral = l <= 20 || l >= 85 || s < 30;
-      const isDull = s < 50 && l > 50; // Muted tones
-
-      // Strict filter: Ignore neutral or dull colors
-      return !isNeutral && !isDull;
-  };
-
-  // Analyze pixels
-  for (let i = 0; i < imageData.length; i += 16) { // Sample every 16th pixel
+      
+      return [h * 360, s * 100, v * 100];
+    };
+  
+    // Process every 32nd pixel for better performance
+    for (let i = 0; i < imageData.length; i += 128) {
       const r = imageData[i];
       const g = imageData[i + 1];
       const b = imageData[i + 2];
       const a = imageData[i + 3];
-
+  
       if (a === 0) continue; // Skip transparent pixels
-
-      const rgbKey = `${r},${g},${b}`;
-      if (evaluatedColors.has(rgbKey)) continue;
-      evaluatedColors.add(rgbKey);
-
-      const [h, s, l] = rgbToHsl(r, g, b);
-      const vibrancyScore = s * (1 - Math.abs(l - 50) / 50); // Boost saturation, balance lightness
-
-      // Hard exclusion for brown tones and non-vibrant colors
-      const isExcluded = isExcludedColor(r, g, b) || !isVibrantColor(h, s, l);
-      const penalty = isExcluded ? -1000 : 0; // Heavy penalty for excluded colors
-      const finalScore = vibrancyScore + penalty;
-
-      colorLog.push({
-          color: `rgb(${r},${g},${b})`,
-          h, s, l,
-          vibrancyScore,
-          penalty,
-          finalScore,
-          isExcluded,
-      });
-
-      if (finalScore > maxVibrancyScore) {
-          maxVibrancyScore = finalScore;
-          dominantColor = [r, g, b];
+  
+      const [h, s, v] = rgbToHsv(r, g, b);
+      
+      // More aggressive filtering:
+      // - Skip if too dark (value < 30%)
+      // - Skip if too desaturated (saturation < 40%)
+      if (v < 30 || s < 40) continue;
+  
+      // Simplified vibrancy score that favors saturation
+      const vibrancyScore = s * (v / 100) * 2;
+  
+      if (vibrancyScore > maxVibrancyScore) {
+        maxVibrancyScore = vibrancyScore;
+        dominantColor = [r, g, b];
       }
-  }
-
-  // Fallback: If no valid color, use vibrant purple
-  if (!dominantColor) {
-      console.warn("No valid vibrant color found. Defaulting to #231761.");
-      dominantColor = [35, 23, 97];
-  }
-
-  // Log details for debugging
-  console.log("Color Analysis Log:", colorLog);
-  console.log(`Selected Dominant Color: rgb(${dominantColor.join(",")})`);
-
-  const [r, g, b] = dominantColor;
-
-  // Precompute gradient
-  this.staticElements.gradient = this.createGradient(r, g, b, tempCtx, 360, 140);
-
-  // Pre-render watermark
-  const watermarkWidth = 160;
-  const watermarkHeight = Math.ceil((watermarkImage.height / watermarkImage.width) * watermarkWidth);
-  const watermarkCanvas = createCanvas(watermarkWidth, watermarkHeight);
-  const watermarkCtx = watermarkCanvas.getContext('2d');
-  watermarkCtx.drawImage(watermarkImage, 0, 0, watermarkWidth, watermarkHeight);
-  // In initializeStaticElements, modify watermark processing:
-  this.staticElements.watermarkBuffer = await sharp(watermarkCanvas.toBuffer())
-  .png()
-  .sharpen({ 
-      sigma: 1.5,
-      m1: 1,  // flat areas
-      m2: 1.5 // jagged areas
-  })
-  .toBuffer();
-
-  // Pre-render profile image
-  const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
-  const profileCtx = profileCanvas.getContext('2d');
-  this.drawRoundedImage(
+    }
+  
+    // Fallback to white if no suitable color found
+    if (!dominantColor || maxVibrancyScore < 50) {
+      console.log('No sufficiently vibrant color found, falling back to white');
+      dominantColor = [255, 255, 255];
+    } else {
+      console.log(`Selected color: rgb(${dominantColor.join(',')}), vibrancy score: ${maxVibrancyScore}`);
+    }
+  
+    // Create gradient with selected color
+    const [r, g, b] = dominantColor;
+    this.staticElements.gradient = this.createGradient(r, g, b, tempCtx, 360, 140);
+  
+    // Rest of initialization code remains the same...
+    const watermarkWidth = 160;
+    const watermarkHeight = Math.ceil((watermarkImage.height / watermarkImage.width) * watermarkWidth);
+    const watermarkCanvas = createCanvas(watermarkWidth, watermarkHeight);
+    const watermarkCtx = watermarkCanvas.getContext('2d');
+    watermarkCtx.drawImage(watermarkImage, 0, 0, watermarkWidth, watermarkHeight);
+    
+    this.staticElements.watermarkBuffer = await sharp(watermarkCanvas.toBuffer())
+      .png()
+      .sharpen({ 
+        sigma: 1.5,
+        m1: 1,
+        m2: 1.5
+      })
+      .toBuffer();
+  
+    const profileCanvas = createCanvas(this.profileImageSize, this.profileImageSize);
+    const profileCtx = profileCanvas.getContext('2d');
+    this.drawRoundedImage(
       profileCtx,
       profileImage,
       0,
@@ -599,11 +563,12 @@ async initializeStaticElements(profileImage, watermarkImage) {
       this.profileImageRadius,
       this.profileImageBorderColor,
       this.profileImageBorderWidth
-  );
-  this.staticElements.profileImageBuffer = await sharp(profileCanvas.toBuffer())
+    );
+    
+    this.staticElements.profileImageBuffer = await sharp(profileCanvas.toBuffer())
       .png()
       .toBuffer();
-}
+  }
 
 
 
