@@ -160,7 +160,7 @@ class ClipUtils {
             audioPath,
             profileImagePath,
             watermarkPath,
-            title: this.truncateMiddle(clipData.creator, 40),
+            title: this.truncateMiddle(clipData.creator, 30),
             subtitle: this.truncateMiddle(clipData.episode, 80),
             outputPath
         });
