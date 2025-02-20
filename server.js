@@ -22,6 +22,7 @@ const {DEBUG_MODE, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
 const ClipQueueManager = require('./utils/ClipQueueManager');
+const FeedCacheManager = require('./utils/FeedCacheManager');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 2;
@@ -80,6 +81,13 @@ const dbBackupManager = new DatabaseBackupManager({
   secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
   bucketName: process.env.SPACES_BUCKET_NAME,
   backupInterval: 1000 * 60 * 60 * 1 // 1 hour
+});
+
+const feedCacheManager = new FeedCacheManager({
+  endpoint: process.env.SPACES_ENDPOINT,
+  accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
+  secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
+  bucketName: process.env.SPACES_BUCKET_NAME
 });
 
 const clipUtils = new ClipUtils();
@@ -224,11 +232,31 @@ class ContentBuffer {
 }
 
 
-app.get('/api/get-available-feeds', async (req,res) => {
-  console.log('get-available-feeds')
-  const results = await getFeedsDetails();
-  res.json({results, count:results.length})
-})
+app.get('/api/get-available-feeds', async (req, res) => {
+  try {
+      console.log('Fetching available feeds from cache');
+      const results = await feedCacheManager.getFeeds();
+      
+      // Ensure we have results before sending response
+      if (!Array.isArray(results)) {
+          throw new Error('Invalid feed data format');
+      }
+
+      // Send response with results
+      res.json({ 
+          results, 
+          count: results.length,
+          cacheTime: feedCacheManager.lastUpdateTime
+      });
+  } catch (error) {
+      console.error('Error fetching available feeds:', error);
+      // Send proper error response
+      res.status(500).json({ 
+          error: 'Failed to fetch available feeds',
+          details: error.message 
+      });
+  }
+});
 
 
 ///Clips related
@@ -908,6 +936,8 @@ app.listen(PORT, async () => {
     await initializeInvoiceDB();
     await initializeRequestsDB();
     await initializeJamieUserDB();
+    await feedCacheManager.initialize();
+    console.log('Feed cache manager initialized successfully');
     
     console.log('All systems initialized successfully');
   } catch (error) {
