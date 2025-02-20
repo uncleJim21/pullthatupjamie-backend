@@ -25,7 +25,7 @@ const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
 
 const mongoURI = process.env.MONGO_URI;
-const invoicePoolSize = 2;
+const invoicePoolSize = 1;
 
 const processingCache = new Map();
 const resultCache = new Map();
