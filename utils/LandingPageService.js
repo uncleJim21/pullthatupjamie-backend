@@ -13,6 +13,7 @@ const mockFeeds = {
     lightningAddress: "pleblab@getalby.com",
     description: "In Early Days, we dive into the early stage—and often chaotic—world of first-time founders. Each episode unpacks the pivotal decisions, unforeseen challenges, and valuable lessons learned along the way, featuring candid conversations with entrepreneurs, investors, and industry experts who've been there.",
     feedUrl: "https://anchor.fm/s/100230220/podcast/rss",
+    listenLink: "https://creators.spotify.com/pod/show/earlydayspod/episodes/Shopstr-e2ttnqi"
   }
 };
 
@@ -136,7 +137,8 @@ async function getPodcastFeed(feedId) {
           audioUrl: episode.itemUrl || '',
           description: episode.description ? sanitizeDescription(episode.description) : '',
           episodeNumber: episode.episodeNumber || '',
-          episodeImage: episode.episodeImage || feedData.logoUrl
+          episodeImage: episode.episodeImage || feedData.logoUrl,
+          listenLink: feedData.listenLink
         }))
       };
     } catch (error) {
