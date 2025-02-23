@@ -20,6 +20,7 @@ const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const path = require('path');
 const {DEBUG_MODE, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
+const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
 const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
@@ -540,6 +541,27 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
 
 
 ///Podcast Search
+
+// Add this endpoint to your Express server (server.js/index.js)
+
+app.get('/api/podcast-feed/:feedId', async (req, res) => {
+  const { feedId } = req.params;
+  console.log(`Fetching podcast feed for ID: ${feedId}`);
+  
+  try {
+    const response = await getPodcastFeed(feedId);
+    
+    // Add cache headers
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching podcast feed:', error);
+    const statusCode = error.message === 'Feed not found' ? 404 : 500;
+    res.status(statusCode).json({ 
+      error: error.message || 'Failed to fetch podcast feed'
+    });
+  }
+});
 
 app.post('/api/search-quotes', async (req, res) => {
   let { query,feedIds=[], limit = 5 } = req.body;
