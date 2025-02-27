@@ -14,6 +14,17 @@ const mockFeeds = {
     description: "In Early Days, we dive into the early stage—and often chaotic—world of first-time founders. Each episode unpacks the pivotal decisions, unforeseen challenges, and valuable lessons learned along the way, featuring candid conversations with entrepreneurs, investors, and industry experts who've been there.",
     feedUrl: "https://anchor.fm/s/100230220/podcast/rss",
     listenLink: "https://creators.spotify.com/pod/show/earlydayspod/episodes/Shopstr-e2ttnqi"
+  },
+  '5015946': {
+    id: '5015946',
+    headerColor: "#305d52",
+    artwork: "https://d3t3ozftmdmh3i.cloudfront.net/staging/podcast_uploaded_nologo/21611220/21611220-1732893316589-fb33705d325d1.jpg",
+    title: "Green Candle Investments Podcast with Brandon Keys",
+    creator: "Green Candle Investments",
+    lightningAddress: "greencandleit@strike.me",
+    description: "I bring viewers easy-to-digest information about investing, both in traditional equities and in Bitcoin.\nTune in every Monday for new Macro Insights podcasts and Friday for new State of Bitcoin podcasts, offering deep dives into current developments, emerging trends, and expert analyses. Stay connected with us on Twitter and Instagram @GreenCandleit for real-time updates, and engage with host, Brandon, at @bkeys1010 on Twitter.\nDon't miss out – share, subscribe, and actively participate in the conversation! Spread the word about our podcast!",
+    feedUrl: "https://anchor.fm/s/8168b150/podcast/rss",
+    listenLink: "https://podcasters.spotify.com/pod/show/greencandleit"
   }
 };
 
