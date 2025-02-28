@@ -18,13 +18,24 @@ const mockFeeds = {
   '5015946': {
     id: '5015946',
     headerColor: "#305d52",
-    artwork: "https://d3t3ozftmdmh3i.cloudfront.net/staging/podcast_uploaded_nologo/21611220/21611220-1732893316589-fb33705d325d1.jpg",
+    logoUrl: "https://d3t3ozftmdmh3i.cloudfront.net/staging/podcast_uploaded_nologo/21611220/21611220-1732893316589-fb33705d325d1.jpg",
     title: "Green Candle Investments Podcast with Brandon Keys",
     creator: "Green Candle Investments",
     lightningAddress: "greencandleit@strike.me",
     description: "I bring viewers easy-to-digest information about investing, both in traditional equities and in Bitcoin.\nTune in every Monday for new Macro Insights podcasts and Friday for new State of Bitcoin podcasts, offering deep dives into current developments, emerging trends, and expert analyses. Stay connected with us on Twitter and Instagram @GreenCandleit for real-time updates, and engage with host, Brandon, at @bkeys1010 on Twitter.\nDon't miss out – share, subscribe, and actively participate in the conversation! Spread the word about our podcast!",
     feedUrl: "https://anchor.fm/s/8168b150/podcast/rss",
     listenLink: "https://podcasters.spotify.com/pod/show/greencandleit"
+  },
+  '3498055': {
+    id: '3498055',
+    headerColor: "#deb83e",
+    logoUrl: "https://d3t3ozftmdmh3i.cloudfront.net/production/podcast_uploaded_nologo/10262374/10262374-1603995280202-46e057c35b6d3.jpg",
+    title: "Convos On The Pedicab",
+    creator: "Alex Strenger",
+    lightningAddress: "effreyjepstein@getalby.com",
+    description: "Bringing people together on a pedicab in Austin, TX in order discuss polarizing topics and come up with meaningful solutions on them.",
+    feedUrl: "https://anchor.fm/s/3dc3ba58/podcast/rss",
+    listenLink: "https://creators.spotify.com/pod/show/alex-strenger/episodes/Convos-On-The-Pedicab-181-CASCDR--A-Bitcoin-Based-AI-Model-e2uecj5"
   }
 };
 
