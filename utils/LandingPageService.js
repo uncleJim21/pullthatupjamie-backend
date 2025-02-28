@@ -13,7 +13,12 @@ const mockFeeds = {
     lightningAddress: "pleblab@getalby.com",
     description: "In Early Days, we dive into the early stage—and often chaotic—world of first-time founders. Each episode unpacks the pivotal decisions, unforeseen challenges, and valuable lessons learned along the way, featuring candid conversations with entrepreneurs, investors, and industry experts who've been there.",
     feedUrl: "https://anchor.fm/s/100230220/podcast/rss",
-    listenLink: "https://creators.spotify.com/pod/show/earlydayspod/episodes/Shopstr-e2ttnqi"
+    listenLink: "https://creators.spotify.com/pod/show/earlydayspod",
+    subscribeLinks:{
+      appleLink:"https://podcasts.apple.com/us/podcast/early-days/id1792360751",
+      spotifyLink:"https://creators.spotify.com/pod/show/earlydayspod/episodes/Shopstr-e2ttnqi",
+      youtubeLink:"https://www.youtube.com/watch?v=u2vmnmy3HgI&list=PLvxf1TpXqCAID5M_k5VkwrURU2M8YYGpZ&index=1"
+    }
   },
   '5015946': {
     id: '5015946',
@@ -24,7 +29,12 @@ const mockFeeds = {
     lightningAddress: "greencandleit@strike.me",
     description: "I bring viewers easy-to-digest information about investing, both in traditional equities and in Bitcoin.\nTune in every Monday for new Macro Insights podcasts and Friday for new State of Bitcoin podcasts, offering deep dives into current developments, emerging trends, and expert analyses. Stay connected with us on Twitter and Instagram @GreenCandleit for real-time updates, and engage with host, Brandon, at @bkeys1010 on Twitter.\nDon't miss out – share, subscribe, and actively participate in the conversation! Spread the word about our podcast!",
     feedUrl: "https://anchor.fm/s/8168b150/podcast/rss",
-    listenLink: "https://podcasters.spotify.com/pod/show/greencandleit"
+    listenLink: "https://podcasters.spotify.com/pod/show/greencandleit",
+    subscribeLinks:{
+      appleLink:"https://podcasts.apple.com/us/podcast/green-candle-investments-podcast-with-brandon-keys/id1608445593",
+      spotifyLink:"https://creators.spotify.com/pod/show/greencandleit",
+      youtubeLink:"https://www.youtube.com/@GreenCandle"
+    }
   },
   '3498055': {
     id: '3498055',
@@ -35,7 +45,12 @@ const mockFeeds = {
     lightningAddress: "effreyjepstein@getalby.com",
     description: "Bringing people together on a pedicab in Austin, TX in order discuss polarizing topics and come up with meaningful solutions on them.",
     feedUrl: "https://anchor.fm/s/3dc3ba58/podcast/rss",
-    listenLink: "https://creators.spotify.com/pod/show/alex-strenger/episodes/Convos-On-The-Pedicab-181-CASCDR--A-Bitcoin-Based-AI-Model-e2uecj5"
+    listenLink: "https://creators.spotify.com/pod/show/alex-strenger",
+    subscribeLinks:{
+      appleLink:"https://podcasts.apple.com/us/podcast/convos-on-the-pedicab/id1538283513",
+      spotifyLink:"https://creators.spotify.com/pod/show/alex-strenger",
+      youtubeLink:"https://www.youtube.com/watch?v=i_V5ZqEGPr0&list=PLmjXKO8Lt3ymQvaOSTDMwcD0PJ7-NBYe_"
+    }
   }
 };
 
