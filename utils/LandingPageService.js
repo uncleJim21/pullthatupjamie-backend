@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { parse } = require('node-html-parser');
-
+const {getProPodcastByFeedId} = require('./ProPodcastUtils')
 
 // Mock database for feed metadata
 const mockFeeds = {
@@ -153,16 +153,20 @@ async function fetchPodcastEpisodes(feedUrl, limit = 35) {
 // Main service function to get feed data
 async function getPodcastFeed(feedId) {
     try {
-      const feedData = mockFeeds[feedId];
+      const feedData = await getProPodcastByFeedId(feedId);
       if (!feedData) {
         throw new Error('Feed not found');
       }
+
+      // console.log(`feedData:${JSON.stringify(feedData,null,2)}`)
+      // return {}
   
       const feedResponse = await fetchPodcastEpisodes(feedData.feedUrl);
       
       if (!feedResponse?.episodes?.episodes || !Array.isArray(feedResponse.episodes.episodes)) {
         throw new Error('Invalid feed data structure');
       }
+
   
       return {
         ...feedData,
