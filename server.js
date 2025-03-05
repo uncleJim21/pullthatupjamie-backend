@@ -24,6 +24,9 @@ const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
 const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
+const jwt = require('jsonwebtoken');
+const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
+const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -259,6 +262,29 @@ app.get('/api/get-available-feeds', async (req, res) => {
   }
 });
 
+
+app.post('/api/validate-privs', async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+  }
+
+  try {
+      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      console.log(`Authenticated email: ${decoded.email}`);
+      const proPod = await getProPodcastByAdminEmail(decoded.email);
+      console.log(`found proPod:${JSON.stringify(proPod,null,2)}`)
+      let privs = {}
+      if(proPod && proPod.feedId){
+        privs = {feedId:proPod.feedId,access:"admin"}
+      }
+      return res.json({ privs});
+  } catch (error) {
+      console.error('JWT validation error:', error.message);
+      return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+});
 
 ///Clips related
 
