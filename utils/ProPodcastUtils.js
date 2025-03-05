@@ -15,6 +15,17 @@ async function getProPodcastByFeedId(feedId) {
   }
 }
 
+async function getProPodcastByAdminEmail(adminEmail) {
+  try {
+    const podcast = await ProPodcastDetails.findOne({ adminEmail }).lean();
+    return podcast || null;
+  } catch (error) {
+    console.error(`Error fetching podcast with adminEmail ${adminEmail}:`, error);
+    throw new Error('Database query failed');
+  }
+}
+
 module.exports = {
-  getProPodcastByFeedId
+  getProPodcastByFeedId,
+  getProPodcastByAdminEmail
 };
