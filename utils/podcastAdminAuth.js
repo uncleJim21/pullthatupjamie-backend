@@ -13,7 +13,28 @@ const { ProPodcastDetails } = require('../models/ProPodcastDetails');
  */
 async function verifyPodcastAdmin(req, res, next, feedId = null) {
     try {
-        // Get the authorization header
+        // Development bypass - MUST be explicitly set to 'bypass'
+        const bypassAuth = process.env.BYPASS_PODCAST_ADMIN_AUTH === 'bypass';
+        if (bypassAuth) {
+            console.warn('⚠️ WARNING: Bypassing podcast admin authentication - FOR DEVELOPMENT ONLY');
+            // Still require feedId for proper routing
+            const targetFeedId = feedId || req.params.feedId;
+            if (!targetFeedId) {
+                return res.status(400).json({
+                    error: 'Missing feed ID',
+                    details: 'Feed ID is required even in bypass mode'
+                });
+            }
+            // Add mock admin info
+            req.admin = {
+                email: 'dev@bypass.local',
+                feedId: targetFeedId,
+                podcast: { feedId: targetFeedId }
+            };
+            return next();
+        }
+
+        // Normal authentication flow
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({

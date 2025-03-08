@@ -133,6 +133,20 @@ Pull That Up Jamie is a privacy-focused search and podcast clip generation appli
   - Parameters: `feedId`
   - Response: `{ success: true, data: RunHistory }`
 
+### User Preferences
+- `GET /api/user-prefs`
+  - Retrieves all preferences for the authenticated user
+  - Requires JWT authentication or bypass mode
+  - Response: `{ success: true, data: UserPreferences }`
+  - In bypass mode, accepts optional `email` query parameter
+
+- `GET /api/user-prefs/:feedId`
+  - Retrieves preferences for a specific podcast feed
+  - Requires JWT authentication or bypass mode
+  - Parameters: `feedId`
+  - Response: `{ success: true, data: PodcastPreference }`
+  - In bypass mode, accepts optional `email` query parameter
+
 ### Authentication Methods
 
 The API supports four authentication methods:
@@ -155,6 +169,21 @@ The API supports four authentication methods:
    - Token contains admin email claim
    - Validates against ProPodcastDetails collection
    - Required for podcast run history endpoints
+
+#### Development Bypass Mode
+
+For development and testing purposes, token authentication can be bypassed by setting the environment variable:
+```
+BYPASS_PODCAST_ADMIN_AUTH=bypass
+```
+
+When bypass mode is enabled:
+- No JWT token is required
+- An optional `email` query parameter can be used to simulate different users
+- If no email is provided, a default email (`dev@bypass.local`) is used
+- Example: `GET /api/user-prefs?email=test@example.com`
+
+⚠️ **Warning**: This bypass should only be used in development environments.
 
 ## System Architecture
 
@@ -282,182 +311,3 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
 ### JamieFeedback
 
 This model captures user feedback:
-
-```javascript
-const JamieFeedbackSchema = new mongoose.Schema({
-  email: String,
-  feedback: String,
-  timestamp: String,
-  mode: String,
-  status: String,
-  state: String
-});
-```
-
-### ProPodcastRunHistory
-
-This model stores the history of podcast clip recommendation runs:
-
-```javascript
-const ProPodcastRunHistorySchema = new mongoose.Schema({
-  feed_id: {
-    type: String,
-    required: true,
-    index: true
-  },
-  run_date: {
-    type: Date,
-    required: true,
-    default: Date.now,
-    index: true
-  },
-  filter_scope: {
-    feed_id: String,
-    episode_guid: String
-  },
-  recommendations: [{
-    title: String,
-    text: String,
-    start_time: Number,
-    end_time: Number,
-    episode_title: String,
-    feed_title: String,
-    audio_url: String,
-    relevance_score: Number,
-    episode_image: String,
-    duration: Number,
-    paragraph_ids: [String],
-    expanded_context: Boolean,
-    first_word_index: Number,
-    last_word_index: Number
-  }]
-}, { 
-  collection: 'propodcastrunhistory',
-  timestamps: true
-});
-```
-
-## Component Flow Charts
-
-### Search Flow
-
-```
-┌──────────┐     ┌───────────────┐     ┌─────────────┐
-│  Client  │────▶│ Authentication │────▶│ Rate Limiter│
-└────┬─────┘     └───────┬───────┘     └──────┬──────┘
-     │                   │                    │
-     │           ┌───────▼───────┐     ┌─────▼──────┐
-     └──────────▶│ Search Request │────▶│ SEARXNG   │
-                 └───────┬───────┘     │ Integration│
-                         │             └──────┬─────┘
-                 ┌───────▼───────┐            │
-                 │ Result        │◀───────────┘
-                 │ Processing    │
-                 └───────┬───────┘
-                         │
-                 ┌───────▼───────┐
-                 │ Response to   │
-                 │ Client        │
-                 └───────────────┘
-```
-
-### Clip Generation Flow
-
-```
-┌──────────┐     ┌───────────────┐     ┌─────────────┐
-│  Client  │────▶│ Authentication │────▶│ Payment     │
-└────┬─────┘     └───────┬───────┘     │ Verification│
-     │                   │             └──────┬──────┘
-     │           ┌───────▼───────┐            │
-     └──────────▶│ Clip Request  │◀───────────┘
-                 └───────┬───────┘
-                         │
-                 ┌───────▼───────┐
-                 │ Clip Queue    │
-                 │ Manager       │
-                 └───────┬───────┘
-                         │
-                 ┌───────▼───────┐     ┌─────────────┐
-                 │ Clip          │────▶│ Video       │
-                 │ Processing    │     │ Generation  │
-                 └───────┬───────┘     └──────┬──────┘
-                         │                    │
-                 ┌───────▼───────┐            │
-                 │ Storage in    │◀───────────┘
-                 │ Digital Ocean │
-                 └───────┬───────┘
-                         │
-                 ┌───────▼───────┐
-                 │ Response to   │
-                 │ Client        │
-                 └───────────────┘
-```
-
-### Admin Authentication Flow
-
-```
-┌──────────┐     ┌───────────────────┐     ┌─────────────────┐
-│  Client  │────▶│ JWT Verification  │────▶│ Email Claim     │
-└────┬─────┘     └───────┬───────────┘     │ Extraction      │
-     │                   │                  └────────┬────────┘
-     │           ┌───────▼──────────┐              │
-     │           │ ProPodcastDetails│              │
-     │           │ Lookup           │◀─────────────┘
-     │           └───────┬──────────┘
-     │                   │
-     │           ┌───────▼──────────┐
-     └──────────▶│ Access Granted   │
-                 │ or Denied        │
-                 └─────────────────┘
-```
-
-## Utility Services
-
-The application includes several utility services for various functionalities:
-
-1. **ClipUtils**: Processing and generation of podcast clips
-2. **VideoGenerator**: Creation of video clips from podcast audio
-3. **LightningUtils**: Integration with Lightning Network for payments
-4. **DatabaseBackupManager**: Automated database backups
-5. **DigitalOceanSpacesManager**: Cloud storage for media files
-6. **FeedCacheManager**: Caching of podcast feeds for improved performance
-
-### Database Management
-
-```
-┌──────────────────┐     ┌───────────────────┐
-│ Application      │────▶│ Database          │
-│ Components       │     │ Connection Pool   │
-└──────────┬───────┘     └─────────┬─────────┘
-           │                       │
-           │               ┌───────▼───────┐
-           │               │ MongoDB        │
-           │               │ Connection     │
-           │               └───────┬───────┘
-           │                       │
-           │               ┌───────▼───────┐
-           └──────────────▶│ Models        │
-                           │ (Mongoose)    │
-                           └───────┬───────┘
-                                   │
-                           ┌───────▼───────┐
-                           │ Database      │
-                           │ Backup Manager│
-                           └───────────────┘
-```
-
-### Media Storage
-
-```
-┌──────────────────┐     ┌───────────────────┐
-│ Clip Generation  │────▶│ Digital Ocean     │
-│ Process          │     │ Spaces Manager    │
-└──────────────────┘     └─────────┬─────────┘
-                                   │
-                           ┌───────▼───────┐
-                           │ CDN Storage   │
-                           │ & Delivery    │
-                           └───────────────┘
-```
-
-This documentation provides a comprehensive overview of the Pull That Up Jamie application architecture, data models, and component interactions. The modular design allows for scalability and maintainability, while the privacy-focused approach ensures user data protection throughout the system.

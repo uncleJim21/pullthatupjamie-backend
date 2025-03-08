@@ -28,6 +28,7 @@ const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
 const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
+const userPreferencesRoutes = require('./routes/userPreferences');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -965,6 +966,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
+app.use('/api/user-prefs', userPreferencesRoutes);
 
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
