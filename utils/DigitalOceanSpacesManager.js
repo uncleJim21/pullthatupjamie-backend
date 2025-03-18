@@ -205,7 +205,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
       }
     }
 
-    async generatePresignedUploadUrl(bucketName, key, contentType, expiresIn = 3600, maxSizeBytes = 1024 * 1024 * 100, acl = null) {
+    async generatePresignedUploadUrl(bucketName, key, contentType, expiresIn = 3600, maxSizeBytes = 1024 * 1024 * 100, acl = 'public-read') {
       console.log(`Generating pre-signed URL for ${bucketName}/${key} (contentType: ${contentType}, acl: ${acl || 'none'})`);
       
       const command = new PutObjectCommand({

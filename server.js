@@ -1032,7 +1032,7 @@ function sanitizeFileName(fileName) {
 }
 
 app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req, res) => {
-  const { fileName, fileType, acl = null } = req.body;
+  const { fileName, fileType, acl = 'public-read' } = req.body;
 
   if (!fileName || !fileType) {
     return res.status(400).json({ error: "File name and type are required" });
