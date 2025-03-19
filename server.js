@@ -1133,21 +1133,64 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Define the prefix for this podcast admin's uploads
     const prefix = `jamie-pro/${feedId}/uploads/`;
     
+    // Parse pagination parameters
+    const pageSize = 50; // Fixed page size of 50 items
+    const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
+    
+    if (page < 1) {
+      return res.status(400).json({ error: "Page number must be 1 or greater" });
+    }
+    
     // Create a new S3 client for this operation
     const client = clipSpacesManager.createClient();
     
-    // Create the list objects command
-    const command = new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: prefix,
-      MaxKeys: 100 // Limit the number of results
-    });
+    // Set up pagination parameters for S3 listing
+    let continuationToken = null;
+    let allContents = [];
+    let hasMoreItems = true;
+    let totalCount = 0;
     
-    // Execute the command
-    const response = await client.send(command);
+    // If we're requesting a page other than the first, we need to fetch all previous pages
+    // to get the correct continuation token
+    // It's not ideal, but S3 doesn't support direct offset pagination
+    let currentPage = 1;
+    
+    while (hasMoreItems && currentPage <= page) {
+      const listParams = {
+        Bucket: bucketName,
+        Prefix: prefix,
+        MaxKeys: pageSize
+      };
+      
+      // Add the continuation token if we have one from a previous request
+      if (continuationToken) {
+        listParams.ContinuationToken = continuationToken;
+      }
+      
+      // Execute the command
+      const command = new ListObjectsV2Command(listParams);
+      const response = await client.send(command);
+      
+      // Update total count
+      totalCount += response.Contents?.length || 0;
+      
+      // If this is the page we want, store the contents
+      if (currentPage === page) {
+        allContents = response.Contents || [];
+      }
+      
+      // Check if there are more items to fetch
+      hasMoreItems = response.IsTruncated;
+      
+      // Update the continuation token for the next request
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
+      
+      // Move to the next page
+      currentPage++;
+    }
     
     // Process the results to make them more user-friendly
-    const uploads = (response.Contents || []).map(item => {
+    const uploads = allContents.map(item => {
       // Extract just the filename from the full path
       const fileName = item.Key.replace(prefix, '');
       
@@ -1160,10 +1203,20 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       };
     });
     
-    // Return the list of uploads
+    // Calculate pagination metadata
+    const hasNextPage = hasMoreItems;
+    const hasPreviousPage = page > 1;
+    
+    // Return the list of uploads with pagination metadata
     res.json({
       uploads,
-      count: uploads.length,
+      pagination: {
+        page,
+        pageSize,
+        hasNextPage,
+        hasPreviousPage,
+        totalCount
+      },
       feedId
     });
     

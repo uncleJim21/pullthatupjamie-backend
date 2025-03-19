@@ -87,10 +87,39 @@ Pull That Up Jamie is a privacy-focused search and podcast clip generation appli
   - Lists all uploaded files for the authenticated podcast admin
   - **Only available for Jamie Pro podcast admins**
   - Requires admin JWT authentication
-  - Response: `{ uploads: [{ key, fileName, size, lastModified, publicUrl }], count, feedId }`
+  - Query Parameters:
+    - `page` (optional): Page number for paginated results (default: 1)
+  - Response: 
+    ```json
+    { 
+      "uploads": [
+        { 
+          "key": "file/path/key", 
+          "fileName": "filename.mp4", 
+          "size": 1048576, 
+          "lastModified": "2023-07-15T10:30:00Z", 
+          "publicUrl": "https://bucket.endpoint.com/file/path/key" 
+        }
+      ],
+      "pagination": {
+        "page": 1,
+        "pageSize": 50,
+        "hasNextPage": true,
+        "hasPreviousPage": false,
+        "totalCount": 120
+      },
+      "feedId": "podcast-feed-id"
+    }
+    ```
   - Example usage with curl:
     ```bash
+    # Fetch first page (default)
     curl -X GET "http://localhost:4132/api/list-uploads" \
+      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+      -H "Content-Type: application/json"
+
+    # Fetch specific page
+    curl -X GET "http://localhost:4132/api/list-uploads?page=2" \
       -H "Authorization: Bearer YOUR_JWT_TOKEN" \
       -H "Content-Type: application/json"
     ```
