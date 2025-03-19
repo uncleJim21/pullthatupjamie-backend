@@ -83,6 +83,18 @@ Pull That Up Jamie is a privacy-focused search and podcast clip generation appli
   - Retrieves details for a specific podcast feed
   - Parameters: `feedId`
 
+- `GET /api/list-uploads`
+  - Lists all uploaded files for the authenticated podcast admin
+  - **Only available for Jamie Pro podcast admins**
+  - Requires admin JWT authentication
+  - Response: `{ uploads: [{ key, fileName, size, lastModified, publicUrl }], count, feedId }`
+  - Example usage with curl:
+    ```bash
+    curl -X GET "http://localhost:4132/api/list-uploads" \
+      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+      -H "Content-Type: application/json"
+    ```
+
 - `POST /api/generate-presigned-url`
   - Generates a pre-signed URL for direct client-to-CDN uploads
   - **Only available for Jamie Pro podcast admins**

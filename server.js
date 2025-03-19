@@ -31,7 +31,7 @@ const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
-const { PutObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1114,7 +1114,67 @@ app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req
   }
 });
 
-
+app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
+  try {
+    // Check if clipSpacesManager is initialized
+    if (!clipSpacesManager) {
+      return res.status(503).json({ error: "Clip storage service not available" });
+    }
+    
+    // Get the clip bucket name from environment variable - same as used in ClipUtils
+    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
+    if (!bucketName) {
+      return res.status(503).json({ error: "Clip bucket not configured" });
+    }
+    
+    // Use feedId from verified podcast admin
+    const { feedId } = req.podcastAdmin;
+    
+    // Define the prefix for this podcast admin's uploads
+    const prefix = `jamie-pro/${feedId}/uploads/`;
+    
+    // Create a new S3 client for this operation
+    const client = clipSpacesManager.createClient();
+    
+    // Create the list objects command
+    const command = new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: prefix,
+      MaxKeys: 100 // Limit the number of results
+    });
+    
+    // Execute the command
+    const response = await client.send(command);
+    
+    // Process the results to make them more user-friendly
+    const uploads = (response.Contents || []).map(item => {
+      // Extract just the filename from the full path
+      const fileName = item.Key.replace(prefix, '');
+      
+      return {
+        key: item.Key,
+        fileName: fileName,
+        size: item.Size,
+        lastModified: item.LastModified,
+        publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
+      };
+    });
+    
+    // Return the list of uploads
+    res.json({
+      uploads,
+      count: uploads.length,
+      feedId
+    });
+    
+  } catch (error) {
+    console.error("Error listing uploads:", error);
+    res.status(500).json({ 
+      error: "Failed to list uploads", 
+      details: error.message 
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
