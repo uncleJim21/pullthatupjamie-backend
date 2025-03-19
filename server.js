@@ -1149,6 +1149,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     let allContents = [];
     let hasMoreItems = true;
     let totalCount = 0;
+    let directoryCount = 0; // Track total number of directories across all pages
     
     // If we're requesting a page other than the first, we need to fetch all previous pages
     // to get the correct continuation token
@@ -1171,7 +1172,11 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       const command = new ListObjectsV2Command(listParams);
       const response = await client.send(command);
       
-      // Update total count
+      // Count directories in this response
+      const directoriesInThisPage = (response.Contents || []).filter(item => item.Key.endsWith('/')).length;
+      directoryCount += directoriesInThisPage;
+      
+      // Update total count (including directories for now)
       totalCount += response.Contents?.length || 0;
       
       // If this is the page we want, store the contents
@@ -1190,22 +1195,27 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     }
     
     // Process the results to make them more user-friendly
-    const uploads = allContents.map(item => {
-      // Extract just the filename from the full path
-      const fileName = item.Key.replace(prefix, '');
-      
-      return {
-        key: item.Key,
-        fileName: fileName,
-        size: item.Size,
-        lastModified: item.LastModified,
-        publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
-      };
-    });
+    const uploads = allContents
+      .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
+      .map(item => {
+        // Extract just the filename from the full path
+        const fileName = item.Key.replace(prefix, '');
+        
+        return {
+          key: item.Key,
+          fileName: fileName,
+          size: item.Size,
+          lastModified: item.LastModified,
+          publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
+        };
+      });
     
     // Calculate pagination metadata
     const hasNextPage = hasMoreItems;
     const hasPreviousPage = page > 1;
+    
+    // Calculate the real total count by subtracting all directories
+    const realTotalCount = totalCount - directoryCount;
     
     // Return the list of uploads with pagination metadata
     res.json({
@@ -1215,7 +1225,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
         pageSize,
         hasNextPage,
         hasPreviousPage,
-        totalCount
+        totalCount: realTotalCount
       },
       feedId
     });
