@@ -29,6 +29,9 @@ const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
 const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const userPreferencesRoutes = require('./routes/userPreferences');
+const { v4: uuidv4 } = require('uuid');
+const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
+const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -68,7 +71,10 @@ const validateSpacesConfig = () => {
     hasSpacesEndpoint: !!process.env.SPACES_ENDPOINT,
     hasAccessKeyId: !!process.env.SPACES_ACCESS_KEY_ID,
     hasSecretKey: !!process.env.SPACES_SECRET_ACCESS_KEY,
-    hasBucketName: !!process.env.SPACES_BUCKET_NAME
+    hasBucketName: !!process.env.SPACES_BUCKET_NAME,
+    hasClipBucket: !!process.env.SPACES_CLIP_BUCKET_NAME,
+    hasClipAccessKey: !!process.env.SPACES_CLIP_ACCESS_KEY_ID,
+    hasClipSecretKey: !!process.env.SPACES_CLIP_SECRET_KEY
   });
   
   const missing = required.filter(key => !process.env[key]);
@@ -78,8 +84,46 @@ const validateSpacesConfig = () => {
     return false;
   }
   
+  // Also check if SPACES_CLIP related variables are available
+  if (!process.env.SPACES_CLIP_BUCKET_NAME) {
+    console.warn('SPACES_CLIP_BUCKET_NAME not defined, clip uploads may not work');
+  }
+  
+  if (!process.env.SPACES_CLIP_ACCESS_KEY_ID || !process.env.SPACES_CLIP_SECRET_KEY) {
+    console.warn('SPACES_CLIP_ACCESS_KEY_ID or SPACES_CLIP_SECRET_KEY not defined, using default credentials');
+  }
+  
   return true;
 };
+
+// Create spacesManager instance
+let spacesManager = null;
+let clipSpacesManager = null;
+
+// Initialize spacesManager
+if (validateSpacesConfig()) {
+  try {
+    spacesManager = new DigitalOceanSpacesManager(
+      process.env.SPACES_ENDPOINT,
+      process.env.SPACES_ACCESS_KEY_ID,
+      process.env.SPACES_SECRET_ACCESS_KEY
+    );
+    console.log('Spaces manager initialized successfully');
+
+    // Initialize clip spaces manager with clip-specific credentials if available
+    const clipAccessKeyId = process.env.SPACES_CLIP_ACCESS_KEY_ID || process.env.SPACES_ACCESS_KEY_ID;
+    const clipSecretKey = process.env.SPACES_CLIP_SECRET_KEY || process.env.SPACES_SECRET_ACCESS_KEY;
+    
+    clipSpacesManager = new DigitalOceanSpacesManager(
+      process.env.SPACES_ENDPOINT,
+      clipAccessKeyId,
+      clipSecretKey
+    );
+    console.log('Clip spaces manager initialized successfully');
+  } catch (error) {
+    console.error('Error initializing spaces manager:', error);
+  }
+}
 
 const dbBackupManager = new DatabaseBackupManager({
   spacesEndpoint: process.env.SPACES_ENDPOINT,
@@ -155,7 +199,42 @@ const jamieAuthMiddleware = async (req, res, next) => {
   }
 };
 
+// Middleware to verify podcast admin privileges
+const verifyPodcastAdminMiddleware = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
 
+    // Extract token
+    const token = authHeader.substring(7);
+    
+    // Verify JWT token
+    const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+    
+    // Fetch podcast details for this admin
+    const proPod = await getProPodcastByAdminEmail(decoded.email);
+    
+    if (!proPod || !proPod.feedId) {
+      return res.status(403).json({ 
+        error: 'Unauthorized. You are not registered as a podcast admin.' 
+      });
+    }
+    
+    // Store feedId and admin email in request object for later use
+    req.podcastAdmin = {
+      email: decoded.email,
+      feedId: proPod.feedId
+    };
+    
+    next();
+  } catch (error) {
+    console.error('Podcast admin verification error:', error.message);
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
 
 // Model configurations
 const MODEL_CONFIGS = {
@@ -932,6 +1011,220 @@ app.post('/api/feedback', async (req, res) => {
     console.error('Error processing feedback:', error);
     res.status(500).json({
       error: 'Internal server error processing feedback'
+    });
+  }
+});
+
+// Helper function for sanitizing file names
+function sanitizeFileName(fileName) {
+  // First, strip any path information by extracting just the file name
+  const fileNameOnly = fileName.split('/').pop().split('\\').pop();
+  
+  // Remove path traversal characters and potentially harmful characters
+  const sanitized = fileNameOnly
+    .replace(/\.\.\//g, '') // Remove path traversal
+    .replace(/[/\\]/g, '_') // Replace slashes with underscores
+    .replace(/[^a-zA-Z0-9._-]/g, '_') // Replace other special characters
+    .trim();
+  
+  // Ensure the file name isn't empty after sanitization
+  return sanitized || 'unnamed_file';
+}
+
+app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req, res) => {
+  const { fileName, fileType, acl = 'public-read' } = req.body;
+
+  if (!fileName || !fileType) {
+    return res.status(400).json({ error: "File name and type are required" });
+  }
+
+  // Validate allowed file types
+  const allowedFileTypes = [
+    // Audio formats
+    'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm',
+    // Image formats
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    // Video formats
+    'video/mp4', 'video/webm', 'video/ogg',
+    // Documents
+    'application/pdf'
+  ];
+
+  if (!allowedFileTypes.includes(fileType)) {
+    return res.status(400).json({ 
+      error: "File type not allowed",
+      allowedTypes: allowedFileTypes
+    });
+  }
+
+  try {
+    // Check if clipSpacesManager is initialized
+    if (!clipSpacesManager) {
+      return res.status(503).json({ error: "Clip storage service not available" });
+    }
+    
+    // Get the clip bucket name from environment variable - same as used in ClipUtils
+    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
+    if (!bucketName) {
+      return res.status(503).json({ error: "Clip bucket not configured" });
+    }
+    
+    // Use feedId from verified podcast admin
+    const { feedId } = req.podcastAdmin;
+    
+    // Generate a safe path using the feedId and a timestamp to ensure uniqueness
+    const timestamp = new Date().getTime();
+    
+    // Use the same path structure that works for ClipUtils
+    const key = `jamie-pro/${feedId}/uploads/${timestamp}-${sanitizeFileName(fileName)}`;
+    const expiresIn = 3600; // URL validity in seconds (1 hour)
+    
+    // Set max file size based on file type (100MB for audio/video, 10MB for images, 5MB for docs)
+    let maxSizeBytes = 100 * 1024 * 1024; // Default to 100MB
+    
+    if (fileType.startsWith('image/')) {
+      maxSizeBytes = 10 * 1024 * 1024; // 10MB for images
+    } else if (fileType === 'application/pdf') {
+      maxSizeBytes = 5 * 1024 * 1024; // 5MB for PDFs
+    }
+
+    // Generate pre-signed URL using the clip-specific spaces manager
+    const uploadUrl = await clipSpacesManager.generatePresignedUploadUrl(
+      bucketName, 
+      key, 
+      fileType, 
+      expiresIn,
+      maxSizeBytes,
+      acl
+    );
+
+    console.log(`Generated pre-signed URL for ${bucketName}/${key}`);
+
+    res.json({ 
+      uploadUrl, 
+      key,
+      feedId,
+      publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${key}`,
+      maxSizeBytes,
+      maxSizeMB: Math.round(maxSizeBytes / (1024 * 1024))
+    });
+  } catch (error) {
+    console.error("Error generating pre-signed URL:", error);
+    res.status(500).json({ error: "Could not generate pre-signed URL" });
+  }
+});
+
+app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
+  try {
+    // Check if clipSpacesManager is initialized
+    if (!clipSpacesManager) {
+      return res.status(503).json({ error: "Clip storage service not available" });
+    }
+    
+    // Get the clip bucket name from environment variable - same as used in ClipUtils
+    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
+    if (!bucketName) {
+      return res.status(503).json({ error: "Clip bucket not configured" });
+    }
+    
+    // Use feedId from verified podcast admin
+    const { feedId } = req.podcastAdmin;
+    
+    // Define the prefix for this podcast admin's uploads
+    const prefix = `jamie-pro/${feedId}/uploads/`;
+    
+    // Parse pagination parameters
+    const pageSize = 50; // Fixed page size of 50 items
+    const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
+    
+    if (page < 1) {
+      return res.status(400).json({ error: "Page number must be 1 or greater" });
+    }
+    
+    // Create a new S3 client for this operation
+    const client = clipSpacesManager.createClient();
+    
+    // Set up pagination parameters for S3 listing
+    let continuationToken = null;
+    let allContents = [];
+    let hasMoreItems = true;
+    let totalCount = 0;
+    
+    // If we're requesting a page other than the first, we need to fetch all previous pages
+    // to get the correct continuation token
+    // It's not ideal, but S3 doesn't support direct offset pagination
+    let currentPage = 1;
+    
+    while (hasMoreItems && currentPage <= page) {
+      const listParams = {
+        Bucket: bucketName,
+        Prefix: prefix,
+        MaxKeys: pageSize
+      };
+      
+      // Add the continuation token if we have one from a previous request
+      if (continuationToken) {
+        listParams.ContinuationToken = continuationToken;
+      }
+      
+      // Execute the command
+      const command = new ListObjectsV2Command(listParams);
+      const response = await client.send(command);
+      
+      // Update total count
+      totalCount += response.Contents?.length || 0;
+      
+      // If this is the page we want, store the contents
+      if (currentPage === page) {
+        allContents = response.Contents || [];
+      }
+      
+      // Check if there are more items to fetch
+      hasMoreItems = response.IsTruncated;
+      
+      // Update the continuation token for the next request
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
+      
+      // Move to the next page
+      currentPage++;
+    }
+    
+    // Process the results to make them more user-friendly
+    const uploads = allContents.map(item => {
+      // Extract just the filename from the full path
+      const fileName = item.Key.replace(prefix, '');
+      
+      return {
+        key: item.Key,
+        fileName: fileName,
+        size: item.Size,
+        lastModified: item.LastModified,
+        publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
+      };
+    });
+    
+    // Calculate pagination metadata
+    const hasNextPage = hasMoreItems;
+    const hasPreviousPage = page > 1;
+    
+    // Return the list of uploads with pagination metadata
+    res.json({
+      uploads,
+      pagination: {
+        page,
+        pageSize,
+        hasNextPage,
+        hasPreviousPage,
+        totalCount
+      },
+      feedId
+    });
+    
+  } catch (error) {
+    console.error("Error listing uploads:", error);
+    res.status(500).json({ 
+      error: "Failed to list uploads", 
+      details: error.message 
     });
   }
 });

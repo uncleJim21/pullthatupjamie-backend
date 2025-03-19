@@ -4,6 +4,7 @@ const {
     GetObjectCommand, 
     DeleteObjectCommand 
   } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
   
   class DigitalOceanSpacesManager {
     constructor(spacesEndpoint, accessKeyId, secretAccessKey, options = {}) {
@@ -55,7 +56,8 @@ const {
         });
         
         // We expect this to fail with a NoSuchBucket error, but not a credentials error
-        await this.s3Client.send(command);
+        const client = this.createClient();
+        await client.send(command);
       } catch (error) {
         if (error.name === 'InvalidAccessKeyId' || error.name === 'SignatureDoesNotMatch') {
           throw new Error('Invalid DigitalOcean Spaces credentials');
@@ -195,12 +197,51 @@ const {
   
       try {
         const command = new DeleteObjectCommand(params);
-        await this.s3Client.send(command);
+        const client = this.createClient();
+        await client.send(command);
       } catch (error) {
         console.error("Error deleting file:", error.message);
         throw new Error(`Failed to delete file: ${error.message}`);
       }
     }
+
+    async generatePresignedUploadUrl(bucketName, key, contentType, expiresIn = 3600, maxSizeBytes = 1024 * 1024 * 100, acl = 'public-read') {
+      console.log(`Generating pre-signed URL for ${bucketName}/${key} (contentType: ${contentType}, acl: ${acl || 'none'})`);
+      
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        ContentType: contentType,
+      });
+
+      // Only add ACL if specified (some buckets might restrict ACL)
+      if (acl) {
+        console.log(`Setting ACL to ${acl}`);
+        command.input.ACL = acl;
+      }
+
+      // Set configuration for the signed URL
+      const signedUrlOptions = { 
+        expiresIn
+      };
+
+      // Note: We intentionally don't set ContentLength in the command
+      // as it can cause issues with curl and other HTTP clients
+      // maxSizeBytes is just used for client-side validation
+
+      try {
+        console.log(`Creating S3 client for endpoint: https://${this.spacesEndpoint}`);
+        const client = this.createClient();
+        const url = await getSignedUrl(client, command, signedUrlOptions);
+        console.log(`Generated pre-signed URL successfully: ${url.substring(0, 100)}...`);
+        return url;
+      } catch (error) {
+        console.error("Error generating pre-signed URL:", error);
+        throw error;
+      }
+    }
   }
+
+  
   
   module.exports = DigitalOceanSpacesManager;
