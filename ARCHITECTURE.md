@@ -83,6 +83,29 @@ Pull That Up Jamie is a privacy-focused search and podcast clip generation appli
   - Retrieves details for a specific podcast feed
   - Parameters: `feedId`
 
+- `POST /api/generate-presigned-url`
+  - Generates a pre-signed URL for direct client-to-CDN uploads
+  - **Only available for Jamie Pro podcast admins**
+  - Requires admin JWT authentication
+  - Body: `{ fileName, fileType, acl }`
+  - Response: `{ uploadUrl, key, feedId, publicUrl, maxSizeBytes, maxSizeMB }`
+  - The `acl` parameter defaults to `public-read` to ensure files are publicly accessible after upload.
+  - Example usage from a React frontend:
+    ```javascript
+    const generatePresignedUrl = async (fileName, fileType) => {
+      const response = await fetch('/api/generate-presigned-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${yourJwtToken}`
+        },
+        body: JSON.stringify({ fileName, fileType, acl: 'public-read' })
+      });
+      const data = await response.json();
+      return data.uploadUrl;
+    };
+    ```
+
 ### Search and Discovery
 - `POST /api/search-quotes`
   - Searches for quotes within podcasts
@@ -308,6 +331,47 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
 });
 ```
 
-### JamieFeedback
+### Obtaining a Pre-signed URL
+- **For Jamie Pro Podcast Admins**
+  - To obtain a pre-signed URL for uploading files directly to the CDN, use the `POST /api/generate-presigned-url` endpoint.
+  - This endpoint requires admin JWT authentication and is only available for Jamie Pro podcast admins.
+  - The request body should include:
+    - `fileName`: The name of the file to be uploaded.
+    - `fileType`: The MIME type of the file.
+    - `acl`: Optional, defaults to `public-read` to ensure the file is publicly accessible.
+  - The response will include:
+    - `uploadUrl`: The pre-signed URL for uploading the file.
+    - `key`: The storage key for the file.
+    - `feedId`: The ID of the podcast feed.
+    - `publicUrl`: The public URL where the file can be accessed after upload.
+    - `maxSizeBytes`: The maximum allowed file size in bytes.
+    - `maxSizeMB`: The maximum allowed file size in megabytes.
 
-This model captures user feedback:
+```javascript
+const generatePresignedUrl = async (fileName, fileType) => {
+  const response = await fetch('/api/generate-presigned-url', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${yourJwtToken}`
+    },
+    body: JSON.stringify({ fileName, fileType, acl: 'public-read' })
+  });
+  const data = await response.json();
+  return data.uploadUrl;
+};
+```
+
+### Uploading Files
+- **Direct Client-to-CDN Upload**
+  - Use the pre-signed URL to upload files directly from the client to the CDN.
+  - Ensure the `x-amz-acl` header is set to `public-read` in the upload request to make the file publicly accessible.
+  - Example bash script for uploading:
+    ```bash
+    #!/bin/bash
+    # Usage: ./test-upload.sh <file_path> "<upload_url>"
+    curl -X PUT "$UPLOAD_URL" \
+         -H "Content-Type: video/mp4" \
+         -H "x-amz-acl: public-read" \
+         --data-binary "@$FILE_PATH"
+    ```

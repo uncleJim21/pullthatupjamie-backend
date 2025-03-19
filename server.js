@@ -1114,61 +1114,7 @@ app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req
   }
 });
 
-// Diagnostic endpoint to test bucket access
-app.get("/api/test-spaces-access", verifyPodcastAdminMiddleware, async (req, res) => {
-  try {
-    if (!clipSpacesManager) {
-      return res.status(503).json({ error: "Clip storage service not available" });
-    }
-    
-    // Get the clip bucket name
-    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
-    if (!bucketName) {
-      return res.status(400).json({ error: "Clip bucket not configured" });
-    }
-    
-    // Create a test key based on feedId
-    const { feedId } = req.podcastAdmin;
-    const testKey = `${feedId}/test-permissions.txt`;
-    const testContent = `Permission test at ${new Date().toISOString()}`;
-    
-    // Try to upload a small test file
-    try {
-      console.log(`Testing write access to ${bucketName}/${testKey} with clip spaces manager`);
-      
-      // Create a test file
-      const command = new PutObjectCommand({
-        Bucket: bucketName,
-        Key: testKey,
-        Body: testContent,
-        ContentType: 'text/plain'
-      });
-      
-      const client = clipSpacesManager.createClient();
-      await client.send(command);
-      
-      return res.json({
-        status: 'success',
-        message: `Successfully wrote test file to ${bucketName}/${testKey}`,
-        bucketName,
-        feedId,
-        testKey
-      });
-    } catch (uploadError) {
-      console.error('Error testing bucket write access:', uploadError);
-      return res.status(403).json({
-        status: 'failed',
-        error: 'Could not write to bucket',
-        details: uploadError.message,
-        bucketName,
-        feedId
-      });
-    }
-  } catch (error) {
-    console.error('General error testing bucket access:', error);
-    return res.status(500).json({ error: "Failed to test bucket access" });
-  }
-});
+
 
 // Health check endpoint
 app.get('/health', (req, res) => {
