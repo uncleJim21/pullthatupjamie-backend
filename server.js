@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -32,6 +32,7 @@ const userPreferencesRoutes = require('./routes/userPreferences');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const debugRoutes = require('./routes/debugRoutes');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1271,6 +1272,12 @@ process.on('unhandledRejection', (reason, promise) => {
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
 
+// Only enable debug routes in debug mode
+if (DEBUG_MODE) {
+  console.log('🔍 Debug mode enabled - Debug routes are accessible');
+  app.use('/api/debug', debugRoutes);
+}
+
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
@@ -1300,6 +1307,110 @@ app.listen(PORT, async () => {
     console.error('Error during initialization:', error);
     // Don't exit the process, just log the error and continue without backups
     console.warn('Continuing without backup system...');
+  }
+});
+
+// Add this new endpoint for testing episode retrieval
+app.get('/api/episode/:guid', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    console.log(`Fetching episode data for GUID: ${guid}`);
+    
+    const episode = await getEpisodeByGuid(guid);
+    
+    if (!episode) {
+      return res.status(404).json({ 
+        error: 'Episode not found',
+        guid 
+      });
+    }
+
+    res.json({ episode });
+  } catch (error) {
+    console.error('Error fetching episode:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch episode data',
+      details: error.message,
+      guid: req.params.guid
+    });
+  }
+});
+
+// Add an endpoint to get paragraph with its episode data
+app.get('/api/paragraph-with-episode/:paragraphId', async (req, res) => {
+  try {
+    const { paragraphId } = req.params;
+    console.log(`Fetching paragraph with episode data for ID: ${paragraphId}`);
+    
+    const result = await getParagraphWithEpisodeData(paragraphId);
+    
+    if (!result || !result.paragraph) {
+      return res.status(404).json({ 
+        error: 'Paragraph not found',
+        paragraphId 
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching paragraph with episode:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch paragraph with episode data',
+      details: error.message,
+      paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+// Add this new endpoint for testing feed retrieval
+app.get('/api/feed/:feedId', async (req, res) => {
+  try {
+    const { feedId } = req.params;
+    console.log(`Fetching feed data for feedId: ${feedId}`);
+    
+    const feed = await getFeedById(feedId);
+    
+    if (!feed) {
+      return res.status(404).json({ 
+        error: 'Feed not found',
+        feedId 
+      });
+    }
+
+    res.json({ feed });
+  } catch (error) {
+    console.error('Error fetching feed:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch feed data',
+      details: error.message,
+      feedId: req.params.feedId
+    });
+  }
+});
+
+// Add an endpoint to get paragraph with its feed data
+app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
+  try {
+    const { paragraphId } = req.params;
+    console.log(`Fetching paragraph with feed data for ID: ${paragraphId}`);
+    
+    const result = await getParagraphWithFeedData(paragraphId);
+    
+    if (!result || !result.paragraph) {
+      return res.status(404).json({ 
+        error: 'Paragraph not found',
+        paragraphId 
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching paragraph with feed:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch paragraph with feed data',
+      details: error.message,
+      paragraphId: req.params.paragraphId
+    });
   }
 });
 

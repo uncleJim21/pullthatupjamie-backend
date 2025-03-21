@@ -306,6 +306,206 @@ const pineconeTools = {
             throw error;
         }
     },
+
+    getEpisodeByGuid: async (guid) => {
+        try {
+            if (!guid) {
+                throw new Error('GUID is required to fetch episode data');
+            }
+            
+            // Query Pinecone with a filter for the specific guid and type "episode"
+            const dummyVector = Array(1536).fill(0);
+            const queryResult = await index.query({
+                vector: dummyVector,
+                filter: {
+                    type: "episode",
+                    guid: guid
+                },
+                topK: 1,
+                includeMetadata: true,
+            });
+            
+            // Check if we got results
+            if (!queryResult || !queryResult.matches || queryResult.matches.length === 0) {
+                console.log('No episode found for guid:', guid);
+                return null;
+            }
+            
+            // Return the episode metadata
+            return {
+                id: queryResult.matches[0].id,
+                guid: guid,
+                title: queryResult.matches[0].metadata.title || queryResult.matches[0].metadata.episode || "Unknown Title",
+                description: queryResult.matches[0].metadata.description || "",
+                publishedDate: queryResult.matches[0].metadata.publishedDate || queryResult.matches[0].metadata.published_date || null,
+                creator: queryResult.matches[0].metadata.creator || "Unknown Creator",
+                feedId: queryResult.matches[0].metadata.feedId || null,
+                audioUrl: queryResult.matches[0].metadata.audioUrl || null,
+                episodeImage: queryResult.matches[0].metadata.episodeImage || queryResult.matches[0].metadata.image || null,
+                duration: queryResult.matches[0].metadata.duration || null,
+                listenLink: queryResult.matches[0].metadata.listenLink || null,
+                // Include any other relevant metadata fields
+                additionalMetadata: queryResult.matches[0].metadata
+            };
+        } catch (error) {
+            console.error('Error in getEpisodeByGuid:', error);
+            throw new Error(`Failed to fetch episode data: ${error.message}`);
+        }
+    },
+    
+    // Add a utility function to get paragraph and its corresponding episode
+    getParagraphWithEpisodeData: async (paragraphId) => {
+        try {
+            // First, get the paragraph data
+            const paragraph = await pineconeTools.getClipById(paragraphId);
+            
+            if (!paragraph) {
+                return null;
+            }
+            
+            // Extract the guid from the paragraph
+            const guid = paragraph.additionalFields?.guid || 
+                         (paragraph.shareLink && paragraph.shareLink.includes('_p') ? 
+                          paragraph.shareLink.split('_p')[0] : null);
+            
+            if (!guid) {
+                console.warn('Could not extract guid from paragraph:', paragraphId);
+                return { paragraph, episode: null };
+            }
+            
+            // Get the episode data using the guid
+            const episode = await pineconeTools.getEpisodeByGuid(guid);
+            
+            // Return both paragraph and episode data
+            return { paragraph, episode };
+        } catch (error) {
+            console.error('Error in getParagraphWithEpisodeData:', error);
+            throw new Error(`Failed to fetch paragraph with episode data: ${error.message}`);
+        }
+    },
+
+    getFeedById: async (feedId) => {
+        try {
+            if (!feedId) {
+                throw new Error('Feed ID is required to fetch feed data');
+            }
+            
+            // Convert feedId to string for comparison with feed objects
+            const feedIdStr = String(feedId);
+            
+            // Query Pinecone with a filter for type "feed" and the specific feedId
+            const dummyVector = Array(1536).fill(0);
+            const queryResult = await index.query({
+                vector: dummyVector,
+                filter: {
+                    type: "feed",
+                    feedId: feedIdStr
+                },
+                topK: 1,
+                includeMetadata: true,
+            });
+            
+            // Check if we got results
+            if (!queryResult || !queryResult.matches || queryResult.matches.length === 0) {
+                console.log('No feed found for feedId:', feedId);
+                
+                // Try with numeric feedId as fallback (in case it's stored as a number)
+                const numericFeedId = parseInt(feedId, 10);
+                if (!isNaN(numericFeedId)) {
+                    const fallbackResult = await index.query({
+                        vector: dummyVector,
+                        filter: {
+                            type: "feed",
+                            feedId: numericFeedId
+                        },
+                        topK: 1,
+                        includeMetadata: true,
+                    });
+                    
+                    if (fallbackResult && fallbackResult.matches && fallbackResult.matches.length > 0) {
+                        return formatFeedData(fallbackResult.matches[0]);
+                    }
+                }
+                
+                return null;
+            }
+            
+            // Format and return the feed metadata
+            return formatFeedData(queryResult.matches[0]);
+        } catch (error) {
+            console.error('Error in getFeedById:', error);
+            throw new Error(`Failed to fetch feed data: ${error.message}`);
+        }
+    },
+    
+    // Helper function to format feed data consistently
+    formatFeedData: (match) => {
+        return {
+            id: match.id,
+            feedId: match.metadata.feedId || "",
+            title: match.metadata.title || "Unknown Title",
+            description: match.metadata.description || "",
+            author: match.metadata.author || match.metadata.creator || "Unknown Author",
+            imageUrl: match.metadata.imageUrl || match.metadata.image || null,
+            language: match.metadata.language || "en",
+            explicit: match.metadata.explicit || false,
+            episodeCount: match.metadata.episodeCount || 0,
+            feedUrl: match.metadata.feedUrl || null,
+            podcastGuid: match.metadata.podcastGuid || null,
+            lastUpdateTime: match.metadata.lastUpdateTime || null,
+            // Include any other relevant metadata fields
+            additionalMetadata: match.metadata
+        };
+    },
+    
+    // Add a utility function to get paragraph with its feed data
+    getParagraphWithFeedData: async (paragraphId) => {
+        try {
+            // First, get the paragraph data
+            const paragraph = await pineconeTools.getClipById(paragraphId);
+            
+            if (!paragraph) {
+                return null;
+            }
+            
+            // Extract the feedId from the paragraph
+            const feedId = paragraph.additionalFields?.feedId || null;
+            
+            if (!feedId) {
+                console.warn('Could not extract feedId from paragraph:', paragraphId);
+                return { paragraph, feed: null };
+            }
+            
+            // Get the feed data using the feedId
+            const feed = await pineconeTools.getFeedById(feedId);
+            
+            // Return both paragraph and feed data
+            return { paragraph, feed };
+        } catch (error) {
+            console.error('Error in getParagraphWithFeedData:', error);
+            throw new Error(`Failed to fetch paragraph with feed data: ${error.message}`);
+        }
+    },
 };
+
+// Helper function to format feed data (outside the object for reuse)
+function formatFeedData(match) {
+    return {
+        id: match.id,
+        feedId: match.metadata.feedId || "",
+        title: match.metadata.title || "Unknown Title",
+        description: match.metadata.description || "",
+        author: match.metadata.author || match.metadata.creator || "Unknown Author",
+        imageUrl: match.metadata.imageUrl || match.metadata.image || null,
+        language: match.metadata.language || "en",
+        explicit: match.metadata.explicit || false,
+        episodeCount: match.metadata.episodeCount || 0,
+        feedUrl: match.metadata.feedUrl || null,
+        podcastGuid: match.metadata.podcastGuid || null,
+        lastUpdateTime: match.metadata.lastUpdateTime || null,
+        // Include any other relevant metadata fields
+        additionalMetadata: match.metadata
+    };
+}
 
 module.exports = pineconeTools;
