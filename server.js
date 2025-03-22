@@ -370,7 +370,7 @@ app.post('/api/validate-privs', async (req, res) => {
 
 ///Clips related
 
-app.post('/api/make-clip',jamieAuthMiddleware, async (req, res) => {
+app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
   const { clipId, timestamps } = req.body;
 
   if (!clipId) {
@@ -403,12 +403,31 @@ app.post('/api/make-clip',jamieAuthMiddleware, async (req, res) => {
           });
       }
 
-      // Create initial record
+      // Extract just the essential identifiers
+      const guid = clipData.additionalFields?.guid || 
+                  (clipData.shareLink && clipData.shareLink.includes('_p') ? 
+                   clipData.shareLink.split('_p')[0] : null);
+      
+      const feedId = clipData.additionalFields?.feedId || null;
+      
+      // Prepare the minimal result object with just the essential data
+      const resultData = {
+          resultSchemaVersion: 2025321,
+          feedId: feedId,
+          guid: guid,
+          shareLink: clipData.shareLink,
+          clipText: clipData.quote || "",
+          timeStart: timestamps ? timestamps[0] : clipData.timeContext?.start_time,
+          timeEnd: timestamps ? timestamps[1] : clipData.timeContext?.end_time,
+      };
+
+      // Create initial record with the minimal result data
       await WorkProductV2.create({
           type: 'ptuj-clip',
           lookupHash,
           status: 'queued',
-          cdnFileId: null
+          cdnFileId: null,
+          result: resultData
       });
 
       // Queue the job WITHOUT awaiting
@@ -1410,6 +1429,51 @@ app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
       error: 'Failed to fetch paragraph with feed data',
       details: error.message,
       paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+app.get('/api/clip-details/:lookupHash', async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    
+    // Get the clip from WorkProductV2
+    const clip = await WorkProductV2.findOne({ lookupHash });
+    
+    if (!clip) {
+      return res.status(404).json({ error: 'Clip not found' });
+    }
+    
+    // If we have the essential identifiers, fetch the detailed data
+    const result = clip.result || {};
+    const { feedId, guid } = result;
+    
+    // Only fetch additional data if we have the identifiers
+    let feedData = null;
+    let episodeData = null;
+    
+    if (feedId && guid) {
+      // Fetch feed and episode data in parallel
+      [feedData, episodeData] = await Promise.all([
+        getFeedById(feedId),
+        getEpisodeByGuid(guid)
+      ]);
+    }
+    
+    // Combine the data
+    const detailedResult = {
+      ...result,
+      cdnFileId: clip.cdnFileId,
+      feed: feedData,
+      episode: episodeData
+    };
+    
+    res.json(detailedResult);
+  } catch (error) {
+    console.error('Error fetching clip details:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch clip details',
+      details: error.message
     });
   }
 });
