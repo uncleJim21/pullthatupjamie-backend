@@ -1492,3 +1492,117 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
   }
 });
 
+// Promotional tweet generation endpoint with jamie-assist name
+app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    const { additionalPrefs = {} } = req.body;
+    
+    console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
+    
+    // Get the clip from WorkProductV2
+    const clip = await WorkProductV2.findOne({ lookupHash });
+    
+    if (!clip) {
+      return res.status(404).json({ error: 'Clip not found' });
+    }
+    
+    // If we have the essential identifiers, fetch the detailed data
+    const result = clip.result || {};
+    const { feedId, guid, clipText } = result;
+    
+    if (!clipText) {
+      return res.status(400).json({ error: 'Clip has no text content' });
+    }
+    
+    // Fetch feed and episode data in parallel
+    let feedData = null;
+    let episodeData = null;
+    
+    if (feedId && guid) {
+      [feedData, episodeData] = await Promise.all([
+        getFeedById(feedId),
+        getEpisodeByGuid(guid)
+      ]);
+    }
+    
+    // Prepare context for the LLM
+    const context = {
+      clipText: clipText || "No clip text available",
+      episodeTitle: episodeData?.title || result.episodeTitle || "Unknown episode",
+      feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
+      episodeDescription: episodeData?.description || result.episodeDescription || "",
+      feedDescription: feedData?.description || result.feedDescription || "",
+      additionalPrefs
+    };
+    
+    // Set up streaming response
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Create the prompt for the LLM
+    const prompt = `
+You are a social media expert who creates engaging promotional tweets for podcast clips.
+
+Here's information about the clip:
+- Podcast: ${context.feedTitle}
+- Episode: ${context.episodeTitle}
+- Clip Text: "${context.clipText}"
+${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}` : ''}
+${context.feedDescription ? `- Podcast Description: ${context.feedDescription}` : ''}
+
+${additionalPrefs.tone ? `Tone preference: ${additionalPrefs.tone}` : 'Use an engaging, conversational tone'}
+${additionalPrefs.length ? `Length preference: ${additionalPrefs.length}` : 'Keep the tweet under 280 characters'}
+${additionalPrefs.hashtags ? `Hashtag preference: ${additionalPrefs.hashtags}` : 'Include 1-2 relevant hashtags'}
+${additionalPrefs.customInstructions ? `Additional instructions: ${additionalPrefs.customInstructions}` : ''}
+
+Create a compelling promotional tweet that:
+1. Captures the essence of the clip
+2. Entices people to listen
+3. Is shareable and attention-grabbing
+4. Includes relevant context about the podcast/episode
+5. Follows Twitter's character limit (280 chars)
+
+Write only the tweet text, without any explanations or quotation marks.
+`;
+
+    // Call OpenAI with streaming
+    const stream = await openai.chat.completions.create({
+      model: "gpt-4-turbo",
+      messages: [{ role: "user", content: prompt }],
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 300
+    });
+    
+    // Stream the response to the client
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    }
+    
+    // End the stream
+    res.write('data: [DONE]\n\n');
+    res.end();
+    
+  } catch (error) {
+    console.error('Error in jamie-assist:', error);
+    
+    // If headers haven't been sent yet, return a JSON error
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        error: 'Failed to generate promotional content',
+        details: error.message
+      });
+    }
+    
+    // If streaming has started, send error in the stream
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+});
+
