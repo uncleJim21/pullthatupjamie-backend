@@ -4,7 +4,8 @@ const {
   getEpisodeByGuid,
   getParagraphWithEpisodeData,
   getFeedById,
-  getParagraphWithFeedData
+  getParagraphWithFeedData,
+  getTextForTimeRange
 } = require('../agent-tools/pineconeTools.js');
 
 // Debug endpoint for episode retrieval
@@ -107,6 +108,40 @@ router.get('/paragraph-with-feed/:paragraphId', async (req, res) => {
       error: 'Failed to fetch paragraph with feed data',
       details: error.message,
       paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+// Add this new endpoint to debugRoutes.js
+router.get('/text-for-timerange/:guid/:startTime/:endTime', async (req, res) => {
+  try {
+    const { guid, startTime, endTime } = req.params;
+    console.log(`[DEBUG] Fetching text for GUID: ${guid}, time range: ${startTime}-${endTime}`);
+    
+    const text = await getTextForTimeRange(
+      guid, 
+      parseFloat(startTime), 
+      parseFloat(endTime)
+    );
+    
+    if (!text) {
+      return res.status(404).json({ 
+        error: 'No text found for the specified time range',
+        guid,
+        startTime,
+        endTime
+      });
+    }
+
+    res.json({ text });
+  } catch (error) {
+    console.error('Error fetching text for time range:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch text for time range',
+      details: error.message,
+      guid: req.params.guid,
+      startTime: req.params.startTime,
+      endTime: req.params.endTime
     });
   }
 });

@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -410,15 +410,29 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       
       const feedId = clipData.additionalFields?.feedId || null;
       
+      // Get the start and end times
+      const timeStart = timestamps ? timestamps[0] : clipData.timeContext?.start_time;
+      const timeEnd = timestamps ? timestamps[1] : clipData.timeContext?.end_time;
+      
+      // Get the accurate text for the time range
+      let clipText = clipData.quote || "";
+      
+      if (guid && timeStart !== undefined && timeEnd !== undefined) {
+          const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
+          if (accurateText) {
+              clipText = accurateText;
+          }
+      }
+      
       // Prepare the minimal result object with just the essential data
       const resultData = {
           resultSchemaVersion: 2025321,
           feedId: feedId,
           guid: guid,
           shareLink: clipData.shareLink,
-          clipText: clipData.quote || "",
-          timeStart: timestamps ? timestamps[0] : clipData.timeContext?.start_time,
-          timeEnd: timestamps ? timestamps[1] : clipData.timeContext?.end_time,
+          clipText: clipText,
+          timeStart: timeStart,
+          timeEnd: timeEnd,
       };
 
       // Create initial record with the minimal result data

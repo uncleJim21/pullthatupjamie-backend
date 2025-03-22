@@ -486,6 +486,60 @@ const pineconeTools = {
             throw new Error(`Failed to fetch paragraph with feed data: ${error.message}`);
         }
     },
+
+    /**
+     * Gets text content from Pinecone for a specific time range in an episode
+     * @param {string} guid - Episode GUID
+     * @param {number} startTime - Start time in seconds
+     * @param {number} endTime - End time in seconds
+     * @returns {string} - Combined text from all paragraphs in the time range
+     */
+    getTextForTimeRange: async (guid, startTime, endTime) => {
+        console.log(`Finding text for guid: ${guid}, time range: ${startTime}-${endTime}`);
+        
+        try {
+            // Create a dummy vector for querying
+            const dummyVector = Array(1536).fill(0);
+            
+            // Query Pinecone for paragraphs that overlap with the time range
+            const result = await index.query({
+                vector: dummyVector,
+                filter: {
+                    type: "paragraph",
+                    guid: guid,
+                    $or: [
+                        // Paragraph starts within our range
+                        { start_time: { $gte: startTime, $lte: endTime } },
+                        // Paragraph ends within our range
+                        { end_time: { $gte: startTime, $lte: endTime } },
+                        // Paragraph completely contains our range
+                        { $and: [{ start_time: { $lte: startTime } }, { end_time: { $gte: endTime } }] }
+                    ]
+                },
+                includeMetadata: true,
+                topK: 50 // Adjust as needed
+            });
+            
+            if (!result.matches || result.matches.length === 0) {
+                console.warn(`No paragraphs found for guid ${guid} in time range ${startTime}-${endTime}`);
+                return null;
+            }
+            
+            // Sort paragraphs by start time
+            const sortedParagraphs = result.matches
+                .sort((a, b) => a.metadata.start_time - b.metadata.start_time);
+            
+            // Combine text from all paragraphs
+            const combinedText = sortedParagraphs
+                .map(p => p.metadata.text)
+                .join(' ');
+            
+            return combinedText;
+        } catch (error) {
+            console.error(`Error getting text for time range:`, error);
+            return null;
+        }
+    },
 };
 
 // Helper function to format feed data (outside the object for reuse)
