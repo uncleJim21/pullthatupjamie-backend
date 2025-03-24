@@ -1496,7 +1496,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
   try {
     const { lookupHash } = req.params;
-    const { additionalPrefs = {} } = req.body;
+    const { additionalPrefs = "" } = req.body;
     
     console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
     
@@ -1552,16 +1552,13 @@ Here's information about the clip:
 ${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}` : ''}
 ${context.feedDescription ? `- Podcast Description: ${context.feedDescription}` : ''}
 
-${additionalPrefs.tone ? `Tone preference: ${additionalPrefs.tone}` : 'Use an engaging, conversational tone'}
-${additionalPrefs.length ? `Length preference: ${additionalPrefs.length}` : 'Keep the tweet under 280 characters'}
-${additionalPrefs.hashtags ? `Hashtag preference: ${additionalPrefs.hashtags}` : 'Include 1-2 relevant hashtags'}
-${additionalPrefs.customInstructions ? `Additional instructions: ${additionalPrefs.customInstructions}` : ''}
+${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters. Include 1-2 relevant hashtags.'}
 
 Create a compelling promotional tweet that:
-1. Captures the essence of the clip
-2. Entices people to listen
+1. Primarily focuses on the clip content itself
+2. Captures the essence of what makes this clip interesting
 3. Is shareable and attention-grabbing
-4. Includes relevant context about the podcast/episode
+4. Includes relevant context about the podcast/episode when helpful
 5. Follows Twitter's character limit (280 chars)
 
 Write only the tweet text, without any explanations or quotation marks.
@@ -1569,7 +1566,7 @@ Write only the tweet text, without any explanations or quotation marks.
 
     // Call OpenAI with streaming
     const stream = await openai.chat.completions.create({
-      model: "gpt-4-turbo",
+      model: "gpt-3.5-turbo",
       messages: [{ role: "user", content: prompt }],
       stream: true,
       temperature: 0.7,

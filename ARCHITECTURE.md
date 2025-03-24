@@ -416,3 +416,93 @@ const generatePresignedUrl = async (fileName, fileType) => {
          -H "x-amz-acl: public-read" \
          --data-binary "@$FILE_PATH"
     ```
+
+- `POST /api/jamie-assist/:lookupHash`
+  - Generates promotional social media content for a clip
+  - Requires authentication (any valid method)
+  - Parameters: `lookupHash` - The unique identifier for the clip
+  - Body: 
+    ```json
+    {
+      "additionalPrefs": "Write an engaging tweet that focuses on the clip content. Keep it professional but conversational."
+    }
+    ```
+  - Response: Server-sent events stream with generated content that prioritizes compelling copy about the clip text while taking surrounding episode/podcast context into account
+  - Example usage:
+    ```javascript
+    // Client-side example
+    const generatePromoContent = async (lookupHash, prefsString = "") => {
+      const response = await fetch(`/api/jamie-assist/${lookupHash}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'YOUR_AUTH_HEADER' // Lightning payment or subscription
+        },
+        body: JSON.stringify({ additionalPrefs: prefsString })
+      });
+      
+      // Handle the streaming response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let result = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              return result;
+            }
+            
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                result += parsed.content;
+                // Update UI with the latest content
+              }
+            } catch (e) {
+              // Handle parsing errors
+            }
+          }
+        }
+      }
+      
+      return result;
+    };
+    ```
+
+### Jamie Assist Feature
+
+Jamie Assist is an AI-powered social media content generation system that helps users create promotional material for podcast clips. This feature leverages GPT-4 Turbo to generate engaging social media posts that prioritize compelling content about the clip text while taking into account the surrounding podcast context.
+
+#### How It Works:
+
+1. **Input**: The system takes a clip's unique lookupHash identifier and a single string containing any style preferences or instructions.
+2. **Processing**: The system:
+   - Retrieves the clip's information from the database
+   - Fetches associated podcast and episode details for context
+   - Constructs a prompt combining the clip text, podcast/episode information, and user's instruction string
+   - Sends this to GPT-4 Turbo as a streaming request
+3. **Output**: Returns a streaming response containing social media copy tailored for the content.
+
+#### Key Benefits:
+
+- **Content-Focused**: The system prioritizes creating compelling copy about the clip content itself
+- **Contextually Aware**: Takes into account podcast and episode metadata to provide relevant framing
+- **Simple Customization**: Users can provide a single instruction string for custom requirements
+- **Real-time Generation**: Content is streamed back in real-time for immediate use
+- **Seamless Integration**: Works with the existing authentication system, including Lightning payments
+
+#### Usage Scenarios:
+
+- Podcast creators sharing highlights on social media
+- Listeners sharing interesting clips with personalized commentary
+- Content marketers repurposing podcast content for social channels
+
+This feature complements the clip generation system by not only allowing users to create podcast clips but also helping them effectively promote those clips across social media platforms.
