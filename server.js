@@ -1499,7 +1499,7 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
     const { additionalPrefs = "" } = req.body;
     
     console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
-    
+    console.log(`[INFO] Additional prefs: ${additionalPrefs}`);
     // Get the clip from WorkProductV2
     const clip = await WorkProductV2.findOne({ lookupHash });
     
@@ -1559,10 +1559,12 @@ Create a compelling promotional tweet that:
 2. Captures the essence of what makes this clip interesting
 3. Is shareable and attention-grabbing
 4. Includes relevant context about the podcast/episode when helpful
-5. Follows Twitter's character limit (280 chars)
+5. Follows Twitter's character limit (280 chars accounting for an additonal 50 characters used by overhead)
+6. If there is a guest make an effort to mention them and the host by name if it fits
 
 Write only the tweet text, without any explanations or quotation marks.
 `;
+    console.log(`[INFO] Prompt: ${prompt}`);
 
     // Call OpenAI with streaming
     const stream = await openai.chat.completions.create({
