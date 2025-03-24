@@ -7,7 +7,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -32,6 +32,7 @@ const userPreferencesRoutes = require('./routes/userPreferences');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const debugRoutes = require('./routes/debugRoutes');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -369,7 +370,7 @@ app.post('/api/validate-privs', async (req, res) => {
 
 ///Clips related
 
-app.post('/api/make-clip',jamieAuthMiddleware, async (req, res) => {
+app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
   const { clipId, timestamps } = req.body;
 
   if (!clipId) {
@@ -402,12 +403,45 @@ app.post('/api/make-clip',jamieAuthMiddleware, async (req, res) => {
           });
       }
 
-      // Create initial record
+      // Extract just the essential identifiers
+      const guid = clipData.additionalFields?.guid || 
+                  (clipData.shareLink && clipData.shareLink.includes('_p') ? 
+                   clipData.shareLink.split('_p')[0] : null);
+      
+      const feedId = clipData.additionalFields?.feedId || null;
+      
+      // Get the start and end times
+      const timeStart = timestamps ? timestamps[0] : clipData.timeContext?.start_time;
+      const timeEnd = timestamps ? timestamps[1] : clipData.timeContext?.end_time;
+      
+      // Get the accurate text for the time range
+      let clipText = clipData.quote || "";
+      
+      if (guid && timeStart !== undefined && timeEnd !== undefined) {
+          const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
+          if (accurateText) {
+              clipText = accurateText;
+          }
+      }
+      
+      // Prepare the minimal result object with just the essential data
+      const resultData = {
+          resultSchemaVersion: 2025321,
+          feedId: feedId,
+          guid: guid,
+          shareLink: clipData.shareLink,
+          clipText: clipText,
+          timeStart: timeStart,
+          timeEnd: timeEnd,
+      };
+
+      // Create initial record with the minimal result data
       await WorkProductV2.create({
           type: 'ptuj-clip',
           lookupHash,
           status: 'queued',
-          cdnFileId: null
+          cdnFileId: null,
+          result: resultData
       });
 
       // Queue the job WITHOUT awaiting
@@ -1271,6 +1305,12 @@ process.on('unhandledRejection', (reason, promise) => {
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
 
+// Only enable debug routes in debug mode
+if (DEBUG_MODE) {
+  console.log('🔍 Debug mode enabled - Debug routes are accessible');
+  app.use('/api/debug', debugRoutes);
+}
+
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
@@ -1300,6 +1340,268 @@ app.listen(PORT, async () => {
     console.error('Error during initialization:', error);
     // Don't exit the process, just log the error and continue without backups
     console.warn('Continuing without backup system...');
+  }
+});
+
+// Add this new endpoint for testing episode retrieval
+app.get('/api/episode/:guid', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    console.log(`Fetching episode data for GUID: ${guid}`);
+    
+    const episode = await getEpisodeByGuid(guid);
+    
+    if (!episode) {
+      return res.status(404).json({ 
+        error: 'Episode not found',
+        guid 
+      });
+    }
+
+    res.json({ episode });
+  } catch (error) {
+    console.error('Error fetching episode:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch episode data',
+      details: error.message,
+      guid: req.params.guid
+    });
+  }
+});
+
+// Add an endpoint to get paragraph with its episode data
+app.get('/api/paragraph-with-episode/:paragraphId', async (req, res) => {
+  try {
+    const { paragraphId } = req.params;
+    console.log(`Fetching paragraph with episode data for ID: ${paragraphId}`);
+    
+    const result = await getParagraphWithEpisodeData(paragraphId);
+    
+    if (!result || !result.paragraph) {
+      return res.status(404).json({ 
+        error: 'Paragraph not found',
+        paragraphId 
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching paragraph with episode:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch paragraph with episode data',
+      details: error.message,
+      paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+// Add this new endpoint for testing feed retrieval
+app.get('/api/feed/:feedId', async (req, res) => {
+  try {
+    const { feedId } = req.params;
+    console.log(`Fetching feed data for feedId: ${feedId}`);
+    
+    const feed = await getFeedById(feedId);
+    
+    if (!feed) {
+      return res.status(404).json({ 
+        error: 'Feed not found',
+        feedId 
+      });
+    }
+
+    res.json({ feed });
+  } catch (error) {
+    console.error('Error fetching feed:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch feed data',
+      details: error.message,
+      feedId: req.params.feedId
+    });
+  }
+});
+
+// Add an endpoint to get paragraph with its feed data
+app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
+  try {
+    const { paragraphId } = req.params;
+    console.log(`Fetching paragraph with feed data for ID: ${paragraphId}`);
+    
+    const result = await getParagraphWithFeedData(paragraphId);
+    
+    if (!result || !result.paragraph) {
+      return res.status(404).json({ 
+        error: 'Paragraph not found',
+        paragraphId 
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching paragraph with feed:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch paragraph with feed data',
+      details: error.message,
+      paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+app.get('/api/clip-details/:lookupHash', async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    
+    // Get the clip from WorkProductV2
+    const clip = await WorkProductV2.findOne({ lookupHash });
+    
+    if (!clip) {
+      return res.status(404).json({ error: 'Clip not found' });
+    }
+    
+    // If we have the essential identifiers, fetch the detailed data
+    const result = clip.result || {};
+    const { feedId, guid } = result;
+    
+    // Only fetch additional data if we have the identifiers
+    let feedData = null;
+    let episodeData = null;
+    
+    if (feedId && guid) {
+      // Fetch feed and episode data in parallel
+      [feedData, episodeData] = await Promise.all([
+        getFeedById(feedId),
+        getEpisodeByGuid(guid)
+      ]);
+    }
+    
+    // Combine the data
+    const detailedResult = {
+      ...result,
+      cdnFileId: clip.cdnFileId,
+      feed: feedData,
+      episode: episodeData
+    };
+    
+    res.json(detailedResult);
+  } catch (error) {
+    console.error('Error fetching clip details:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch clip details',
+      details: error.message
+    });
+  }
+});
+
+// Promotional tweet generation endpoint with jamie-assist name
+app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    const { additionalPrefs = "" } = req.body;
+    
+    console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
+    console.log(`[INFO] Additional prefs: ${additionalPrefs}`);
+    // Get the clip from WorkProductV2
+    const clip = await WorkProductV2.findOne({ lookupHash });
+    
+    if (!clip) {
+      return res.status(404).json({ error: 'Clip not found' });
+    }
+    
+    // If we have the essential identifiers, fetch the detailed data
+    const result = clip.result || {};
+    const { feedId, guid, clipText } = result;
+    
+    if (!clipText) {
+      return res.status(400).json({ error: 'Clip has no text content' });
+    }
+    
+    // Fetch feed and episode data in parallel
+    let feedData = null;
+    let episodeData = null;
+    
+    if (feedId && guid) {
+      [feedData, episodeData] = await Promise.all([
+        getFeedById(feedId),
+        getEpisodeByGuid(guid)
+      ]);
+    }
+    
+    // Prepare context for the LLM
+    const context = {
+      clipText: clipText || "No clip text available",
+      episodeTitle: episodeData?.title || result.episodeTitle || "Unknown episode",
+      feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
+      episodeDescription: episodeData?.description || result.episodeDescription || "",
+      feedDescription: feedData?.description || result.feedDescription || "",
+      additionalPrefs
+    };
+    
+    // Set up streaming response
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Create the prompt for the LLM
+    const prompt = `
+You are a social media expert who creates engaging promotional tweets for podcast clips.
+
+Here's information about the clip:
+- Podcast: ${context.feedTitle}
+- Episode: ${context.episodeTitle}
+- Clip Text: "${context.clipText}"
+${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}` : ''}
+${context.feedDescription ? `- Podcast Description: ${context.feedDescription}` : ''}
+
+${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters. Include 1-2 relevant hashtags.'}
+
+Create a compelling promotional tweet that:
+1. Primarily focuses on the clip content itself
+2. Captures the essence of what makes this clip interesting
+3. Is shareable and attention-grabbing
+4. Includes relevant context about the podcast/episode when helpful
+5. Follows Twitter's character limit (280 chars accounting for an additonal 50 characters used by overhead)
+6. If there is a guest make an effort to mention them and the host by name if it fits
+
+Write only the tweet text, without any explanations or quotation marks.
+`;
+    console.log(`[INFO] Prompt: ${prompt}`);
+
+    // Call OpenAI with streaming
+    const stream = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: prompt }],
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 300
+    });
+    
+    // Stream the response to the client
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    }
+    
+    // End the stream
+    res.write('data: [DONE]\n\n');
+    res.end();
+    
+  } catch (error) {
+    console.error('Error in jamie-assist:', error);
+    
+    // If headers haven't been sent yet, return a JSON error
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        error: 'Failed to generate promotional content',
+        details: error.message
+      });
+    }
+    
+    // If streaming has started, send error in the stream
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
   }
 });
 

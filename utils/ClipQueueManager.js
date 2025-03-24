@@ -92,11 +92,38 @@ class ClipQueueManager extends EventEmitter {
             try {
                 job.attempts++;
                 // Use the hash that was passed in
-                await this.clipUtils._backgroundProcessClip(
+                const videoUrl = await this.clipUtils._backgroundProcessClip(
                     job.clipData,
                     job.timestamps,
                     job.lookupHash  // Using passed-in hash
                 );
+
+                // Update MongoDB with completed status and CDN file ID
+                // But preserve the existing result data
+                const updateObj = { 
+                    $set: { 
+                        status: 'completed'
+                    }
+                };
+                
+                // Only set cdnFileId and previewImageId if videoUrl is defined
+                if (videoUrl) {
+                    updateObj.$set.cdnFileId = videoUrl;
+                    
+                    // Only try to add previewImageId if videoUrl exists
+                    if (typeof videoUrl === 'string') {
+                        updateObj.$addToSet = {
+                            'result.previewImageId': videoUrl.replace('-clip.mp4', '-clip-preview.png')
+                        };
+                    }
+                }
+                
+                await WorkProductV2.findOneAndUpdate(
+                    { lookupHash: job.lookupHash },
+                    updateObj,
+                    { new: true } // Return the updated document
+                );
+
                 return;
             } catch (error) {
                 if (job.attempts >= job.maxAttempts) {

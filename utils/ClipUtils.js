@@ -282,13 +282,6 @@ class ClipUtils {
 
         console.log(`[DEBUG] Saving preview image for ${lookupHash}`);
 
-        // ✅ Update MongoDB with final URL
-        await WorkProductV2.findOneAndUpdate({ lookupHash }, { cdnFileId: uploadedUrl });
-        
-
-        // Determine first frame
-        console.log(`[DEBUG] Saving preview image for ${lookupHash}`);
-
         // Define preview filename based on video path
         const previewFileName = `${lookupHash}-preview.png`;
         const previewCdnFileId = cdnFileId.replace('.mp4', '-preview.png');
@@ -321,11 +314,11 @@ class ClipUtils {
                 { lookupHash },
                 { 
                     $set: { 
-                        cdnFileId: uploadedUrl, // ✅ Keep cdnFileId at the top level
-                        "result.previewImageId": previewUploadedUrl // ✅ Store previewImageId inside result
+                        cdnFileId: uploadedUrl,
+                        'result.previewImageId': previewUploadedUrl
                     }
                 },
-                { new: true, upsert: true }
+                { new: true }
             );
             console.log(`[DEBUG] Updated MongoDB entry:`, updatedClip);                        
         } else {
