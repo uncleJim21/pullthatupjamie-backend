@@ -1561,6 +1561,7 @@ Create a compelling promotional tweet that:
 4. Includes relevant context about the podcast/episode when helpful
 5. Follows Twitter's character limit (280 chars accounting for an additonal 50 characters used by overhead)
 6. If there is a guest make an effort to mention them and the host by name if it fits
+7. Do not use hashtags as they deprioritize content
 
 Write only the tweet text, without any explanations or quotation marks.
 `;
