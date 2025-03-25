@@ -1552,7 +1552,7 @@ Here's information about the clip:
 ${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}` : ''}
 ${context.feedDescription ? `- Podcast Description: ${context.feedDescription}` : ''}
 
-${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters. Include 1-2 relevant hashtags.'}
+${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters.'}
 
 Create a compelling promotional tweet that:
 1. Primarily focuses on the clip content itself
