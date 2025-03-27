@@ -1527,12 +1527,20 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
     }
     
     // Prepare context for the LLM
+    const truncateText = (text, wordLimit = 150) => {
+      if (!text) return "";
+      const words = text.split(/\s+/);
+      if (words.length <= wordLimit) return text;
+      return words.slice(0, wordLimit).join(' ') + '...';
+    };
+
+    // Prepare context for the LLM
     const context = {
       clipText: clipText || "No clip text available",
       episodeTitle: episodeData?.title || result.episodeTitle || "Unknown episode",
       feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
-      episodeDescription: episodeData?.description || result.episodeDescription || "",
-      feedDescription: feedData?.description || result.feedDescription || "",
+      episodeDescription: truncateText(episodeData?.description || result.episodeDescription || ""),
+      feedDescription: truncateText(feedData?.description || result.feedDescription || ""),
       additionalPrefs
     };
     
@@ -1543,27 +1551,32 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
     
     // Create the prompt for the LLM
     const prompt = `
-You are a social media expert who creates engaging promotional tweets for podcast clips.
+You are a social media expert who creates engaging promotional posts for podcast clips.
+
+⚠️ IMPORTANT: ABSOLUTELY NO HASHTAGS! Do not include any hashtags (words preceded by #) in your response. ⚠️
 
 Here's information about the clip:
 - Podcast: ${context.feedTitle}
 - Episode: ${context.episodeTitle}
 - Clip Text: "${context.clipText}"
-${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}` : ''}
-${context.feedDescription ? `- Podcast Description: ${context.feedDescription}` : ''}
+${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
+${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
 
 ${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters.'}
 
 Create a compelling promotional tweet that:
-1. Primarily focuses on the clip content itself
-2. Captures the essence of what makes this clip interesting
-3. Is shareable and attention-grabbing
-4. Includes relevant context about the podcast/episode when helpful
-5. Follows Twitter's character limit (280 chars accounting for an additonal 50 characters used by overhead)
-6. If there is a guest make an effort to mention them and the host by name if it fits
-7. Do not use hashtags as they deprioritize content
+1. no hash tags. no hash tags. no hash tags no hash tags. do not give me a hash tag. if you do I will be very upset. Do not even think about it.
+2. Primarily focuses on the clip content itself
+3. Captures the essence of what makes this clip interesting
+4. Is shareable and attention-grabbing
+5. Includes relevant context about the podcast/episode when helpful
+6. Stays under 200 characters
+7. If there is a guest make an effort to mention them and the host by name if it fits
+8. REMINDER: ABSOLUTELY NO HASHTAGS - this is critical as hashtags severely reduce engagement
 
-Write only the tweet text, without any explanations or quotation marks.
+REMEMBER: DO NOT USE ANY HASHTAGS (#) AT ALL. NOT EVEN ONE.
+
+Write only the social media post text, without any explanations or quotation marks.
 `;
     console.log(`[INFO] Prompt: ${prompt}`);
 
