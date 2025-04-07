@@ -9,6 +9,10 @@ const { v4: uuidv4 } = require('uuid');
 const os = require('os');
 const sharp = require('sharp');
 
+const overrideLookup = {
+  'TFTC: A Bitcoin Podcast':[252,241,216]
+}
+
 
 class VideoGenerator {
   constructor(options) {
@@ -23,6 +27,7 @@ class VideoGenerator {
     this.subtitle = options.subtitle;
     this.outputPath = options.outputPath;
     this.watermarkPath = options.watermarkPath;
+    this.creator = options.creator ? options.creator : 'Unknown creator';
 
     // Optional configurations
     this.frameRate = options.frameRate || 20;
@@ -167,7 +172,7 @@ class VideoGenerator {
       ctx.stroke();
   }
 
-  createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage) {
+  createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage,overrideDomColor=null) {
     const tempCanvas = createCanvas(profileImage.width, profileImage.height);
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
@@ -211,7 +216,7 @@ class VideoGenerator {
         }
     }
 
-    const [r, g, b] = dominantColor;
+    const [r, g, b] = overrideDomColor ? overrideDomColor : dominantColor;
 
     // Debugging log: Show the selected dominant color
     console.log(`Selected Dominant Color: rgb(${r},${g},${b})`);
@@ -465,7 +470,7 @@ rgbToHsl(r, g, b) {
 }
 
 // Updated color selection logic with hard exclusion for tones similar to #9b4a37
-async initializeStaticElements(profileImage, watermarkImage) {
+async initializeStaticElements(profileImage, watermarkImage,overrideDomColor=null) {
     const tempCanvas = createCanvas(profileImage.width, profileImage.height);
     const tempCtx = tempCanvas.getContext('2d');
     tempCtx.drawImage(profileImage, 0, 0);
@@ -524,7 +529,10 @@ async initializeStaticElements(profileImage, watermarkImage) {
     }
   
     // Fallback to white if no suitable color found
-    if (!dominantColor || maxVibrancyScore < 50) {
+    if(overrideDomColor){
+      dominantColor = overrideDomColor
+    }
+    else if (!dominantColor || maxVibrancyScore < 50) {
       console.log('No sufficiently vibrant color found, falling back to white');
       dominantColor = [255, 255, 255];
     } else {
@@ -630,7 +638,10 @@ async generateFrames() {
     ]);
 
     // Initialize static elements
-    await this.initializeStaticElements(profileImage, watermarkImage);
+    console.log(`creator:${this.creator}`)
+    const overrideValue = overrideLookup[this.creator] ?? null;
+    console.log(`override value:${overrideValue}`)
+    await this.initializeStaticElements(profileImage, watermarkImage,overrideValue);
 
     const exactDuration = await this.getDuration(this.audioPath);
     const totalFrames = Math.floor(exactDuration * this.frameRate);
