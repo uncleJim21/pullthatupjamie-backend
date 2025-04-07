@@ -162,7 +162,8 @@ class ClipUtils {
             watermarkPath,
             title: this.truncateMiddle(clipData.creator, 30),
             subtitle: this.truncateMiddle(clipData.episode, 80),
-            outputPath
+            outputPath,
+            creator: clipData.creator
         });
 
         console.log('Starting video generation...');
