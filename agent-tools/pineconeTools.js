@@ -540,6 +540,16 @@ const pineconeTools = {
             return null;
         }
     },
+
+    // Fast stats function that returns raw stats from Pinecone
+    getQuickStats: async () => {
+        try {
+            return await index.describeIndexStats();
+        } catch (error) {
+            console.error('Error in getQuickStats:', error);
+            throw error;
+        }
+    }
 };
 
 // Helper function to format feed data (outside the object for reuse)
