@@ -370,6 +370,64 @@ app.post('/api/validate-privs', async (req, res) => {
 
 ///Clips related
 
+// Add this function to generate subtitles
+async function generateSubtitlesForClip(clipData, start, end) {
+  // For now, this is a placeholder that returns test subtitles
+  // Later this will query a database or other service to get real subtitles
+  
+  // Sample subtitles in the specified format
+  const testSubtitles = [
+    {
+      "start": start + 0,
+      "end": start + 0.16,
+      "text": "I"
+    },
+    {
+      "start": start + 0.16,
+      "end": start + 0.39999998,
+      "text": "think"
+    },
+    {
+      "start": start + 0.39999998,
+      "end": start + 0.56,
+      "text": "there's"
+    },
+    {
+      "start": start + 0.56,
+      "end": start + 0.96,
+      "text": "circa"
+    },
+    {
+      "start": start + 0.96,
+      "end": start + 1.52,
+      "text": "2,000"
+    },
+    {
+      "start": start + 1.52,
+      "end": start + 1.92,
+      "text": "trillion"
+    },
+    {
+      "start": start + 1.92,
+      "end": start + 2.24,
+      "text": "dollars"
+    },
+    {
+      "start": start + 2.24,
+      "end": start + 2.3999999,
+      "text": "at"
+    },
+    {
+      "start": start + 2.3999999,
+      "end": start + 2.48,
+      "text": "the"
+    }
+  ];
+
+  console.log(`[INFO] Generated ${testSubtitles.length} test subtitles for clip`);
+  return testSubtitles;
+}
+
 app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
   const { clipId, timestamps } = req.body;
 
@@ -381,6 +439,8 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
   if (!clipData) {
       return res.status(404).json({ error: 'Clip not found', clipId });
   }
+
+  console.log(`clipData:${JSON.stringify(clipData,null,2)}`)
 
   try {
       // Calculate lookup hash ONCE, at the beginning
@@ -424,6 +484,9 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           }
       }
       
+      // Generate subtitles for this clip on the server side
+      const subtitles = await generateSubtitlesForClip(clipData, timeStart, timeEnd);
+      
       // Prepare the minimal result object with just the essential data
       const resultData = {
           resultSchemaVersion: 2025321,
@@ -433,6 +496,7 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           clipText: clipText,
           timeStart: timeStart,
           timeEnd: timeEnd,
+          hasSubtitles: subtitles && subtitles.length > 0 // Add subtitle flag
       };
 
       // Create initial record with the minimal result data
@@ -445,7 +509,7 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       });
 
       // Queue the job WITHOUT awaiting
-      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash).catch(err => {
+      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, subtitles).catch(err => {
           console.error('Error queuing clip:', err);
           // Update DB with error status if queue fails
           WorkProductV2.findOneAndUpdate(
@@ -506,7 +570,7 @@ app.get('/api/clip-status/:lookupHash', async (req, res) => {
   }
 });
 
-async function processClip(clip, timestamps) {
+async function processClip(clip, timestamps, subtitles = null) {
   try {
     console.log(`Processing clip with clipId:${clip.shareLink}`);
     
@@ -518,7 +582,7 @@ async function processClip(clip, timestamps) {
       };
     }
 
-    const videoUrl = await clipUtils.processClip(clip,timestamps);
+    const videoUrl = await clipUtils.processClip(clip, timestamps, subtitles);
     return videoUrl;
   } catch (error) {
     console.error('Error in processClip:', error);

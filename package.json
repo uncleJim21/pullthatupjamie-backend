@@ -5,7 +5,10 @@
   "main": "app.js",
   "scripts": {
     "prebuild": "mkdir -p dbs && chmod 755 dbs",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "setup-subtitle-test": "node setup-subtitle-test.js",
+    "test-subtitles": "node test-subtitles.js",
+    "test-server-subtitles": "node test-server-subtitles.js"
   },
   "author": "uj21",
   "license": "ISC",

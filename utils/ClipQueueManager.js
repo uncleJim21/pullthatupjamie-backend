@@ -13,7 +13,7 @@ class ClipQueueManager extends EventEmitter {
         this.clipUtils = clipUtils; // Store the clipUtils reference
     }
 
-    async enqueueClip(clipData, timestamps, lookupHash) {
+    async enqueueClip(clipData, timestamps, lookupHash, subtitles = null) {
         // Check if clip is already being processed
         if (this.processingQueue.has(lookupHash)) {
             console.log(`[INFO] Clip ${lookupHash} already processing`);
@@ -25,11 +25,14 @@ class ClipQueueManager extends EventEmitter {
             throw new Error('Queue is full, please try again later');
         }
 
+        console.log(`[INFO] Enqueueing clip with ${subtitles ? subtitles.length : 0} subtitles`);
+
         // Create job object
         const job = {
             clipData,
             timestamps,
             lookupHash,
+            subtitles,
             attempts: 0,
             maxAttempts: 3,
             addedAt: Date.now()
@@ -59,6 +62,8 @@ class ClipQueueManager extends EventEmitter {
                 { upsert: true }
             );
 
+            console.log(`[INFO] Processing job with ${job.subtitles ? job.subtitles.length : 0} subtitles`);
+            
             // Process the clip
             await this._processClipWithRetry(job);
 
@@ -88,58 +93,40 @@ class ClipQueueManager extends EventEmitter {
     }
 
     async _processClipWithRetry(job) {
-        while (job.attempts < job.maxAttempts) {
+        let lastError = null;
+        
+        for (let attempt = 1; attempt <= job.maxAttempts; attempt++) {
             try {
-                job.attempts++;
-                // Use the hash that was passed in
-                const videoUrl = await this.clipUtils._backgroundProcessClip(
-                    job.clipData,
-                    job.timestamps,
-                    job.lookupHash  // Using passed-in hash
+                // Pass subtitles to the background process
+                await this.clipUtils._backgroundProcessClip(
+                    job.clipData, 
+                    job.timestamps, 
+                    job.lookupHash,
+                    job.subtitles
                 );
-
-                // Update MongoDB with completed status and CDN file ID
-                // But preserve the existing result data
-                const updateObj = { 
-                    $set: { 
-                        status: 'completed'
-                    }
-                };
-                
-                // Only set cdnFileId and previewImageId if videoUrl is defined
-                if (videoUrl) {
-                    updateObj.$set.cdnFileId = videoUrl;
-                    
-                    // Only try to add previewImageId if videoUrl exists
-                    if (typeof videoUrl === 'string') {
-                        updateObj.$addToSet = {
-                            'result.previewImageId': videoUrl.replace('-clip.mp4', '-clip-preview.png')
-                        };
-                    }
-                }
-                
-                await WorkProductV2.findOneAndUpdate(
-                    { lookupHash: job.lookupHash },
-                    updateObj,
-                    { new: true } // Return the updated document
-                );
-
-                return;
+                return; // Success, exit the retry loop
             } catch (error) {
-                if (job.attempts >= job.maxAttempts) {
-                    throw error;
+                lastError = error;
+                console.error(`[ERROR] Process attempt ${attempt}/${job.maxAttempts} failed:`, error);
+                
+                if (attempt < job.maxAttempts) {
+                    // Wait before retrying (exponential backoff)
+                    const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
                 }
-                await new Promise(resolve => 
-                    setTimeout(resolve, Math.pow(2, job.attempts) * 1000)
-                );
             }
         }
+        
+        // If we get here, all attempts failed
+        throw lastError || new Error('Failed to process clip after multiple attempts');
     }
 
     processNextInQueue() {
         if (this.waitingQueue.length > 0 && this.activeWorkers < this.maxConcurrent) {
             const nextJob = this.waitingQueue.shift();
-            this.processJob(nextJob);
+            this.processJob(nextJob).catch(err => {
+                console.error(`[ERROR] Failed to process next job:`, err);
+            });
         }
     }
 
@@ -151,23 +138,31 @@ class ClipQueueManager extends EventEmitter {
         };
     }
 
-    // Method to check estimated wait time for a clip
     async getEstimatedWaitTime(lookupHash) {
-        const queuePosition = this.waitingQueue.findIndex(job => job.lookupHash === lookupHash);
-        
-        if (queuePosition === -1) {
-            // Check if it's currently processing
-            if (this.processingQueue.has(lookupHash)) {
-                return 'Currently processing';
-            }
-            return 'Not found in queue';
+        // If this hash is already being processed
+        if (this.processingQueue.has(lookupHash)) {
+            return {
+                position: 0,
+                estimatedWaitTime: "Currently processing"
+            };
         }
 
-        // Estimate based on queue position and average processing time
-        const avgProcessingTime = 120; // seconds, adjust based on actual metrics
-        const estimatedWait = Math.ceil((queuePosition / this.maxConcurrent) * avgProcessingTime);
+        // Check if it's in the waiting queue
+        const queuePosition = this.waitingQueue.findIndex(job => job.lookupHash === lookupHash);
         
-        return `Approximately ${estimatedWait} seconds`;
+        if (queuePosition !== -1) {
+            // Return queue position (1-based for user-friendliness)
+            return {
+                position: queuePosition + 1,
+                estimatedWaitTime: `Queue position: ${queuePosition + 1}`
+            };
+        }
+
+        // Not found in either queue
+        return {
+            position: -1,
+            estimatedWaitTime: "Unknown"
+        };
     }
 }
 
