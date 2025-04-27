@@ -491,10 +491,10 @@ rgbToHsl(r, g, b) {
                 });
             });
         });
-        // Group words into sets of 3
+        // Group words into sets of 5
         const wordGroups = [];
-        for (let i = 0; i < allWords.length; i += 3) {
-            const group = allWords.slice(i, i + 3);
+        for (let i = 0; i < allWords.length; i += 5) {
+            const group = allWords.slice(i, i + 5);
             if (group.length > 0) {
                 wordGroups.push({
                     words: group,
@@ -508,9 +508,9 @@ rgbToHsl(r, g, b) {
         if (currentGroup) {
             const currentSegment = currentGroup.words.map(w => w.text).join(' ');
             // Position subtitle at the bottom of the frame
-            const subtitleY = height - 80; // 80px from bottom
-            // Use larger, bolder font for better visibility
-            ctx.font = 'bold 36px Arial';
+            const subtitleY = height - 100; // 80px from bottom
+            // Use smaller, bolder font for better visibility (30% smaller)
+            ctx.font = 'bold 25px Arial';
             const textMetrics = ctx.measureText(currentSegment);
             const textWidth = Math.min(textMetrics.width + 80, width - 40); // Add padding but cap at screen width
             // Draw background for subtitle - semi-transparent black rectangle with rounded corners
