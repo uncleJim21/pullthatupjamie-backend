@@ -475,60 +475,80 @@ rgbToHsl(r, g, b) {
     // Calculate current timestamp based on frame index and frame rate
     const timestamp = frameIndex / this.frameRate;
     
-    // Get active subtitles for this timestamp
-    const activeSubtitles = this.getActiveSubtitles(timestamp);
-    
-    if (activeSubtitles && activeSubtitles.length > 0) {
-        // Draw subtitle background and text
-        const subtitleText = activeSubtitles.map(s => s.text).join(' ');
-        
-        // Position subtitle at the bottom of the frame
-        const subtitleY = height - 80; // 80px from bottom
-        
-        // Use larger, bolder font for better visibility
-        ctx.font = 'bold 36px Arial';
-        const textMetrics = ctx.measureText(subtitleText);
-        const textWidth = Math.min(textMetrics.width + 80, width - 40); // Add padding but cap at screen width
-        
-        // Draw background for subtitle - semi-transparent black rectangle with rounded corners
-        const bgHeight = 70;
-        const bgY = subtitleY - 45; // Move up to center text vertically
-        const bgX = Math.max(20, (width - textWidth) / 2); // Keep from edges
-        const cornerRadius = 15;
-        
-        // Draw rounded rectangle with lower opacity
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% opacity for better readability
-        ctx.beginPath();
-        ctx.moveTo(bgX + cornerRadius, bgY);
-        ctx.lineTo(bgX + textWidth - cornerRadius, bgY);
-        ctx.quadraticCurveTo(bgX + textWidth, bgY, bgX + textWidth, bgY + cornerRadius);
-        ctx.lineTo(bgX + textWidth, bgY + bgHeight - cornerRadius);
-        ctx.quadraticCurveTo(bgX + textWidth, bgY + bgHeight, bgX + textWidth - cornerRadius, bgY + bgHeight);
-        ctx.lineTo(bgX + cornerRadius, bgY + bgHeight);
-        ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - cornerRadius);
-        ctx.lineTo(bgX, bgY + cornerRadius);
-        ctx.quadraticCurveTo(bgX, bgY, bgX + cornerRadius, bgY);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Draw subtitle text with stronger shadow for better readability
-        ctx.fillStyle = '#FFFFFF';
-        ctx.textAlign = 'center';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-        ctx.shadowBlur = 6;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 2;
-        ctx.fillText(subtitleText, width / 2, subtitleY);
-        
-        // Reset shadow
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-        
-        // Debug logging for first few frames
-        if (frameIndex < 10) {
-            console.log(`[DEBUG] Frame ${frameIndex} rendering subtitle: "${subtitleText}"`);
+    // --- NEW SUBTITLE GROUPING LOGIC ---
+    if (this.subtitles && this.subtitles.length > 0) {
+        // Build a flat list of all words with timing from all subtitles
+        const allWords = [];
+        this.subtitles.forEach(subtitle => {
+            const words = subtitle.text.split(' ');
+            const duration = subtitle.end - subtitle.start;
+            const wordDuration = duration / words.length;
+            words.forEach((word, idx) => {
+                allWords.push({
+                    text: word,
+                    start: subtitle.start + idx * wordDuration,
+                    end: subtitle.start + (idx + 1) * wordDuration
+                });
+            });
+        });
+        // Group words into sets of 3
+        const wordGroups = [];
+        for (let i = 0; i < allWords.length; i += 3) {
+            const group = allWords.slice(i, i + 3);
+            if (group.length > 0) {
+                wordGroups.push({
+                    words: group,
+                    startTime: group[0].start,
+                    endTime: group[group.length - 1].end
+                });
+            }
+        }
+        // Find the group whose time range contains the current timestamp
+        const currentGroup = wordGroups.find(group => timestamp >= group.startTime && timestamp < group.endTime);
+        if (currentGroup) {
+            const currentSegment = currentGroup.words.map(w => w.text).join(' ');
+            // Position subtitle at the bottom of the frame
+            const subtitleY = height - 80; // 80px from bottom
+            // Use larger, bolder font for better visibility
+            ctx.font = 'bold 36px Arial';
+            const textMetrics = ctx.measureText(currentSegment);
+            const textWidth = Math.min(textMetrics.width + 80, width - 40); // Add padding but cap at screen width
+            // Draw background for subtitle - semi-transparent black rectangle with rounded corners
+            const bgHeight = 70;
+            const bgY = subtitleY - 45; // Move up to center text vertically
+            const bgX = Math.max(20, (width - textWidth) / 2); // Keep from edges
+            const cornerRadius = 15;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% opacity for better readability
+            ctx.beginPath();
+            ctx.moveTo(bgX + cornerRadius, bgY);
+            ctx.lineTo(bgX + textWidth - cornerRadius, bgY);
+            ctx.quadraticCurveTo(bgX + textWidth, bgY, bgX + textWidth, bgY + cornerRadius);
+            ctx.lineTo(bgX + textWidth, bgY + bgHeight - cornerRadius);
+            ctx.quadraticCurveTo(bgX + textWidth, bgY + bgHeight, bgX + textWidth - cornerRadius, bgY + bgHeight);
+            ctx.lineTo(bgX + cornerRadius, bgY + bgHeight);
+            ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - cornerRadius);
+            ctx.lineTo(bgX, bgY + cornerRadius);
+            ctx.quadraticCurveTo(bgX, bgY, bgX + cornerRadius, bgY);
+            ctx.closePath();
+            ctx.fill();
+            // Draw subtitle text with stronger shadow for better readability
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+            ctx.shadowBlur = 6;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 2;
+            ctx.fillText(currentSegment, width / 2, subtitleY);
+            // Reset shadow
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+            // Debug logging for first few frames
+            if (frameIndex < 10) {
+                console.log(`[DEBUG] Frame ${frameIndex} rendering subtitle: "${currentSegment}"`);
+                console.log(`[DEBUG] Group timing: ${currentGroup.startTime.toFixed(2)}s - ${currentGroup.endTime.toFixed(2)}s`);
+            }
         }
     }
 }
