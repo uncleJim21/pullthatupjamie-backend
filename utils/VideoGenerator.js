@@ -472,30 +472,18 @@ rgbToHsl(r, g, b) {
     ctx.closePath();
     ctx.fill();
 
-    // IMPORTANT: Calculate current timestamp based on frame index
-    // This needs to come AFTER drawing the waveform but BEFORE adding subtitles
-    if (this.exactDuration && this.frameRate) {
-      const timestamp = (frameIndex / this.frameRate);
-      
-      // Log for debug purpose - remove in production
-      if (frameIndex === 0) {
-        console.log(`[DEBUG] First frame timestamp: ${timestamp}, exact duration: ${this.exactDuration}, frameRate: ${this.frameRate}`);
-        console.log(`[DEBUG] Subtitle count: ${this.subtitles ? this.subtitles.length : 0}`);
-      }
-      
-      // Get active subtitles for this timestamp
-      const activeSubtitles = this.getActiveSubtitles(timestamp);
-      
-      if (activeSubtitles && activeSubtitles.length > 0) {
-        // Draw subtitle background
+    // Calculate current timestamp based on frame index and frame rate
+    const timestamp = frameIndex / this.frameRate;
+    
+    // Get active subtitles for this timestamp
+    const activeSubtitles = this.getActiveSubtitles(timestamp);
+    
+    if (activeSubtitles && activeSubtitles.length > 0) {
+        // Draw subtitle background and text
         const subtitleText = activeSubtitles.map(s => s.text).join(' ');
         
-        if (frameIndex % 20 === 0) {
-          console.log(`[DEBUG] Frame ${frameIndex} active subtitles: '${subtitleText}'`);
-        }
-        
-        // Position subtitle DIRECTLY IN FRONT of the waveform
-        const subtitleY = height - 120; // Just 20px from bottom of frame (height - 40 for text alignment)
+        // Position subtitle at the bottom of the frame
+        const subtitleY = height - 80; // 80px from bottom
         
         // Use larger, bolder font for better visibility
         ctx.font = 'bold 36px Arial';
@@ -509,7 +497,7 @@ rgbToHsl(r, g, b) {
         const cornerRadius = 15;
         
         // Draw rounded rectangle with lower opacity
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // 40% opacity for a subtle background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% opacity for better readability
         ctx.beginPath();
         ctx.moveTo(bgX + cornerRadius, bgY);
         ctx.lineTo(bgX + textWidth - cornerRadius, bgY);
@@ -537,7 +525,11 @@ rgbToHsl(r, g, b) {
         ctx.shadowBlur = 0;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
-      }
+        
+        // Debug logging for first few frames
+        if (frameIndex < 10) {
+            console.log(`[DEBUG] Frame ${frameIndex} rendering subtitle: "${subtitleText}"`);
+        }
     }
 }
 

@@ -593,18 +593,6 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       const subtitles = await generateSubtitlesForClip(clipData, timeStart, timeEnd);
       console.timeEnd(`${debugPrefix} Subtitle-Generation-Total-Time`);
       
-      // For testing - return subtitles directly
-      if (process.env.DEBUG_MODE === 'true') {
-          return res.json({
-              status: 'testing',
-              subtitles,
-              clipText,
-              timeStart,
-              timeEnd,
-              guid
-          });
-      }
-      
       // Prepare the minimal result object with just the essential data
       const resultData = {
           resultSchemaVersion: 2025321,
