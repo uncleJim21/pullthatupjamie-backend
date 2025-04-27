@@ -406,7 +406,7 @@ rgbToHsl(r, g, b) {
       firstLine = subtitle;
     }
     
-    ctx.font = '24px Arial';
+    ctx.font = '20px Arial';
     ctx.fillText(firstLine.trim(), width / 2, profileImageY + profileImageSize + 80);
     if (secondLine) {
       ctx.fillText(secondLine.trim(), width / 2, profileImageY + profileImageSize + 110);
@@ -509,8 +509,8 @@ rgbToHsl(r, g, b) {
             const currentSegment = currentGroup.words.map(w => w.text).join(' ');
             // Position subtitle at the bottom of the frame
             const subtitleY = height - 110; // 80px from bottom
-            // Use smaller, bolder font for better visibility (30% smaller)
-            ctx.font = 'bold 25px Arial';
+            // Use smaller, bolder font for better visibility (20% smaller)
+            ctx.font = 'bold 20px Arial';
             const textMetrics = ctx.measureText(currentSegment);
             const maxAllowedWidth = width * 0.9;
             let displayText = currentSegment;
@@ -548,7 +548,7 @@ rgbToHsl(r, g, b) {
             ctx.shadowBlur = 6;
             ctx.shadowOffsetX = 2;
             ctx.shadowOffsetY = 2;
-            ctx.fillText(displayText, width / 2, subtitleY);
+            ctx.fillText(displayText.toUpperCase(), width / 2, subtitleY);
             // Reset shadow
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
