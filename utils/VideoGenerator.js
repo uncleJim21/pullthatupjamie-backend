@@ -508,11 +508,21 @@ rgbToHsl(r, g, b) {
         if (currentGroup) {
             const currentSegment = currentGroup.words.map(w => w.text).join(' ');
             // Position subtitle at the bottom of the frame
-            const subtitleY = height - 100; // 80px from bottom
+            const subtitleY = height - 110; // 80px from bottom
             // Use smaller, bolder font for better visibility (30% smaller)
             ctx.font = 'bold 25px Arial';
             const textMetrics = ctx.measureText(currentSegment);
-            const textWidth = Math.min(textMetrics.width + 80, width - 40); // Add padding but cap at screen width
+            const maxAllowedWidth = width * 0.9;
+            let displayText = currentSegment;
+            // Truncate with ellipsis if too wide
+            if (textMetrics.width > maxAllowedWidth) {
+                while (displayText.length > 1 && ctx.measureText(displayText + '…').width > maxAllowedWidth) {
+                    displayText = displayText.slice(0, -1);
+                }
+                displayText = displayText.trim() + '…';
+                textMetrics = ctx.measureText(displayText);
+            }
+            const textWidth = Math.min(textMetrics.width + 80, maxAllowedWidth); // Add padding but cap at 90%
             // Draw background for subtitle - semi-transparent black rectangle with rounded corners
             const bgHeight = 70;
             const bgY = subtitleY - 45; // Move up to center text vertically
@@ -538,7 +548,7 @@ rgbToHsl(r, g, b) {
             ctx.shadowBlur = 6;
             ctx.shadowOffsetX = 2;
             ctx.shadowOffsetY = 2;
-            ctx.fillText(currentSegment, width / 2, subtitleY);
+            ctx.fillText(displayText, width / 2, subtitleY);
             // Reset shadow
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
