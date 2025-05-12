@@ -29,6 +29,7 @@ const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
 const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const userPreferencesRoutes = require('./routes/userPreferences');
+const onDemandRunsRoutes = require('./routes/onDemandRuns');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
@@ -1497,6 +1498,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
+app.use('/api/on-demand', onDemandRunsRoutes);
 
 // Only enable debug routes in debug mode
 if (DEBUG_MODE) {
