@@ -28,6 +28,9 @@ class VideoGenerator {
     this.outputPath = options.outputPath;
     this.watermarkPath = options.watermarkPath;
     this.creator = options.creator ? options.creator : 'Unknown creator';
+    
+    // Added subtitle support
+    this.subtitles = options.subtitles || [];
 
     // Optional configurations
     this.frameRate = options.frameRate || 20;
@@ -131,45 +134,45 @@ class VideoGenerator {
   }
 
   drawRoundedImage(ctx, image, x, y, width, height, radius, borderColor, borderWidth) {
-      ctx.save();
-      
-      // Create path for rounded corners
-      ctx.beginPath();
-      ctx.moveTo(x + radius, y);
-      ctx.lineTo(x + width - radius, y);
-      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-      ctx.lineTo(x + width, y + height - radius);
-      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-      ctx.lineTo(x + radius, y + height);
-      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-      ctx.lineTo(x, y + radius);
-      ctx.quadraticCurveTo(x, y, x + radius, y);
-      ctx.closePath();
-      
-      // Draw image first
-      ctx.clip();
-      ctx.drawImage(image, x, y, width, height);
-      
-      // Restore context and redraw path for border
-      ctx.restore();
-      
-      // Draw border path again
-      ctx.beginPath();
-      ctx.moveTo(x + radius, y);
-      ctx.lineTo(x + width - radius, y);
-      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-      ctx.lineTo(x + width, y + height - radius);
-      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-      ctx.lineTo(x + radius, y + height);
-      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-      ctx.lineTo(x, y + radius);
-      ctx.quadraticCurveTo(x, y, x + radius, y);
-      ctx.closePath();
-      
-      // Draw border
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = borderWidth;
-      ctx.stroke();
+    ctx.save();
+    
+    // Create path for rounded corners
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x + radius, y);
+    ctx.closePath();
+    
+    // Draw image first
+    ctx.clip();
+    ctx.drawImage(image, x, y, width, height);
+    
+    // Restore context and redraw path for border
+    ctx.restore();
+    
+    // Draw border path again
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+    
+    // Draw border
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = borderWidth;
+    ctx.stroke();
   }
 
   createGradientFromImage(ctx, waveformCenterY, maxWaveHeight, profileImage,overrideDomColor=null) {
@@ -326,7 +329,7 @@ rgbToHsl(r, g, b) {
 
   
 
-  renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx) {
+  renderFrame(profileImage, watermarkImage, frequencyData, canvas, ctx, frameIndex = 0) {
     const { width, height } = canvas;
 
     // Clear background
@@ -403,11 +406,12 @@ rgbToHsl(r, g, b) {
       firstLine = subtitle;
     }
     
-    ctx.font = '24px Arial';
+    ctx.font = '20px Arial';
     ctx.fillText(firstLine.trim(), width / 2, profileImageY + profileImageSize + 80);
     if (secondLine) {
       ctx.fillText(secondLine.trim(), width / 2, profileImageY + profileImageSize + 110);
     }
+    
     // Waveform settings
     const waveformCenterY = height * 0.75;
     const pointCount = frequencyData.length;
@@ -467,6 +471,96 @@ rgbToHsl(r, g, b) {
 
     ctx.closePath();
     ctx.fill();
+
+    // Calculate current timestamp based on frame index and frame rate
+    const timestamp = frameIndex / this.frameRate;
+    
+    // --- NEW SUBTITLE GROUPING LOGIC ---
+    if (this.subtitles && this.subtitles.length > 0) {
+        // Build a flat list of all words with timing from all subtitles
+        const allWords = [];
+        this.subtitles.forEach(subtitle => {
+            const words = subtitle.text.split(' ');
+            const duration = subtitle.end - subtitle.start;
+            const wordDuration = duration / words.length;
+            words.forEach((word, idx) => {
+                allWords.push({
+                    text: word,
+                    start: subtitle.start + idx * wordDuration,
+                    end: subtitle.start + (idx + 1) * wordDuration
+                });
+            });
+        });
+        // Group words into sets of 5
+        const wordGroups = [];
+        for (let i = 0; i < allWords.length; i += 5) {
+            const group = allWords.slice(i, i + 5);
+            if (group.length > 0) {
+                wordGroups.push({
+                    words: group,
+                    startTime: group[0].start,
+                    endTime: group[group.length - 1].end
+                });
+            }
+        }
+        // Find the group whose time range contains the current timestamp
+        const currentGroup = wordGroups.find(group => timestamp >= group.startTime && timestamp < group.endTime);
+        if (currentGroup) {
+            const currentSegment = currentGroup.words.map(w => w.text).join(' ');
+            // Position subtitle at the bottom of the frame
+            const subtitleY = height - 110; // 80px from bottom
+            // Use smaller, bolder font for better visibility (20% smaller)
+            ctx.font = 'bold 20px Arial';
+            const textMetrics = ctx.measureText(currentSegment);
+            const maxAllowedWidth = width * 0.9;
+            let displayText = currentSegment;
+            // Truncate with ellipsis if too wide
+            if (textMetrics.width > maxAllowedWidth) {
+                while (displayText.length > 1 && ctx.measureText(displayText + '…').width > maxAllowedWidth) {
+                    displayText = displayText.slice(0, -1);
+                }
+                displayText = displayText.trim() + '…';
+                textMetrics = ctx.measureText(displayText);
+            }
+            const textWidth = Math.min(textMetrics.width + 80, maxAllowedWidth); // Add padding but cap at 90%
+            // Draw background for subtitle - semi-transparent black rectangle with rounded corners
+            const bgHeight = 70;
+            const bgY = subtitleY - 45; // Move up to center text vertically
+            const bgX = Math.max(20, (width - textWidth) / 2); // Keep from edges
+            const cornerRadius = 15;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% opacity for better readability
+            ctx.beginPath();
+            ctx.moveTo(bgX + cornerRadius, bgY);
+            ctx.lineTo(bgX + textWidth - cornerRadius, bgY);
+            ctx.quadraticCurveTo(bgX + textWidth, bgY, bgX + textWidth, bgY + cornerRadius);
+            ctx.lineTo(bgX + textWidth, bgY + bgHeight - cornerRadius);
+            ctx.quadraticCurveTo(bgX + textWidth, bgY + bgHeight, bgX + textWidth - cornerRadius, bgY + bgHeight);
+            ctx.lineTo(bgX + cornerRadius, bgY + bgHeight);
+            ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - cornerRadius);
+            ctx.lineTo(bgX, bgY + cornerRadius);
+            ctx.quadraticCurveTo(bgX, bgY, bgX + cornerRadius, bgY);
+            ctx.closePath();
+            ctx.fill();
+            // Draw subtitle text with stronger shadow for better readability
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+            ctx.shadowBlur = 6;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 2;
+            ctx.fillText(displayText.toUpperCase(), width / 2, subtitleY);
+            // Reset shadow
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+            // Debug logging for first few frames
+            if (frameIndex < 10) {
+                console.log(`[DEBUG] Frame ${frameIndex} rendering subtitle: "${currentSegment}"`);
+                console.log(`[DEBUG] Group timing: ${currentGroup.startTime.toFixed(2)}s - ${currentGroup.endTime.toFixed(2)}s`);
+            }
+        }
+    }
 }
 
 // Updated color selection logic with hard exclusion for tones similar to #9b4a37
@@ -644,6 +738,9 @@ async generateFrames() {
     await this.initializeStaticElements(profileImage, watermarkImage,overrideValue);
 
     const exactDuration = await this.getDuration(this.audioPath);
+    // Store the duration for use in subtitle timing
+    this.exactDuration = exactDuration;
+    
     const totalFrames = Math.floor(exactDuration * this.frameRate);
     const samplesPerFrame = Math.ceil(audioData.length / totalFrames);
 
@@ -664,7 +761,8 @@ async generateFrames() {
                 const frameData = audioData.slice(startSample, startSample + samplesPerFrame);
                 const frequencies = this.calculateFrequencies(frameData, 64);
 
-                this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx);
+                // Pass frame index to renderFrame
+                this.renderFrame(profileImage, watermarkImage, frequencies, frameCanvas, frameCtx, frame);
 
                 // ✅ Ensure first frame is saved properly
                 const uniqueFrameFile = path.join(this.framesDir, `frame-${this.instanceId}-${frame.toString().padStart(6, '0')}.png`);
@@ -757,6 +855,85 @@ async generateFrames() {
         await this.cleanup();
         throw error;
     }
+}
+
+// Add a new method to find active subtitles for a specific timestamp
+getActiveSubtitles(timestamp) {
+  // Debug subtitle array contents to make sure it's initialized properly
+  if (timestamp < 0.1 || timestamp % 5 < 0.05) {
+    console.log(`[DEBUG] getActiveSubtitles called at timestamp ${timestamp.toFixed(2)}`);
+    console.log(`[DEBUG] Subtitle array has ${this.subtitles ? this.subtitles.length : 0} items`);
+    
+    if (this.subtitles && this.subtitles.length > 0) {
+      console.log(`[DEBUG] First subtitle: ${JSON.stringify(this.subtitles[0])}`);
+      console.log(`[DEBUG] Last subtitle: ${JSON.stringify(this.subtitles[this.subtitles.length-1])}`);
+      
+      // Add this check to help debug timestamp issues
+      if (timestamp < 0.1) {  // Check in the first frame
+        const timeInRange = this.subtitles.some(s => 
+          timestamp >= s.start - 0.1 && timestamp <= s.end + 0.1
+        );
+        
+        if (!timeInRange) {
+          console.log(`[WARN] No subtitles match timestamp ${timestamp}. This likely means there's a timestamp mismatch.`);
+          console.log(`[WARN] If subtitles use absolute timestamps (from original audio), they need to be adjusted to be relative to the clip.`);
+          
+          // Attempt to suggest adjustment if timestamps seem absolute
+          if (this.subtitles[0].start > 10) {
+            console.log(`[DEBUG] Consider adjusting subtitle timestamps in ClipUtils.js before passing to VideoGenerator.`);
+            
+            // Just for debugging - show what the first subtitle would look like if adjusted
+            console.log(`[DEBUG] Example: timestamp ${timestamp.toFixed(2)} would match a subtitle with start ≤ ${timestamp.toFixed(2)} and end ≥ ${timestamp.toFixed(2)}`);
+          }
+        }
+      }
+    }
+  }
+  
+  // Validate subtitles exist
+  if (!this.subtitles || this.subtitles.length === 0) {
+    return [];
+  }
+  
+  // Validate timestamp
+  if (timestamp === undefined || timestamp === null || isNaN(timestamp)) {
+    console.warn(`[WARN] Invalid timestamp in getActiveSubtitles: ${timestamp}`);
+    return [];
+  }
+  
+  // Find all subtitles that are active at the current timestamp
+  const result = this.subtitles.filter(subtitle => {
+    // Skip invalid subtitle entries
+    if (!subtitle || subtitle.start === undefined || subtitle.end === undefined) {
+      if (timestamp < 1) {
+        console.warn(`[WARN] Invalid subtitle entry found:`, subtitle);
+      }
+      return false;
+    }
+    
+    // Check if this subtitle is active at the current timestamp
+    const isActive = subtitle.start <= timestamp && subtitle.end >= timestamp;
+    
+    // Provide more detailed logging for debugging
+    if (timestamp < 1 && isActive) {
+      console.log(`[DEBUG] Active subtitle at ${timestamp.toFixed(2)}s: "${subtitle.text}" (${subtitle.start.toFixed(2)}s - ${subtitle.end.toFixed(2)}s)`);
+    }
+    
+    return isActive;
+  });
+  
+  // Debug logging on every frame for the first 5 seconds
+  if (timestamp < 5) {
+    if (result.length > 0) {
+      console.log(`[DEBUG] Found ${result.length} active subtitles at timestamp ${timestamp.toFixed(2)}:`, 
+        result.map(s => s.text).join(' '));
+    } else if (timestamp % 1 < 0.05) {
+      // Only log empty results once per second to reduce spam
+      console.log(`[DEBUG] No active subtitles at timestamp ${timestamp.toFixed(2)}`);
+    }
+  }
+  
+  return result;
 }
 }
 

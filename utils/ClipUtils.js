@@ -140,7 +140,7 @@ class ClipUtils {
     }
   }
 
-  async generateShareableVideo(clipData, audioPath) {
+  async generateShareableVideo(clipData, audioPath, subtitles = null) {
     let profileImagePath = null;
     let videoGenerator = null;
     
@@ -155,6 +155,49 @@ class ClipUtils {
 
         const outputPath = path.join(os.tmpdir(), `${clipData.shareLink}.mp4`);
         
+        // Enhanced subtitle debugging
+        if (subtitles && subtitles.length > 0) {
+            console.log(`[INFO] Adding ${subtitles.length} subtitles to video`);
+            console.log(`[DEBUG] First 3 subtitles (before adjustment): ${JSON.stringify(subtitles.slice(0, 3))}`);
+            
+            // Validate subtitle format
+            const validSubtitles = subtitles.filter(s => 
+                s && typeof s === 'object' && 
+                typeof s.start === 'number' && 
+                typeof s.end === 'number' && 
+                typeof s.text === 'string' &&
+                s.start <= s.end
+            );
+            
+            if (validSubtitles.length !== subtitles.length) {
+                console.warn(`[WARN] Found ${subtitles.length - validSubtitles.length} invalid subtitles that will be skipped`);
+                subtitles = validSubtitles;
+            }
+            
+            // Sort subtitles by start time
+            subtitles.sort((a, b) => a.start - b.start);
+            
+            // *CRITICAL FIX*: Always adjust subtitle timestamps to be relative to clip start
+            // Get clip start time
+            const clipStartTime = clipData.timeContext?.start_time ?? 0;
+            
+            if (subtitles[0].start > 10) { // This indicates absolute timestamps (not 0-based)
+                console.log(`[INFO] Adjusting subtitle timestamps from absolute to relative (first start: ${subtitles[0].start})`);
+                
+                // Adjust all timestamps to be relative to clip start
+                subtitles = subtitles.map(subtitle => ({
+                    ...subtitle,
+                    start: Math.max(0, subtitle.start - clipStartTime),
+                    end: Math.max(0, subtitle.end - clipStartTime)
+                }));
+                
+                console.log(`[DEBUG] First 3 subtitles (after adjustment): ${JSON.stringify(subtitles.slice(0, 3))}`);
+            }
+        } else {
+            console.log('[INFO] No subtitles provided for video');
+            subtitles = []; // Ensure subtitles is an array even if null
+        }
+        
         // Create new instance for this specific video
         videoGenerator = new VideoGenerator({
             audioPath,
@@ -163,7 +206,9 @@ class ClipUtils {
             title: this.truncateMiddle(clipData.creator, 30),
             subtitle: this.truncateMiddle(clipData.episode, 80),
             outputPath,
-            creator: clipData.creator
+            creator: clipData.creator,
+            subtitles: subtitles,  // Pass subtitles to VideoGenerator
+            frameRate: 30  // Increase frame rate for smoother subtitle display
         });
 
         console.log('Starting video generation...');
@@ -194,10 +239,16 @@ class ClipUtils {
    *
    * @param {Object} clipData - The clip metadata.
    * @param {Array} timestamps - Optional override timestamps.
+   * @param {Array} subtitles - Optional subtitles array.
    * @returns {string} - lookupHash to poll.
    */
-  async processClip(clipData, timestamps = null) {
+  async processClip(clipData, timestamps = null, subtitles = null) {
     console.log(`[DEBUG] processClip started for: ${JSON.stringify(clipData,null,2)}`);
+    
+    // Log if we have subtitles
+    if (subtitles && subtitles.length > 0) {
+        console.log(`[DEBUG] Processing clip with ${subtitles.length} subtitles`);
+    }
 
     // Compute lookupHash
     const lookupHash = calculateLookupHash(clipData, timestamps);
@@ -222,6 +273,9 @@ class ClipUtils {
             type: 'ptuj-clip',
             lookupHash,
             cdnFileId: null,
+            result: {
+                hasSubtitles: subtitles != null && subtitles.length > 0
+            }
         });
 
         console.log(`[DEBUG] WorkProductV2 entry created for ${lookupHash}`);
@@ -230,7 +284,7 @@ class ClipUtils {
         const response = { status: 'processing', lookupHash };
 
         // 🚀 Force background job to run immediately
-        this._backgroundProcessClip(clipData, timestamps, lookupHash).catch(err => {
+        this._backgroundProcessClip(clipData, timestamps, lookupHash, subtitles).catch(err => {
             console.error(`[ERROR] _backgroundProcessClip FAILED:`, err);
         });
 
@@ -249,8 +303,9 @@ class ClipUtils {
    * @param {Object} clipData
    * @param {Array} timestamps
    * @param {string} lookupHash
+   * @param {Array} subtitles Optional subtitles array
    */
-  async _backgroundProcessClip(clipData, timestamps, lookupHash) {
+  async _backgroundProcessClip(clipData, timestamps, lookupHash, subtitles = null) {
     console.log(`[DEBUG] _backgroundProcessClip STARTED for ${lookupHash}`);
     
     try {
@@ -258,15 +313,53 @@ class ClipUtils {
 
         // Force an initial log to prove it's running
         console.log(`[DEBUG] Extracting audio for ${lookupHash}`);
+        
+        // Debug subtitles if provided
+        if (subtitles && subtitles.length > 0) {
+            console.log(`[DEBUG] Processing clip with ${subtitles.length} subtitles`);
+            console.log(`[DEBUG] First subtitle (original): ${JSON.stringify(subtitles[0])}`);
+            console.log(`[DEBUG] Last subtitle (original): ${JSON.stringify(subtitles[subtitles.length-1])}`);
+        } else {
+            console.log(`[DEBUG] No subtitles provided for clip ${lookupHash}`);
+        }
 
         const audioPath = await this.extractAudioClip(
           clipData.audioUrl,
           timestamps?.[0] ?? clipData.timeContext?.start_time ?? 0,
           timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30) // fallback to 30 sec clip
-      );
+        );
+        
+        console.log(`[DEBUG] Audio extraction complete for ${lookupHash}, path: ${audioPath}`);
+        
+        // Calculate clip duration for verification
+        const clipStartTime = timestamps?.[0] ?? clipData.timeContext?.start_time ?? 0;
+        const clipEndTime = timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30);
+        const clipDuration = clipEndTime - clipStartTime;
+        
+        console.log(`[DEBUG] Clip duration: ${clipDuration}s (${clipStartTime} to ${clipEndTime})`);
+        
+        // ALWAYS adjust subtitle timestamps for consistency - this is critical
+        if (subtitles && subtitles.length > 0) {
+            console.log(`[INFO] Adjusting all subtitle timestamps to be relative to clip start time (${clipStartTime})`);
+            
+            // Adjust all subtitle timestamps relative to clip start time
+            subtitles = subtitles.map(subtitle => ({
+                ...subtitle,
+                start: Math.max(0, subtitle.start - clipStartTime),
+                end: Math.min(clipDuration, subtitle.end - clipStartTime)
+            }))
+            // Filter out subtitles outside the clip duration
+            .filter(subtitle => subtitle.start < clipDuration && subtitle.end > 0);
+            
+            console.log(`[DEBUG] After adjustment: ${subtitles.length} subtitles remain in clip timeframe`);
+            if (subtitles.length > 0) {
+                console.log(`[DEBUG] First subtitle (adjusted): ${JSON.stringify(subtitles[0])}`);
+                console.log(`[DEBUG] Last subtitle (adjusted): ${JSON.stringify(subtitles[subtitles.length-1])}`);
+            }
+        }
+        
         console.log(`[DEBUG] Generating video for ${lookupHash}`);
-        const { videoPath, videoGenerator } = await this.generateShareableVideo(clipData, audioPath);
-
+        const { videoPath, videoGenerator } = await this.generateShareableVideo(clipData, audioPath, subtitles);
 
         console.log(`[DEBUG] Uploading to CDN for ${lookupHash}`);
         const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}/${lookupHash}-clip.mp4`;
@@ -310,13 +403,14 @@ class ClipUtils {
         
             console.log(`[DEBUG] Preview uploaded for ${lookupHash}: ${previewUploadedUrl}`);
         
-            // ✅ Update MongoDB with preview URL
+            // ✅ Update MongoDB with preview URL and subtitle info
             const updatedClip = await WorkProductV2.findOneAndUpdate(
                 { lookupHash },
                 { 
                     $set: { 
                         cdnFileId: uploadedUrl,
-                        'result.previewImageId': previewUploadedUrl
+                        'result.previewImageId': previewUploadedUrl,
+                        'result.hasSubtitles': subtitles != null && subtitles.length > 0
                     }
                 },
                 { new: true }

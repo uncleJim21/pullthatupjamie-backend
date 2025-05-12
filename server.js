@@ -126,6 +126,31 @@ if (validateSpacesConfig()) {
   }
 }
 
+// Initialize transcript spaces manager with dedicated credentials
+let transcriptSpacesManager = null;
+if (process.env.TRANSCRIPT_SPACES_ACCESS_KEY_ID && 
+    process.env.TRANSCRIPT_SPACES_SECRET_KEY && 
+    process.env.TRANSCRIPT_SPACES_BUCKET_NAME) {
+  try {
+    transcriptSpacesManager = new DigitalOceanSpacesManager(
+      process.env.SPACES_ENDPOINT,
+      process.env.TRANSCRIPT_SPACES_ACCESS_KEY_ID,
+      process.env.TRANSCRIPT_SPACES_SECRET_KEY,
+      {
+        maxRetries: 3,
+        baseDelay: 1000,
+        maxDelay: 10000, // Fixed typo: to000 -> 10000
+        timeout: 30000
+      }
+    );
+    console.log('Transcript spaces manager initialized successfully');
+  } catch (error) {
+    console.error('Error initializing transcript spaces manager:', error);
+  }
+} else {
+  console.warn('Transcript spaces credentials not provided. Transcript access may be limited.');
+}
+
 const dbBackupManager = new DatabaseBackupManager({
   spacesEndpoint: process.env.SPACES_ENDPOINT,
   accessKeyId: process.env.SPACES_ACCESS_KEY_ID,
@@ -370,32 +395,163 @@ app.post('/api/validate-privs', async (req, res) => {
 
 ///Clips related
 
+// Add this function to generate subtitles
+async function generateSubtitlesForClip(clipData, start, end) {
+  const debugPrefix = `[SUBTITLE-DEBUG][${Date.now()}]`;
+  console.log(`${debugPrefix} ========== SUBTITLE GENERATION STARTING ==========`);
+  console.log(`${debugPrefix} generateSubtitlesForClip called with start: ${start}, end: ${end}`);
+  console.log(`${debugPrefix} Duration: ${end - start}s`);
+  
+  if (!clipData) {
+    console.error(`${debugPrefix} clipData is null or undefined, cannot generate subtitles`);
+    return [];
+  }
+  
+  // Dump the entire clipData for debugging
+  console.log(`${debugPrefix} Full clipData structure: ${JSON.stringify(clipData, null, 2)}`);
+  
+  // Extract podcast GUID from clipData with more extensive logging
+  let guid = null;
+  
+  // Try all possible paths to find the GUID
+  if (clipData.additionalFields?.guid) {
+    guid = clipData.additionalFields.guid;
+    console.log(`${debugPrefix} Found GUID in clipData.additionalFields.guid: ${guid}`);
+  } else if (clipData.shareLink && clipData.shareLink.includes('_p')) {
+    guid = clipData.shareLink.split('_p')[0];
+    console.log(`${debugPrefix} Extracted GUID from shareLink: ${guid}`);
+  } else if (clipData.additionalMetadata?.guid) {
+    guid = clipData.additionalMetadata.guid;
+    console.log(`${debugPrefix} Found GUID in clipData.additionalMetadata.guid: ${guid}`);
+  } else {
+    console.warn(`${debugPrefix} No podcast GUID found in any expected location in clipData`);
+    console.log(`${debugPrefix} clipData.additionalFields: ${JSON.stringify(clipData.additionalFields || {})}`);
+    console.log(`${debugPrefix} clipData.shareLink: ${clipData.shareLink}`);
+    console.log(`${debugPrefix} clipData.additionalMetadata: ${JSON.stringify(clipData.additionalMetadata || {})}`);
+  }
+  
+  if (!guid) {
+    console.error(`${debugPrefix} FATAL: No podcast GUID found in clip data, cannot generate subtitles`);
+    return [];
+  }
+  
+  try {
+    console.time(`${debugPrefix} Subtitle-Generation-Time`);
+    console.log(`${debugPrefix} Calling getWordTimestampsFromFullTranscriptJSON with guid: ${guid}, start: ${start}, end: ${end}`);
+    
+    // Get real word timestamps from the transcript JSON
+    const subtitles = await getWordTimestampsFromFullTranscriptJSON(guid, start, end);
+    console.timeEnd(`${debugPrefix} Subtitle-Generation-Time`);
+    
+    // Detailed subtitle validation and stats
+    if (!subtitles || !Array.isArray(subtitles)) {
+      console.error(`${debugPrefix} Invalid subtitles returned (not an array): ${typeof subtitles}`);
+      return [];
+    }
+    
+    console.log(`${debugPrefix} Generated ${subtitles.length} subtitles for clip`);
+    
+    if (subtitles.length === 0) {
+      console.warn(`${debugPrefix} No subtitles found in the specified time range ${start}s to ${end}s`);
+      return [];
+    }
+    
+    // Calculate subtitle coverage and statistics
+    const clipDuration = end - start;
+    const subtitlesDuration = subtitles.reduce((total, sub) => total + (sub.end - sub.start), 0);
+    const coverage = (subtitlesDuration / clipDuration) * 100;
+    
+    console.log(`${debugPrefix} Subtitle Statistics:`);
+    console.log(`${debugPrefix} - Total clip duration: ${clipDuration.toFixed(2)}s`);
+    console.log(`${debugPrefix} - Total subtitles duration: ${subtitlesDuration.toFixed(2)}s`);
+    console.log(`${debugPrefix} - Coverage: ${coverage.toFixed(2)}%`);
+    console.log(`${debugPrefix} - First subtitle: ${JSON.stringify(subtitles[0])}`);
+    console.log(`${debugPrefix} - Last subtitle: ${JSON.stringify(subtitles[subtitles.length - 1])}`);
+    
+    // Validate subtitle timing - check for overlap or gaps
+    let hasOverlaps = false;
+    let hasGaps = false;
+    let previousEnd = 0;
+    
+    for (let i = 0; i < subtitles.length; i++) {
+      const current = subtitles[i];
+      
+      // Check for basic validity
+      if (typeof current.start !== 'number' || typeof current.end !== 'number') {
+        console.warn(`${debugPrefix} Invalid subtitle timing at index ${i}: ${JSON.stringify(current)}`);
+        continue;
+      }
+      
+      // Check if this subtitle starts before it ends
+      if (current.start >= current.end) {
+        console.warn(`${debugPrefix} Subtitle at index ${i} has start >= end: ${JSON.stringify(current)}`);
+      }
+      
+      // Check for overlap with previous subtitle
+      if (i > 0 && current.start < previousEnd) {
+        hasOverlaps = true;
+        console.warn(`${debugPrefix} Subtitle overlap detected: ${JSON.stringify(subtitles[i-1])} and ${JSON.stringify(current)}`);
+      }
+      
+      // Check for gap with previous subtitle (more than 0.5s)
+      if (i > 0 && current.start - previousEnd > 0.5) {
+        hasGaps = true;
+        console.warn(`${debugPrefix} Gap detected between subtitles: ${previousEnd}s to ${current.start}s (${(current.start - previousEnd).toFixed(2)}s)`);
+      }
+      
+      previousEnd = current.end;
+    }
+    
+    console.log(`${debugPrefix} Subtitle validation complete - Overlaps: ${hasOverlaps}, Gaps: ${hasGaps}`);
+    console.log(`${debugPrefix} ========== SUBTITLE GENERATION COMPLETE ==========`);
+    
+    return subtitles;
+  } catch (error) {
+    console.error(`${debugPrefix} FAILED TO GENERATE SUBTITLES: ${error.message}`);
+    console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+    console.log(`${debugPrefix} ========== SUBTITLE GENERATION FAILED ==========`);
+    return [];
+  }
+}
+
 app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
+  const debugPrefix = `[SUBTITLE-DEBUG][${Date.now()}]`;
+  console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
 
+  console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
+  
   if (!clipId) {
+      console.error(`${debugPrefix} Missing required parameter: clipId`);
       return res.status(400).json({ error: 'clipId is required' });
   }
 
+  console.log(`${debugPrefix} Fetching clip data for clipId: ${clipId}`);
   const clipData = await getClipById(clipId);
   if (!clipData) {
+      console.error(`${debugPrefix} Clip not found for clipId: ${clipId}`);
       return res.status(404).json({ error: 'Clip not found', clipId });
   }
+
+  console.log(`${debugPrefix} Retrieved clipData: ${JSON.stringify(clipData, null, 2)}`);
 
   try {
       // Calculate lookup hash ONCE, at the beginning
       const lookupHash = calculateLookupHash(clipData, timestamps);
+      console.log(`${debugPrefix} Calculated lookupHash: ${lookupHash}`);
 
       // Check if this exists already
       const existingClip = await WorkProductV2.findOne({ lookupHash });
       if (existingClip) {
           if (existingClip.cdnFileId) {
+              console.log(`${debugPrefix} Clip already exists with URL: ${existingClip.cdnFileId}`);
               return res.status(200).json({
                   status: 'completed',
                   lookupHash,
                   url: existingClip.cdnFileId
               });
           }
+          console.log(`${debugPrefix} Clip is already processing with lookupHash: ${lookupHash}`);
           return res.status(202).json({
               status: 'processing',
               lookupHash,
@@ -409,20 +565,33 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
                    clipData.shareLink.split('_p')[0] : null);
       
       const feedId = clipData.additionalFields?.feedId || null;
+      console.log(`${debugPrefix} Extracted guid: ${guid}, feedId: ${feedId}`);
       
       // Get the start and end times
       const timeStart = timestamps ? timestamps[0] : clipData.timeContext?.start_time;
       const timeEnd = timestamps ? timestamps[1] : clipData.timeContext?.end_time;
+      console.log(`${debugPrefix} Clip time range: ${timeStart}s to ${timeEnd}s (duration: ${timeEnd - timeStart}s)`);
       
       // Get the accurate text for the time range
       let clipText = clipData.quote || "";
       
       if (guid && timeStart !== undefined && timeEnd !== undefined) {
+          console.log(`${debugPrefix} Fetching accurate text for time range...`);
           const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
           if (accurateText) {
               clipText = accurateText;
+              console.log(`${debugPrefix} Retrieved accurate text (${accurateText.length} chars)`);
+          } else {
+              console.log(`${debugPrefix} No accurate text retrieved, using original quote`);
           }
       }
+      
+      console.time(`${debugPrefix} Subtitle-Generation-Total-Time`);
+      console.log(`${debugPrefix} Generating subtitles for clip...`);
+      
+      // Generate subtitles for this clip on the server side
+      const subtitles = await generateSubtitlesForClip(clipData, timeStart, timeEnd);
+      console.timeEnd(`${debugPrefix} Subtitle-Generation-Total-Time`);
       
       // Prepare the minimal result object with just the essential data
       const resultData = {
@@ -433,8 +602,10 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           clipText: clipText,
           timeStart: timeStart,
           timeEnd: timeEnd,
+          hasSubtitles: subtitles && subtitles.length > 0 // Add subtitle flag
       };
 
+      console.log(`${debugPrefix} Creating initial WorkProductV2 record...`);
       // Create initial record with the minimal result data
       await WorkProductV2.create({
           type: 'ptuj-clip',
@@ -443,17 +614,21 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           cdnFileId: null,
           result: resultData
       });
+      console.log(`${debugPrefix} Initial WorkProductV2 record created`);
 
       // Queue the job WITHOUT awaiting
-      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash).catch(err => {
-          console.error('Error queuing clip:', err);
+      console.log(`${debugPrefix} Adding clip to the processing queue with ${subtitles ? subtitles.length : 0} subtitles...`);
+      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, subtitles).catch(err => {
+          console.error(`${debugPrefix} Error queuing clip: ${err.message}`);
+          console.error(err.stack);
           // Update DB with error status if queue fails
           WorkProductV2.findOneAndUpdate(
               { lookupHash },
               { status: 'failed', error: err.message }
-          ).catch(console.error);
+          ).catch(error => console.error(`${debugPrefix} Error updating WorkProductV2: ${error.message}`));
       });
 
+      console.log(`${debugPrefix} Clip successfully queued. Returning response to client.`);
       // Return immediately
       return res.status(202).json({
           status: 'processing',
@@ -462,7 +637,8 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       });
 
   } catch (error) {
-      console.error('Error in make-clip:', error);
+      console.error(`${debugPrefix} Error in make-clip endpoint: ${error.message}`);
+      console.error(`${debugPrefix} Stack trace: ${error.stack}`);
       return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -506,7 +682,7 @@ app.get('/api/clip-status/:lookupHash', async (req, res) => {
   }
 });
 
-async function processClip(clip, timestamps) {
+async function processClip(clip, timestamps, subtitles = null) {
   try {
     console.log(`Processing clip with clipId:${clip.shareLink}`);
     
@@ -518,7 +694,7 @@ async function processClip(clip, timestamps) {
       };
     }
 
-    const videoUrl = await clipUtils.processClip(clip,timestamps);
+    const videoUrl = await clipUtils.processClip(clip, timestamps, subtitles);
     return videoUrl;
   } catch (error) {
     console.error('Error in processClip:', error);
@@ -1464,6 +1640,159 @@ app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
   }
 });
 
+/**
+ * Alternative method to fetch transcript JSON directly from Digital Ocean Spaces
+ * using dedicated transcript bucket credentials
+ * 
+ * @param {string} podGuid - The podcast GUID to fetch transcript for
+ * @returns {Object} - The parsed transcript JSON data
+ */
+const formatTranscriptData = (transcriptData) => {
+  if (!transcriptData) {
+    console.error('Invalid transcript data: null or undefined');
+    return null;
+  }
+
+  try {
+    // The transcript data has a direct channels array
+    if (!Array.isArray(transcriptData.channels)) {
+      console.error('Invalid transcript structure - no channels array found');
+      return null;
+    }
+
+    // Get the first channel's alternatives
+    const channel = transcriptData.channels[0];
+    if (!channel || !Array.isArray(channel.alternatives) || !channel.alternatives[0]) {
+      console.error('Invalid transcript structure - missing channel data or alternatives');
+      return null;
+    }
+
+    const alternative = channel.alternatives[0];
+    
+    // Format the transcript data
+    const formattedData = {
+      results: {
+        channels: [{
+          alternatives: [{
+            confidence: alternative.confidence || 0,
+            transcript: alternative.transcript || '',
+            words: alternative.words || []
+          }]
+        }]
+      },
+      metadata: transcriptData.metadata || {},
+      language_code: transcriptData.language_code || 'en-US',
+      paragraphs: alternative.paragraphs || null
+    };
+
+    return formattedData;
+  } catch (error) {
+    console.error('Error formatting transcript data:', error);
+    return null;
+  }
+};
+
+const getTranscriptFromSpaces = async (podGuid) => {
+  const debugPrefix = `[TRANSCRIPT-DEBUG][${Date.now()}]`;
+  console.log(`${debugPrefix} getTranscriptFromSpaces START for guid: ${podGuid}`);
+  
+  if (!podGuid) {
+    console.error(`${debugPrefix} Missing podGuid parameter`);
+    throw new Error('Missing required parameter: podGuid');
+  }
+  
+  if (!transcriptSpacesManager) {
+    console.error(`${debugPrefix} Transcript spaces manager not initialized`);
+    throw new Error('Transcript spaces manager not initialized');
+  }
+  
+  try {
+    console.time(`${debugPrefix} Transcript-Spaces-Fetch-Time`);
+    
+    // Construct the key for the transcript JSON file
+    const transcriptKey = `${podGuid}.json`;
+    console.log(`${debugPrefix} Fetching transcript with key: ${transcriptKey} from bucket: ${process.env.TRANSCRIPT_SPACES_BUCKET_NAME}`);
+    
+    // Get the file as buffer directly from Spaces
+    const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+      process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+      transcriptKey
+    );
+    
+    console.timeEnd(`${debugPrefix} Transcript-Spaces-Fetch-Time`);
+    console.log(`${debugPrefix} Transcript fetch completed successfully. File size: ${fileBuffer.length} bytes`);
+    
+    // Parse the JSON from the buffer
+    let transcriptData;
+    try {
+      const jsonString = fileBuffer.toString('utf-8');
+      transcriptData = JSON.parse(jsonString);
+      console.log(`${debugPrefix} Successfully parsed transcript JSON`);
+      
+      // Format the transcript data before returning
+      const formattedData = formatTranscriptData(transcriptData);
+      if (!formattedData) {
+        throw new Error('Failed to format transcript data: Invalid structure');
+      }
+      return formattedData;
+    } catch (parseError) {
+      console.error(`${debugPrefix} 🔴 Failed to parse transcript JSON: ${parseError.message}`);
+      throw new Error(`Failed to parse transcript JSON: ${parseError.message}`);
+    }
+  } catch (error) {
+    console.error(`${debugPrefix} 🔥 Failed to fetch transcript for GUID ${podGuid}: ${error.message}`);
+    console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+    throw error;
+  }
+};
+
+// Now let's add a temporary test endpoint to verify the new transcript access method
+
+// TEMPORARY TEST ENDPOINT - Remove after testing
+app.get('/api/test-transcript/:guid', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    console.log(`TESTING transcript access for GUID: ${guid}`);
+    
+    // Try the new method
+    let transcript = null;
+    let error = null;
+    
+    try {
+      console.time('New-Method-Time');
+      transcript = await getTranscriptFromSpaces(guid);
+      console.timeEnd('New-Method-Time');
+      console.log('SUCCESS: New transcript access method worked!');
+    } catch (err) {
+      error = err;
+      console.error('ERROR: New transcript access method failed:', err.message);
+    }
+    
+    // Return the result
+    if (transcript) {
+      res.json({
+        success: true,
+        message: 'Transcript successfully retrieved using new method',
+        transcript: transcript
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: error?.message || 'Unknown error',
+        guid
+      });
+    }
+  } catch (error) {
+    console.error('Error in test endpoint:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+
 app.get('/api/clip-details/:lookupHash', async (req, res) => {
   try {
     const { lookupHash } = req.params;
@@ -1633,6 +1962,621 @@ Write only the social media post text, without any explanations or quotation mar
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
+  }
+});
+
+// Add back the getFullTranscriptJSON function after getTranscriptFromSpaces
+const getFullTranscriptJSON = async (podGuid) => {
+  const debugPrefix = `[SUBTITLE-DEBUG][${Date.now()}]`;
+  console.log(`${debugPrefix} getFullTranscriptJSON START for guid: ${podGuid}`);
+  
+  if (!podGuid) {
+    console.error(`${debugPrefix} Missing podGuid parameter in getFullTranscriptJSON`);
+    throw new Error('Missing required parameter: podGuid');
+  }
+  
+  try {
+    const transcriptUrl = `https://cascdr-transcripts.nyc3.cdn.digitaloceanspaces.com/${podGuid}.json`;
+    console.log(`${debugPrefix} Fetching transcript from URL: ${transcriptUrl}`);
+    
+    console.time(`${debugPrefix} Transcript-API-Call`);
+    let response;
+    try {
+      response = await axios.get(transcriptUrl, {
+        timeout: 10000, // 10 second timeout
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'JamieAgent/1.0'
+        }
+      });
+      console.timeEnd(`${debugPrefix} Transcript-API-Call`);
+    } catch (fetchError) {
+      console.timeEnd(`${debugPrefix} Transcript-API-Call`);
+      console.error(`${debugPrefix} 🔴 HTTP request failed: ${fetchError.message}`);
+      
+      if (fetchError.response) {
+        // The request was made and the server responded with a status code
+        console.error(`${debugPrefix} Response status: ${fetchError.response.status}`);
+        console.error(`${debugPrefix} Response headers: ${JSON.stringify(fetchError.response.headers)}`);
+      } else if (fetchError.request) {
+        // The request was made but no response was received
+        console.error(`${debugPrefix} No response received. Network error or timeout.`);
+      }
+      
+      throw new Error(`Failed to fetch transcript: ${fetchError.message}`);
+    }
+    
+    console.log(`${debugPrefix} Transcript API Response status: ${response.status}`);
+    console.log(`${debugPrefix} Response headers: ${JSON.stringify(response.headers)}`);
+    console.log(`${debugPrefix} Response size: ${
+      typeof response.data === 'string' 
+        ? `${response.data.length} characters` 
+        : `${JSON.stringify(response.data).length} characters (JSON)`
+    }`);
+    
+    // Check if response.data is already an object or a string that needs parsing
+    let transcriptData;
+    if (typeof response.data === 'string') {
+      console.log(`${debugPrefix} Response is a string, attempting to parse JSON...`);
+      try {
+        transcriptData = JSON.parse(response.data);
+        console.log(`${debugPrefix} Successfully parsed JSON string to object`);
+      } catch (parseError) {
+        console.error(`${debugPrefix} 🔴 Failed to parse transcript JSON: ${parseError.message}`);
+        
+        // Try to show a sample of the response to debug content issues
+        const sampleLength = Math.min(response.data.length, 500);
+        console.log(`${debugPrefix} First ${sampleLength} chars of response: ${response.data.substring(0, sampleLength)}...`);
+        
+        // Check for common issues
+        if (response.data.includes('AccessDenied')) {
+          console.error(`${debugPrefix} Response appears to contain an Access Denied error`);
+        } else if (response.data.includes('<!DOCTYPE html>')) {
+          console.error(`${debugPrefix} Response appears to be HTML, not JSON`);
+        } else if (response.data.trim() === '') {
+          console.error(`${debugPrefix} Response is an empty string`);
+        }
+        
+        throw new Error(`Failed to parse transcript JSON: ${parseError.message}`);
+      }
+    } else {
+      console.log(`${debugPrefix} Response is already an object, no parsing needed`);
+      transcriptData = response.data;
+    }
+    
+    // Validate transcript data structure
+    console.log(`${debugPrefix} Validating transcript data structure...`);
+    console.log(`${debugPrefix} Transcript data top-level keys: ${Object.keys(transcriptData || {}).join(', ')}`);
+    
+    if (!transcriptData) {
+      console.error(`${debugPrefix} 🔴 Transcript data is null or undefined`);
+      throw new Error('Invalid transcript data: null or undefined');
+    }
+    
+    if (!transcriptData.results) {
+      console.error(`${debugPrefix} 🔴 Invalid transcript data: missing 'results' property`);
+      console.log(`${debugPrefix} Transcript structure: ${JSON.stringify(transcriptData).substring(0, 200)}...`);
+      throw new Error('Invalid transcript data: missing results property');
+    }
+    
+    // Validate results structure
+    if (!transcriptData.results.channels || !Array.isArray(transcriptData.results.channels)) {
+      console.error(`${debugPrefix} 🔴 Invalid transcript data: missing or invalid 'channels' array`);
+      console.log(`${debugPrefix} Results keys: ${Object.keys(transcriptData.results).join(', ')}`);
+      
+      // Try to create a minimal valid structure to avoid null errors downstream
+      transcriptData.results.channels = [];
+      console.warn(`${debugPrefix} Created empty channels array to avoid null errors`);
+    }
+    
+    // Log transcript metadata if available
+    if (transcriptData.metadata) {
+      console.log(`${debugPrefix} Transcript metadata: ${JSON.stringify(transcriptData.metadata)}`);
+    }
+    
+    // Check for word count to validate content
+    let wordCount = 0;
+    if (transcriptData.results.channels && 
+        transcriptData.results.channels[0] && 
+        transcriptData.results.channels[0].alternatives && 
+        transcriptData.results.channels[0].alternatives[0] &&
+        Array.isArray(transcriptData.results.channels[0].alternatives[0].words)) {
+      
+      wordCount = transcriptData.results.channels[0].alternatives[0].words.length;
+      console.log(`${debugPrefix} Transcript contains ${wordCount} words`);
+      
+      // Try to detect if the transcript might be incomplete
+      const sampleWords = transcriptData.results.channels[0].alternatives[0].words.slice(0, 3);
+      console.log(`${debugPrefix} Sample words: ${JSON.stringify(sampleWords)}`);
+    } else {
+      console.warn(`${debugPrefix} ⚠️ Transcript does not contain any words or has invalid structure`);
+    }
+    
+    console.log(`${debugPrefix} getFullTranscriptJSON COMPLETE for guid: ${podGuid}`);
+    return transcriptData;
+  } catch (error) {
+    console.error(`${debugPrefix} 🔥 Failed to fetch transcript for GUID ${podGuid}: ${error.message}`);
+    console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+    throw error;
+  }
+};
+
+/**
+ * Gets word timestamps from a transcript, using the new spaces method first and falling back to HTTP
+ */
+const getWordTimestampsFromFullTranscriptJSON = async (guid, startTime, endTime) => {
+  const debugPrefix = `[SUBTITLE-DEBUG][${Date.now()}]`;
+  console.log(`${debugPrefix} getWordTimestampsFromFullTranscriptJSON START with guid: ${guid}, startTime: ${startTime}, endTime: ${endTime}`);
+  
+  if (!guid) {
+    console.error(`${debugPrefix} Missing guid in getWordTimestampsFromFullTranscriptJSON`);
+    throw new Error('Missing required parameter: guid');
+  }
+  
+  // Validate time parameters
+  if (startTime === undefined || endTime === undefined) {
+    console.error(`${debugPrefix} Missing time parameters in getWordTimestampsFromFullTranscriptJSON`);
+    throw new Error('Missing required time parameters');
+  }
+  
+  if (startTime >= endTime) {
+    console.error(`${debugPrefix} Invalid time range: startTime (${startTime}) >= endTime (${endTime})`);
+    throw new Error(`Invalid time range: startTime (${startTime}) >= endTime (${endTime})`);
+  }
+  
+  console.time(`${debugPrefix} GetTranscript-Total`);
+  let transcriptJSON;
+  
+  try {
+    // First try to get the transcript using the new Spaces method
+    console.log(`${debugPrefix} Attempting to get transcript using Spaces method first`);
+    try {
+      console.time(`${debugPrefix} GetTranscript-Spaces`);
+      const transcriptKey = `${guid}.json`;
+      const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+        process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+        transcriptKey
+      );
+      console.log(`${debugPrefix} Raw file size: ${fileBuffer.length} bytes`);
+      
+      const jsonString = fileBuffer.toString('utf-8');
+      console.log(`${debugPrefix} JSON string length: ${jsonString.length} characters`);
+      
+      // Handle double-encoded JSON
+      try {
+        // First try parsing as regular JSON
+        transcriptJSON = JSON.parse(jsonString);
+        
+        // If the result is a string and looks like JSON, parse it again
+        if (typeof transcriptJSON === 'string' && 
+            (transcriptJSON.trim().startsWith('{') || transcriptJSON.trim().startsWith('['))) {
+          console.log(`${debugPrefix} Detected double-encoded JSON, parsing again`);
+          transcriptJSON = JSON.parse(transcriptJSON);
+        }
+        
+        console.log(`${debugPrefix} Successfully parsed JSON, top-level keys:`, Object.keys(transcriptJSON));
+      } catch (parseError) {
+        console.error(`${debugPrefix} Failed to parse JSON: ${parseError.message}`);
+        throw parseError;
+      }
+      
+      console.timeEnd(`${debugPrefix} GetTranscript-Spaces`);
+      console.log(`${debugPrefix} Successfully retrieved transcript from Spaces`);
+    } catch (spacesError) {
+      // If Spaces method fails, fall back to the HTTP method
+      console.timeEnd(`${debugPrefix} GetTranscript-Spaces`);
+      console.warn(`${debugPrefix} ⚠️ Spaces method failed: ${spacesError.message}. Falling back to HTTP method.`);
+      
+      console.time(`${debugPrefix} GetTranscript-HTTP`);
+      const transcriptUrl = `https://cascdr-transcripts.nyc3.cdn.digitaloceanspaces.com/${guid}.json`;
+      const response = await axios.get(transcriptUrl);
+      transcriptJSON = response.data;
+      console.log(`${debugPrefix} Successfully retrieved transcript using fallback HTTP method`);
+      console.timeEnd(`${debugPrefix} GetTranscript-HTTP`);
+    }
+    
+    console.timeEnd(`${debugPrefix} GetTranscript-Total`);
+    
+    // Log the structure we received
+    console.log(`${debugPrefix} Transcript structure:`, {
+      topLevelKeys: Object.keys(transcriptJSON),
+      hasChannels: !!transcriptJSON.channels,
+      hasResults: !!transcriptJSON.results,
+      hasResultsChannels: !!(transcriptJSON.results && transcriptJSON.results.channels)
+    });
+    
+    // Handle different transcript formats
+    let words = [];
+    
+    // Case 1: Direct channels format
+    if (transcriptJSON.channels && transcriptJSON.channels[0] && transcriptJSON.channels[0].alternatives) {
+      console.log(`${debugPrefix} Processing direct channels format transcript`);
+      words = transcriptJSON.channels[0].alternatives[0].words || [];
+    }
+    // Case 2: Results format
+    else if (transcriptJSON.results && transcriptJSON.results.channels && transcriptJSON.results.channels[0] && transcriptJSON.results.channels[0].alternatives) {
+      console.log(`${debugPrefix} Processing results format transcript`);
+      words = transcriptJSON.results.channels[0].alternatives[0].words || [];
+    }
+    else {
+      console.error(`${debugPrefix} 🔴 Could not find words in any supported structure`);
+      throw new Error('Could not find words in transcript structure');
+    }
+    
+    console.log(`${debugPrefix} Found ${words.length} words in transcript`);
+    
+    // Log sample of words
+    if (words.length > 0) {
+      console.log(`${debugPrefix} Sample word structure:`, words[0]);
+    }
+    
+    // Filter words by time range
+    console.time(`${debugPrefix} WordFilter`);
+    const filteredWords = words.filter(word => {
+      const wordStart = parseFloat(word.start);
+      return wordStart >= startTime && wordStart <= endTime;
+    });
+    console.timeEnd(`${debugPrefix} WordFilter`);
+    
+    console.log(`${debugPrefix} Filtered words count: ${filteredWords.length} (time range ${startTime}-${endTime})`);
+    
+    // Format the words for subtitles
+    const subtitles = filteredWords.map(word => ({
+      text: word.word,
+      start: parseFloat(word.start),
+      end: parseFloat(word.end),
+      confidence: word.confidence || 0
+    }));
+    
+    // Log sample of formatted subtitles
+    if (subtitles.length > 0) {
+      console.log(`${debugPrefix} Sample subtitle structure:`, subtitles[0]);
+    }
+    
+    console.log(`${debugPrefix} getWordTimestampsFromFullTranscriptJSON COMPLETE`);
+    return subtitles;
+  } catch (error) {
+    console.timeEnd(`${debugPrefix} GetTranscript-Total`);
+    console.error(`${debugPrefix} 🔥 Error getting word timestamps: ${error.message}`);
+    console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+    throw error;
+  }
+};
+
+// Add the temporary endpoint for testing transcript retrieval
+app.get('/api/test-transcript/:guid', async (req, res) => {
+  const debugPrefix = `[TEST-TRANSCRIPT][${Date.now()}]`;
+  const guid = req.params.guid;
+  
+  console.log(`${debugPrefix} Testing transcript retrieval for GUID: ${guid}`);
+  
+  if (!guid) {
+    console.error(`${debugPrefix} Missing GUID parameter`);
+    return res.status(400).json({ error: 'Missing required parameter: guid' });
+  }
+  
+  try {
+    console.time(`${debugPrefix} SpacesMethod`);
+    console.log(`${debugPrefix} Attempting to retrieve transcript using Spaces method`);
+    
+    // Get the transcript object without validation
+    let transcriptData;
+    try {
+      // Use transcriptSpacesManager to get raw file
+      const transcriptKey = `${guid}.json`;
+      const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+        process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+        transcriptKey
+      );
+      
+      // Parse the JSON
+      const jsonString = fileBuffer.toString('utf-8');
+      transcriptData = JSON.parse(jsonString);
+      
+      // Log success and return complete data
+      console.log(`${debugPrefix} Successfully retrieved transcript data`);
+      console.log(`${debugPrefix} Top-level keys: ${Object.keys(transcriptData || {}).join(', ')}`);
+      
+      // Return the complete transcript data
+      return res.json({
+        success: true,
+        method: 'spaces',
+        guid,
+        transcript: transcriptData,
+        rawStructure: {
+          hasResults: !!transcriptData.results,
+          hasChannels: !!transcriptData.channels,
+          hasResultsChannels: !!(transcriptData.results && transcriptData.results.channels),
+          topLevelKeys: Object.keys(transcriptData)
+        }
+      });
+    } catch (error) {
+      console.error(`${debugPrefix} Error retrieving transcript data: ${error.message}`);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        guid
+      });
+    }
+  } catch (error) {
+    console.error(`${debugPrefix} Outer error in test endpoint: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// ====================================================
+// TEMPORARY TEST ENDPOINTS - REMOVE BEFORE PRODUCTION
+// These endpoints are for debugging transcript processing
+// ====================================================
+
+/**
+ * Test endpoint to get raw transcript data
+ * @route GET /api/debug/raw-transcript/:guid
+ * @description Returns the completely raw transcript data as received from storage
+ * @access Private
+ * @param {string} guid - The podcast GUID
+ * @returns {Object} Raw transcript data
+ */
+app.get('/api/debug/raw-transcript/:guid', async (req, res) => {
+  const debugPrefix = `[DEBUG-RAW-TRANSCRIPT][${Date.now()}]`;
+  const guid = req.params.guid;
+  
+  console.log(`${debugPrefix} Testing raw transcript retrieval for GUID: ${guid}`);
+  
+  if (!guid) {
+    console.error(`${debugPrefix} Missing GUID parameter`);
+    return res.status(400).json({ error: 'Missing required parameter: guid' });
+  }
+  
+  try {
+    // Get raw transcript data from Spaces
+    const transcriptKey = `${guid}.json`;
+    const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+      process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+      transcriptKey
+    );
+    
+    // Parse the JSON
+    const jsonString = fileBuffer.toString('utf-8');
+    const transcriptData = JSON.parse(jsonString);
+    
+    // Return the complete raw data with metadata about its structure
+    return res.json({
+      success: true,
+      guid,
+      rawData: transcriptData,
+      structureInfo: {
+        topLevelKeys: Object.keys(transcriptData),
+        hasResults: !!transcriptData.results,
+        hasChannels: !!transcriptData.channels,
+        hasResultsChannels: !!(transcriptData.results && transcriptData.results.channels),
+        fileSize: fileBuffer.length,
+        jsonStringLength: jsonString.length
+      }
+    });
+  } catch (error) {
+    console.error(`${debugPrefix} Error retrieving raw transcript: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      guid
+    });
+  }
+});
+
+/**
+ * Test endpoint to get formatted transcript data
+ * @route GET /api/debug/formatted-transcript/:guid
+ * @description Returns the transcript data after initial formatting
+ * @access Private
+ * @param {string} guid - The podcast GUID
+ * @returns {Object} Formatted transcript data
+ */
+app.get('/api/debug/formatted-transcript/:guid', async (req, res) => {
+  const debugPrefix = `[DEBUG-FORMATTED-TRANSCRIPT][${Date.now()}]`;
+  const guid = req.params.guid;
+  
+  console.log(`${debugPrefix} Testing formatted transcript retrieval for GUID: ${guid}`);
+  
+  if (!guid) {
+    console.error(`${debugPrefix} Missing GUID parameter`);
+    return res.status(400).json({ error: 'Missing required parameter: guid' });
+  }
+  
+  try {
+    // Get raw transcript data
+    const transcriptKey = `${guid}.json`;
+    const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+      process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+      transcriptKey
+    );
+    
+    // Parse the JSON
+    const jsonString = fileBuffer.toString('utf-8');
+    const rawData = JSON.parse(jsonString);
+    
+    // Apply formatting
+    const formattedData = formatTranscriptData(rawData);
+    
+    // Return both raw and formatted data for comparison
+    return res.json({
+      success: true,
+      guid,
+      rawData,
+      formattedData,
+      structureInfo: {
+        rawTopLevelKeys: Object.keys(rawData),
+        formattedTopLevelKeys: formattedData ? Object.keys(formattedData) : [],
+        hasWords: !!(formattedData?.results?.channels?.[0]?.alternatives?.[0]?.words),
+        wordCount: formattedData?.results?.channels?.[0]?.alternatives?.[0]?.words?.length || 0
+      }
+    });
+  } catch (error) {
+    console.error(`${debugPrefix} Error processing transcript: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      guid
+    });
+  }
+});
+
+/**
+ * Debug endpoint for subtitle generation
+ * @route GET /api/debug/subtitles/:guid
+ * @description Returns detailed debug information about subtitle generation
+ * @access Private
+ * @param {string} guid - The podcast GUID
+ * @param {number} startTime - Start time in seconds
+ * @param {number} endTime - End time in seconds
+ * @returns {Object} Debug information about subtitle generation
+ */
+app.get('/api/debug/subtitles/:guid', async (req, res) => {
+  const debugPrefix = `[DEBUG-SUBTITLES][${Date.now()}]`;
+  const { guid } = req.params;
+  const startTime = parseFloat(req.query.startTime) || 0;
+  const endTime = parseFloat(req.query.endTime) || 60;
+  
+  console.log(`${debugPrefix} Starting subtitle debug for GUID: ${guid}, time range: ${startTime}-${endTime}s`);
+  
+  try {
+    // Step 1: Get raw transcript data
+    console.log(`${debugPrefix} Step 1: Getting raw transcript data`);
+    const transcriptKey = `${guid}.json`;
+    const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+      process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+      transcriptKey
+    );
+    console.log(`${debugPrefix} Raw file size: ${fileBuffer.length} bytes`);
+    
+    // Step 2: Parse JSON
+    console.log(`${debugPrefix} Step 2: Parsing JSON`);
+    const jsonString = fileBuffer.toString('utf-8');
+    const rawData = JSON.parse(jsonString);
+    console.log(`${debugPrefix} Raw data structure:`, {
+      topLevelKeys: Object.keys(rawData),
+      hasChannels: !!rawData.channels,
+      hasResults: !!rawData.results,
+      hasResultsChannels: !!(rawData.results && rawData.results.channels)
+    });
+    
+    // Step 3: Extract words
+    console.log(`${debugPrefix} Step 3: Extracting words`);
+    let words = [];
+    if (rawData.channels && rawData.channels[0] && rawData.channels[0].alternatives) {
+      words = rawData.channels[0].alternatives[0].words || [];
+    } else if (rawData.results && rawData.results.channels && rawData.results.channels[0] && rawData.results.channels[0].alternatives) {
+      words = rawData.results.channels[0].alternatives[0].words || [];
+    }
+    console.log(`${debugPrefix} Found ${words.length} words in transcript`);
+    
+    // Step 4: Filter words by time range
+    console.log(`${debugPrefix} Step 4: Filtering words by time range ${startTime}-${endTime}s`);
+    const filteredWords = words.filter(word => {
+      const wordStart = parseFloat(word.start);
+      return wordStart >= startTime && wordStart <= endTime;
+    });
+    console.log(`${debugPrefix} Filtered to ${filteredWords.length} words in time range`);
+    
+    // Step 5: Format subtitles
+    console.log(`${debugPrefix} Step 5: Formatting subtitles`);
+    const subtitles = filteredWords.map(word => ({
+      text: word.word,
+      start: parseFloat(word.start),
+      end: parseFloat(word.end),
+      confidence: word.confidence || 0
+    }));
+    
+    // Return detailed debug information
+    return res.json({
+      success: true,
+      guid,
+      timeRange: { startTime, endTime },
+      rawDataStructure: {
+        topLevelKeys: Object.keys(rawData),
+        hasChannels: !!rawData.channels,
+        hasResults: !!rawData.results,
+        hasResultsChannels: !!(rawData.results && rawData.results.channels)
+      },
+      wordCounts: {
+        total: words.length,
+        filtered: filteredWords.length
+      },
+      sampleWords: words.slice(0, 5),
+      sampleFilteredWords: filteredWords.slice(0, 5),
+      subtitles: subtitles.slice(0, 5), // Return first 5 subtitles as sample
+      fullSubtitles: subtitles // Return all subtitles
+    });
+    
+  } catch (error) {
+    console.error(`${debugPrefix} Error in subtitle debug: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack,
+      guid
+    });
+  }
+});
+
+// Add this new debug endpoint to print raw transcript content
+app.get('/api/debug/raw-transcript-content/:guid', async (req, res) => {
+  const debugPrefix = `[DEBUG-RAW-CONTENT][${Date.now()}]`;
+  const guid = req.params.guid;
+  
+  console.log(`${debugPrefix} Printing raw transcript content for GUID: ${guid}`);
+  
+  if (!guid) {
+    console.error(`${debugPrefix} Missing GUID parameter`);
+    return res.status(400).json({ error: 'Missing required parameter: guid' });
+  }
+  
+  try {
+    // Get raw transcript data from Spaces
+    const transcriptKey = `${guid}.json`;
+    const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+      process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+      transcriptKey
+    );
+    
+    // Get the raw string content
+    const jsonString = fileBuffer.toString('utf-8');
+    
+    // Print first 100 characters to console
+    console.log(`${debugPrefix} First 100 characters of transcript:`);
+    console.log(jsonString.substring(0, 100));
+    
+    // Try to parse the JSON
+    let parsedData;
+    try {
+      parsedData = JSON.parse(jsonString);
+      console.log(`${debugPrefix} Successfully parsed JSON`);
+    } catch (parseError) {
+      console.error(`${debugPrefix} Failed to parse JSON: ${parseError.message}`);
+      parsedData = null;
+    }
+    
+    // Return the complete data
+    return res.json({
+      success: true,
+      guid,
+      first100Chars: jsonString.substring(0, 100),
+      fileSize: fileBuffer.length,
+      isJson: jsonString.trim().startsWith('{') || jsonString.trim().startsWith('['),
+      parseError: parsedData === null ? 'Failed to parse JSON' : null,
+      parsedData: parsedData ? Object.keys(parsedData).slice(0, 5) : null
+    });
+  } catch (error) {
+    console.error(`${debugPrefix} Error retrieving transcript content: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      guid
+    });
   }
 });
 
