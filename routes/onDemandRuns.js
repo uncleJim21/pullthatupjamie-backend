@@ -1,14 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { WorkProductV2 } = require('../models/WorkProductV2');
 
 /**
  * POST /api/on-demand/submitOnDemandRun
  * Submit an on-demand run request
  */
-router.post('/submit', async (req, res) => {
+router.post('/submitOnDemandRun', async (req, res) => {
     try {
-        const { message, parameters } = req.body;
+        const { message, parameters, episodes } = req.body;
 
         // Validate request body
         if (!message || typeof message !== 'string') {
@@ -25,13 +26,60 @@ router.post('/submit', async (req, res) => {
             });
         }
 
-        // Generate a random job ID
-        const jobId = crypto.randomBytes(8).toString('hex');
+        // Validate episodes array
+        if (!episodes || !Array.isArray(episodes) || episodes.length === 0) {
+            return res.status(400).json({
+                error: 'Invalid episodes',
+                details: 'Episodes must be a non-empty array'
+            });
+        }
 
-        // For now, just return a success response with the job ID
+        // Validate each episode has required fields
+        for (const episode of episodes) {
+            if (!episode.guid || !episode.feedGuid || !episode.feedId) {
+                return res.status(400).json({
+                    error: 'Invalid episode data',
+                    details: 'Each episode must have guid, feedGuid, and feedId'
+                });
+            }
+        }
+
+        // Generate a random lookupHash using crypto
+        const lookupHash = crypto.randomBytes(12).toString('hex');
+
+        // Create result structure
+        const result = {
+            jobStatus: 'pending',
+            totalFeeds: 0, // Will be calculated later
+            totalEpisodes: episodes.length,
+            episodesProcessed: 0,
+            episodesSkipped: 0,
+            episodesFailed: 0,
+            episodes: episodes.map(ep => ({
+                ...ep,
+                status: 'pending'
+            })),
+            startedAt: new Date().toISOString(),
+            completedAt: null
+        };
+
+        // Calculate unique feeds count
+        const uniqueFeedIds = new Set(episodes.map(ep => ep.feedId));
+        result.totalFeeds = uniqueFeedIds.size;
+
+        // Create a new WorkProductV2 document
+        await WorkProductV2.create({
+            type: 'on-demand-jamie-episodes',
+            lookupHash,
+            result
+        });
+
+        // Return success response with the lookupHash
         res.json({
             success: true,
-            jobId: jobId,
+            jobId: lookupHash,
+            totalEpisodes: episodes.length,
+            totalFeeds: result.totalFeeds,
             message: 'On-demand run submitted successfully'
         });
     } catch (error) {
@@ -47,7 +95,7 @@ router.post('/submit', async (req, res) => {
  * GET /api/on-demand/getOnDemandJobStatus/:jobId
  * Get status of an on-demand job
  */
-router.get('/status/:jobId', async (req, res) => {
+router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
     try {
         const { jobId } = req.params;
 
@@ -59,16 +107,31 @@ router.get('/status/:jobId', async (req, res) => {
             });
         }
 
-        // Generate a random number using crypto
-        const randomValue = crypto.randomInt(1, 100);
+        // Look up the job in WorkProductV2
+        const job = await WorkProductV2.findOne({ lookupHash: jobId });
 
-        // For now, just return a random status
+        if (!job) {
+            return res.status(404).json({
+                error: 'Job not found',
+                details: `No job found with ID ${jobId}`
+            });
+        }
+
+        // Return the job status
         res.json({
             success: true,
             jobId: jobId,
-            status: randomValue % 3 === 0 ? 'completed' : (randomValue % 3 === 1 ? 'in_progress' : 'pending'),
-            randomValue: randomValue,
-            message: 'Job status retrieved successfully'
+            status: job.result.jobStatus,
+            stats: {
+                totalEpisodes: job.result.totalEpisodes,
+                totalFeeds: job.result.totalFeeds,
+                episodesProcessed: job.result.episodesProcessed,
+                episodesSkipped: job.result.episodesSkipped,
+                episodesFailed: job.result.episodesFailed
+            },
+            episodes: job.result.episodes,
+            startedAt: job.result.startedAt,
+            completedAt: job.result.completedAt
         });
     } catch (error) {
         console.error('Error getting job status:', error);
