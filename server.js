@@ -18,8 +18,9 @@ const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = requ
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const Scheduler = require('./utils/Scheduler');
+const callIngestor = require('./utils/callIngestor');
 const path = require('path');
-const {DEBUG_MODE, SCHEDULER_ENABLED, printLog} = require('./constants.js')
+const {DEBUG_MODE, SCHEDULER_ENABLED, SCHEDULED_INGESTOR_TIMES, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
 const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
@@ -34,6 +35,7 @@ const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const debugRoutes = require('./routes/debugRoutes');
+const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1536,23 +1538,27 @@ app.listen(PORT, async () => {
     // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
     if (SCHEDULER_ENABLED) {
       console.log('Setting up scheduled tasks...');
+
+      // Add a scheduled task to call the ingestor API using configured times
+      const ingestorTimes = SCHEDULED_INGESTOR_TIMES;
+        
+      console.log(`Using ingestor schedule times: ${ingestorTimes.join(', ')} (Chicago time)`);
       
-      // Parse Chicago schedule times from environment variable
-      const scheduledRuntimes = process.env.CHICAGO_SCHEDULE_TIMES ? 
-        process.env.CHICAGO_SCHEDULE_TIMES.split(',').map(time => time.trim()) : 
-        ['02:00', '08:00', '16:45', '16:50']; // Default times if not specified
-      
-      console.log(`Using Chicago schedule times: ${scheduledRuntimes.join(', ')}`);
-      
-      // Add a simple "Hello World" task that runs at specific times (including 16:35)
       scheduler.scheduleTask(
-        'hello-world',
-        scheduledRuntimes,
-        () => {
-          const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
-          console.log(`[SCHEDULED TASK] Hello World! The current time in Chicago is ${now}`);
-        },
-        { runImmediately: false } // Also run once immediately to test
+        'podcast-ingestor',
+        ingestorTimes,
+        async () => {
+          try {
+            const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+            console.log(`[SCHEDULED TASK] Starting podcast ingestion at ${now} (Chicago time)`);
+            
+            const result = await callIngestor();
+            
+            return result;
+          } catch (error) {
+            console.error(`[SCHEDULED TASK] Error triggering podcast ingestion:`, error.message);
+          }
+        }
       );
 
       // Schedule daily database backup at 3:00 AM Chicago time only if not in debug mode
@@ -1568,10 +1574,6 @@ app.listen(PORT, async () => {
           }
         );
       }
-      
-      
-      
-      console.log(`Scheduled tasks set to run at the following times (Chicago): ${scheduledRuntimes.join(', ')}`);
     } else {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
@@ -2656,4 +2658,29 @@ app.get('/api/debug/raw-transcript-content/:guid', async (req, res) => {
     });
   }
 });
+
+// Add a debug endpoint to trigger the ingestor manually (only in debug mode)
+if (DEBUG_MODE) {
+  app.post('/api/debug/trigger-ingestor', async (req, res) => {
+    try {
+      const jobId = `manual-job-${Date.now()}`;
+      console.log(`[DEBUG] Manually triggering ingestor with job ID: ${jobId}`);
+      
+      const result = await callIngestor(jobId);
+      
+      res.json({
+        success: true,
+        message: 'Ingestor triggered successfully',
+        jobId,
+        result
+      });
+    } catch (error) {
+      console.error('Error triggering ingestor:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+}
 
