@@ -17,8 +17,9 @@ const { initializeInvoiceDB } = require('./utils/invoice-db');
 const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
 const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
+const Scheduler = require('./utils/Scheduler');
 const path = require('path');
-const {DEBUG_MODE, printLog} = require('./constants.js')
+const {DEBUG_MODE, SCHEDULER_ENABLED, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
 const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
@@ -171,6 +172,9 @@ const clipQueueManager = new ClipQueueManager({
   maxConcurrent: 2,
   maxQueueSize: 100
 }, clipUtils);
+
+// Initialize the scheduler if enabled
+const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
 
 //Validates user meets one of three requirements:
 //1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
@@ -1507,6 +1511,7 @@ if (DEBUG_MODE) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
+  console.log(`SCHEDULER_ENABLED:`, SCHEDULER_ENABLED)
   console.log(`Available models: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
 
   //Initialize local dbs for speedy auth
@@ -1528,12 +1533,84 @@ app.listen(PORT, async () => {
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
     
+    // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
+    if (SCHEDULER_ENABLED) {
+      console.log('Setting up scheduled tasks...');
+      
+      // Parse Chicago schedule times from environment variable
+      const scheduledRuntimes = process.env.CHICAGO_SCHEDULE_TIMES ? 
+        process.env.CHICAGO_SCHEDULE_TIMES.split(',').map(time => time.trim()) : 
+        ['02:00', '08:00', '16:45', '16:50']; // Default times if not specified
+      
+      console.log(`Using Chicago schedule times: ${scheduledRuntimes.join(', ')}`);
+      
+      // Add a simple "Hello World" task that runs at specific times (including 16:35)
+      scheduler.scheduleTask(
+        'hello-world',
+        scheduledRuntimes,
+        () => {
+          const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+          console.log(`[SCHEDULED TASK] Hello World! The current time in Chicago is ${now}`);
+        },
+        { runImmediately: false } // Also run once immediately to test
+      );
+
+      // Schedule daily database backup at 3:00 AM Chicago time only if not in debug mode
+      if (!DEBUG_MODE && dbBackupManager) {
+        scheduler.scheduleTask(
+          'database-backup',
+          ['03:00'],
+          () => {
+            console.log('Running scheduled database backup');
+            dbBackupManager.performBackup().catch(err => {
+              console.error('Error in scheduled database backup:', err);
+            });
+          }
+        );
+      }
+      
+      
+      
+      console.log(`Scheduled tasks set to run at the following times (Chicago): ${scheduledRuntimes.join(', ')}`);
+    } else {
+      console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
+    }
+    
     console.log('All systems initialized successfully');
   } catch (error) {
     console.error('Error during initialization:', error);
     // Don't exit the process, just log the error and continue without backups
     console.warn('Continuing without backup system...');
   }
+});
+
+// Keep the graceful shutdown handlers for the scheduler
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  
+  if (SCHEDULER_ENABLED) {
+    scheduler.stopAllTasks();
+  }
+  
+  // Close database connections and exit
+  setTimeout(() => {
+    mongoose.connection.close();
+    process.exit(0);
+  }, 1000);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  
+  if (SCHEDULER_ENABLED) {
+    scheduler.stopAllTasks();
+  }
+  
+  // Close database connections and exit
+  setTimeout(() => {
+    mongoose.connection.close();
+    process.exit(0);
+  }, 1000);
 });
 
 // Add this new endpoint for testing episode retrieval
