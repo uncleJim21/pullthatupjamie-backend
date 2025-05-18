@@ -31,6 +31,7 @@
     "mongoose": "^8.8.1",
     "natural": "^8.0.1",
     "neo4j-driver": "^5.26.0",
+    "node-cron": "^4.0.5",
     "node-fetch": "^2.7.0",
     "node-html-parser": "^7.0.1",
     "openai": "^4.70.2",
