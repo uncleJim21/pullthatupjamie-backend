@@ -8,3 +8,4 @@ utils/invoice-db.js
 utils/temp.wav
 *.txt
 /sessions
+scripts/seedPodcastFeeds.js
