@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
+const axios = require('axios');
 
 /**
  * POST /api/on-demand/submitOnDemandRun
@@ -74,14 +75,66 @@ router.post('/submitOnDemandRun', async (req, res) => {
             result
         });
 
-        // Return success response with the lookupHash
-        res.json({
-            success: true,
-            jobId: lookupHash,
-            totalEpisodes: episodes.length,
-            totalFeeds: result.totalFeeds,
-            message: 'On-demand run submitted successfully'
+        // Prepare the AWS API payload
+        const feedGuids = {};
+        episodes.forEach(episode => {
+            if (!feedGuids[episode.feedGuid]) {
+                feedGuids[episode.feedGuid] = {
+                    feedId: episode.feedId,
+                    episodes: []
+                };
+            }
+            feedGuids[episode.feedGuid].episodes.push(episode.guid);
         });
+
+        const awsPayload = {
+            jobId: lookupHash,
+            jobConfig: {
+                onDemand: true,
+                feedGuids,
+                workProductV2LookupHash: lookupHash
+            }
+        };
+
+        // Call the AWS API
+        try {
+            const awsResponse = await axios.post(
+                process.env.AWS_INGESTOR_API_URL,
+                awsPayload,
+                {
+                    headers: {
+                        'x-api-key': process.env.AWS_REMOTE_TEST_API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            // Return success response with the lookupHash and AWS response
+            return res.json({
+                success: true,
+                jobId: lookupHash,
+                totalEpisodes: episodes.length,
+                totalFeeds: result.totalFeeds,
+                message: 'On-demand run submitted successfully',
+                awsResponse: awsResponse.data
+            });
+        } catch (awsError) {
+            console.error('AWS API Error:', awsError.response?.data || awsError.message);
+            
+            // Update WorkProductV2 with error status
+            await WorkProductV2.findOneAndUpdate(
+                { lookupHash },
+                { 
+                    'result.jobStatus': 'failed',
+                    'result.error': awsError.response?.data?.message || awsError.message
+                }
+            );
+
+            return res.status(awsError.response?.status || 500).json({
+                error: 'Failed to submit job to AWS',
+                details: awsError.response?.data || awsError.message
+            });
+        }
     } catch (error) {
         console.error('Error submitting on-demand run:', error);
         res.status(500).json({
