@@ -268,22 +268,141 @@ router.get('/auth-success', (req, res) => {
                     margin: 20px 0;
                     word-break: break-all;
                 }
+                .action-section {
+                    background-color: #e3f2fd;
+                    border: 1px solid #bbdefb;
+                    border-radius: 4px;
+                    padding: 20px;
+                    margin: 20px 0;
+                }
+                button {
+                    background-color: #1da1f2;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 16px;
+                }
+                button:hover {
+                    background-color: #1991da;
+                }
+                #result {
+                    margin-top: 20px;
+                    padding: 10px;
+                    border-radius: 4px;
+                }
+                .success {
+                    background-color: #e8f5e9;
+                    border: 1px solid #c8e6c9;
+                }
+                .error {
+                    background-color: #ffebee;
+                    border: 1px solid #ffcdd2;
+                }
             </style>
         </head>
         <body>
             <h1>Twitter Authentication Successful!</h1>
             <div class="success-message">
                 <h2>✅ Successfully connected to Twitter</h2>
-                <p>Your Twitter account has been successfully connected.</p>
+                <p>Your Twitter account has been successfully connected. You can now close this page.</p>
             </div>
             <div class="token-info">
                 <h3>Token Information:</h3>
                 <p><strong>User ID:</strong> ${req.session.twitterTokens.userId}</p>
                 <p><strong>Expires At:</strong> ${new Date(req.session.twitterTokens.expiresAt).toLocaleString()}</p>
             </div>
+            <div class="action-section">
+                <h3>Test Your Connection</h3>
+                <button onclick="postTweet()">Post "Hello World" Tweet</button>
+                <div id="result"></div>
+            </div>
+
+            <script>
+                async function postTweet() {
+                    const resultDiv = document.getElementById('result');
+                    resultDiv.innerHTML = 'Posting tweet...';
+                    resultDiv.className = '';
+                    
+                    try {
+                        const response = await fetch('/api/twitter/tweet', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            resultDiv.innerHTML = \`
+                                <h4>✅ Tweet Posted Successfully!</h4>
+                                <p>Check your Twitter profile to see the tweet.</p>
+                                <p><strong>Tweet ID:</strong> \${data.tweet.id}</p>
+                            \`;
+                            resultDiv.className = 'success';
+                        } else {
+                            resultDiv.innerHTML = \`
+                                <h4>❌ Error Posting Tweet</h4>
+                                <p>\${data.message || data.error}</p>
+                            \`;
+                            resultDiv.className = 'error';
+                        }
+                    } catch (error) {
+                        resultDiv.innerHTML = \`
+                            <h4>❌ Error</h4>
+                            <p>\${error.message}</p>
+                        \`;
+                        resultDiv.className = 'error';
+                    }
+                }
+            </script>
         </body>
         </html>
     `);
+});
+
+/**
+ * POST /api/twitter/tweet
+ * Post a tweet using stored tokens
+ */
+router.post('/tweet', async (req, res) => {
+    try {
+        // Check if we have valid tokens
+        if (!req.session.twitterTokens) {
+            return res.status(401).json({ 
+                error: 'Not authenticated',
+                message: 'Please complete Twitter OAuth first'
+            });
+        }
+
+        // Check if token is expired
+        if (Date.now() >= req.session.twitterTokens.expiresAt) {
+            return res.status(401).json({ 
+                error: 'Token expired',
+                message: 'Please re-authenticate with Twitter'
+            });
+        }
+
+        // Create Twitter client with stored access token
+        const client = new TwitterApi(req.session.twitterTokens.accessToken);
+
+        // Post the tweet
+        const tweet = await client.v2.tweet('Hello World!');
+
+        res.json({
+            success: true,
+            message: 'Tweet posted successfully',
+            tweet: tweet.data
+        });
+    } catch (error) {
+        console.error('Error posting tweet:', error);
+        res.status(500).json({ 
+            error: 'Failed to post tweet',
+            details: error.message
+        });
+    }
 });
 
 module.exports = router; 
