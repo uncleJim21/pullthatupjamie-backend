@@ -300,6 +300,18 @@ router.get('/auth-success', (req, res) => {
                     background-color: #ffebee;
                     border: 1px solid #ffcdd2;
                 }
+                .tweet-input {
+                    width: 100%;
+                    padding: 10px;
+                    margin: 10px 0;
+                    border: 1px solid #e0e0e0;
+                    border-radius: 4px;
+                    font-size: 16px;
+                }
+                .tweet-input:focus {
+                    outline: none;
+                    border-color: #1da1f2;
+                }
             </style>
         </head>
         <body>
@@ -314,14 +326,23 @@ router.get('/auth-success', (req, res) => {
                 <p><strong>Expires At:</strong> ${new Date(req.session.twitterTokens.expiresAt).toLocaleString()}</p>
             </div>
             <div class="action-section">
-                <h3>Test Your Connection</h3>
-                <button onclick="postTweet()">Post "Hello World" Tweet</button>
+                <h3>Post a Tweet</h3>
+                <input type="text" id="tweetText" class="tweet-input" placeholder="What's happening?" value="Hello World!">
+                <button onclick="postTweet()">Post Tweet</button>
                 <div id="result"></div>
             </div>
 
             <script>
                 async function postTweet() {
                     const resultDiv = document.getElementById('result');
+                    const tweetText = document.getElementById('tweetText').value;
+                    
+                    if (!tweetText) {
+                        resultDiv.innerHTML = '<h4>❌ Error</h4><p>Please enter some text for your tweet</p>';
+                        resultDiv.className = 'error';
+                        return;
+                    }
+                    
                     resultDiv.innerHTML = 'Posting tweet...';
                     resultDiv.className = '';
                     
@@ -330,7 +351,8 @@ router.get('/auth-success', (req, res) => {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
-                            }
+                            },
+                            body: JSON.stringify({ text: tweetText })
                         });
                         
                         const data = await response.json();
@@ -385,11 +407,20 @@ router.post('/tweet', async (req, res) => {
             });
         }
 
+        // Get tweet text from request body
+        const { text } = req.body;
+        if (!text) {
+            return res.status(400).json({
+                error: 'Missing text',
+                message: 'Please provide tweet text'
+            });
+        }
+
         // Create Twitter client with stored access token
         const client = new TwitterApi(req.session.twitterTokens.accessToken);
 
         // Post the tweet
-        const tweet = await client.v2.tweet('Hello World!');
+        const tweet = await client.v2.tweet(text);
 
         res.json({
             success: true,
