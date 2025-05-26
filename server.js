@@ -36,6 +36,8 @@ const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
+const twitterRoutes = require('./routes/twitterRoutes');
+const cookieParser = require('cookie-parser'); // Add this line
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -58,6 +60,24 @@ app.use(cors());
 app.enable('trust proxy');
 app.set('trust proxy', true);
 app.use(express.json());
+app.use(cookieParser()); // Add this line before session middleware
+
+// Add session middleware
+const session = require('express-session');
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-secret-key',
+  resave: true,
+  saveUninitialized: true,
+  cookie: {
+    secure: false, // Set to false for local development
+    httpOnly: true,
+    sameSite: 'lax',
+    domain: 'localhost',
+    path: '/',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  },
+  name: 'connect.sid' // Explicitly set the cookie name
+}));
 
 // Environment variables with defaults
 const PORT = process.env.PORT || 4131;
@@ -1503,6 +1523,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
+app.use('/api/twitter', twitterRoutes);
 
 // Only enable debug routes in debug mode
 if (DEBUG_MODE) {
