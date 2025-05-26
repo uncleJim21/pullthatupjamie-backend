@@ -68,6 +68,7 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'your-secret-key',
   resave: true,
   saveUninitialized: true,
+  rolling: true, // Extends session lifetime on activity
   cookie: {
     secure: false, // Set to false for local development
     httpOnly: true,
