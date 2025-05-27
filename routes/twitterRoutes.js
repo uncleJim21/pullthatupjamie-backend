@@ -425,21 +425,14 @@ router.get('/auth-success', (req, res) => {
  * POST /api/twitter/tweet
  * Post a tweet using stored tokens
  */
-router.post('/tweet', async (req, res) => {
+router.post('/tweet', validatePrivs, async (req, res) => {
     try {
-        // Check if we have valid tokens
-        if (!req.session.twitterTokens) {
+        // Get tokens from database
+        const tokens = await getTwitterTokens(req.user.adminEmail);
+        if (!tokens) {
             return res.status(401).json({ 
                 error: 'Not authenticated',
                 message: 'Please complete Twitter OAuth first'
-            });
-        }
-
-        // Check if token is expired
-        if (Date.now() >= req.session.twitterTokens.expiresAt) {
-            return res.status(401).json({ 
-                error: 'Token expired',
-                message: 'Please re-authenticate with Twitter'
             });
         }
 
@@ -453,7 +446,7 @@ router.post('/tweet', async (req, res) => {
         }
 
         // Create Twitter client with stored access token
-        const client = new TwitterApi(req.session.twitterTokens.accessToken);
+        const client = new TwitterApi(tokens.oauthToken);
 
         // Post the tweet
         const tweet = await client.v2.tweet(text);
