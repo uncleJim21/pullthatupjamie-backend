@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { TwitterApi } = require('twitter-api-v2');
+const { updateTwitterTokens, getTwitterTokens } = require('../utils/ProPodcastUtils');
+const { validatePrivs } = require('../middleware/validate-privs');
 
 // Get the port from environment variables
 const PORT = process.env.PORT || 4132;
@@ -193,12 +195,23 @@ router.get('/callback', async (req, res) => {
         const userClient = new TwitterApi(accessToken);
         const user = await userClient.v2.me();
 
-        // Store tokens in session
+        // Store tokens in ProPodcastDetails if we have an admin email
+        if (req.session.adminEmail) {
+            await updateTwitterTokens(req.session.adminEmail, {
+                oauthToken: accessToken,
+                oauthTokenSecret: refreshToken,
+                twitterId: user.data.id,
+                twitterUsername: user.data.username
+            });
+        }
+
+        // Store tokens in session for backward compatibility
         req.session.twitterTokens = {
             accessToken,
             refreshToken,
             expiresAt: Date.now() + (expiresIn * 1000),
-            userId: user.data.id
+            twitterId: user.data.id,
+            twitterUsername: user.data.username
         };
 
         // Clean up the temporary store
@@ -220,13 +233,8 @@ router.get('/callback', async (req, res) => {
     } catch (error) {
         console.error('Twitter callback error:', error);
         res.status(500).json({ 
-            error: 'Failed to complete Twitter auth',
-            details: error.message,
-            debug: {
-                error: error,
-                headers: error.headers,
-                data: error.data
-            }
+            error: 'Failed to complete Twitter authentication',
+            details: error.message 
         });
     }
 });
@@ -322,7 +330,7 @@ router.get('/auth-success', (req, res) => {
             </div>
             <div class="token-info">
                 <h3>Token Information:</h3>
-                <p><strong>User ID:</strong> ${req.session.twitterTokens.userId}</p>
+                <p><strong>User ID:</strong> ${req.session.twitterTokens.twitterId}</p>
                 <p><strong>Expires At:</strong> ${new Date(req.session.twitterTokens.expiresAt).toLocaleString()}</p>
             </div>
             <div class="action-section">
@@ -433,6 +441,27 @@ router.post('/tweet', async (req, res) => {
             error: 'Failed to post tweet',
             details: error.message
         });
+    }
+});
+
+/**
+ * GET /api/twitter/tokens
+ * Get Twitter token status for the authenticated podcast
+ */
+router.get('/tokens', validatePrivs, async (req, res) => {
+    try {
+        const tokens = await getTwitterTokens(req.user.adminEmail);
+        if (!tokens) {
+            return res.json({ authenticated: false });
+        }
+        res.json({ 
+            authenticated: true,
+            twitterId: tokens.twitterId,
+            twitterUsername: tokens.twitterUsername
+        });
+    } catch (error) {
+        console.error('Error getting Twitter tokens:', error);
+        res.status(500).json({ error: 'Failed to get Twitter tokens' });
     }
 });
 

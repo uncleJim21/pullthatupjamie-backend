@@ -53,6 +53,14 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
     spotifyLink: { type: String, required: false },
     youtubeLink: { type: String, required: false },
   },
+  // Add Twitter token fields
+  twitterTokens: {
+    oauthToken: { type: String, required: false },
+    oauthTokenSecret: { type: String, required: false },
+    twitterId: { type: String, required: false },
+    twitterUsername: { type: String, required: false },
+    lastUpdated: { type: Date, default: Date.now }
+  }
 });
 
 const ProPodcastDetails = mongoose.model("ProPodcastDetails", ProPodcastDetailsSchema);
