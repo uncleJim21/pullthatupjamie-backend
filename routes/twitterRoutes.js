@@ -445,10 +445,10 @@ router.post('/tweet', async (req, res) => {
 });
 
 /**
- * GET /api/twitter/tokens
+ * POST /api/twitter/tokens
  * Get Twitter token status for the authenticated podcast
  */
-router.get('/tokens', validatePrivs, async (req, res) => {
+router.post('/tokens', validatePrivs, async (req, res) => {
     try {
         const tokens = await getTwitterTokens(req.user.adminEmail);
         if (!tokens) {
