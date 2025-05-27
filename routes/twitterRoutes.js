@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { TwitterApi } = require('twitter-api-v2');
-const { updateTwitterTokens, getTwitterTokens } = require('../utils/ProPodcastUtils');
+const { updateTwitterTokens, getTwitterTokens, getProPodcastByAdminEmail } = require('../utils/ProPodcastUtils');
 const { validatePrivs } = require('../middleware/validate-privs');
+const jwt = require('jsonwebtoken');
 
 // Get the port from environment variables
 const PORT = process.env.PORT || 4132;
@@ -11,11 +12,37 @@ const PORT = process.env.PORT || 4132;
 const oauthStateStore = new Map();
 
 /**
- * GET /api/twitter/x-oauth
+ * GET/POST /api/twitter/x-oauth
  * Initiate Twitter OAuth flow
  */
-router.get('/x-oauth', async (req, res) => {
+router.all('/x-oauth', async (req, res) => {
     try {
+        // Get token from either Authorization header or request body
+        const authHeader = req.headers.authorization;
+        const token = authHeader?.startsWith('Bearer ') 
+            ? authHeader.split(' ')[1]
+            : req.body?.token;
+
+        if (!token) {
+            return res.status(401).json({ 
+                error: 'Not authenticated',
+                message: 'Bearer token required'
+            });
+        }
+
+        // Verify the JWT token
+        const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+        
+        // Get the podcast details using the email from the token
+        const podcast = await getProPodcastByAdminEmail(decoded.email);
+        
+        if (!podcast) {
+            return res.status(401).json({ 
+                error: 'Not authorized',
+                message: 'No podcast found for this admin email'
+            });
+        }
+
         // Log the request details
         console.log('OAuth Initiation:', {
             headers: req.headers,
@@ -48,7 +75,8 @@ router.get('/x-oauth', async (req, res) => {
         const oauthData = {
             codeVerifier,
             state,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            adminEmail: decoded.email // Store admin email in OAuth state
         };
         
         // Store in session
@@ -77,8 +105,8 @@ router.get('/x-oauth', async (req, res) => {
                 maxAge: 24 * 60 * 60 * 1000 // 24 hours
             });
 
-            // If the request is from curl, return JSON response
-            if (req.headers['user-agent']?.includes('curl')) {
+            // If the request is from curl or has a JSON content type, return JSON response
+            if (req.headers['user-agent']?.includes('curl') || req.headers['content-type']?.includes('application/json')) {
                 return res.json({ 
                     success: true,
                     authUrl: url,
@@ -195,9 +223,9 @@ router.get('/callback', async (req, res) => {
         const userClient = new TwitterApi(accessToken);
         const user = await userClient.v2.me();
 
-        // Store tokens in ProPodcastDetails if we have an admin email
-        if (req.session.adminEmail) {
-            await updateTwitterTokens(req.session.adminEmail, {
+        // Store tokens in ProPodcastDetails using admin email from OAuth state
+        if (oauthData.adminEmail) {
+            await updateTwitterTokens(oauthData.adminEmail, {
                 oauthToken: accessToken,
                 oauthTokenSecret: refreshToken,
                 twitterId: user.data.id,

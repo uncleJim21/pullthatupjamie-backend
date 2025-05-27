@@ -55,8 +55,16 @@ db.once("open", () => {
 
 const app = express();
 
+// CORS configuration
+const corsOptions = {
+    origin: 'http://localhost:3000', // Your React app's URL
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.enable('trust proxy');
 app.set('trust proxy', true);
 app.use(express.json());

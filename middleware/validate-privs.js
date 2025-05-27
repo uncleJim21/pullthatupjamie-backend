@@ -18,7 +18,7 @@ const validatePrivs = async (req, res, next) => {
         const token = authHeader.split(' ')[1];
         
         // Verify the JWT token
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
         
         // Get the podcast details using the email from the token
         const podcast = await getProPodcastByAdminEmail(decoded.email);
