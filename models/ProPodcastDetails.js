@@ -55,10 +55,18 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
   },
   // Add Twitter token fields
   twitterTokens: {
-    oauthToken: { type: String, required: false },
-    oauthTokenSecret: { type: String, required: false },
+    // OAuth 2.0 tokens (for tweets and basic API calls)
+    oauthToken: { type: String, required: false },           // OAuth 2.0 access token
+    oauthTokenSecret: { type: String, required: false },     // OAuth 2.0 refresh token
     twitterId: { type: String, required: false },
     twitterUsername: { type: String, required: false },
+    
+    // OAuth 1.0a tokens (for media uploads)
+    oauth1AccessToken: { type: String, required: false },    // OAuth 1.0a access token
+    oauth1AccessSecret: { type: String, required: false },   // OAuth 1.0a access secret
+    oauth1TwitterId: { type: String, required: false },
+    oauth1TwitterUsername: { type: String, required: false },
+    
     lastUpdated: { type: Date, default: Date.now }
   }
 });
