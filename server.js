@@ -57,7 +57,11 @@ const app = express();
 
 // CORS configuration
 const corsOptions = {
-    origin: 'http://localhost:3000', // Your React app's URL
+    origin: [
+        'http://localhost:3000',
+        'http://localhost:3001', 
+        'https://pullthatupjamie.ai'
+    ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
