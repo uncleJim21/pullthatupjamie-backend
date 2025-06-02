@@ -60,7 +60,8 @@ const corsOptions = {
     origin: [
         'http://localhost:3000',
         'http://localhost:3001', 
-        'https://pullthatupjamie.ai'
+        'https://pullthatupjamie.ai',
+        'https://www.pullthatupjamie.ai'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
