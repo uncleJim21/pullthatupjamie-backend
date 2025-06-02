@@ -451,4 +451,69 @@ router.post('/twitter/clear-tokens', validatePrivs, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/debug/twitter/test-revoke
+ * Test the Twitter token revocation endpoint (debug version)
+ */
+router.post('/twitter/test-revoke', validatePrivs, async (req, res) => {
+    try {
+        // Get current token status before revocation
+        const tokensBefore = await getTwitterTokens(req.user.adminEmail);
+        
+        console.log('[DEBUG] Testing token revocation...');
+        console.log('[DEBUG] Tokens before revocation:', {
+            hasOAuth2: !!(tokensBefore?.oauthToken),
+            hasOAuth1: !!(tokensBefore?.oauth1AccessToken),
+            username: tokensBefore?.twitterUsername
+        });
+
+        // Clear all tokens (same as main revoke endpoint but without confirmation requirement)
+        await updateTwitterTokens(req.user.adminEmail, {
+            oauthToken: null,
+            oauthTokenSecret: null,
+            twitterId: null,
+            twitterUsername: null,
+            oauth1AccessToken: null,
+            oauth1AccessSecret: null,
+            oauth1TwitterId: null,
+            oauth1TwitterUsername: null,
+            expiresAt: null
+        });
+
+        // Get token status after revocation
+        const tokensAfter = await getTwitterTokens(req.user.adminEmail);
+        
+        console.log('[DEBUG] Tokens after revocation:', {
+            hasOAuth2: !!(tokensAfter?.oauthToken),
+            hasOAuth1: !!(tokensAfter?.oauth1AccessToken),
+            allFieldsNull: Object.values(tokensAfter || {}).every(val => val === null || val instanceof Date)
+        });
+
+        res.json({
+            success: true,
+            message: '[DEBUG] Twitter tokens revoked successfully',
+            before: {
+                hasOAuth2Token: !!(tokensBefore?.oauthToken),
+                hasOAuth1Token: !!(tokensBefore?.oauth1AccessToken),
+                username: tokensBefore?.twitterUsername,
+                lastUpdated: tokensBefore?.lastUpdated
+            },
+            after: {
+                hasOAuth2Token: !!(tokensAfter?.oauthToken),
+                hasOAuth1Token: !!(tokensAfter?.oauth1AccessToken),
+                username: tokensAfter?.twitterUsername,
+                lastUpdated: tokensAfter?.lastUpdated
+            },
+            note: 'This is a debug endpoint - use /api/twitter/revoke for production'
+        });
+
+    } catch (error) {
+        console.error('[DEBUG] Error testing token revocation:', error);
+        res.status(500).json({ 
+            error: 'Failed to test token revocation',
+            details: error.message
+        });
+    }
+});
+
 module.exports = router; 

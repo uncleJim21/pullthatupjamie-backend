@@ -520,7 +520,7 @@ router.get('/auth-success', async (req, res) => {
                     <h3>Current Capabilities:</h3>
                     <div class="capability-item capability-enabled">Post text tweets</div>
                     <div class="capability-item capability-enabled">Read profile information</div>
-                    <div class="capability-item capability-${isPartial ? 'disabled' : 'enabled'}">${isPartial ? 'Upload media (not authorized)' : 'Upload images and videos'}</div>
+                    <div class="capability-${isPartial ? 'disabled' : 'enabled'}">${isPartial ? 'Upload media (not authorized)' : 'Upload images and videos'}</div>
                     <div class="capability-item capability-enabled">Automatic token refresh</div>
                 </div>
 
@@ -755,78 +755,230 @@ router.get('/oauth1-callback', async (req, res) => {
             <html>
             <head>
                 <title>Twitter Authorization Complete</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
-                    body { 
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-                        max-width: 600px; 
-                        margin: 50px auto; 
-                        padding: 20px;
-                        background: #f5f5f5;
+                    * {
+                        margin: 0;
+                        padding: 0;
+                        box-sizing: border-box;
                     }
+                    
+                    body { 
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 50%, #0a0a0a 100%);
+                        color: #ffffff;
+                        min-height: 100vh;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        padding: 20px;
+                        position: relative;
+                        overflow-x: hidden;
+                    }
+                    
+                    body::before {
+                        content: '';
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background: radial-gradient(circle at 25% 25%, #1a1a1a 0%, transparent 50%),
+                                    radial-gradient(circle at 75% 75%, #2a2a2a 0%, transparent 50%);
+                        pointer-events: none;
+                        z-index: -1;
+                    }
+                    
                     .container {
-                        background: white;
-                        border-radius: 12px;
-                        padding: 40px;
-                        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                        background: rgba(20, 20, 20, 0.9);
+                        backdrop-filter: blur(10px);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 20px;
+                        padding: 50px;
+                        max-width: 600px;
+                        width: 100%;
+                        text-align: center;
+                        box-shadow: 
+                            0 20px 40px rgba(0, 0, 0, 0.5),
+                            0 0 60px rgba(255, 255, 255, 0.02),
+                            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+                        position: relative;
+                    }
+                    
+                    .container::before {
+                        content: '';
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background: linear-gradient(45deg, transparent 30%, rgba(255, 255, 255, 0.02) 50%, transparent 70%);
+                        border-radius: 20px;
+                        pointer-events: none;
+                    }
+                    
+                    .success-icon {
+                        font-size: 64px;
+                        margin-bottom: 30px;
+                        background: linear-gradient(45deg, #00ff88, #00ccff);
+                        background-clip: text;
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                        text-shadow: 0 0 30px rgba(0, 255, 136, 0.3);
+                        animation: glow 2s ease-in-out infinite alternate;
+                    }
+                    
+                    @keyframes glow {
+                        from { filter: brightness(1) drop-shadow(0 0 20px rgba(0, 255, 136, 0.3)); }
+                        to { filter: brightness(1.2) drop-shadow(0 0 30px rgba(0, 255, 136, 0.5)); }
+                    }
+                    
+                    h1 {
+                        color: #ffffff;
+                        font-size: 32px;
+                        font-weight: 700;
+                        margin-bottom: 15px;
+                        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+                        background: linear-gradient(45deg, #ffffff, #e0e0e0);
+                        background-clip: text;
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                    }
+                    
+                    .subtitle {
+                        color: #b0b0b0;
+                        font-size: 18px;
+                        margin-bottom: 40px;
+                        font-weight: 300;
+                    }
+                    
+                    .username {
+                        color: #00ff88;
+                        font-weight: 600;
+                        text-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+                    }
+                    
+                    .permissions {
+                        background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 15px;
+                        padding: 30px;
+                        margin: 30px 0;
+                        text-align: left;
+                        backdrop-filter: blur(5px);
+                    }
+                    
+                    .permissions h3 {
+                        color: #ffffff;
+                        font-size: 20px;
+                        font-weight: 600;
+                        margin-bottom: 20px;
                         text-align: center;
                     }
-                    .success { 
-                        color: #1d9bf0;
-                        font-size: 48px;
-                        margin-bottom: 20px;
-                    }
-                    h1 {
-                        color: #14171a;
-                        margin-bottom: 10px;
-                    }
-                    .subtitle {
-                        color: #657786;
-                        font-size: 18px;
-                        margin-bottom: 30px;
-                    }
-                    .permissions {
-                        background: #f7f9fa;
-                        border-radius: 8px;
-                        padding: 20px;
-                        margin: 20px 0;
-                        text-align: left;
-                    }
+                    
                     .permission-item {
                         display: flex;
                         align-items: center;
-                        margin: 10px 0;
-                        color: #14171a;
+                        margin: 15px 0;
+                        color: #e0e0e0;
+                        font-size: 16px;
+                        padding: 10px 0;
+                        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
                     }
+                    
+                    .permission-item:last-child {
+                        border-bottom: none;
+                    }
+                    
                     .permission-item::before {
-                        content: "✅";
-                        margin-right: 10px;
+                        content: "✓";
+                        margin-right: 15px;
+                        color: #00ff88;
+                        font-weight: bold;
+                        font-size: 18px;
+                        text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
                     }
+                    
                     .close-instruction {
-                        color: #657786;
+                        color: #808080;
                         font-size: 14px;
-                        margin-top: 30px;
+                        margin-top: 40px;
+                        padding-top: 30px;
+                        border-top: 1px solid rgba(255, 255, 255, 0.1);
+                        font-weight: 300;
+                        line-height: 1.6;
+                    }
+                    
+                    .pulse {
+                        animation: pulse 1.5s ease-in-out infinite;
+                    }
+                    
+                    @keyframes pulse {
+                        0%, 100% { opacity: 1; }
+                        50% { opacity: 0.7; }
+                    }
+                    
+                    .gradient-text {
+                        background: linear-gradient(45deg, #00ff88, #00ccff, #ff0080);
+                        background-size: 200% 200%;
+                        background-clip: text;
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                        animation: gradient-flow 3s ease infinite;
+                    }
+                    
+                    @keyframes gradient-flow {
+                        0%, 100% { background-position: 0% 50%; }
+                        50% { background-position: 100% 50%; }
+                    }
+                    
+                    @media (max-width: 768px) {
+                        body {
+                            padding: 15px;
+                        }
+                        
+                        .container {
+                            padding: 30px 25px;
+                        }
+                        
+                        .success-icon {
+                            font-size: 48px;
+                        }
+                        
+                        h1 {
+                            font-size: 24px;
+                        }
+                        
+                        .subtitle {
+                            font-size: 16px;
+                        }
                     }
                 </style>
             </head>
             <body>
                 <div class="container">
-                    <div class="success">🎉</div>
+                    <div class="success-icon">🎉</div>
                     <h1>${completionMessage}</h1>
-                    <p class="subtitle">Your Twitter account <strong>@${user.screen_name}</strong> is now fully connected.</p>
+                    <p class="subtitle">Connected as <span class="username">@${user.screen_name}</span></p>
                     
                     ${isUnifiedFlow ? `
                     <div class="permissions">
+                        <h3 class="gradient-text">Full Access Granted</h3>
                         <div class="permission-item">Post tweets on your behalf</div>
                         <div class="permission-item">Upload images and videos to tweets</div>
                         <div class="permission-item">Read your basic profile information</div>
                     </div>
                     ` : `
                     <div class="permissions">
+                        <h3 class="gradient-text">Media Upload Enabled</h3>
                         <div class="permission-item">Upload images and videos to tweets</div>
                     </div>
                     `}
                     
-                    <p class="close-instruction">You can now close this window and return to your application.</p>
+                    <p class="close-instruction pulse">
+                        You can now close this window and return to your application.<br>
+                        Your Twitter integration is <span class="gradient-text">fully active</span>.
+                    </p>
                 </div>
             </body>
             </html>
@@ -908,15 +1060,22 @@ router.post('/tweet', validatePrivs, async (req, res) => {
         const result = await executeWithTokenRefresh(req.user.adminEmail, async (newAccessToken) => {
             // Get tokens (potentially updated after refresh)
             const tokens = await getTwitterTokens(req.user.adminEmail);
-            if (!tokens) {
-                const error = new Error('No authentication tokens found');
-                error.code = 'TWITTER_AUTH_EXPIRED';
+            if (!tokens || (!tokens.oauthToken && !newAccessToken)) {
+                const error = new Error('No authentication tokens found. Please connect your Twitter account first.');
+                error.code = 'TWITTER_NOT_CONNECTED';
                 error.requiresReauth = true;
                 throw error;
             }
 
             // Use new token if provided (from refresh), otherwise use stored token
             const accessToken = newAccessToken || tokens.oauthToken;
+            if (!accessToken) {
+                const error = new Error('No valid access token available. Please re-authenticate.');
+                error.code = 'TWITTER_AUTH_EXPIRED';
+                error.requiresReauth = true;
+                throw error;
+            }
+
             const client = new TwitterApi(accessToken);
 
             // Test token validity
@@ -1078,6 +1237,97 @@ router.post('/tokens', validatePrivs, async (req, res) => {
     } catch (error) {
         console.error('Error getting Twitter tokens:', error);
         res.status(500).json({ error: 'Failed to get Twitter tokens' });
+    }
+});
+
+/**
+ * POST /api/twitter/revoke
+ * Revoke and delete all Twitter tokens for the authenticated user
+ */
+router.post('/revoke', validatePrivs, async (req, res) => {
+    try {
+        const { confirmRevoke } = req.body;
+        
+        // Safety check - require explicit confirmation
+        if (!confirmRevoke) {
+            return res.status(400).json({
+                error: 'Confirmation required',
+                message: 'Please confirm that you want to revoke Twitter access by sending confirmRevoke: true',
+                warning: 'This will disconnect your Twitter account and require re-authentication for future use.'
+            });
+        }
+
+        const adminEmail = req.user.adminEmail;
+        
+        // Get current tokens before deletion (for logging purposes)
+        const existingTokens = await getTwitterTokens(adminEmail);
+        const hadTokens = existingTokens && (existingTokens.oauthToken || existingTokens.oauth1AccessToken);
+        
+        console.log('Revoking Twitter tokens for:', adminEmail, {
+            hadOAuth2: !!(existingTokens?.oauthToken),
+            hadOAuth1: !!(existingTokens?.oauth1AccessToken),
+            username: existingTokens?.twitterUsername
+        });
+
+        // Clear all Twitter tokens from database
+        await updateTwitterTokens(adminEmail, {
+            oauthToken: null,
+            oauthTokenSecret: null,
+            twitterId: null,
+            twitterUsername: null,
+            oauth1AccessToken: null,
+            oauth1AccessSecret: null,
+            oauth1TwitterId: null,
+            oauth1TwitterUsername: null,
+            expiresAt: null
+        });
+
+        // Clear any Twitter-related session data
+        if (req.session.twitterTokens) {
+            delete req.session.twitterTokens;
+        }
+        if (req.session.twitterOAuth) {
+            delete req.session.twitterOAuth;
+        }
+
+        // Save session after clearing Twitter data
+        req.session.save((err) => {
+            if (err) {
+                console.error('Session save error during revoke:', err);
+                // Continue anyway since database tokens are cleared
+            }
+        });
+
+        console.log('Twitter tokens successfully revoked for:', adminEmail);
+
+        res.json({
+            success: true,
+            message: hadTokens 
+                ? 'Twitter account disconnected successfully. All tokens have been revoked and deleted.'
+                : 'No Twitter tokens were found to revoke.',
+            status: {
+                tokensCleared: hadTokens,
+                sessionCleared: true,
+                requiresReauth: true
+            },
+            nextSteps: {
+                reconnect: 'Use /api/twitter/x-oauth to reconnect your Twitter account',
+                checkStatus: 'Use /api/twitter/tokens to verify disconnection'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error revoking Twitter tokens:', {
+            adminEmail: req.user.adminEmail,
+            error: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({
+            error: 'Failed to revoke Twitter tokens',
+            message: 'An error occurred while disconnecting your Twitter account. Please try again.',
+            details: error.message
+        });
     }
 });
 
