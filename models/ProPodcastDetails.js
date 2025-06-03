@@ -67,6 +67,7 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
     oauth1TwitterId: { type: String, required: false },
     oauth1TwitterUsername: { type: String, required: false },
     
+    expiresAt: { type: Date, required: false },              // Token expiration timestamp
     lastUpdated: { type: Date, default: Date.now }
   }
 });

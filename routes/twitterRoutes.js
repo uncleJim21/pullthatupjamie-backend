@@ -16,7 +16,11 @@ const oauthStateStore = new Map();
  */
 async function refreshTwitterToken(adminEmail, currentRefreshToken) {
     try {
-        console.log('Attempting to refresh Twitter OAuth 2.0 token...');
+        console.log('🔄 REFRESH ATTEMPT:', {
+            adminEmail,
+            currentRefreshTokenLength: currentRefreshToken?.length,
+            timestamp: new Date().toISOString()
+        });
         
         const client = new TwitterApi({
             clientId: process.env.TWITTER_CLIENT_ID,
@@ -26,7 +30,12 @@ async function refreshTwitterToken(adminEmail, currentRefreshToken) {
         // Use the refresh token to get a new access token
         const { accessToken, refreshToken, expiresIn } = await client.refreshOAuth2Token(currentRefreshToken);
         
-        console.log('Twitter token refresh successful');
+        console.log('✅ REFRESH SUCCESS:', {
+            adminEmail,
+            newAccessTokenLength: accessToken?.length,
+            newRefreshTokenLength: refreshToken?.length,
+            expiresIn
+        });
         
         // Get existing tokens to preserve OAuth 1.0a tokens
         const existingTokens = await getTwitterTokens(adminEmail);
@@ -37,6 +46,14 @@ async function refreshTwitterToken(adminEmail, currentRefreshToken) {
             oauthToken: accessToken,
             oauthTokenSecret: refreshToken || currentRefreshToken, // Use new refresh token if provided
             expiresAt: Date.now() + (expiresIn * 1000) // Calculate new expiration
+        });
+
+        // Ensure database update is complete by reading it back
+        const updatedTokens = await getTwitterTokens(adminEmail);
+        console.log('💾 DATABASE UPDATE VERIFIED:', {
+            adminEmail,
+            updatedAccessTokenMatches: updatedTokens?.oauthToken === accessToken,
+            timestamp: new Date().toISOString()
         });
 
         console.log('Database updated with refreshed tokens');
@@ -514,7 +531,7 @@ router.get('/auth-success', async (req, res) => {
                     <div class="${isPartial ? 'partial-icon' : 'success-icon'}">${isPartial ? '⚠️' : '🎉'}</div>
                     <h1>${isPartial ? 'Partial Twitter Authorization' : 'Twitter Integration Complete!'}</h1>
                     <p class="subtitle">Connected as <strong>@${username}</strong></p>
-                </div>
+            </div>
 
                 <div class="capabilities">
                     <h3>Current Capabilities:</h3>
@@ -522,7 +539,7 @@ router.get('/auth-success', async (req, res) => {
                     <div class="capability-item capability-enabled">Read profile information</div>
                     <div class="capability-${isPartial ? 'disabled' : 'enabled'}">${isPartial ? 'Upload media (not authorized)' : 'Upload images and videos'}</div>
                     <div class="capability-item capability-enabled">Automatic token refresh</div>
-                </div>
+            </div>
 
                 ${isPartial ? `
                 <div class="warning-box">
@@ -534,14 +551,14 @@ router.get('/auth-success', async (req, res) => {
                 </div>
                 ` : ''}
 
-                <div class="action-section">
+            <div class="action-section">
                     <h3>Test Your Connection</h3>
                     <textarea id="tweetText" class="tweet-input" placeholder="What's happening?">${isPartial ? 'Just completed partial Twitter setup! Text tweets are working. 📝' : 'Just completed full Twitter integration! Both text and media uploads are ready! 🎉📸'}</textarea>
                     <div>
-                        <button onclick="postTweet()">Post Tweet</button>
+                <button onclick="postTweet()">Post Tweet</button>
                         ${!isPartial ? '<button onclick="showMediaTest()">Test with Media</button>' : ''}
                     </div>
-                    <div id="result"></div>
+                <div id="result"></div>
                 </div>
 
                 <div class="token-info">
@@ -1058,17 +1075,32 @@ router.post('/tweet', validatePrivs, async (req, res) => {
 
         // Use retry wrapper for the entire tweet operation
         const result = await executeWithTokenRefresh(req.user.adminEmail, async (newAccessToken) => {
-            // Get tokens (potentially updated after refresh)
-            const tokens = await getTwitterTokens(req.user.adminEmail);
-            if (!tokens || (!tokens.oauthToken && !newAccessToken)) {
-                const error = new Error('No authentication tokens found. Please connect your Twitter account first.');
-                error.code = 'TWITTER_NOT_CONNECTED';
-                error.requiresReauth = true;
-                throw error;
+            console.log('🎯 TOKEN SELECTION:', {
+                hasNewAccessToken: !!newAccessToken,
+                usingNewToken: !!newAccessToken
+            });
+
+            // Prioritize the refreshed token from volatile memory to avoid race conditions
+            let accessToken = newAccessToken;
+            let tokens = null;
+
+            if (!accessToken) {
+                // Only query database if we don't have a fresh token from refresh
+                tokens = await getTwitterTokens(req.user.adminEmail);
+                if (!tokens?.oauthToken) {
+                    const error = new Error('No authentication tokens found. Please connect your Twitter account first.');
+                    error.code = 'TWITTER_NOT_CONNECTED';
+                    error.requiresReauth = true;
+                    throw error;
+                }
+                accessToken = tokens.oauthToken;
+            } else {
+                // We have a fresh token, but still need other token data for media uploads
+                tokens = await getTwitterTokens(req.user.adminEmail);
             }
 
-            // Use new token if provided (from refresh), otherwise use stored token
-            const accessToken = newAccessToken || tokens.oauthToken;
+            console.log('Using token source:', newAccessToken ? 'refreshed' : 'stored');
+
             if (!accessToken) {
                 const error = new Error('No valid access token available. Please re-authenticate.');
                 error.code = 'TWITTER_AUTH_EXPIRED';
