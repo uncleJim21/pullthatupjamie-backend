@@ -12,6 +12,9 @@
   },
   "author": "uj21",
   "license": "ISC",
+  "overrides": {
+    "tar-fs": ">=2.1.3"
+  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.717.0",
     "@aws-sdk/s3-request-presigner": "^3.758.0",
@@ -21,10 +24,12 @@
     "axios": "^1.7.9",
     "bolt11": "^1.4.1",
     "canvas": "^3.1.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "express-session": "^1.18.1",
     "ffmpeg": "^0.0.4",
     "fluent-ffmpeg": "^2.1.3",
     "langchain": "^0.3.5",
@@ -38,6 +43,7 @@
     "sharp": "^0.33.5",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
+    "twitter-api-v2": "^1.23.2",
     "wav": "^1.0.2",
     "web-streams-polyfill": "^4.0.0"
   }
