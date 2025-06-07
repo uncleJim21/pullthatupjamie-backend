@@ -39,6 +39,7 @@ const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
+const { checkOnDemandEligibility } = require('./utils/userPermissions');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1546,6 +1547,67 @@ if (DEBUG_MODE) {
   console.log('🔍 Debug mode enabled - Debug routes are accessible');
   app.use('/api/debug', debugRoutes);
 }
+
+// Standalone endpoint for checking on-demand run eligibility
+app.get('/api/check-ondemand-eligibility', async (req, res) => {
+  try {
+    // Extract user email from JWT token
+    let userEmail = null;
+    
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        details: 'Please provide a valid JWT token in Authorization header'
+      });
+    }
+    
+    try {
+      const token = authHeader.substring(7);
+      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      userEmail = decoded.email;
+    } catch (jwtError) {
+      console.error('JWT verification failed:', jwtError.message);
+      return res.status(401).json({
+        error: 'Invalid token',
+        details: 'JWT token verification failed'
+      });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({
+        error: 'Invalid token',
+        details: 'No email found in JWT token'
+      });
+    }
+    
+    // Check eligibility using the utility function
+    const eligibility = await checkOnDemandEligibility(userEmail);
+    
+    res.json({
+      success: true,
+      userEmail: userEmail,
+      eligibility: {
+        eligible: eligibility.eligible,
+        remainingRuns: eligibility.remainingRuns,
+        totalLimit: eligibility.totalLimit,
+        usedThisPeriod: eligibility.usedThisPeriod,
+        periodStart: eligibility.periodStart,
+        nextResetDate: eligibility.nextResetDate,
+        daysUntilReset: eligibility.daysUntilReset
+      },
+      message: eligibility.eligible 
+        ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
+        : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
+    });
+  } catch (error) {
+    console.error('Error checking on-demand eligibility:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
 
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);

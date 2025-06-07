@@ -3,12 +3,13 @@ const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const axios = require('axios');
+const { checkOnDemandPermissions, consumeOnDemandQuota, checkOnDemandEligibility } = require('../utils/userPermissions');
 
 /**
  * POST /api/on-demand/submitOnDemandRun
  * Submit an on-demand run request
  */
-router.post('/submitOnDemandRun', async (req, res) => {
+router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => {
     try {
         const { message, parameters, episodes } = req.body;
 
@@ -45,6 +46,17 @@ router.post('/submitOnDemandRun', async (req, res) => {
             }
         }
 
+        // Consume user quota first (this will increment their usage)
+        const quotaResult = await consumeOnDemandQuota(req.userEmail);
+        if (!quotaResult.success) {
+            return res.status(403).json({
+                error: 'Failed to consume quota',
+                details: quotaResult.error,
+                remainingRuns: quotaResult.remainingRuns,
+                nextResetDate: quotaResult.nextResetDate
+            });
+        }
+
         // Generate a random lookupHash using crypto
         const lookupHash = crypto.randomBytes(12).toString('hex');
 
@@ -61,7 +73,9 @@ router.post('/submitOnDemandRun', async (req, res) => {
                 status: 'pending'
             })),
             startedAt: new Date().toISOString(),
-            completedAt: null
+            completedAt: null,
+            userEmail: req.userEmail, // Track which user submitted this
+            quotaConsumed: true
         };
 
         // Calculate unique feeds count
@@ -92,7 +106,8 @@ router.post('/submitOnDemandRun', async (req, res) => {
             jobConfig: {
                 onDemand: true,
                 feedGuids,
-                workProductV2LookupHash: lookupHash
+                workProductV2LookupHash: lookupHash,
+                overrideExistence: true
             }
         };
 
@@ -116,6 +131,11 @@ router.post('/submitOnDemandRun', async (req, res) => {
                 totalEpisodes: episodes.length,
                 totalFeeds: result.totalFeeds,
                 message: 'On-demand run submitted successfully',
+                quotaInfo: {
+                    remainingRuns: quotaResult.remainingRuns,
+                    usedThisPeriod: quotaResult.usedThisPeriod,
+                    totalLimit: quotaResult.totalLimit
+                },
                 awsResponse: awsResponse.data
             });
         } catch (awsError) {
@@ -130,9 +150,13 @@ router.post('/submitOnDemandRun', async (req, res) => {
                 }
             );
 
+            // Note: We don't refund the quota here since the submission was attempted
+            // You might want to implement quota refunding for AWS failures if desired
+
             return res.status(awsError.response?.status || 500).json({
                 error: 'Failed to submit job to AWS',
-                details: awsError.response?.data || awsError.message
+                details: awsError.response?.data || awsError.message,
+                quotaNote: 'Your quota has been consumed despite the AWS error. Contact support if needed.'
             });
         }
     } catch (error) {
@@ -184,7 +208,8 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
             },
             episodes: job.result.episodes,
             startedAt: job.result.startedAt,
-            completedAt: job.result.completedAt
+            completedAt: job.result.completedAt,
+            userEmail: job.result.userEmail || null // Include user email if available
         });
     } catch (error) {
         console.error('Error getting job status:', error);
