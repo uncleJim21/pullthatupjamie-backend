@@ -207,7 +207,7 @@ const feedCacheManager = new FeedCacheManager({
 
 const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
-  maxConcurrent: 12,
+  maxConcurrent: 4,
   maxQueueSize: 100
 }, clipUtils);
 
@@ -323,7 +323,7 @@ const MODEL_CONFIGS = {
         done: false
       })
     },
-    'claude-3-sonnet': {
+    'claude-3-5-sonnet': {
       apiUrl: 'https://api.anthropic.com/v1/messages',
       headers: (apiKey) => ({
         'Content-Type': 'application/json',
@@ -336,7 +336,7 @@ const MODEL_CONFIGS = {
         const userMessage = messages.find(m => m.role === 'user')?.content || '';
         
         return {
-          model: 'claude-3-sonnet-20240229',
+          model: 'claude-3-5-sonnet-20241022',
           max_tokens: 4096,
           messages: [{
             role: 'user',
