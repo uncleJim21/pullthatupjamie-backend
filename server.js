@@ -207,7 +207,7 @@ const feedCacheManager = new FeedCacheManager({
 
 const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
-  maxConcurrent: 2,
+  maxConcurrent: 12,
   maxQueueSize: 100
 }, clipUtils);
 
