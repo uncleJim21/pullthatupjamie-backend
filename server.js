@@ -64,7 +64,20 @@ const corsOptions = {
         'https://www.pullthatupjamie.ai'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+        'Content-Type', 
+        'Authorization',
+        'sec-ch-ua',
+        'sec-ch-ua-mobile',
+        'sec-ch-ua-platform',
+        'User-Agent',
+        'Accept',
+        'Accept-Language',
+        'Accept-Encoding',
+        'Referer',
+        'Origin',
+        'X-Requested-With'
+    ],
     credentials: true
 };
 
