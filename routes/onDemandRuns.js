@@ -111,14 +111,16 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
             }
         };
 
+        console.log('awsPayload:', JSON.stringify(awsPayload, null, 2));
+
         // Call the AWS API
         try {
             const awsResponse = await axios.post(
-                process.env.AWS_INGESTOR_API_URL,
+                process.env.AWS_INGESTOR_PARALLEL_URL,
                 awsPayload,
                 {
                     headers: {
-                        'x-api-key': process.env.AWS_REMOTE_TEST_API_KEY,
+                        'x-api-key': process.env.AWS_INGESTOR_PARALLEL_API_KEY,
                         'Content-Type': 'application/json'
                     }
                 }
@@ -139,7 +141,26 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
                 awsResponse: awsResponse.data
             });
         } catch (awsError) {
-            console.error('AWS API Error:', awsError.response?.data || awsError.message);
+            console.error('=== AWS API ERROR DETAILS ===');
+            console.error('Error Message:', awsError.message);
+            console.error('Error Code:', awsError.code);
+            console.error('Error Stack:', awsError.stack);
+            
+            if (awsError.response) {
+                console.error('Response Status:', awsError.response.status);
+                console.error('Response Status Text:', awsError.response.statusText);
+                console.error('Response Headers:', JSON.stringify(awsError.response.headers, null, 2));
+                console.error('Response Data:', JSON.stringify(awsError.response.data, null, 2));
+            }
+            
+            if (awsError.request) {
+                console.error('Request Method:', awsError.request.method);
+                console.error('Request URL:', awsError.request.url);
+                console.error('Request Headers:', JSON.stringify(awsError.request.headers, null, 2));
+            }
+            
+            console.error('Full Error Object:', JSON.stringify(awsError, null, 2));
+            console.error('=== END AWS API ERROR DETAILS ===');
             
             // Update WorkProductV2 with error status
             await WorkProductV2.findOneAndUpdate(

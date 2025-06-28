@@ -9,7 +9,7 @@ const { getPodcastFeedsForIngestor, updateFeedProcessedTime } = require('./getPo
  * @returns {Promise<Object>} - Response from the ingestor API
  */
 async function callIngestor(jobId = `job-${Date.now()}`, feeds = null) {
-  const apiKey = process.env.INGESTOR_API_KEY;
+  const apiKey = process.env.SCHEDULED_INGESTOR_API_KEY;
   
   if (!apiKey) {
     throw new Error('INGESTOR_API_KEY is missing from environment variables');
@@ -32,7 +32,7 @@ async function callIngestor(jobId = `job-${Date.now()}`, feeds = null) {
     
     const response = await axios({
       method: 'POST',
-      url: 'https://87z87dzail.execute-api.us-east-2.amazonaws.com/dev/jamieIngestor',
+      url: `${process.env.SCHEDULED_INGESTOR_API_URL}`,
       headers: {
         'x-api-key': apiKey,
         'Content-Type': 'application/json'
