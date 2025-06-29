@@ -111,6 +111,7 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
             }
         };
 
+        console.log('Try Jamie On Demand URL:', process.env.AWS_INGESTOR_PARALLEL_URL)
         console.log('awsPayload:', JSON.stringify(awsPayload, null, 2));
 
         // Call the AWS API
