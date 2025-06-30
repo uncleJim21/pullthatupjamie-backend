@@ -7,7 +7,7 @@ class FeedCacheManager {
     constructor(spacesConfig) {
         this.cache = null;
         this.lastUpdateTime = null;
-        this.updateInterval = 60 * 60 * 1000; // 1 hour
+        this.updateInterval = 60 * 10 * 1000; // 10 minutes
         this.isUpdating = false;
 
         // Initialize DigitalOcean Spaces
@@ -115,14 +115,19 @@ class FeedCacheManager {
 
     async updateCache() {
         if (this.isUpdating) {
+            console.log('Feed cache update already in progress, skipping...');
             return;
         }
 
         this.isUpdating = true;
         try {
+            console.log('Updating feed cache...');
+            const startTime = Date.now();
             const response = await getFeedsDetails();
             this.cache = await this.processFeeds(response);
             this.lastUpdateTime = Date.now();
+            const duration = Date.now() - startTime;
+            console.log(`Feed cache updated successfully in ${duration}ms. Cache contains ${this.cache?.matches?.length || 0} feeds.`);
         } catch (error) {
             console.error('Error updating feed cache:', error);
             throw error;
