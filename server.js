@@ -1050,7 +1050,11 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
  
     // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
-      const formatted = `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet || result.content || 'No content available'}\n`;
+      // Get content, handling empty strings and undefined values
+      const contentValue = result.snippet || result.content;
+      const safeContent = (contentValue && contentValue.trim()) ? contentValue.trim() : 'No content available';
+      
+      const formatted = `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${safeContent}\n`;
       printLog(`[${requestId}] Formatted source ${index + 1}:`, formatted);
       return formatted;
     }).join('\n');
