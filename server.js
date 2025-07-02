@@ -992,6 +992,7 @@ app.post('/api/search-quotes', async (req, res) => {
 });
 
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
+  const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
  
   if (!query) {
@@ -1052,8 +1053,8 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     systemMessage += ` Format your response as follows:
     - Use clear, concise language
     - Use proper markdown formatting
-    - Cite sources using [[n]](url) format, where n is the source number
-    - Citations must be inline within sentences
+    - Cite sources using [[n]](url) format inline within sentences, where n is the source number (e.g., "Water is wet [[1]](https://example.com)")
+    - Citations should appear immediately after relevant facts or claims
     - Start with a brief overview
     - Use bullet points for multiple items
     - Bold key terms with **term**
