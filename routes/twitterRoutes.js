@@ -1416,152 +1416,30 @@ router.post('/users/lookup', validatePrivs, async (req, res) => {
         const appOnlyClient = await client.appLogin();
         
         try {
-            const allUsers = new Map(); // Use Map to avoid duplicates by user ID
+            console.log('Looking up Twitter users:', searchQueries);
             
-            console.log('🚀 Smart search for queries:', searchQueries);
+            // Simple exact username lookup
+            const response = await appOnlyClient.v2.usersByUsernames(searchQueries, {
+                'user.fields': [
+                    'id',
+                    'name', 
+                    'username',
+                    'verified',
+                    'verified_type',
+                    'profile_image_url',
+                    'description',
+                    'public_metrics',
+                    'protected'
+                ]
+            });
             
-            // Process each search query with efficient strategy
-            for (const searchQuery of searchQueries) {
-                console.log('🔍 Smart search for:', searchQuery);
-                
-                // STRATEGY 1: Popular account patterns first (most important)
-                const popularPatterns = [];
-                if (searchQuery === 'joe') {
-                    popularPatterns.push('joerogan', 'joebiden', 'joemart', 'joejones', 'joecool', 'joepodcast');
-                } else if (searchQuery === 'elon') {
-                    popularPatterns.push('elonmusk');
-                } else if (searchQuery === 'donald' || searchQuery === 'trump') {
-                    popularPatterns.push('realdonaldtrump');
-                } else if (searchQuery === 'taylor') {
-                    popularPatterns.push('taylorswift13');
-                } else if (searchQuery === 'kim') {
-                    popularPatterns.push('kimkardashian');
-                } else if (searchQuery === 'barack' || searchQuery === 'obama') {
-                    popularPatterns.push('barackobama');
-                } else if (searchQuery === 'bill') {
-                    popularPatterns.push('billgates', 'billclinton');
-                }
-                
-                // STRATEGY 2: Common username patterns
-                const commonPatterns = [
-                    searchQuery, // exact
-                    `${searchQuery}_`, // with underscore
-                    `${searchQuery}official`, // official account
-                    `real${searchQuery}`, // real account
-                    `the${searchQuery}`, // the account
-                    `${searchQuery}1`, `${searchQuery}2`, `${searchQuery}3`, // numbered
-                    `${searchQuery}tv`, `${searchQuery}show`, `${searchQuery}podcast` // content types
-                ];
-                
-                // Combine patterns, prioritizing popular ones
-                const allPatterns = [...popularPatterns, ...commonPatterns];
-                
-                console.log(`Trying ${allPatterns.length} patterns for "${searchQuery}"`);
-                
-                // Look up patterns in batches to avoid rate limits
-                const batches = [];
-                for (let i = 0; i < allPatterns.length; i += 10) {
-                    batches.push(allPatterns.slice(i, i + 10));
-                }
-                
-                for (const batch of batches) {
-                    try {
-                        // Try batch lookup first (more efficient)
-                        const batchResponse = await appOnlyClient.v2.usersByUsernames(batch, {
-                            'user.fields': [
-                                'id', 'name', 'username', 'verified', 'verified_type',
-                                'profile_image_url', 'description', 'public_metrics', 'protected'
-                            ]
-                        });
-                        
-                        if (batchResponse.data) {
-                            batchResponse.data.forEach(user => {
-                                allUsers.set(user.id, user);
-                                console.log('✅ Found:', user.username, `(${user.public_metrics?.followers_count || 0} followers)`);
-                            });
-                        }
-                        
-                        // Small delay between batches
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                        
-                    } catch (batchError) {
-                        console.log('Batch lookup failed, trying individual lookups...');
-                        
-                        // Fallback to individual lookups
-                        for (const pattern of batch) {
-                            try {
-                                const result = await appOnlyClient.v2.userByUsername(pattern, {
-                                    'user.fields': [
-                                        'id', 'name', 'username', 'verified', 'verified_type',
-                                        'profile_image_url', 'description', 'public_metrics', 'protected'
-                                    ]
-                                });
-                                
-                                if (result.data) {
-                                    allUsers.set(result.data.id, result.data);
-                                    console.log('✅ Found:', result.data.username, `(${result.data.public_metrics?.followers_count || 0} followers)`);
-                                }
-                                
-                                // Small delay between individual requests
-                                await new Promise(resolve => setTimeout(resolve, 100));
-                                
-                            } catch (individualError) {
-                                // Most patterns won't exist - that's normal
-                            }
-                        }
-                    }
-                }
-                
-                console.log(`✨ Total users found for "${searchQuery}": ${allUsers.size}`);
-            }
+            console.log('Twitter API response received:', {
+                foundUsers: response.data?.length || 0,
+                errors: response.errors?.length || 0
+            });
             
-            // Convert Map to array and sort by relevance (HEAVILY favor popular accounts)
-            const foundUsers = Array.from(allUsers.values())
-                .sort((a, b) => {
-                    // Calculate popularity scores (heavily weighted)
-                    const aFollowers = a.public_metrics?.followers_count || 0;
-                    const bFollowers = b.public_metrics?.followers_count || 0;
-                    const aVerified = a.verified ? 10000000 : 0; // 10M bonus for verified
-                    const bVerified = b.verified ? 10000000 : 0;
-                    
-                    // Calculate relevance scores
-                    let aRelevance = 0;
-                    let bRelevance = 0;
-                    
-                    searchQueries.forEach(query => {
-                        const queryLower = query.toLowerCase();
-                        const aUsernameLower = a.username.toLowerCase();
-                        const bUsernameLower = b.username.toLowerCase();
-                        const aNameLower = a.name.toLowerCase();
-                        const bNameLower = b.name.toLowerCase();
-                        
-                        // Exact username match gets massive bonus
-                        if (aUsernameLower === queryLower) aRelevance += 100000000;
-                        if (bUsernameLower === queryLower) bRelevance += 100000000;
-                        
-                        // Username starts with query gets big bonus
-                        if (aUsernameLower.startsWith(queryLower)) aRelevance += 50000000;
-                        if (bUsernameLower.startsWith(queryLower)) bRelevance += 50000000;
-                        
-                        // Username contains query gets medium bonus
-                        if (aUsernameLower.includes(queryLower)) aRelevance += 20000000;
-                        if (bUsernameLower.includes(queryLower)) bRelevance += 20000000;
-                        
-                        // Display name contains query gets smaller bonus
-                        if (aNameLower.includes(queryLower)) aRelevance += 5000000;
-                        if (bNameLower.includes(queryLower)) bRelevance += 5000000;
-                    });
-                    
-                    // Final score = relevance + followers + verified bonus
-                    const aFinalScore = aRelevance + aFollowers + aVerified;
-                    const bFinalScore = bRelevance + bFollowers + bVerified;
-                    
-                    return bFinalScore - aFinalScore; // Higher score = better ranking
-                })
-                .slice(0, 20); // Limit final results
-            
-            // Map to our response format
-            const userData = foundUsers.map(user => ({
+            // Map Twitter API response to our format
+            const userData = response.data?.map(user => ({
                 id: user.id,
                 username: user.username,
                 name: user.name,
@@ -1576,15 +1454,18 @@ router.post('/users/lookup', validatePrivs, async (req, res) => {
                     listed_count: 0
                 },
                 protected: user.protected || false
-            }));
+            })) || [];
             
-            console.log('Twitter user search results:', {
-                queries: searchQueries,
-                foundUsers: userData.length,
-                usernames: userData.map(u => u.username),
-                totalDiscoveredUsers: allUsers.size,
-                allFoundUsernames: Array.from(allUsers.values()).map(u => u.username)
-            });
+            // Log any users that weren't found
+            if (response.errors && response.errors.length > 0) {
+                const notFoundUsers = response.errors
+                    .filter(error => error.title === 'Not Found Error')
+                    .map(error => error.value);
+                
+                if (notFoundUsers.length > 0) {
+                    console.log('Users not found:', notFoundUsers);
+                }
+            }
             
             res.json({
                 success: true,
