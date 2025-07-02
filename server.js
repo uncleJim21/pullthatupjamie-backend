@@ -66,7 +66,20 @@ const corsOptions = {
         'https://www.pullthatupjamie.ai'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+        'Content-Type', 
+        'Authorization',
+        'sec-ch-ua',
+        'sec-ch-ua-mobile',
+        'sec-ch-ua-platform',
+        'User-Agent',
+        'Accept',
+        'Accept-Language',
+        'Accept-Encoding',
+        'Referer',
+        'Origin',
+        'X-Requested-With'
+    ],
     credentials: true
 };
 
@@ -1050,7 +1063,12 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
  
     // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
-      const formatted = `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${result.snippet || result.content || 'No content available'}\n`;
+
+      // Get content, handling empty strings and undefined values
+      const contentValue = result.snippet || result.content;
+      const safeContent = (contentValue && contentValue.trim()) ? contentValue.trim() : 'No content available';
+      
+      const formatted = `${index + 1}. ${result.title}\nURL: ${result.url}\nContent: ${safeContent}\n`;
       printLog(`[${requestId}] Formatted source ${index + 1}:`, formatted);
       return formatted;
     }).join('\n');
@@ -1067,8 +1085,8 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     systemMessage += ` Format your response as follows:
     - Use clear, concise language
     - Use proper markdown formatting
-    - Cite sources using [[n]](url) format, where n is the source number
-    - Citations must be inline within sentences
+    - Cite sources using [[n]](url) format inline within sentences, where n is the source number (e.g., "Water is wet [[1]](https://example.com)")
+    - Citations should appear immediately after relevant facts or claims
     - Start with a brief overview
     - Use bullet points for multiple items
     - Bold key terms with **term**
