@@ -1363,4 +1363,274 @@ router.post('/revoke', validatePrivs, async (req, res) => {
     }
 });
 
+
+/**
+ * POST /api/twitter/users/lookup
+ * Search for Twitter users by username patterns for mentions functionality
+ * Now works as a search endpoint - each "username" is treated as a search query
+ */
+router.post('/users/lookup', validatePrivs, async (req, res) => {
+    try {
+        const { usernames } = req.body;
+        
+        // Validate input
+        if (!usernames || !Array.isArray(usernames)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid input',
+                message: 'usernames must be an array'
+            });
+        }
+        
+        // Process usernames: remove @, filter empty, dedupe
+        const searchQueries = [...new Set(
+            usernames
+                .map(username => typeof username === 'string' ? username.trim().replace(/^@/, '').toLowerCase() : '')
+                .filter(username => username.length > 0 && username.length <= 15)
+        )];
+        
+        if (searchQueries.length === 0) {
+            return res.json({
+                success: true,
+                data: []
+            });
+        }
+        
+        if (searchQueries.length > 10) {
+            return res.status(400).json({
+                success: false,
+                error: 'Too many search queries',
+                message: 'Maximum 10 search queries allowed per request'
+            });
+        }
+        
+        console.log('Searching Twitter users for queries:', searchQueries);
+        
+        // Use consumer keys for app-only authentication
+        const client = new TwitterApi({
+            appKey: process.env.TWITTER_CONSUMER_KEY,
+            appSecret: process.env.TWITTER_CONSUMER_SECRET,
+        });
+        
+        // Get app-only bearer token
+        const appOnlyClient = await client.appLogin();
+        
+        try {
+            const allUsers = new Map(); // Use Map to avoid duplicates by user ID
+            
+            console.log('🚀 Smart search for queries:', searchQueries);
+            
+            // Process each search query with efficient strategy
+            for (const searchQuery of searchQueries) {
+                console.log('🔍 Smart search for:', searchQuery);
+                
+                // STRATEGY 1: Popular account patterns first (most important)
+                const popularPatterns = [];
+                if (searchQuery === 'joe') {
+                    popularPatterns.push('joerogan', 'joebiden', 'joemart', 'joejones', 'joecool', 'joepodcast');
+                } else if (searchQuery === 'elon') {
+                    popularPatterns.push('elonmusk');
+                } else if (searchQuery === 'donald' || searchQuery === 'trump') {
+                    popularPatterns.push('realdonaldtrump');
+                } else if (searchQuery === 'taylor') {
+                    popularPatterns.push('taylorswift13');
+                } else if (searchQuery === 'kim') {
+                    popularPatterns.push('kimkardashian');
+                } else if (searchQuery === 'barack' || searchQuery === 'obama') {
+                    popularPatterns.push('barackobama');
+                } else if (searchQuery === 'bill') {
+                    popularPatterns.push('billgates', 'billclinton');
+                }
+                
+                // STRATEGY 2: Common username patterns
+                const commonPatterns = [
+                    searchQuery, // exact
+                    `${searchQuery}_`, // with underscore
+                    `${searchQuery}official`, // official account
+                    `real${searchQuery}`, // real account
+                    `the${searchQuery}`, // the account
+                    `${searchQuery}1`, `${searchQuery}2`, `${searchQuery}3`, // numbered
+                    `${searchQuery}tv`, `${searchQuery}show`, `${searchQuery}podcast` // content types
+                ];
+                
+                // Combine patterns, prioritizing popular ones
+                const allPatterns = [...popularPatterns, ...commonPatterns];
+                
+                console.log(`Trying ${allPatterns.length} patterns for "${searchQuery}"`);
+                
+                // Look up patterns in batches to avoid rate limits
+                const batches = [];
+                for (let i = 0; i < allPatterns.length; i += 10) {
+                    batches.push(allPatterns.slice(i, i + 10));
+                }
+                
+                for (const batch of batches) {
+                    try {
+                        // Try batch lookup first (more efficient)
+                        const batchResponse = await appOnlyClient.v2.usersByUsernames(batch, {
+                            'user.fields': [
+                                'id', 'name', 'username', 'verified', 'verified_type',
+                                'profile_image_url', 'description', 'public_metrics', 'protected'
+                            ]
+                        });
+                        
+                        if (batchResponse.data) {
+                            batchResponse.data.forEach(user => {
+                                allUsers.set(user.id, user);
+                                console.log('✅ Found:', user.username, `(${user.public_metrics?.followers_count || 0} followers)`);
+                            });
+                        }
+                        
+                        // Small delay between batches
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        
+                    } catch (batchError) {
+                        console.log('Batch lookup failed, trying individual lookups...');
+                        
+                        // Fallback to individual lookups
+                        for (const pattern of batch) {
+                            try {
+                                const result = await appOnlyClient.v2.userByUsername(pattern, {
+                                    'user.fields': [
+                                        'id', 'name', 'username', 'verified', 'verified_type',
+                                        'profile_image_url', 'description', 'public_metrics', 'protected'
+                                    ]
+                                });
+                                
+                                if (result.data) {
+                                    allUsers.set(result.data.id, result.data);
+                                    console.log('✅ Found:', result.data.username, `(${result.data.public_metrics?.followers_count || 0} followers)`);
+                                }
+                                
+                                // Small delay between individual requests
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                                
+                            } catch (individualError) {
+                                // Most patterns won't exist - that's normal
+                            }
+                        }
+                    }
+                }
+                
+                console.log(`✨ Total users found for "${searchQuery}": ${allUsers.size}`);
+            }
+            
+            // Convert Map to array and sort by relevance (HEAVILY favor popular accounts)
+            const foundUsers = Array.from(allUsers.values())
+                .sort((a, b) => {
+                    // Calculate popularity scores (heavily weighted)
+                    const aFollowers = a.public_metrics?.followers_count || 0;
+                    const bFollowers = b.public_metrics?.followers_count || 0;
+                    const aVerified = a.verified ? 10000000 : 0; // 10M bonus for verified
+                    const bVerified = b.verified ? 10000000 : 0;
+                    
+                    // Calculate relevance scores
+                    let aRelevance = 0;
+                    let bRelevance = 0;
+                    
+                    searchQueries.forEach(query => {
+                        const queryLower = query.toLowerCase();
+                        const aUsernameLower = a.username.toLowerCase();
+                        const bUsernameLower = b.username.toLowerCase();
+                        const aNameLower = a.name.toLowerCase();
+                        const bNameLower = b.name.toLowerCase();
+                        
+                        // Exact username match gets massive bonus
+                        if (aUsernameLower === queryLower) aRelevance += 100000000;
+                        if (bUsernameLower === queryLower) bRelevance += 100000000;
+                        
+                        // Username starts with query gets big bonus
+                        if (aUsernameLower.startsWith(queryLower)) aRelevance += 50000000;
+                        if (bUsernameLower.startsWith(queryLower)) bRelevance += 50000000;
+                        
+                        // Username contains query gets medium bonus
+                        if (aUsernameLower.includes(queryLower)) aRelevance += 20000000;
+                        if (bUsernameLower.includes(queryLower)) bRelevance += 20000000;
+                        
+                        // Display name contains query gets smaller bonus
+                        if (aNameLower.includes(queryLower)) aRelevance += 5000000;
+                        if (bNameLower.includes(queryLower)) bRelevance += 5000000;
+                    });
+                    
+                    // Final score = relevance + followers + verified bonus
+                    const aFinalScore = aRelevance + aFollowers + aVerified;
+                    const bFinalScore = bRelevance + bFollowers + bVerified;
+                    
+                    return bFinalScore - aFinalScore; // Higher score = better ranking
+                })
+                .slice(0, 20); // Limit final results
+            
+            // Map to our response format
+            const userData = foundUsers.map(user => ({
+                id: user.id,
+                username: user.username,
+                name: user.name,
+                verified: user.verified || false,
+                verified_type: user.verified_type || null,
+                profile_image_url: user.profile_image_url || null,
+                description: user.description || null,
+                public_metrics: user.public_metrics || {
+                    followers_count: 0,
+                    following_count: 0,
+                    tweet_count: 0,
+                    listed_count: 0
+                },
+                protected: user.protected || false
+            }));
+            
+            console.log('Twitter user search results:', {
+                queries: searchQueries,
+                foundUsers: userData.length,
+                usernames: userData.map(u => u.username),
+                totalDiscoveredUsers: allUsers.size,
+                allFoundUsernames: Array.from(allUsers.values()).map(u => u.username)
+            });
+            
+            res.json({
+                success: true,
+                data: userData
+            });
+            
+        } catch (twitterError) {
+            console.error('Twitter search error:', {
+                message: twitterError.message,
+                code: twitterError.code,
+                data: twitterError.data
+            });
+            
+            // Handle rate limiting
+            if (twitterError.code === 429) {
+                return res.status(429).json({
+                    success: false,
+                    error: 'Rate limit exceeded',
+                    message: 'Please try again in 15 minutes'
+                });
+            }
+            
+            // Handle authentication errors
+            if (twitterError.code === 401 || twitterError.code === 403) {
+                return res.status(500).json({
+                    success: false,
+                    error: 'Twitter API authentication failed',
+                    message: 'Unable to authenticate with Twitter API'
+                });
+            }
+            
+            throw twitterError;
+        }
+        
+    } catch (error) {
+        console.error('User lookup error:', {
+            message: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({
+            success: false,
+            error: 'User lookup failed',
+            message: 'An error occurred while looking up Twitter users'
+        });
+    }
+});
+
 module.exports = router; 
