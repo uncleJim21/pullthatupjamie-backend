@@ -6,7 +6,7 @@
 |------|--------------|--------|-------|
 | 1    | **Schema foundation**: Add/extend User.mention_preferences, create SocialProfileMappings, define all IDs | ✅ Completed | User & SocialProfileMappings models updated |
 | 2    | **Upgrade lookup**: Implement `/api/mentions/search` with new schema, unified results | ✅ Completed | Twitter, cross-mapping, and placeholder logic implemented |
-| 3    | Personal pin management: `/api/mentions/pins` CRUD | ⬜️ Not started |  |
+| 3    | Personal pin management: `/api/mentions/pins` CRUD | ✅ Completed | Authentication middleware, GET, POST, PUT, DELETE operations implemented |
 | 4    | Cross-platform mapping adoption: `/api/mentions/adopt-cross-mapping` | ⬜️ Not started |  |
 | 5    | Public mapping discovery, voting, reporting | ⬜️ Not started |  |
 | 6    | Mapping creation & management | ⬜️ Not started |  |
