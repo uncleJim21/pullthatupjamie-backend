@@ -3,7 +3,7 @@ const { EventEmitter } = require('events');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 
 class ClipQueueManager extends EventEmitter {
-    constructor(options = {}, clipUtils) {
+    constructor(options = {}, clipUtils, subtitleGenerator = null) {
         super();
         this.maxConcurrent = options.maxConcurrent || 2;
         this.maxQueueSize = options.maxQueueSize || 100;
@@ -11,6 +11,7 @@ class ClipQueueManager extends EventEmitter {
         this.waitingQueue = []; // Clips waiting to be processed
         this.activeWorkers = 0;
         this.clipUtils = clipUtils; // Store the clipUtils reference
+        this.subtitleGenerator = subtitleGenerator; // Store the subtitle generation function
     }
 
     async enqueueClip(clipData, timestamps, lookupHash, subtitles = null) {
@@ -97,12 +98,27 @@ class ClipQueueManager extends EventEmitter {
         
         for (let attempt = 1; attempt <= job.maxAttempts; attempt++) {
             try {
+                // Generate subtitles in background if not provided and generator is available
+                let subtitles = job.subtitles;
+                if (!subtitles && this.subtitleGenerator) {
+                    console.log(`[INFO] Generating subtitles in background for ${job.lookupHash}`);
+                    try {
+                        const timeStart = job.timestamps ? job.timestamps[0] : job.clipData.timeContext?.start_time;
+                        const timeEnd = job.timestamps ? job.timestamps[1] : job.clipData.timeContext?.end_time;
+                        subtitles = await this.subtitleGenerator(job.clipData, timeStart, timeEnd);
+                        console.log(`[INFO] Generated ${subtitles ? subtitles.length : 0} subtitles for ${job.lookupHash}`);
+                    } catch (subtitleError) {
+                        console.error(`[ERROR] Failed to generate subtitles for ${job.lookupHash}:`, subtitleError);
+                        subtitles = null; // Continue without subtitles
+                    }
+                }
+                
                 // Pass subtitles to the background process
                 await this.clipUtils._backgroundProcessClip(
                     job.clipData, 
                     job.timestamps, 
                     job.lookupHash,
-                    job.subtitles
+                    subtitles
                 );
                 return; // Success, exit the retry loop
             } catch (error) {
