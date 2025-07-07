@@ -40,6 +40,7 @@ const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { checkOnDemandEligibility } = require('./utils/userPermissions');
+const mentionsRoutes = require('./routes/mentions');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1025,6 +1026,7 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
  
     // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
+
       // Get content, handling empty strings and undefined values
       const contentValue = result.snippet || result.content;
       const safeContent = (contentValue && contentValue.trim()) ? contentValue.trim() : 'No content available';
@@ -1625,6 +1627,7 @@ app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
 app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
+app.use('/api/mentions', mentionsRoutes);
 
 // Only enable debug routes in debug mode
 if (DEBUG_MODE) {
