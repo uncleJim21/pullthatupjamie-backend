@@ -3,7 +3,7 @@ const { EventEmitter } = require('events');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 
 class ClipQueueManager extends EventEmitter {
-    constructor(options = {}, clipUtils) {
+    constructor(options = {}, clipUtils, subtitleGenerator = null) {
         super();
         this.maxConcurrent = options.maxConcurrent || 2;
         this.maxQueueSize = options.maxQueueSize || 100;
@@ -11,6 +11,7 @@ class ClipQueueManager extends EventEmitter {
         this.waitingQueue = []; // Clips waiting to be processed
         this.activeWorkers = 0;
         this.clipUtils = clipUtils; // Store the clipUtils reference
+        this.subtitleGenerator = subtitleGenerator; // Store the subtitle generation function
     }
 
     async enqueueClip(clipData, timestamps, lookupHash, subtitles = null) {
@@ -97,21 +98,74 @@ class ClipQueueManager extends EventEmitter {
         
         for (let attempt = 1; attempt <= job.maxAttempts; attempt++) {
             try {
-                // Pass subtitles to the background process
+                console.log(`[INFO] Starting background processing for ${job.lookupHash} (attempt ${attempt})`);
+                
+                // 1. Fetch accurate text in background
+                let clipText = job.clipData.quote || "";
+                const guid = job.clipData.additionalFields?.guid;
+                const timeStart = job.timestamps ? job.timestamps[0] : job.clipData.timeContext?.start_time;
+                const timeEnd = job.timestamps ? job.timestamps[1] : job.clipData.timeContext?.end_time;
+                
+                if (guid && timeStart !== undefined && timeEnd !== undefined) {
+                    console.log(`[INFO] Fetching accurate text for ${job.lookupHash}...`);
+                    try {
+                        // Import getTextForTimeRange dynamically to avoid circular dependencies
+                        const { getTextForTimeRange } = require('../agent-tools/pineconeTools.js');
+                        const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
+                        if (accurateText) {
+                            clipText = accurateText;
+                            console.log(`[INFO] Retrieved accurate text (${accurateText.length} chars) for ${job.lookupHash}`);
+                            
+                            // Update the database with accurate text
+                            await WorkProductV2.findOneAndUpdate(
+                                { lookupHash: job.lookupHash },
+                                { 'result.clipText': clipText }
+                            );
+                        }
+                    } catch (textError) {
+                        console.error(`[ERROR] Failed to fetch accurate text for ${job.lookupHash}:`, textError);
+                        // Continue with original quote
+                    }
+                }
+                
+                // 2. Generate subtitles in background if not provided and generator is available
+                let subtitles = job.subtitles;
+                if (!subtitles && this.subtitleGenerator) {
+                    console.log(`[INFO] Generating subtitles in background for ${job.lookupHash}`);
+                    try {
+                        subtitles = await this.subtitleGenerator(job.clipData, timeStart, timeEnd);
+                        console.log(`[INFO] Generated ${subtitles ? subtitles.length : 0} subtitles for ${job.lookupHash}`);
+                        
+                        // Update the database with subtitle info
+                        await WorkProductV2.findOneAndUpdate(
+                            { lookupHash: job.lookupHash },
+                            { 'result.hasSubtitles': subtitles != null && subtitles.length > 0 }
+                        );
+                    } catch (subtitleError) {
+                        console.error(`[ERROR] Failed to generate subtitles for ${job.lookupHash}:`, subtitleError);
+                        subtitles = null; // Continue without subtitles
+                    }
+                }
+                
+                // 3. Process the actual clip with all the data
+                console.log(`[INFO] Processing clip with ${subtitles ? subtitles.length : 0} subtitles for ${job.lookupHash}`);
                 await this.clipUtils._backgroundProcessClip(
                     job.clipData, 
                     job.timestamps, 
                     job.lookupHash,
-                    job.subtitles
+                    subtitles
                 );
+                
+                console.log(`[INFO] Successfully completed processing for ${job.lookupHash}`);
                 return; // Success, exit the retry loop
             } catch (error) {
                 lastError = error;
-                console.error(`[ERROR] Process attempt ${attempt}/${job.maxAttempts} failed:`, error);
+                console.error(`[ERROR] Process attempt ${attempt}/${job.maxAttempts} failed for ${job.lookupHash}:`, error);
                 
                 if (attempt < job.maxAttempts) {
                     // Wait before retrying (exponential backoff)
                     const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+                    console.log(`[INFO] Waiting ${backoffMs}ms before retry ${attempt + 1} for ${job.lookupHash}`);
                     await new Promise(resolve => setTimeout(resolve, backoffMs));
                 }
             }

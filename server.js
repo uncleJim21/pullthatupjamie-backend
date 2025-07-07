@@ -223,7 +223,7 @@ const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
   maxConcurrent: 4,
   maxQueueSize: 100
-}, clipUtils);
+}, clipUtils, generateSubtitlesForClip);
 
 // Initialize the scheduler if enabled
 const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
@@ -571,7 +571,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
 }
 
 app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
-  const debugPrefix = `[SUBTITLE-DEBUG][${Date.now()}]`;
+  const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
 
@@ -582,21 +582,20 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'clipId is required' });
   }
 
-  console.log(`${debugPrefix} Fetching clip data for clipId: ${clipId}`);
-  const clipData = await getClipById(clipId);
-  if (!clipData) {
-      console.error(`${debugPrefix} Clip not found for clipId: ${clipId}`);
-      return res.status(404).json({ error: 'Clip not found', clipId });
-  }
-
-  console.log(`${debugPrefix} Retrieved clipData: ${JSON.stringify(clipData, null, 2)}`);
-
   try {
-      // Calculate lookup hash ONCE, at the beginning
+      // 1. Get clip data (keep this - it's fast)
+      console.log(`${debugPrefix} Fetching clip data for clipId: ${clipId}`);
+      const clipData = await getClipById(clipId);
+      if (!clipData) {
+          console.error(`${debugPrefix} Clip not found for clipId: ${clipId}`);
+          return res.status(404).json({ error: 'Clip not found', clipId });
+      }
+
+      // 2. Calculate lookup hash (keep this - it's fast)
       const lookupHash = calculateLookupHash(clipData, timestamps);
       console.log(`${debugPrefix} Calculated lookupHash: ${lookupHash}`);
 
-      // Check if this exists already
+      // 3. Check if this exists already (keep this - it's fast)
       const existingClip = await WorkProductV2.findOne({ lookupHash });
       if (existingClip) {
           if (existingClip.cdnFileId) {
@@ -615,66 +614,29 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           });
       }
 
-      // Extract just the essential identifiers
-      const guid = clipData.additionalFields?.guid || 
-                  (clipData.shareLink && clipData.shareLink.includes('_p') ? 
-                   clipData.shareLink.split('_p')[0] : null);
-      
-      const feedId = clipData.additionalFields?.feedId || null;
-      console.log(`${debugPrefix} Extracted guid: ${guid}, feedId: ${feedId}`);
-      
-      // Get the start and end times
-      const timeStart = timestamps ? timestamps[0] : clipData.timeContext?.start_time;
-      const timeEnd = timestamps ? timestamps[1] : clipData.timeContext?.end_time;
-      console.log(`${debugPrefix} Clip time range: ${timeStart}s to ${timeEnd}s (duration: ${timeEnd - timeStart}s)`);
-      
-      // Get the accurate text for the time range
-      let clipText = clipData.quote || "";
-      
-      if (guid && timeStart !== undefined && timeEnd !== undefined) {
-          console.log(`${debugPrefix} Fetching accurate text for time range...`);
-          const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
-          if (accurateText) {
-              clipText = accurateText;
-              console.log(`${debugPrefix} Retrieved accurate text (${accurateText.length} chars)`);
-          } else {
-              console.log(`${debugPrefix} No accurate text retrieved, using original quote`);
-          }
-      }
-      
-      console.time(`${debugPrefix} Subtitle-Generation-Total-Time`);
-      console.log(`${debugPrefix} Generating subtitles for clip...`);
-      
-      // Generate subtitles for this clip on the server side
-      const subtitles = await generateSubtitlesForClip(clipData, timeStart, timeEnd);
-      console.timeEnd(`${debugPrefix} Subtitle-Generation-Total-Time`);
-      
-      // Prepare the minimal result object with just the essential data
-      const resultData = {
-          resultSchemaVersion: 2025321,
-          feedId: feedId,
-          guid: guid,
-          shareLink: clipData.shareLink,
-          clipText: clipText,
-          timeStart: timeStart,
-          timeEnd: timeEnd,
-          hasSubtitles: subtitles && subtitles.length > 0 // Add subtitle flag
-      };
-
+      // 4. Create minimal initial record (keep this - it's fast)
       console.log(`${debugPrefix} Creating initial WorkProductV2 record...`);
-      // Create initial record with the minimal result data
       await WorkProductV2.create({
           type: 'ptuj-clip',
           lookupHash,
           status: 'queued',
           cdnFileId: null,
-          result: resultData
+          result: {
+              resultSchemaVersion: 2025321,
+              feedId: clipData.additionalFields?.feedId || null,
+              guid: clipData.additionalFields?.guid || null,
+              shareLink: clipData.shareLink,
+              clipText: clipData.quote || "", // Will be updated in background
+              timeStart: timestamps ? timestamps[0] : clipData.timeContext?.start_time,
+              timeEnd: timestamps ? timestamps[1] : clipData.timeContext?.end_time,
+              hasSubtitles: false // Will be updated in background
+          }
       });
       console.log(`${debugPrefix} Initial WorkProductV2 record created`);
 
-      // Queue the job WITHOUT awaiting
-      console.log(`${debugPrefix} Adding clip to the processing queue with ${subtitles ? subtitles.length : 0} subtitles...`);
-      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, subtitles).catch(err => {
+      // 5. Queue the job for background processing (don't await)
+      console.log(`${debugPrefix} Adding clip to the processing queue...`);
+      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, null).catch(err => {
           console.error(`${debugPrefix} Error queuing clip: ${err.message}`);
           console.error(err.stack);
           // Update DB with error status if queue fails
@@ -685,7 +647,7 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       });
 
       console.log(`${debugPrefix} Clip successfully queued. Returning response to client.`);
-      // Return immediately
+      // Return immediately - everything else happens in background
       return res.status(202).json({
           status: 'processing',
           lookupHash,
