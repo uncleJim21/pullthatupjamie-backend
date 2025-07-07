@@ -222,7 +222,7 @@ const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
   maxConcurrent: 4,
   maxQueueSize: 100
-}, clipUtils);
+}, clipUtils, generateSubtitlesForClip);
 
 // Initialize the scheduler if enabled
 const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
@@ -627,7 +627,7 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       const timeEnd = timestamps ? timestamps[1] : clipData.timeContext?.end_time;
       console.log(`${debugPrefix} Clip time range: ${timeStart}s to ${timeEnd}s (duration: ${timeEnd - timeStart}s)`);
       
-      // Get the accurate text for the time range
+      // Get the accurate text for the time range (keep this for now as it's fast)
       let clipText = clipData.quote || "";
       
       if (guid && timeStart !== undefined && timeEnd !== undefined) {
@@ -641,13 +641,6 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           }
       }
       
-      console.time(`${debugPrefix} Subtitle-Generation-Total-Time`);
-      console.log(`${debugPrefix} Generating subtitles for clip...`);
-      
-      // Generate subtitles for this clip on the server side
-      const subtitles = await generateSubtitlesForClip(clipData, timeStart, timeEnd);
-      console.timeEnd(`${debugPrefix} Subtitle-Generation-Total-Time`);
-      
       // Prepare the minimal result object with just the essential data
       const resultData = {
           resultSchemaVersion: 2025321,
@@ -657,7 +650,7 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
           clipText: clipText,
           timeStart: timeStart,
           timeEnd: timeEnd,
-          hasSubtitles: subtitles && subtitles.length > 0 // Add subtitle flag
+          hasSubtitles: false // Will be updated when subtitles are generated in background
       };
 
       console.log(`${debugPrefix} Creating initial WorkProductV2 record...`);
@@ -671,9 +664,9 @@ app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
       });
       console.log(`${debugPrefix} Initial WorkProductV2 record created`);
 
-      // Queue the job WITHOUT awaiting
-      console.log(`${debugPrefix} Adding clip to the processing queue with ${subtitles ? subtitles.length : 0} subtitles...`);
-      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, subtitles).catch(err => {
+      // Queue the job WITHOUT awaiting - subtitles will be generated in background
+      console.log(`${debugPrefix} Adding clip to the processing queue (subtitles will be generated in background)...`);
+      clipQueueManager.enqueueClip(clipData, timestamps, lookupHash, null).catch(err => {
           console.error(`${debugPrefix} Error queuing clip: ${err.message}`);
           console.error(err.stack);
           // Update DB with error status if queue fails
