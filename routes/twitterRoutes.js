@@ -1363,4 +1363,155 @@ router.post('/revoke', validatePrivs, async (req, res) => {
     }
 });
 
+
+/**
+ * POST /api/twitter/users/lookup
+ * Search for Twitter users by username patterns for mentions functionality
+ * Now works as a search endpoint - each "username" is treated as a search query
+ */
+router.post('/users/lookup', validatePrivs, async (req, res) => {
+    try {
+        const { usernames } = req.body;
+        
+        // Validate input
+        if (!usernames || !Array.isArray(usernames)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid input',
+                message: 'usernames must be an array'
+            });
+        }
+        
+        // Process usernames: remove @, filter empty, dedupe
+        const searchQueries = [...new Set(
+            usernames
+                .map(username => typeof username === 'string' ? username.trim().replace(/^@/, '').toLowerCase() : '')
+                .filter(username => username.length > 0 && username.length <= 15)
+        )];
+        
+        if (searchQueries.length === 0) {
+            return res.json({
+                success: true,
+                data: []
+            });
+        }
+        
+        if (searchQueries.length > 10) {
+            return res.status(400).json({
+                success: false,
+                error: 'Too many search queries',
+                message: 'Maximum 10 search queries allowed per request'
+            });
+        }
+        
+        console.log('Searching Twitter users for queries:', searchQueries);
+        
+        // Use consumer keys for app-only authentication
+        const client = new TwitterApi({
+            appKey: process.env.TWITTER_CONSUMER_KEY,
+            appSecret: process.env.TWITTER_CONSUMER_SECRET,
+        });
+        
+        // Get app-only bearer token
+        const appOnlyClient = await client.appLogin();
+        
+        try {
+            console.log('Looking up Twitter users:', searchQueries);
+            
+            // Simple exact username lookup
+            const response = await appOnlyClient.v2.usersByUsernames(searchQueries, {
+                'user.fields': [
+                    'id',
+                    'name', 
+                    'username',
+                    'verified',
+                    'verified_type',
+                    'profile_image_url',
+                    'description',
+                    'public_metrics',
+                    'protected'
+                ]
+            });
+            
+            console.log('Twitter API response received:', {
+                foundUsers: response.data?.length || 0,
+                errors: response.errors?.length || 0
+            });
+            
+            // Map Twitter API response to our format
+            const userData = response.data?.map(user => ({
+                id: user.id,
+                username: user.username,
+                name: user.name,
+                verified: user.verified || false,
+                verified_type: user.verified_type || null,
+                profile_image_url: user.profile_image_url || null,
+                description: user.description || null,
+                public_metrics: user.public_metrics || {
+                    followers_count: 0,
+                    following_count: 0,
+                    tweet_count: 0,
+                    listed_count: 0
+                },
+                protected: user.protected || false
+            })) || [];
+            
+            // Log any users that weren't found
+            if (response.errors && response.errors.length > 0) {
+                const notFoundUsers = response.errors
+                    .filter(error => error.title === 'Not Found Error')
+                    .map(error => error.value);
+                
+                if (notFoundUsers.length > 0) {
+                    console.log('Users not found:', notFoundUsers);
+                }
+            }
+            
+            res.json({
+                success: true,
+                data: userData
+            });
+            
+        } catch (twitterError) {
+            console.error('Twitter search error:', {
+                message: twitterError.message,
+                code: twitterError.code,
+                data: twitterError.data
+            });
+            
+            // Handle rate limiting
+            if (twitterError.code === 429) {
+                return res.status(429).json({
+                    success: false,
+                    error: 'Rate limit exceeded',
+                    message: 'Please try again in 15 minutes'
+                });
+            }
+            
+            // Handle authentication errors
+            if (twitterError.code === 401 || twitterError.code === 403) {
+                return res.status(500).json({
+                    success: false,
+                    error: 'Twitter API authentication failed',
+                    message: 'Unable to authenticate with Twitter API'
+                });
+            }
+            
+            throw twitterError;
+        }
+        
+    } catch (error) {
+        console.error('User lookup error:', {
+            message: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({
+            success: false,
+            error: 'User lookup failed',
+            message: 'An error occurred while looking up Twitter users'
+        });
+    }
+});
+
 module.exports = router; 

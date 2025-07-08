@@ -1,0 +1,70 @@
+const mongoose = require('mongoose');
+
+const PermissionsSchema = new mongoose.Schema({
+  entitlementName: {
+    type: String,
+    required: true
+  },
+  usageThisPeriod: {
+    type: Number,
+    required: true,
+    default: 0
+  },
+  periodStart: {
+    type: Date,
+    required: true,
+    default: Date.now
+  }
+}, { _id: false }); // Don't create separate _id for subdocument
+
+const PinnedMentionSchema = new mongoose.Schema({
+  id: { type: String, required: true }, // pinId or cross_*
+  label: { type: String },
+  twitter_profile: { type: Object }, // { username, id, ... }
+  nostr_profile: { type: Object, default: null }, // { npub, ... } or null
+  is_cross_platform: { type: Boolean, default: false },
+  source_mapping_id: { type: String, default: null }, // mappingId if adopted
+  mapping_confidence: { type: Number, default: null },
+  usage_count: { type: Number, default: 0 },
+  is_adopted: { type: Boolean, default: false }
+}, { _id: false });
+
+const UserSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
+  squareCustomerId: {
+    type: String,
+    required: false
+  },
+  subscriptionId: {
+    type: String,
+    required: false
+  },
+  permissions: {
+    type: PermissionsSchema,
+    required: false, // Optional field for backward compatibility
+    default: null
+  },
+  mention_preferences: {
+    type: new mongoose.Schema({
+      pinned_mentions: { type: [PinnedMentionSchema], default: [] }
+    }, { _id: false }),
+    select: false,
+    default: () => ({ pinned_mentions: [] })
+  }
+}, {
+  timestamps: false, // Don't add createdAt/updatedAt to match existing structure
+  versionKey: '__v' // Keep the __v field to match existing structure
+});
+
+const User = mongoose.model('User', UserSchema);
+
+module.exports = { User, PermissionsSchema }; 

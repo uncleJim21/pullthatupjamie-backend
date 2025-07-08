@@ -31,6 +31,7 @@ const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
 const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const userPreferencesRoutes = require('./routes/userPreferences');
+const onDemandRunsRoutes = require('./routes/onDemandRuns');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
@@ -38,6 +39,8 @@ const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
+const { checkOnDemandEligibility } = require('./utils/userPermissions');
+const mentionsRoutes = require('./routes/mentions');
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -956,14 +959,22 @@ app.post('/api/search-quotes', async (req, res) => {
 app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
+  
+  printLog(`[${requestId}] ========== STREAM SEARCH REQUEST STARTED ==========`);
+  printLog(`[${requestId}] Request body:`, { query, model, mode });
+  printLog(`[${requestId}] DEFAULT_MODEL:`, DEFAULT_MODEL);
+  printLog(`[${requestId}] Auth info:`, req.auth);
  
   if (!query) {
+    printLog(`[${requestId}] ERROR: Missing query parameter`);
     return res.status(400).json({ error: 'Query is required' });
   }
  
   try {
     let searchResults = [];
     const { email, preimage, paymentHash } = req.auth || {};
+    
+    printLog(`[${requestId}] ========== SEARXNG SEARCH PHASE ==========`);
  
     try {
       // Create a new SearxNG instance
@@ -971,31 +982,51 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
         username: process.env.ANON_AUTH_USERNAME,
         password: process.env.ANON_AUTH_PW
       };
+      
+      printLog(`[${requestId}] SearxNG config (username only):`, { username: searxngConfig.username });
  
       const searxng = new SearxNGTool(searxngConfig);
-      searchResults = (await searxng.search(query)).slice(0, 10);
+      printLog(`[${requestId}] SearxNG instance created, performing search for:`, query);
+      
+      const rawSearchResults = await searxng.search(query);
+      printLog(`[${requestId}] Raw search results count:`, rawSearchResults.length);
+      printLog(`[${requestId}] Raw search results sample:`, rawSearchResults.slice(0, 2));
+      
+      searchResults = rawSearchResults.slice(0, 10);
+      printLog(`[${requestId}] Final search results count:`, searchResults.length);
+      printLog(`[${requestId}] Final search results:`, searchResults);
     } catch (searchError) {
-      console.error('Search error:', searchError);
+      printLog(`[${requestId}] SEARXNG ERROR:`, searchError);
       searchResults = [{
         title: 'Search Error',
         url: 'https://example.com',
         snippet: 'SearxNG search failed. Using fallback result.'
       }];
+      printLog(`[${requestId}] Using fallback search results:`, searchResults);
     }
+    
+    printLog(`[${requestId}] ========== SSE SETUP PHASE ==========`);
  
     // Set headers for SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    printLog(`[${requestId}] SSE headers set`);
  
     // Send search results
-    res.write(`data: ${JSON.stringify({
+    const searchDataPayload = {
       type: 'search',
       data: searchResults
-    })}\n\n`);
+    };
+    printLog(`[${requestId}] Sending search data payload:`, searchDataPayload);
+    res.write(`data: ${JSON.stringify(searchDataPayload)}\n\n`);
+    printLog(`[${requestId}] Search results sent to client`);
+    
+    printLog(`[${requestId}] ========== LLM MESSAGE PREPARATION PHASE ==========`);
  
     // Prepare formatted sources
     const formattedSources = searchResults.map((result, index) => {
+
       // Get content, handling empty strings and undefined values
       const contentValue = result.snippet || result.content;
       const safeContent = (contentValue && contentValue.trim()) ? contentValue.trim() : 'No content available';
@@ -1004,6 +1035,8 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
       printLog(`[${requestId}] Formatted source ${index + 1}:`, formatted);
       return formatted;
     }).join('\n');
+    
+    printLog(`[${requestId}] Complete formatted sources:`, formattedSources);
  
     // Construct messages for LLM
     let systemMessage = `You are a helpful research assistant that provides well-structured, markdown-formatted responses.`;
@@ -1025,30 +1058,77 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
     - Pay very close attention to numerical figures given. Be certain to not misinterpret those. Simply write those exactly as written.
     - Use the provided title, URL, and content from each source to inform your response`;
     const userMessage = `Query: "${query}"\n\nSources:\n${formattedSources}`;
- 
+    
+    printLog(`[${requestId}] System message:`, systemMessage);
+    printLog(`[${requestId}] User message:`, userMessage);
+    printLog(`[${requestId}] Selected model:`, model);
+    
+    printLog(`[${requestId}] ========== MODEL CONFIG PHASE ==========`);
     const modelConfig = MODEL_CONFIGS[model];
+    printLog(`[${requestId}] Model config found:`, !!modelConfig);
+    printLog(`[${requestId}] Model config details:`, {
+      apiUrl: modelConfig?.apiUrl,
+      hasFormatData: !!modelConfig?.formatData,
+      hasHeaders: !!modelConfig?.headers
+    });
+    
+    if (!modelConfig) {
+      printLog(`[${requestId}] FATAL ERROR: No model config found for model:`, model);
+      printLog(`[${requestId}] Available models:`, Object.keys(MODEL_CONFIGS));
+      throw new Error(`Unsupported model: ${model}`);
+    }
+    
     const apiKey = model.startsWith('gpt') ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;
+    printLog(`[${requestId}] API key type:`, model.startsWith('gpt') ? 'OpenAI' : 'Anthropic');
+    printLog(`[${requestId}] API key present:`, !!apiKey);
+    printLog(`[${requestId}] API key length:`, apiKey?.length);
+    
+    const messages = [
+      { role: 'system', content: systemMessage },
+      { role: 'user', content: userMessage }
+    ];
+    printLog(`[${requestId}] Messages array:`, messages);
+    
+    const formattedData = modelConfig.formatData(messages);
+    printLog(`[${requestId}] Formatted data for API:`, formattedData);
+    
+    const headers = modelConfig.headers(apiKey);
+    printLog(`[${requestId}] Request headers:`, headers);
+    
     const contentBuffer = new ContentBuffer();
+    printLog(`[${requestId}] ContentBuffer created`);
+    
+    printLog(`[${requestId}] ========== API REQUEST PHASE ==========`);
+    printLog(`[${requestId}] Making API request to:`, modelConfig.apiUrl);
  
     const response = await axios({
       method: 'post',
       url: modelConfig.apiUrl,
-      headers: modelConfig.headers(apiKey),
-      data: modelConfig.formatData([
-        { role: 'system', content: systemMessage },
-        { role: 'user', content: userMessage }
-      ]),
+      headers: headers,
+      data: formattedData,
       responseType: 'stream'
     });
+    
+    printLog(`[${requestId}] API response received, status:`, response.status);
+    printLog(`[${requestId}] API response headers:`, response.headers);
+    
+    printLog(`[${requestId}] ========== STREAM PROCESSING PHASE ==========`);
  
     response.data.on('data', (chunk) => {
-      const lines = chunk.toString().split('\n');
-      lines.forEach((line) => {
+      const chunkString = chunk.toString();
+      printLog(`[${requestId}] Received chunk (${chunkString.length} chars):`, chunkString.substring(0, 200) + (chunkString.length > 200 ? '...' : ''));
+      
+      const lines = chunkString.split('\n');
+      lines.forEach((line, lineIndex) => {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
+          printLog(`[${requestId}] Processing data line ${lineIndex}:`, data);
+          
           if (data === '[DONE]') {
+            printLog(`[${requestId}] Received [DONE] signal`);
             const finalContent = contentBuffer.flush();
             if (finalContent) {
+              printLog(`[${requestId}] Flushing final content:`, finalContent);
               res.write(`data: ${JSON.stringify({
                 type: 'inference',
                 data: finalContent
@@ -1056,74 +1136,100 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
             }
             res.write('data: [DONE]\n\n');
             res.end();
+            printLog(`[${requestId}] Stream ended with [DONE]`);
             return;
           }
     
           try {
             const parsed = JSON.parse(data);
+            printLog(`[${requestId}] Parsed JSON:`, parsed);
             let content;
             
             if (model.startsWith('gpt')) {
               content = parsed.choices?.[0]?.delta?.content;
+              printLog(`[${requestId}] GPT content extracted:`, content);
             } else {
               // Handle Claude format
+              printLog(`[${requestId}] Processing Claude format, type:`, parsed.type);
               if (parsed.type === 'content_block_start') {
+                printLog(`[${requestId}] Skipping content_block_start`);
                 return; // Skip content block start messages
               }
               if (parsed.type === 'content_block_stop') {
+                printLog(`[${requestId}] Skipping content_block_stop`);
                 return; // Skip content block stop messages
               }
               if (parsed.type === 'ping') {
+                printLog(`[${requestId}] Skipping ping`);
                 return; // Skip ping messages
               }
               content = parsed.delta?.text;
+              printLog(`[${requestId}] Claude content extracted:`, content);
             }
     
             if (content) {
+              printLog(`[${requestId}] Adding content to buffer:`, content);
               const bufferedContent = contentBuffer.add(content);
               if (bufferedContent) {
+                printLog(`[${requestId}] Sending buffered content:`, bufferedContent);
                 res.write(`data: ${JSON.stringify({
                   type: 'inference',
                   data: bufferedContent
                 })}\n\n`);
+              } else {
+                printLog(`[${requestId}] Content added to buffer but not yet ready to send`);
               }
+            } else {
+              printLog(`[${requestId}] No content extracted from parsed data`);
             }
           } catch (e) {
             if (e instanceof SyntaxError) {
-              console.error('JSON Parse Error:', {
+              printLog(`[${requestId}] JSON Parse Error:`, {
                 data: data.substring(0, 100),
-                error: e.message
+                error: e.message,
+                fullData: data
               });
               return; // Skip malformed JSON
             }
+            printLog(`[${requestId}] Non-JSON error:`, e);
             throw e;
           }
+        } else if (line.trim()) {
+          printLog(`[${requestId}] Non-data line:`, line);
         }
       });
     });
  
     response.data.on('end', () => {
+      printLog(`[${requestId}] Stream ended naturally`);
       const finalContent = contentBuffer.flush();
       if (finalContent) {
+        printLog(`[${requestId}] Flushing final content on end:`, finalContent);
         res.write(`data: ${JSON.stringify({
           type: 'inference',
           data: finalContent
         })}\n\n`);
       }
       res.end();
+      printLog(`[${requestId}] ========== STREAM SEARCH COMPLETED ==========`);
     });
  
     response.data.on('error', (error) => {
-      console.error('Stream error:', error);
+      printLog(`[${requestId}] Stream error:`, error);
       res.write(`data: ${JSON.stringify({
         type: 'error',
         data: 'Stream processing error occurred'
       })}\n\n`);
       res.end();
+      printLog(`[${requestId}] ========== STREAM SEARCH FAILED ==========`);
     });
   } catch (error) {
-    console.error('Streaming search error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    printLog(`[${requestId}] FATAL ERROR:`, error);
+    printLog(`[${requestId}] Error stack:`, error.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+    printLog(`[${requestId}] ========== STREAM SEARCH FAILED ==========`);
   }
  });
 
@@ -1519,13 +1625,76 @@ process.on('unhandledRejection', (reason, promise) => {
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
 app.use('/api/user-prefs', userPreferencesRoutes);
+app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
+app.use('/api/mentions', mentionsRoutes);
 
 // Only enable debug routes in debug mode
 if (DEBUG_MODE) {
   console.log('🔍 Debug mode enabled - Debug routes are accessible');
   app.use('/api/debug', debugRoutes);
 }
+
+// Standalone endpoint for checking on-demand run eligibility
+app.get('/api/check-ondemand-eligibility', async (req, res) => {
+  try {
+    // Extract user email from JWT token
+    let userEmail = null;
+    
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        details: 'Please provide a valid JWT token in Authorization header'
+      });
+    }
+    
+    try {
+      const token = authHeader.substring(7);
+      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      userEmail = decoded.email;
+    } catch (jwtError) {
+      console.error('JWT verification failed:', jwtError.message);
+      return res.status(401).json({
+        error: 'Invalid token',
+        details: 'JWT token verification failed'
+      });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({
+        error: 'Invalid token',
+        details: 'No email found in JWT token'
+      });
+    }
+    
+    // Check eligibility using the utility function
+    const eligibility = await checkOnDemandEligibility(userEmail);
+    
+    res.json({
+      success: true,
+      userEmail: userEmail,
+      eligibility: {
+        eligible: eligibility.eligible,
+        remainingRuns: eligibility.remainingRuns,
+        totalLimit: eligibility.totalLimit,
+        usedThisPeriod: eligibility.usedThisPeriod,
+        periodStart: eligibility.periodStart,
+        nextResetDate: eligibility.nextResetDate,
+        daysUntilReset: eligibility.daysUntilReset
+      },
+      message: eligibility.eligible 
+        ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
+        : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
+    });
+  } catch (error) {
+    console.error('Error checking on-demand eligibility:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
 
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);

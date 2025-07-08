@@ -4,7 +4,7 @@ const crypto = require('crypto');//force push
 const WorkProductV2Schema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['ptuj-clip'],  // ✅ Correct type enforced
+    enum: ['ptuj-clip','on-demand-jamie-episodes'],  // ✅ Correct type enforced
     required: true,
   },
   result: {
