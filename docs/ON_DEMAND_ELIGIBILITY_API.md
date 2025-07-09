@@ -4,6 +4,8 @@
 
 The On-Demand Eligibility API allows clients to check their eligibility for on-demand runs before submitting jobs. This endpoint supports both IP-based and JWT-based authentication methods, providing quota information and eligibility status.
 
+**✅ Consolidated System**: All quota data is now stored in MongoDB, ensuring data persistence across server resets and automatic backup.
+
 ## Endpoint
 
 ```
@@ -47,14 +49,14 @@ Authorization: Bearer <jwt_token>  // Optional
   "clientIp": "192.168.1.1",          // Only for IP auth
   "eligibility": {
     "eligible": true,
-    "remainingRuns": 5,
+    "remainingRuns": 10,
     "totalLimit": 10,
     "usedThisPeriod": 2,
     "periodStart": "2024-01-01T00:00:00.000Z",
     "nextResetDate": "2024-02-01T00:00:00.000Z",
     "daysUntilReset": 15
   },
-  "message": "You have 5 on-demand runs remaining this period."
+  "message": "You have 10 on-demand runs remaining this period."
 }
 ```
 
@@ -86,15 +88,18 @@ Authorization: Bearer <jwt_token>  // Optional
 
 ## Quota Configuration
 
-### IP-Based Quota
-- **Default Limit**: 5 runs per week
-- **Reset Period**: Weekly (configurable via `IP_ONDEMAND_QUOTA_RESET_DAYS`)
-- **Storage**: SQLite database (`requests.db`)
+### Unified Quota System
+- **Default Limit**: 10 runs per 30 days (for both IP and JWT)
+- **Reset Period**: 30 days (configurable via `ON_DEMAND_PERIOD_DAYS`)
+- **Storage**: MongoDB (`OnDemandQuota` collection)
+- **Backup**: Automatically backed up with existing system
 
-### JWT-Based Quota
-- **Default Limit**: 10 runs per 30 days
-- **Reset Period**: 30 days (configurable via `ONDEMAND_QUOTA_RESET_DAYS`)
-- **Storage**: MongoDB (`User` collection)
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ON_DEMAND_USAGE_LIMIT` | 10 | Quota limit for both IP and JWT |
+| `ON_DEMAND_PERIOD_DAYS` | 30 | Reset period in days |
 
 ## Examples
 
@@ -112,14 +117,14 @@ curl -X GET http://localhost:4111/api/on-demand/checkEligibility \
   "clientIp": "192.168.1.100",
   "eligibility": {
     "eligible": true,
-    "remainingRuns": 3,
-    "totalLimit": 5,
+    "remainingRuns": 8,
+    "totalLimit": 10,
     "usedThisPeriod": 2,
     "periodStart": "2024-01-15T00:00:00.000Z",
-    "nextResetDate": "2024-01-22T00:00:00.000Z",
-    "daysUntilReset": 3
+    "nextResetDate": "2024-02-14T00:00:00.000Z",
+    "daysUntilReset": 15
   },
-  "message": "You have 3 on-demand runs remaining this period."
+  "message": "You have 8 on-demand runs remaining this period."
 }
 ```
 
@@ -158,13 +163,13 @@ curl -X GET http://localhost:4111/api/on-demand/checkEligibility \
   "eligibility": {
     "eligible": false,
     "remainingRuns": 0,
-    "totalLimit": 5,
-    "usedThisPeriod": 5,
+    "totalLimit": 10,
+    "usedThisPeriod": 10,
     "periodStart": "2024-01-15T00:00:00.000Z",
-    "nextResetDate": "2024-01-22T00:00:00.000Z",
-    "daysUntilReset": 3
+    "nextResetDate": "2024-02-14T00:00:00.000Z",
+    "daysUntilReset": 15
   },
-  "message": "You have reached your limit of 5 on-demand runs. Next reset: 1/22/2024"
+  "message": "You have reached your limit of 10 on-demand runs. Next reset: 2/14/2024"
 }
 ```
 
@@ -306,22 +311,31 @@ export JWT_TOKEN="your-jwt-token-here"
 node test/test-eligibility.js
 ```
 
-## Configuration
+## Architecture Benefits
 
-### Environment Variables
+### ✅ **Consolidated System**
+- **Single Database**: All quota data in MongoDB
+- **Consistent Limits**: Both IP and JWT get same treatment
+- **Automatic Backup**: Part of existing backup system
+- **Survives Resets**: Data persists across server restarts
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `IP_ONDEMAND_QUOTA_LIMIT` | 5 | IP-based quota limit |
-| `IP_ONDEMAND_QUOTA_RESET_DAYS` | 7 | IP-based reset period (days) |
-| `ONDEMAND_QUOTA_LIMIT` | 10 | JWT-based quota limit |
-| `ONDEMAND_QUOTA_RESET_DAYS` | 30 | JWT-based reset period (days) |
+### ✅ **Reliability Improvements**
+- **No Data Loss**: MongoDB survives server resets
+- **Consistent Logic**: Same quota rules for all users
+- **Better Monitoring**: One place to check quota status
+- **Easier Debugging**: Unified data model
+
+### ✅ **Simplified Maintenance**
+- **One System**: No more SQLite + MongoDB complexity
+- **Unified Limits**: 10 runs per 30 days for everyone
+- **Consistent UX**: Same experience regardless of auth method
+- **Future-Proof**: Easier to add features
 
 ## Security Considerations
 
 1. **IP Address Extraction**: The system tries multiple headers to extract the real client IP
 2. **JWT Validation**: Invalid JWT tokens are ignored and fall back to IP-based auth
-3. **Separate Quotas**: IP and JWT quotas are tracked independently
+3. **Unified Quotas**: IP and JWT quotas are tracked independently but consistently
 4. **Rate Limiting**: Consider implementing additional rate limiting for this endpoint
 
 ## Next Steps

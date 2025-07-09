@@ -3,7 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const axios = require('axios');
-const { checkOnDemandPermissions, consumeOnDemandQuota, checkOnDemandEligibility, consumeIPOnDemandQuota, checkIPOnDemandEligibility } = require('../utils/userPermissions');
+const { checkQuotaEligibility, consumeQuota } = require('../utils/onDemandQuota');
 
 /**
  * GET /api/on-demand/checkEligibility
@@ -26,26 +26,26 @@ router.get('/checkEligibility', async (req, res) => {
             }
         }
 
-        // If we have a user email, check user-based eligibility
+        // If we have a user email, check JWT-based eligibility
         if (userEmail) {
-            const eligibility = await checkOnDemandEligibility(userEmail);
+            const eligibility = await checkQuotaEligibility(userEmail, 'jwt');
             
-                    return res.json({
-          success: true,
-          userEmail: userEmail,
-          eligibility: {
-            eligible: eligibility.eligible,
-            remainingRuns: eligibility.remainingRuns,
-            totalLimit: eligibility.totalLimit,
-            usedThisPeriod: eligibility.usedThisPeriod,
-            periodStart: eligibility.periodStart,
-            nextResetDate: eligibility.nextResetDate,
-            daysUntilReset: eligibility.daysUntilReset
-          },
-          message: eligibility.eligible 
-            ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
-            : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
-        });
+            return res.json({
+                success: true,
+                userEmail: userEmail,
+                eligibility: {
+                    eligible: eligibility.eligible,
+                    remainingRuns: eligibility.remainingRuns,
+                    totalLimit: eligibility.totalLimit,
+                    usedThisPeriod: eligibility.usedThisPeriod,
+                    periodStart: eligibility.periodStart,
+                    nextResetDate: eligibility.nextResetDate,
+                    daysUntilReset: eligibility.daysUntilReset
+                },
+                message: eligibility.eligible 
+                    ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
+                    : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
+            });
         }
 
         // If no user email, check IP-based eligibility
@@ -62,23 +62,23 @@ router.get('/checkEligibility', async (req, res) => {
             });
         }
 
-        const ipEligibility = await checkIPOnDemandEligibility(clientIp);
+        const ipEligibility = await checkQuotaEligibility(clientIp, 'ip');
         
-                return res.json({
-          success: true,
-          clientIp: clientIp,
-          eligibility: {
-            eligible: ipEligibility.eligible,
-            remainingRuns: ipEligibility.remainingRuns,
-            totalLimit: ipEligibility.totalLimit,
-            usedThisPeriod: ipEligibility.usedThisPeriod,
-            periodStart: ipEligibility.periodStart,
-            nextResetDate: ipEligibility.nextResetDate,
-            daysUntilReset: ipEligibility.daysUntilReset
-          },
-          message: ipEligibility.eligible 
-            ? `You have ${ipEligibility.remainingRuns} on-demand runs remaining this period.`
-            : `You have reached your limit of ${ipEligibility.totalLimit} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
+        return res.json({
+            success: true,
+            clientIp: clientIp,
+            eligibility: {
+                eligible: ipEligibility.eligible,
+                remainingRuns: ipEligibility.remainingRuns,
+                totalLimit: ipEligibility.totalLimit,
+                usedThisPeriod: ipEligibility.usedThisPeriod,
+                periodStart: ipEligibility.periodStart,
+                nextResetDate: ipEligibility.nextResetDate,
+                daysUntilReset: ipEligibility.daysUntilReset
+            },
+            message: ipEligibility.eligible 
+                ? `You have ${ipEligibility.remainingRuns} on-demand runs remaining this period.`
+                : `You have reached your limit of ${ipEligibility.totalLimit} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
         });
 
     } catch (error) {
@@ -95,8 +95,46 @@ router.get('/checkEligibility', async (req, res) => {
  * POST /api/on-demand/submitOnDemandRun
  * Submit an on-demand run request
  */
-router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => {
+router.post('/submitOnDemandRun', async (req, res) => {
     try {
+        // Extract user email from JWT token if provided
+        let userEmail = null;
+        let authType = 'ip';
+        const authHeader = req.headers.authorization;
+        
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const jwt = require('jsonwebtoken');
+            try {
+                const token = authHeader.substring(7);
+                const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+                userEmail = decoded.email;
+                authType = 'user';
+            } catch (jwtError) {
+                console.error('JWT verification failed:', jwtError.message);
+            }
+        }
+
+        // If no user email, use IP-based auth
+        if (!userEmail) {
+            const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
+                             req.headers['x-real-ip'] || 
+                             req.ip ||
+                             req.connection.remoteAddress;
+            
+            if (!clientIp) {
+                return res.status(400).json({
+                    error: 'Could not determine client IP address',
+                    details: 'IP address is required for authentication'
+                });
+            }
+            
+            req.clientIp = clientIp;
+        } else {
+            req.userEmail = userEmail;
+        }
+        
+        req.authType = authType;
+
         const { message, parameters, episodes } = req.body;
 
         // Validate request body
@@ -135,9 +173,9 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
         // Consume user quota based on auth type
         let quotaResult;
         if (req.authType === 'user') {
-            quotaResult = await consumeOnDemandQuota(req.userEmail);
+            quotaResult = await consumeQuota(req.userEmail, 'jwt');
         } else {
-            quotaResult = await consumeIPOnDemandQuota(req.clientIp);
+            quotaResult = await consumeQuota(req.clientIp, 'ip');
         }
         
         if (!quotaResult.success) {

@@ -39,9 +39,9 @@ const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
-const { checkOnDemandEligibility } = require('./utils/userPermissions');
+const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
-const { initializeIPOnDemandDB } = require('./utils/userPermissions');
+
 
 const mongoURI = process.env.MONGO_URI;
 const invoicePoolSize = 1;
@@ -1660,7 +1660,6 @@ app.listen(PORT, async () => {
     await initializeInvoiceDB();
     await initializeRequestsDB();
     await initializeJamieUserDB();
-    await initializeIPOnDemandDB();
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
     
