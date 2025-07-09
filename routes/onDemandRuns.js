@@ -3,7 +3,93 @@ const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const axios = require('axios');
-const { checkOnDemandPermissions, consumeOnDemandQuota, checkOnDemandEligibility } = require('../utils/userPermissions');
+const { checkOnDemandPermissions, consumeOnDemandQuota, checkOnDemandEligibility, consumeIPOnDemandQuota, checkIPOnDemandEligibility } = require('../utils/userPermissions');
+
+/**
+ * GET /api/on-demand/checkEligibility
+ * Check eligibility for on-demand runs (supports both IP and JWT auth)
+ */
+router.get('/checkEligibility', async (req, res) => {
+    try {
+        // Extract user email from JWT token if provided
+        let userEmail = null;
+        const authHeader = req.headers.authorization;
+        
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const jwt = require('jsonwebtoken');
+            try {
+                const token = authHeader.substring(7);
+                const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+                userEmail = decoded.email;
+            } catch (jwtError) {
+                console.error('JWT verification failed:', jwtError.message);
+            }
+        }
+
+        // If we have a user email, check user-based eligibility
+        if (userEmail) {
+            const eligibility = await checkOnDemandEligibility(userEmail);
+            
+                    return res.json({
+          success: true,
+          userEmail: userEmail,
+          eligibility: {
+            eligible: eligibility.eligible,
+            remainingRuns: eligibility.remainingRuns,
+            totalLimit: eligibility.totalLimit,
+            usedThisPeriod: eligibility.usedThisPeriod,
+            periodStart: eligibility.periodStart,
+            nextResetDate: eligibility.nextResetDate,
+            daysUntilReset: eligibility.daysUntilReset
+          },
+          message: eligibility.eligible 
+            ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
+            : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
+        });
+        }
+
+        // If no user email, check IP-based eligibility
+        const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
+                         req.headers['x-real-ip'] || 
+                         req.ip ||
+                         req.connection.remoteAddress;
+
+        if (!clientIp) {
+            return res.status(400).json({
+                success: false,
+                error: 'Could not determine client IP address',
+                details: 'IP address is required for eligibility check'
+            });
+        }
+
+        const ipEligibility = await checkIPOnDemandEligibility(clientIp);
+        
+                return res.json({
+          success: true,
+          clientIp: clientIp,
+          eligibility: {
+            eligible: ipEligibility.eligible,
+            remainingRuns: ipEligibility.remainingRuns,
+            totalLimit: ipEligibility.totalLimit,
+            usedThisPeriod: ipEligibility.usedThisPeriod,
+            periodStart: ipEligibility.periodStart,
+            nextResetDate: ipEligibility.nextResetDate,
+            daysUntilReset: ipEligibility.daysUntilReset
+          },
+          message: ipEligibility.eligible 
+            ? `You have ${ipEligibility.remainingRuns} on-demand runs remaining this period.`
+            : `You have reached your limit of ${ipEligibility.totalLimit} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
+        });
+
+    } catch (error) {
+        console.error('Error checking on-demand eligibility:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            details: error.message
+        });
+    }
+});
 
 /**
  * POST /api/on-demand/submitOnDemandRun
@@ -46,8 +132,14 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
             }
         }
 
-        // Consume user quota first (this will increment their usage)
-        const quotaResult = await consumeOnDemandQuota(req.userEmail);
+        // Consume user quota based on auth type
+        let quotaResult;
+        if (req.authType === 'user') {
+            quotaResult = await consumeOnDemandQuota(req.userEmail);
+        } else {
+            quotaResult = await consumeIPOnDemandQuota(req.clientIp);
+        }
+        
         if (!quotaResult.success) {
             return res.status(403).json({
                 error: 'Failed to consume quota',
@@ -74,7 +166,9 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
             })),
             startedAt: new Date().toISOString(),
             completedAt: null,
-            userEmail: req.userEmail, // Track which user submitted this
+            userEmail: req.authType === 'user' ? req.userEmail : null,
+            clientIp: req.authType === 'ip' ? req.clientIp : null,
+            authType: req.authType,
             quotaConsumed: true
         };
 
@@ -134,6 +228,7 @@ router.post('/submitOnDemandRun', checkOnDemandPermissions, async (req, res) => 
                 totalEpisodes: episodes.length,
                 totalFeeds: result.totalFeeds,
                 message: 'On-demand run submitted successfully',
+                authType: req.authType,
                 quotaInfo: {
                     remainingRuns: quotaResult.remainingRuns,
                     usedThisPeriod: quotaResult.usedThisPeriod,
@@ -231,7 +326,9 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
             episodes: job.result.episodes,
             startedAt: job.result.startedAt,
             completedAt: job.result.completedAt,
-            userEmail: job.result.userEmail || null // Include user email if available
+            userEmail: job.result.userEmail || null, // Include user email if available
+            clientIp: job.result.clientIp || null, // Include client IP if available
+            authType: job.result.authType || null // Include auth type if available
         });
     } catch (error) {
         console.error('Error getting job status:', error);
