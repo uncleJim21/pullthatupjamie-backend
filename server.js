@@ -42,6 +42,9 @@ const twitterRoutes = require('./routes/twitterRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
+const { User, PermissionsSchema } = require('./models/User');
+const { Entitlement } = require('./models/Entitlement');
+const { updateEntitlementConfig } = require('./utils/entitlements');
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -2813,4 +2816,6 @@ if (DEBUG_MODE) {
     }
   });
 }
+
+
 

@@ -4,6 +4,9 @@ const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const axios = require('axios');
 const { checkEntitlementEligibility, consumeEntitlement } = require('../utils/entitlements');
+const jwt = require('jsonwebtoken');
+const { User } = require('../models/User');
+const { Entitlement } = require('../models/Entitlement');
 
 /**
  * GET /api/on-demand/checkEligibility
@@ -371,6 +374,152 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
     } catch (error) {
         console.error('Error getting job status:', error);
         res.status(500).json({
+            error: 'Internal server error',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * POST /api/on-demand/update-ondemand-quota
+ * Update on-demand quota for jamie-pro users
+ */
+router.post('/update-ondemand-quota', async (req, res) => {
+    try {
+        // 0. Extract and verify JWT token
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({
+                error: 'Authentication required',
+                details: 'Bearer token required'
+            });
+        }
+
+        const token = authHeader.split(' ')[1];
+        let decoded;
+        
+        try {
+            decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+        } catch (jwtError) {
+            return res.status(401).json({
+                error: 'Invalid token',
+                details: 'Token verification failed'
+            });
+        }
+
+        const email = decoded.email;
+        if (!email) {
+            return res.status(401).json({
+                error: 'Invalid token',
+                details: 'Token missing email claim'
+            });
+        }
+
+        // 1. Delay 2.5 seconds to ensure other processes complete
+        await new Promise(resolve => setTimeout(resolve, 2500));
+
+        // 2. Check User.js by looking up email
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found',
+                details: 'No user found with the provided email'
+            });
+        }
+
+        // 3. Verify whether the user has jamie-pro subscription
+        let hasJamiePro = false;
+        try {
+            // Validate with auth server using the provided token
+            const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            const authData = authResponse.data;
+            
+            // Check if subscription is valid and specifically for jamie-pro
+            if (authData.subscriptionValid && authData.subscriptionType === 'jamie-pro') {
+                hasJamiePro = true;
+            }
+        } catch (authError) {
+            console.error('Auth server validation failed:', authError);
+            return res.status(403).json({
+                error: 'Subscription validation failed',
+                details: 'Could not validate jamie-pro subscription'
+            });
+        }
+
+        // 4. If they have jamie-pro, update entitlement to 8 on-demand runs per month
+        if (hasJamiePro) {
+            try {
+                // Find or create entitlement for this user
+                let entitlement = await Entitlement.findOne({
+                    identifier: email,
+                    identifierType: 'jwt',
+                    entitlementType: 'onDemandRun'
+                });
+
+                if (entitlement) {
+                    // Update existing entitlement and reset count to 0
+                    entitlement.maxUsage = process.env.JAMIE_PRO_ON_DEMAND_QUOTA || 4;
+                    entitlement.usedCount = 0;
+                    entitlement.status = 'active';
+                    entitlement.lastUsed = new Date();
+                    await entitlement.save();
+                } else {
+                    // Create new entitlement
+                    const now = new Date();
+                    const nextResetDate = new Date(now);
+                    nextResetDate.setDate(nextResetDate.getDate() + 30); // 30 days from now
+                    
+                    entitlement = new Entitlement({
+                        identifier: email,
+                        identifierType: 'jwt',
+                        entitlementType: 'onDemandRun',
+                        usedCount: 0,
+                        maxUsage: 8,
+                        periodStart: now,
+                        periodLengthDays: 30,
+                        nextResetDate,
+                        lastUsed: now,
+                        status: 'active'
+                    });
+                    await entitlement.save();
+                }
+
+                return res.json({
+                    success: true,
+                    message: 'On-demand quota updated for jamie-pro user',
+                    userEmail: email,
+                    entitlement: {
+                        maxUsage: entitlement.maxUsage,
+                        usedCount: entitlement.usedCount,
+                        remainingUsage: entitlement.maxUsage - entitlement.usedCount,
+                        periodStart: entitlement.periodStart,
+                        nextResetDate: entitlement.nextResetDate,
+                        status: entitlement.status
+                    }
+                });
+            } catch (entitlementError) {
+                console.error('Error updating entitlement:', entitlementError);
+                return res.status(500).json({
+                    error: 'Failed to update entitlement',
+                    details: entitlementError.message
+                });
+            }
+        } else {
+            return res.status(403).json({
+                error: 'Not authorized',
+                details: 'User does not have jamie-pro subscription'
+            });
+        }
+
+    } catch (error) {
+        console.error('Error in update-ondemand-quota:', error);
+        return res.status(500).json({
             error: 'Internal server error',
             details: error.message
         });
