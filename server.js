@@ -32,6 +32,7 @@ const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const onDemandRunsRoutes = require('./routes/onDemandRuns');
+const adminEntitlementsRoutes = require('./routes/adminEntitlements');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
@@ -1630,9 +1631,10 @@ app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 
-// Only enable debug routes in debug mode
+// Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
-  console.log('🔍 Debug mode enabled - Debug routes are accessible');
+  console.log('🔍 Debug mode enabled - Admin and debug routes are accessible');
+  app.use('/api/admin/entitlements', adminEntitlementsRoutes);
   app.use('/api/debug', debugRoutes);
 }
 

@@ -3,7 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const axios = require('axios');
-const { checkQuotaEligibility, consumeQuota } = require('../utils/onDemandQuota');
+const { checkEntitlementEligibility, consumeEntitlement } = require('../utils/entitlements');
 
 /**
  * GET /api/on-demand/checkEligibility
@@ -28,23 +28,23 @@ router.get('/checkEligibility', async (req, res) => {
 
         // If we have a user email, check JWT-based eligibility
         if (userEmail) {
-            const eligibility = await checkQuotaEligibility(userEmail, 'jwt');
+            const eligibility = await checkEntitlementEligibility(userEmail, 'jwt', 'onDemandRun');
             
             return res.json({
                 success: true,
                 userEmail: userEmail,
                 eligibility: {
                     eligible: eligibility.eligible,
-                    remainingRuns: eligibility.remainingRuns,
-                    totalLimit: eligibility.totalLimit,
-                    usedThisPeriod: eligibility.usedThisPeriod,
+                    remainingRuns: eligibility.remainingUsage,
+                    totalLimit: eligibility.maxUsage,
+                    usedThisPeriod: eligibility.usedCount,
                     periodStart: eligibility.periodStart,
                     nextResetDate: eligibility.nextResetDate,
                     daysUntilReset: eligibility.daysUntilReset
                 },
                 message: eligibility.eligible 
-                    ? `You have ${eligibility.remainingRuns} on-demand runs remaining this period.`
-                    : `You have reached your limit of ${eligibility.totalLimit} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
+                    ? `You have ${eligibility.remainingUsage} on-demand runs remaining this period.`
+                    : `You have reached your limit of ${eligibility.maxUsage} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
             });
         }
 
@@ -62,23 +62,23 @@ router.get('/checkEligibility', async (req, res) => {
             });
         }
 
-        const ipEligibility = await checkQuotaEligibility(clientIp, 'ip');
+        const ipEligibility = await checkEntitlementEligibility(clientIp, 'ip', 'onDemandRun');
         
         return res.json({
             success: true,
             clientIp: clientIp,
             eligibility: {
                 eligible: ipEligibility.eligible,
-                remainingRuns: ipEligibility.remainingRuns,
-                totalLimit: ipEligibility.totalLimit,
-                usedThisPeriod: ipEligibility.usedThisPeriod,
+                remainingRuns: ipEligibility.remainingUsage,
+                totalLimit: ipEligibility.maxUsage,
+                usedThisPeriod: ipEligibility.usedCount,
                 periodStart: ipEligibility.periodStart,
                 nextResetDate: ipEligibility.nextResetDate,
                 daysUntilReset: ipEligibility.daysUntilReset
             },
             message: ipEligibility.eligible 
-                ? `You have ${ipEligibility.remainingRuns} on-demand runs remaining this period.`
-                : `You have reached your limit of ${ipEligibility.totalLimit} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
+                ? `You have ${ipEligibility.remainingUsage} on-demand runs remaining this period.`
+                : `You have reached your limit of ${ipEligibility.maxUsage} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
         });
 
     } catch (error) {
@@ -170,20 +170,20 @@ router.post('/submitOnDemandRun', async (req, res) => {
             }
         }
 
-        // Consume user quota based on auth type
-        let quotaResult;
+        // Consume user entitlement based on auth type
+        let entitlementResult;
         if (req.authType === 'user') {
-            quotaResult = await consumeQuota(req.userEmail, 'jwt');
+            entitlementResult = await consumeEntitlement(req.userEmail, 'jwt', 'onDemandRun');
         } else {
-            quotaResult = await consumeQuota(req.clientIp, 'ip');
+            entitlementResult = await consumeEntitlement(req.clientIp, 'ip', 'onDemandRun');
         }
         
-        if (!quotaResult.success) {
+        if (!entitlementResult.success) {
             return res.status(403).json({
-                error: 'Failed to consume quota',
-                details: quotaResult.error,
-                remainingRuns: quotaResult.remainingRuns,
-                nextResetDate: quotaResult.nextResetDate
+                error: 'Failed to consume entitlement',
+                details: entitlementResult.error,
+                remainingRuns: entitlementResult.remainingUsage,
+                nextResetDate: entitlementResult.nextResetDate
             });
         }
 
@@ -207,7 +207,7 @@ router.post('/submitOnDemandRun', async (req, res) => {
             userEmail: req.authType === 'user' ? req.userEmail : null,
             clientIp: req.authType === 'ip' ? req.clientIp : null,
             authType: req.authType,
-            quotaConsumed: true
+            entitlementConsumed: true
         };
 
         // Calculate unique feeds count
@@ -267,10 +267,10 @@ router.post('/submitOnDemandRun', async (req, res) => {
                 totalFeeds: result.totalFeeds,
                 message: 'On-demand run submitted successfully',
                 authType: req.authType,
-                quotaInfo: {
-                    remainingRuns: quotaResult.remainingRuns,
-                    usedThisPeriod: quotaResult.usedThisPeriod,
-                    totalLimit: quotaResult.totalLimit
+                entitlementInfo: {
+                    remainingRuns: entitlementResult.remainingUsage,
+                    usedThisPeriod: entitlementResult.usedCount,
+                    totalLimit: entitlementResult.maxUsage
                 },
                 awsResponse: awsResponse.data
             });
@@ -305,13 +305,13 @@ router.post('/submitOnDemandRun', async (req, res) => {
                 }
             );
 
-            // Note: We don't refund the quota here since the submission was attempted
-            // You might want to implement quota refunding for AWS failures if desired
+            // Note: We don't refund the entitlement here since the submission was attempted
+            // You might want to implement entitlement refunding for AWS failures if desired
 
             return res.status(awsError.response?.status || 500).json({
                 error: 'Failed to submit job to AWS',
                 details: awsError.response?.data || awsError.message,
-                quotaNote: 'Your quota has been consumed despite the AWS error. Contact support if needed.'
+                entitlementNote: 'Your entitlement has been consumed despite the AWS error. Contact support if needed.'
             });
         }
     } catch (error) {
