@@ -1,22 +1,5 @@
 const mongoose = require('mongoose');
 
-const PermissionsSchema = new mongoose.Schema({
-  entitlementName: {
-    type: String,
-    required: true
-  },
-  usageThisPeriod: {
-    type: Number,
-    required: true,
-    default: 0
-  },
-  periodStart: {
-    type: Date,
-    required: true,
-    default: Date.now
-  }
-}, { _id: false }); // Don't create separate _id for subdocument
-
 const PinnedMentionSchema = new mongoose.Schema({
   id: { type: String, required: true }, // pinId or cross_*
   label: { type: String },
@@ -48,11 +31,6 @@ const UserSchema = new mongoose.Schema({
     type: String,
     required: false
   },
-  permissions: {
-    type: PermissionsSchema,
-    required: false, // Optional field for backward compatibility
-    default: null
-  },
   mention_preferences: {
     type: new mongoose.Schema({
       pinned_mentions: { type: [PinnedMentionSchema], default: [] }
@@ -67,4 +45,4 @@ const UserSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 
-module.exports = { User, PermissionsSchema }; 
+module.exports = { User }; 

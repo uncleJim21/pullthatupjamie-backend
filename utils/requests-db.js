@@ -19,6 +19,16 @@ async function initializeRequestsDB() {
         )
     `);
 
+    // Add IP on-demand requests table
+    await sqliteDb.exec(`
+        CREATE TABLE IF NOT EXISTS ip_ondemand_requests (
+            ip TEXT PRIMARY KEY,
+            request_count INTEGER DEFAULT 0,
+            period_start INTEGER,
+            last_request_at INTEGER
+        )
+    `);
+
     console.log('Initialized requests DB');
     return sqliteDb;
 }
