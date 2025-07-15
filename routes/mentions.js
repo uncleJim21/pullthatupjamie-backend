@@ -37,6 +37,7 @@ router.post('/search', authenticateToken, async (req, res) => {
           'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
         ]
       });
+      
       twitterResults = (response.data || []).map(user => ({
         platform: 'twitter',
         id: user.id,
@@ -211,7 +212,8 @@ router.post('/search', authenticateToken, async (req, res) => {
       const pinKey = `${pinPlatform}:${pinUsername.toLowerCase()}`;
       
       // Only add pinned profiles that match the search query
-      const matchesQuery = pinUsername.toLowerCase().includes(query.toLowerCase());
+      const matchesQuery = pinUsername.toLowerCase().includes(query.toLowerCase()) || 
+                           (pin.twitter_profile?.name && pin.twitter_profile.name.toLowerCase().includes(query.toLowerCase()));
       
       if (!existingUsernames.includes(pinKey) && matchesQuery) {
         // Add pinned profile that wasn't found in search results but matches the query
