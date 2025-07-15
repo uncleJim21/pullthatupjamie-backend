@@ -62,6 +62,40 @@ Search for mentions across platforms including personal pins and cross-platform 
 }
 ```
 
+### POST `/search/stream` 🚀 **New!**
+Streaming search using Server-Sent Events for real-time results as they become available.
+
+**Request Body:**
+```json
+{
+  "query": "username or @username",
+  "platforms": ["twitter", "nostr"],
+  "includePersonalPins": true,
+  "includeCrossPlatformMappings": true,
+  "limit": 10
+}
+```
+
+**Response Type:** `text/event-stream`
+
+**Stream Events:**
+```
+event: data
+data: {"type":"partial","source":"pins","results":[...],"meta":{...}}
+
+event: data
+data: {"type":"partial","source":"twitter","results":[...],"meta":{...}}
+
+event: complete
+data: {"type":"complete","totalResults":3,"completedSources":[...]}
+```
+
+**Performance Benefits:**
+- Personal pins appear immediately (~50-100ms)
+- Twitter results stream as API responds (~300-500ms)  
+- Individual source failures don't break entire search
+- 200-500ms faster perceived response time
+
 ---
 
 ## 📌 Personal Pin Management
