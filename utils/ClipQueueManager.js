@@ -195,57 +195,215 @@ class ClipQueueManager extends EventEmitter {
         }
     }
 
-    // Process the actual job content (same as before)
+    // Enhanced processJobContent with detailed error handling and stage tracking
     async processJobContent(job) {
-        // 1. Fetch accurate text
-        let clipText = job.clipData.quote || "";
-        const guid = job.clipData.additionalFields?.guid;
-        const timeStart = job.timestamps ? job.timestamps[0] : job.clipData.timeContext?.start_time;
-        const timeEnd = job.timestamps ? job.timestamps[1] : job.clipData.timeContext?.end_time;
+        let processingStage = 'initialization';
+        const logPrefix = `[CLIP-PROCESSING][${job.lookupHash}]`;
         
-        if (guid && timeStart !== undefined && timeEnd !== undefined) {
-            try {
-                const { getTextForTimeRange } = require('../agent-tools/pineconeTools.js');
-                const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
-                if (accurateText) {
-                    clipText = accurateText;
+        try {
+            console.log(`${logPrefix} Starting processing with ${job.attempts} attempts`);
+            
+            // Stage 1: Extract basic parameters and validate
+            processingStage = 'parameter-extraction';
+            let clipText = job.clipData.quote || "";
+            const guid = job.clipData.additionalFields?.guid;
+            const timeStart = job.timestamps ? job.timestamps[0] : job.clipData.timeContext?.start_time;
+            const timeEnd = job.timestamps ? job.timestamps[1] : job.clipData.timeContext?.end_time;
+            
+            console.log(`${logPrefix} [${processingStage}] Extracted params - GUID: ${guid}, Time: ${timeStart}-${timeEnd}`);
+            
+            if (!guid) {
+                throw new Error(`Missing podcast GUID in clip data`);
+            }
+            if (timeStart === undefined || timeEnd === undefined) {
+                throw new Error(`Missing time parameters: start=${timeStart}, end=${timeEnd}`);
+            }
+            
+            // Stage 2: Fetch accurate text from Pinecone
+            processingStage = 'text-fetching';
+            if (guid && timeStart !== undefined && timeEnd !== undefined) {
+                try {
+                    console.log(`${logPrefix} [${processingStage}] Fetching accurate text from Pinecone...`);
+                    const { getTextForTimeRange } = require('../agent-tools/pineconeTools.js');
+                    const accurateText = await getTextForTimeRange(guid, timeStart, timeEnd);
+                    if (accurateText && accurateText.length > 0) {
+                        clipText = accurateText;
+                        await WorkProductV2.findOneAndUpdate(
+                            { lookupHash: job.lookupHash },
+                            { 
+                                'result.clipText': clipText,
+                                'result.textSource': 'pinecone',
+                                lastUpdated: new Date()
+                            }
+                        );
+                        console.log(`${logPrefix} [${processingStage}] Successfully updated clip text (${clipText.length} chars)`);
+                    } else {
+                        console.warn(`${logPrefix} [${processingStage}] No accurate text found, using original quote`);
+                    }
+                } catch (textError) {
+                    console.error(`${logPrefix} [${processingStage}] FAILED: ${textError.message}`);
+                    // Mark the specific failure but don't stop processing
                     await WorkProductV2.findOneAndUpdate(
                         { lookupHash: job.lookupHash },
-                        { 'result.clipText': clipText }
+                        { 
+                            'result.textSource': 'original',
+                            'result.textFetchError': textError.message,
+                            lastUpdated: new Date()
+                        }
                     );
                 }
-            } catch (textError) {
-                console.error(`[ERROR] Failed to fetch accurate text for ${job.lookupHash}:`, textError);
             }
-        }
-        
-        // 2. Generate subtitles if needed
-        let subtitles = job.subtitles;
-        if (!subtitles && this.subtitleGenerator) {
+            
+            // Stage 3: Generate subtitles if needed
+            processingStage = 'subtitle-generation';
+            let subtitles = job.subtitles;
+            if (!subtitles && this.subtitleGenerator) {
+                try {
+                    console.log(`${logPrefix} [${processingStage}] Generating subtitles...`);
+                    subtitles = await this.subtitleGenerator(job.clipData, timeStart, timeEnd);
+                    const hasSubtitles = subtitles != null && subtitles.length > 0;
+                    
+                    await WorkProductV2.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            'result.hasSubtitles': hasSubtitles,
+                            'result.subtitleCount': hasSubtitles ? subtitles.length : 0,
+                            lastUpdated: new Date()
+                        }
+                    );
+                    console.log(`${logPrefix} [${processingStage}] Successfully generated ${subtitles?.length || 0} subtitles`);
+                } catch (subtitleError) {
+                    console.error(`${logPrefix} [${processingStage}] FAILED: ${subtitleError.message}`);
+                    // Mark subtitle failure but continue processing
+                    await WorkProductV2.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            'result.hasSubtitles': false,
+                            'result.subtitleError': subtitleError.message,
+                            lastUpdated: new Date()
+                        }
+                    );
+                    subtitles = null;
+                }
+            }
+            
+            // Stage 4: Process the actual video clip (CRITICAL STAGE)
+            processingStage = 'video-processing';
+            console.log(`${logPrefix} [${processingStage}] Starting video processing...`);
+            
             try {
-                subtitles = await this.subtitleGenerator(job.clipData, timeStart, timeEnd);
-                await WorkProductV2.findOneAndUpdate(
-                    { lookupHash: job.lookupHash },
-                    { 'result.hasSubtitles': subtitles != null && subtitles.length > 0 }
+                await this.clipUtils._backgroundProcessClip(
+                    job.clipData, 
+                    job.timestamps, 
+                    job.lookupHash,
+                    subtitles
                 );
-            } catch (subtitleError) {
-                console.error(`[ERROR] Failed to generate subtitles for ${job.lookupHash}:`, subtitleError);
-                subtitles = null;
+                console.log(`${logPrefix} [${processingStage}] Video processing completed`);
+            } catch (videoError) {
+                console.error(`${logPrefix} [${processingStage}] CRITICAL FAILURE: ${videoError.message}`);
+                
+                // Update both collections with failure status
+                await Promise.all([
+                    WorkProductV2.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            status: 'failed',
+                            'result.videoProcessingError': videoError.message,
+                            'result.failedAt': new Date(),
+                            lastUpdated: new Date()
+                        }
+                    ),
+                    QueueJob.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            lastError: `Video processing failed: ${videoError.message}`,
+                            failedAt: new Date()
+                        }
+                    )
+                ]);
+                
+                throw new Error(`Video processing failed: ${videoError.message}`);
             }
-        }
-        
-        // 3. Process the actual clip
-        await this.clipUtils._backgroundProcessClip(
-            job.clipData, 
-            job.timestamps, 
-            job.lookupHash,
-            subtitles
-        );
-        
-        // 4. Verify success
-        const updatedClip = await WorkProductV2.findOne({ lookupHash: job.lookupHash });
-        if (!updatedClip || !updatedClip.cdnFileId) {
-            throw new Error('Clip processing completed but cdnFileId was not set in database');
+            
+            // Stage 5: Verify success and CDN upload
+            processingStage = 'verification';
+            console.log(`${logPrefix} [${processingStage}] Verifying completion...`);
+            
+            const updatedClip = await WorkProductV2.findOne({ lookupHash: job.lookupHash });
+            if (!updatedClip) {
+                throw new Error('WorkProductV2 record not found after processing');
+            }
+            
+            if (!updatedClip.cdnFileId || updatedClip.cdnFileId.trim() === '') {
+                console.error(`${logPrefix} [${processingStage}] CRITICAL: CDN upload failed`);
+                
+                // Mark as failed in both collections
+                await Promise.all([
+                    WorkProductV2.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            status: 'failed',
+                            'result.uploadError': 'CDN upload failed - no file ID returned',
+                            'result.failedAt': new Date(),
+                            lastUpdated: new Date()
+                        }
+                    ),
+                    QueueJob.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            lastError: 'CDN upload failed - no file ID returned',
+                            failedAt: new Date()
+                        }
+                    )
+                ]);
+                
+                throw new Error('CDN upload failed - no file ID returned');
+            }
+            
+            // SUCCESS: Update final completion status
+            processingStage = 'completion';
+            await WorkProductV2.findOneAndUpdate(
+                { lookupHash: job.lookupHash },
+                { 
+                    status: 'completed',
+                    'result.completedAt': new Date(),
+                    'result.processingStages': ['parameter-extraction', 'text-fetching', 'subtitle-generation', 'video-processing', 'verification', 'completion'],
+                    lastUpdated: new Date()
+                }
+            );
+            
+            console.log(`${logPrefix} [${processingStage}] ✅ Successfully completed! CDN URL: ${updatedClip.cdnFileId}`);
+            
+        } catch (error) {
+            console.error(`${logPrefix} [${processingStage}] 🔥 PROCESSING FAILED: ${error.message}`);
+            
+            // Ensure both collections are marked as failed
+            try {
+                await Promise.all([
+                    WorkProductV2.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            status: 'failed',
+                            'result.failedAt': new Date(),
+                            'result.lastError': error.message,
+                            'result.failedStage': processingStage,
+                            lastUpdated: new Date()
+                        }
+                    ),
+                    QueueJob.findOneAndUpdate(
+                        { lookupHash: job.lookupHash },
+                        { 
+                            lastError: `Failed at stage ${processingStage}: ${error.message}`,
+                            failedAt: new Date()
+                        }
+                    )
+                ]);
+            } catch (updateError) {
+                console.error(`${logPrefix} [${processingStage}] Failed to update failure status: ${updateError.message}`);
+            }
+            
+            // Re-throw the original error for the retry logic
+            throw error;
         }
     }
 
