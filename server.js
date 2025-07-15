@@ -24,6 +24,7 @@ const {DEBUG_MODE, SCHEDULER_ENABLED, SCHEDULED_INGESTOR_TIMES, printLog} = requ
 const ClipUtils = require('./utils/ClipUtils');
 const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
+const QueueJob = require('./models/QueueJob');
 const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
 const jwt = require('jsonwebtoken');
@@ -1609,6 +1610,17 @@ app.get('/api/get-clip-count', async (req, res) => {
   }
 });
 
+// Queue monitoring endpoint
+app.get('/api/queue-status', async (req, res) => {
+  try {
+    const status = await clipQueueManager.getQueueStatus();
+    res.json(status);
+  } catch (error) {
+    console.error('Error getting queue status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Validate required environment variables
 if (!process.env.OPENAI_API_KEY) {
   console.error('OPENAI_API_KEY is required');
@@ -1639,6 +1651,73 @@ if (DEBUG_MODE) {
   console.log('🔍 Debug mode enabled - Admin and debug routes are accessible');
   app.use('/api/admin/entitlements', adminEntitlementsRoutes);
   app.use('/api/debug', debugRoutes);
+  
+  // Cleanup endpoint for limbo jobs (debug mode only)
+  app.post('/api/debug/cleanup-limbo', async (req, res) => {
+    try {
+      // Find clips stuck in processing for more than 1 hour in both collections
+      const cutoffTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+      
+      // Check WorkProductV2 for clips without cdnFileId but not failed
+      const stuckWorkProducts = await WorkProductV2.find({
+        $and: [
+          { cdnFileId: { $in: [null, ''] } },
+          { 
+            $or: [
+              { status: { $in: ['processing', undefined] } },
+              { status: { $exists: false } }
+            ]
+          }
+        ]
+      });
+      
+      // Check QueueJob for old processing jobs
+      const stuckQueueJobs = await QueueJob.find({
+        status: 'processing',
+        $or: [
+          { heartbeatAt: { $lt: cutoffTime } },
+          { heartbeatAt: { $exists: false } },
+          { claimedAt: { $lt: cutoffTime } }
+        ]
+      });
+      
+      console.log(`Found ${stuckWorkProducts.length} stuck WorkProducts and ${stuckQueueJobs.length} stuck QueueJobs`);
+      
+      // Reset QueueJob entries to queued
+      const queueJobResult = await QueueJob.updateMany(
+        {
+          status: 'processing',
+          $or: [
+            { heartbeatAt: { $lt: cutoffTime } },
+            { heartbeatAt: { $exists: false } },
+            { claimedAt: { $lt: cutoffTime } }
+          ]
+        },
+        {
+          status: 'queued',
+          instanceId: null,
+          claimedAt: null,
+          heartbeatAt: null,
+          startedAt: null,
+          attempts: 0,
+          lastError: null
+        }
+      );
+      
+      res.json({
+        success: true,
+        message: `Cleanup completed`,
+        stuckWorkProducts: stuckWorkProducts.length,
+        stuckQueueJobs: stuckQueueJobs.length,
+        queueJobsReset: queueJobResult.modifiedCount,
+        stuckWorkProductHashes: stuckWorkProducts.map(wp => wp.lookupHash),
+        stuckQueueJobHashes: stuckQueueJobs.map(qj => qj.lookupHash)
+      });
+    } catch (error) {
+      console.error('Error in limbo cleanup:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
 }
 
 
@@ -1719,15 +1798,19 @@ app.listen(PORT, async () => {
   }
 });
 
-// Keep the graceful shutdown handlers for the scheduler
-process.on('SIGTERM', () => {
+// Update the shutdown handlers
+process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   
   if (SCHEDULER_ENABLED) {
     scheduler.stopAllTasks();
   }
   
-  // Close database connections and exit
+  // ✅ GUARANTEED TRANSFER: Release jobs back to queue
+  if (clipQueueManager) {
+    await clipQueueManager.shutdown();
+  }
+  
   setTimeout(() => {
     mongoose.connection.close();
     process.exit(0);
