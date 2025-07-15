@@ -5,6 +5,352 @@ const { SocialProfileMapping } = require('../models/SocialProfileMappings');
 const { TwitterApi } = require('twitter-api-v2');
 const { authenticateToken } = require('../middleware/authMiddleware');
 
+// Utility function to send SSE formatted data
+function sendSSE(res, data, eventType = 'data') {
+  res.write(`event: ${eventType}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+// Promisified search functions
+async function searchPersonalPins(user, query) {
+  try {
+    const userData = await User.findById(user.id).select('+mention_preferences +mentionPreferences');
+    
+    let pins = [];
+    if (userData.mention_preferences?.pinned_mentions) {
+      pins = userData.mention_preferences.pinned_mentions;
+    } else if (userData.mentionPreferences?.personalPins) {
+      pins = userData.mentionPreferences.personalPins;
+    }
+
+    // Filter and validate pins
+    const validPins = pins.filter(pin => {
+      return (pin.twitter_profile && pin.twitter_profile.username) || 
+             (pin.nostr_profile && pin.nostr_profile.npub);
+    });
+
+    const matchingPins = validPins.filter(pin => {
+      let pinUsername = null;
+      let pinName = null;
+      
+      if (pin.twitter_profile && pin.twitter_profile.username) {
+        pinUsername = pin.twitter_profile.username;
+        pinName = pin.twitter_profile.name;
+      } else if (pin.nostr_profile && pin.nostr_profile.npub) {
+        pinUsername = pin.nostr_profile.npub;
+        pinName = pin.nostr_profile.displayName;
+      }
+      
+      const matchesQuery = 
+        (pinUsername && pinUsername.toLowerCase().includes(query.toLowerCase())) ||
+        (pinName && pinName.toLowerCase().includes(query.toLowerCase()));
+      
+      return matchesQuery;
+    });
+
+    const results = matchingPins.map(pin => {
+      const pinPlatform = pin.twitter_profile ? 'twitter' : 'nostr';
+      const profileData = pin.twitter_profile || pin.nostr_profile;
+      const username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
+      
+      return {
+        platform: pinPlatform,
+        id: profileData?.id || null,
+        username: username,
+        name: profileData?.name || profileData?.displayName || username,
+        verified: profileData?.verified || false,
+        verified_type: profileData?.verified_type || null,
+        profile_image_url: profileData?.profile_image_url || null,
+        description: profileData?.description || null,
+        public_metrics: profileData?.public_metrics || {
+          followers_count: 0,
+          following_count: 0,
+          tweet_count: 0,
+          listed_count: 0
+        },
+        protected: profileData?.protected || false,
+        isPinned: true,
+        pinId: pin.id,
+        lastUsed: null,
+        crossPlatformMapping: null
+      };
+    });
+
+    return { source: 'pins', results, error: null };
+  } catch (error) {
+    console.error('Error searching personal pins:', error);
+    return { source: 'pins', results: [], error: error.message };
+  }
+}
+
+async function searchTwitterAPI(query, platforms) {
+  if (!platforms.includes('twitter')) {
+    return { source: 'twitter', results: [], error: null };
+  }
+
+  try {
+    const client = new TwitterApi({
+      appKey: process.env.TWITTER_CONSUMER_KEY,
+      appSecret: process.env.TWITTER_CONSUMER_SECRET,
+    });
+    const appOnlyClient = await client.appLogin();
+    const response = await appOnlyClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
+      'user.fields': [
+        'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
+      ]
+    });
+
+    const results = (response.data || []).map(user => ({
+      platform: 'twitter',
+      id: user.id,
+      username: user.username,
+      name: user.name,
+      verified: user.verified || false,
+      verified_type: user.verified_type || null,
+      profile_image_url: user.profile_image_url || null,
+      description: user.description || null,
+      public_metrics: user.public_metrics || {
+        followers_count: 0,
+        following_count: 0,
+        tweet_count: 0,
+        listed_count: 0
+      },
+      protected: user.protected || false,
+      isPinned: false,
+      pinId: null,
+      lastUsed: null,
+      crossPlatformMapping: null
+    }));
+
+    return { source: 'twitter', results, error: null };
+  } catch (error) {
+    console.error('Error searching Twitter API:', error);
+    return { source: 'twitter', results: [], error: error.message };
+  }
+}
+
+async function searchCrossPlatformMappings(query, limit) {
+  try {
+    const mappings = await SocialProfileMapping.find({
+      $or: [
+        { 'twitter_profile.username': { $regex: query, $options: 'i' } },
+        { 'nostr_profile.npub': { $regex: query, $options: 'i' } }
+      ]
+    }).limit(limit).lean();
+
+    return { source: 'mappings', results: mappings, error: null };
+  } catch (error) {
+    console.error('Error searching cross-platform mappings:', error);
+    return { source: 'mappings', results: [], error: error.message };
+  }
+}
+
+// POST /api/mentions/search/stream - Streaming search endpoint
+router.post('/search/stream', authenticateToken, async (req, res) => {
+  const {
+    query,
+    platforms = ['twitter'],
+    includePersonalPins = true,
+    includeCrossPlatformMappings = true,
+    limit = 10
+  } = req.body;
+
+  if (!query || typeof query !== 'string' || query.length < 1 || query.length > 50) {
+    return res.status(400).json({
+      error: 'Invalid search query',
+      message: 'Query must be between 1 and 50 characters',
+      code: 'INVALID_QUERY_LENGTH'
+    });
+  }
+
+  // Set up SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control'
+  });
+
+  // Keep track of all results for deduplication
+  const allResults = [];
+  const completedSources = [];
+
+  // Create search promises
+  const searchPromises = [];
+  
+  if (includePersonalPins) {
+    searchPromises.push(searchPersonalPins(req.user, query));
+  }
+  
+  searchPromises.push(searchTwitterAPI(query, platforms));
+  
+  if (includeCrossPlatformMappings) {
+    searchPromises.push(searchCrossPlatformMappings(query, limit));
+  }
+
+  // Process searches as they complete to enable true streaming
+  let completedCount = 0;
+  const totalSearches = searchPromises.length;
+
+  const handleSearchResult = async (searchPromise, index) => {
+    try {
+      const { source, results, error } = await searchPromise;
+      completedSources.push(source);
+      completedCount++;
+
+      if (error) {
+        sendSSE(res, {
+          type: 'error',
+          source,
+          error,
+          completedSources: [...completedSources]
+        }, 'error');
+        return;
+      }
+
+      // For personal pins, send immediately
+      if (source === 'pins') {
+        allResults.push(...results);
+        sendSSE(res, {
+          type: 'partial',
+          source,
+          results,
+          meta: {
+            totalResults: results.length,
+            searchTerm: query,
+            completedSources: [...completedSources]
+          }
+        });
+      }
+      // For Twitter results, merge with pins data and send
+      else if (source === 'twitter') {
+        // Update pin status for Twitter results
+        const pinsData = allResults.filter(r => r.isPinned);
+        const updatedResults = results.map(twitterUser => {
+          const matchingPin = pinsData.find(pin => 
+            pin.platform === 'twitter' && 
+            pin.username.toLowerCase() === twitterUser.username.toLowerCase()
+          );
+          
+          if (matchingPin) {
+            return {
+              ...twitterUser,
+              isPinned: true,
+              pinId: matchingPin.pinId,
+              lastUsed: matchingPin.lastUsed
+            };
+          }
+          return twitterUser;
+        });
+
+        // Add to allResults (avoiding duplicates)
+        updatedResults.forEach(result => {
+          const existingIndex = allResults.findIndex(r => 
+            r.platform === result.platform && 
+            r.username.toLowerCase() === result.username.toLowerCase()
+          );
+          if (existingIndex >= 0) {
+            allResults[existingIndex] = result; // Update with Twitter data
+          } else {
+            allResults.push(result);
+          }
+        });
+
+        sendSSE(res, {
+          type: 'partial',
+          source,
+          results: updatedResults,
+          meta: {
+            totalResults: updatedResults.length,
+            searchTerm: query,
+            completedSources: [...completedSources]
+          }
+        });
+      }
+      // For mappings, just send the data
+      else if (source === 'mappings') {
+        sendSSE(res, {
+          type: 'partial',
+          source,
+          results,
+          meta: {
+            totalResults: results.length,
+            searchTerm: query,
+            completedSources: [...completedSources]
+          }
+        });
+      }
+
+      // Check if all searches are complete
+      if (completedCount === totalSearches) {
+        // Send completion event
+        sendSSE(res, {
+          type: 'complete',
+          totalResults: allResults.length,
+          platforms,
+          searchTerm: query,
+          includePersonalPins,
+          includeCrossPlatformMappings,
+          completedSources
+        }, 'complete');
+
+        res.end();
+      }
+    } catch (error) {
+      completedCount++;
+      sendSSE(res, {
+        type: 'error',
+        source: 'unknown',
+        error: error?.message || 'Unknown search error',
+        completedSources: [...completedSources]
+      }, 'error');
+
+      // Check if all searches are complete (even with errors)
+      if (completedCount === totalSearches) {
+        sendSSE(res, {
+          type: 'complete',
+          totalResults: allResults.length,
+          platforms,
+          searchTerm: query,
+          includePersonalPins,
+          includeCrossPlatformMappings,
+          completedSources
+        }, 'complete');
+
+        res.end();
+      }
+    }
+  };
+
+  // Handle client disconnection
+  req.on('close', () => {
+    console.log('Client disconnected from streaming search');
+  });
+
+  // Set a timeout to ensure the connection closes
+  const timeout = setTimeout(() => {
+    if (!res.finished) {
+      sendSSE(res, {
+        type: 'timeout',
+        message: 'Search timed out after 30 seconds',
+        completedSources
+      }, 'error');
+      res.end();
+    }
+  }, 30000);
+
+  // Clear timeout when response ends
+  res.on('finish', () => {
+    clearTimeout(timeout);
+  });
+
+  // Start all searches and handle them as they complete
+  searchPromises.forEach((promise, index) => {
+    handleSearchResult(promise, index);
+  });
+});
+
 // POST /api/mentions/search
 router.post('/search', authenticateToken, async (req, res) => {
   const {
