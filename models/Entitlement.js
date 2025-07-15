@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require('mongoose');//
 
 const entitlementSchema = new mongoose.Schema({
   // Unique identifier for the entitlement holder (IP address, JWT user ID, etc.)
