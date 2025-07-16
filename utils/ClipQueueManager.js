@@ -3,6 +3,7 @@ const { EventEmitter } = require('events');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const QueueJob = require('../models/QueueJob');
 const { v4: uuidv4 } = require('uuid');
+const { DEBUG_MODE, printLog } = require('../constants');
 
 class ClipQueueManager extends EventEmitter {
     constructor(options = {}, clipUtils, subtitleGenerator = null) {
@@ -23,9 +24,14 @@ class ClipQueueManager extends EventEmitter {
         console.log(`[INFO] ClipQueueManager initialized with instanceId: ${this.instanceId}`);
         
         // Start background processes
-        this.startHeartbeat();
-        this.startJobPoller();
-        this.reclaimOrphanedJobs();
+        if(!DEBUG_MODE) {
+            this.startHeartbeat();
+            this.startJobPoller();
+            this.reclaimOrphanedJobs();
+        }
+        else{
+            printLog(`[INFO] DEBUG_MODE is enabled, skipping heartbeat and job poller`);
+        }
     }
 
     // ✅ GUARANTEED TRANSFER: Add job to persistent database queue
