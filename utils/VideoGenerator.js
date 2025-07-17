@@ -342,10 +342,10 @@ rgbToHsl(r, g, b) {
     const profileImageY = height / 4 - profileImageSize / 2;
 
     // Watermark settings
-    const watermarkWidth = 160;
+    const watermarkWidth = 240;
     const watermarkHeight = Math.ceil((watermarkImage.height / watermarkImage.width) * watermarkWidth);
-    const watermarkX = width - watermarkWidth - 10;
-    const watermarkY = 10;
+    const watermarkX = width - watermarkWidth - 2;
+    const watermarkY = 14;
 
     // Attempt to draw precomputed profile image buffer
     if (this.staticElements.profileImageBuffer) {
