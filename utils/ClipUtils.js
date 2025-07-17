@@ -148,7 +148,7 @@ class ClipUtils {
         console.log('Downloading profile image...');
         profileImagePath = await this.downloadImage(clipData.episodeImage);
         
-        const watermarkPath = path.join(__dirname, '../assets/watermark8.png');
+        const watermarkPath = path.join(__dirname, '../assets/watermark11.png');
         if (!fs.existsSync(watermarkPath)) {
             throw new Error('Watermark file not found at: ' + watermarkPath);
         }
