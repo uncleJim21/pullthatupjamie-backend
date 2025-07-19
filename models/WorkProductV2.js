@@ -21,6 +21,12 @@ const WorkProductV2Schema = new mongoose.Schema({
     type: String,
     required: false, // ✅ Filled when processing completes
   },
+  status: {
+    type: String,
+    enum: ['queued', 'processing', 'completed', 'failed'],
+    default: 'queued',
+    required: false,
+  },
 });
 
 /**
