@@ -55,8 +55,17 @@ async function checkClipShareability(recommendation) {
             };
         }
         
+        // Debug logging to help identify the issue
+        console.log(`[DEBUG] Found existing clip for lookupHash ${lookupHash}:`, {
+            cdnFileId: existingClip.cdnFileId,
+            status: existingClip.status,
+            type: existingClip.type,
+            hasResult: !!existingClip.result
+        });
+        
         // Same completion check as /api/make-clip
-        if (existingClip.cdnFileId) {
+        if (existingClip.cdnFileId && existingClip.cdnFileId.trim() !== '') {
+            console.log(`[DEBUG] Clip ${lookupHash} is shareable - has cdnFileId: ${existingClip.cdnFileId}`);
             return {
                 shareable: true,
                 reason: 'ready',
@@ -77,7 +86,19 @@ async function checkClipShareability(recommendation) {
             };
         }
         
+        // Additional check for explicit processing status
+        if (existingClip.status === 'processing' || existingClip.status === 'queued') {
+            return {
+                shareable: false,
+                reason: 'processing',
+                lookupHash,
+                clipId,
+                cdnUrl: null
+            };
+        }
+        
         // Still processing
+        console.log(`[DEBUG] Clip ${lookupHash} is still processing - no cdnFileId and status is not failed`);
         return {
             shareable: false,
             reason: 'processing',
