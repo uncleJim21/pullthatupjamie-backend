@@ -20,7 +20,8 @@ async function testIngestorCall() {
   // Test feed data - TFTC: A Bitcoin Podcast
   const testFeed = {
     feedId: 226249,
-    feedUrl: 'https://feeds.fountain.fm/ZwwaDULvAj0yZvJ5kdB9'
+    feedUrl: 'https://feeds.fountain.fm/ZwwaDULvAj0yZvJ5kdB9',
+    alwaysOverride: true
   };
 
   const jobId = `test-job-${Date.now()}`;
@@ -40,8 +41,7 @@ async function testIngestorCall() {
       data: {
         jobId,
         jobConfig: {
-          feeds: [testFeed],
-          overrideExistence: true // Force set to true as requested
+          feeds: [testFeed]
         }
       },
       timeout: 30000 // 30 second timeout
