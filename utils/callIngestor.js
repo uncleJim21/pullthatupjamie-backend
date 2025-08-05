@@ -40,7 +40,8 @@ async function callIngestor(jobId = `job-${Date.now()}`, feeds = null) {
       data: {
         jobId,
         jobConfig: {
-          feeds: feedsToProcess
+          feeds: feedsToProcess,
+          overrideExistence: process.env.OVERRIDE_EXISTENCE === 'true'
         }
       },
       timeout: 30000 // 30 second timeout
