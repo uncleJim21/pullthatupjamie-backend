@@ -119,7 +119,7 @@ app.use(session({
 
 // Environment variables with defaults
 const PORT = process.env.PORT || 4131;
-const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-3.5-turbo';
+const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-4o-mini';
 
 const validateSpacesConfig = () => {
   const required = [
@@ -328,6 +328,23 @@ const verifyPodcastAdminMiddleware = async (req, res, next) => {
 
 // Model configurations
 const MODEL_CONFIGS = {
+    'gpt-4o-mini': {
+      apiUrl: 'https://api.openai.com/v1/chat/completions',
+      headers: (apiKey) => ({
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      }),
+      formatData: (messages) => ({
+        model: 'gpt-4o-mini',
+        messages,
+        stream: true,
+        temperature: 0.0
+      }),
+      parseContent: (parsed) => ({
+        content: parsed.choices[0].delta.content,
+        done: false
+      })
+    },
     'gpt-3.5-turbo': {
       apiUrl: 'https://api.openai.com/v1/chat/completions',
       headers: (apiKey) => ({
@@ -2227,7 +2244,7 @@ Write only the social media post text, without any explanations or quotation mar
 
     // Call OpenAI with streaming
     const stream = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
       stream: true,
       temperature: 0.7,
