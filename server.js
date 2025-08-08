@@ -40,6 +40,8 @@ const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Co
 const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
+const socialPostRoutes = require('./routes/socialPostRoutes');
+const nostrRoutes = require('./routes/nostrRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
@@ -1645,6 +1647,8 @@ app.use('/api/user-prefs', userPreferencesRoutes);
 app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
+app.use('/api/social', socialPostRoutes);
+app.use('/api/nostr', nostrRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
