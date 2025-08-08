@@ -18,11 +18,14 @@ router.post('/posts', validatePrivs, async (req, res) => {
             timezone = 'America/Chicago'
         } = req.body;
 
-        // Validation
-        if (!text || text.trim().length === 0) {
+        // Validation - require either text OR media
+        const hasText = text && text.trim().length > 0;
+        const hasMedia = mediaUrl && mediaUrl.trim().length > 0;
+        
+        if (!hasText && !hasMedia) {
             return res.status(400).json({
-                error: 'Missing text',
-                message: 'Post text is required'
+                error: 'Missing content',
+                message: 'Either text or media URL is required'
             });
         }
 

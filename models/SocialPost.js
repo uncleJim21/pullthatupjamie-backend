@@ -33,7 +33,7 @@ const SocialPostSchema = new mongoose.Schema({
   content: {
     text: {
       type: String,
-      required: true,
+      required: false,
       maxlength: 2000 // Allow for longer Nostr posts
     },
     mediaUrl: {
