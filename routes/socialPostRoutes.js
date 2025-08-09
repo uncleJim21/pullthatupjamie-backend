@@ -236,21 +236,32 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
             });
         }
 
-        // Update fields if provided
+        // Prepare updates and validate content
         const updates = {};
         
+        // Determine final content state after updates
+        let finalText = post.content.text; // Start with existing values
+        let finalMediaUrl = post.content.mediaUrl;
+        
         if (text !== undefined) {
-            if (text.trim().length === 0) {
-                return res.status(400).json({
-                    error: 'Invalid text',
-                    message: 'Post text cannot be empty'
-                });
-            }
-            updates['content.text'] = text.trim();
+            finalText = text ? text.trim() : ''; // Allow empty string, validation happens later
+            updates['content.text'] = finalText;
         }
 
         if (mediaUrl !== undefined) {
-            updates['content.mediaUrl'] = mediaUrl || null;
+            finalMediaUrl = mediaUrl && mediaUrl.trim().length > 0 ? mediaUrl.trim() : null;
+            updates['content.mediaUrl'] = finalMediaUrl;
+        }
+
+        // Validation - require either text OR media in final state
+        const hasText = finalText && finalText.length > 0;
+        const hasMedia = finalMediaUrl && finalMediaUrl.length > 0;
+        
+        if (!hasText && !hasMedia) {
+            return res.status(400).json({
+                error: 'Missing content',
+                message: 'Either text or media URL is required'
+            });
         }
 
         if (scheduledFor !== undefined) {
