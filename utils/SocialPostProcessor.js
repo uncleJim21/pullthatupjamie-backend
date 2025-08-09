@@ -1,16 +1,17 @@
 const SocialPost = require('../models/SocialPost');
-const SocialPostPublisher = require('./SocialPostPublisher');
-const QueueJob = require('../models/QueueJob');
+const TwitterService = require('./TwitterService');
+const NostrService = require('./NostrService');
 
 /**
  * Social Post Processor - handles scheduled post processing
- * Integrates with existing QueueJob system for scalability
+ * Uses TwitterService and NostrService for actual posting
  */
 class SocialPostProcessor {
     constructor() {
         this.isProcessing = false;
         this.processingInterval = 60000; // Check every minute
-        this.publisher = new SocialPostPublisher();
+        this.twitterService = new TwitterService();
+        this.nostrService = new NostrService();
     }
 
     /**
@@ -50,7 +51,7 @@ class SocialPostProcessor {
                 console.log(`📋 Found ${duePosts.length} due posts to process`);
                 
                 for (const post of duePosts) {
-                    await this.queuePostForProcessing(post);
+                    await this.processPost(post);
                 }
             }
 
@@ -65,12 +66,9 @@ class SocialPostProcessor {
                 console.log(`🔄 Found ${retryPosts.length} posts to retry`);
                 
                 for (const post of retryPosts) {
-                    await this.queuePostForProcessing(post);
+                    await this.processPost(post);
                 }
             }
-
-            // Process queued social post jobs
-            await this.processQueuedJobs();
 
         } catch (error) {
             console.error('❌ Error in processScheduledPosts:', error);
@@ -80,138 +78,98 @@ class SocialPostProcessor {
     }
 
     /**
-     * Queue a post for processing using existing QueueJob system
+     * Process individual social post directly using services
      */
-    async queuePostForProcessing(post) {
+    async processPost(post) {
         try {
-            console.log(`📤 Queueing post ${post.postId} for ${post.platform}`);
+            console.log(`🔄 Processing post ${post._id} for ${post.platform}`);
 
-            // Check if already queued
-            const existingJob = await QueueJob.findOne({
-                lookupHash: post.postId,
-                status: { $in: ['queued', 'processing'] }
-            });
-
-            if (existingJob) {
-                console.log(`⏭️  Post ${post.postId} already queued, skipping`);
-                return;
-            }
-
-            // Create queue job (integrating with existing system)
-            const queueJob = new QueueJob({
-                lookupHash: post.postId,
-                status: 'queued',
-                priority: 0,
-                
-                // Store social post data in the existing clipData field
-                clipData: {
-                    type: 'social-post',
-                    postId: post.postId,
-                    platform: post.platform,
-                    adminEmail: post.adminEmail,
-                    content: post.content,
-                    platformData: post.platformData,
-                    attemptCount: post.attemptCount
-                }
-            });
-
-            await queueJob.save();
-            console.log(`✅ Post ${post.postId} queued successfully`);
-
-        } catch (error) {
-            console.error(`❌ Error queueing post ${post.postId}:`, error);
-            
-            // Mark post as failed if we can't queue it
+            // Mark as processing
             await SocialPost.findByIdAndUpdate(post._id, {
-                status: 'failed',
-                error: `Failed to queue: ${error.message}`,
-                failedAt: new Date()
-            });
-        }
-    }
-
-    /**
-     * Process queued social post jobs
-     */
-    async processQueuedJobs() {
-        try {
-            // Find queued social post jobs
-            const queuedJobs = await QueueJob.find({
-                status: 'queued',
-                'clipData.type': 'social-post'
-            }).sort({ priority: -1, queuedAt: 1 }).limit(3); // Process up to 3 at a time
-
-            for (const job of queuedJobs) {
-                await this.processQueueJob(job);
-            }
-
-        } catch (error) {
-            console.error('❌ Error processing queued social post jobs:', error);
-        }
-    }
-
-    /**
-     * Process individual queue job
-     */
-    async processQueueJob(queueJob) {
-        try {
-            const { postId } = queueJob.clipData;
-            console.log(`🔄 Processing queued job for post ${postId}`);
-
-            // Update job status to processing
-            await QueueJob.findByIdAndUpdate(queueJob._id, {
                 status: 'processing',
-                startedAt: new Date(),
-                instanceId: process.env.INSTANCE_ID || 'main',
-                heartbeatAt: new Date()
+                processedAt: new Date(),
+                $inc: { attemptCount: 1 }
             });
 
-            // Get the current post data
-            const post = await SocialPost.findOne({ postId });
-            if (!post) {
-                throw new Error(`Post ${postId} not found`);
-            }
-
-            // Skip if already posted or cancelled
-            if (post.status === 'posted' || post.status === 'cancelled') {
-                console.log(`⏭️  Post ${postId} already ${post.status}, skipping`);
-                await QueueJob.findByIdAndUpdate(queueJob._id, {
-                    status: 'completed',
-                    completedAt: new Date()
+            let result;
+            
+            if (post.platform === 'twitter') {
+                // Use TwitterService
+                result = await this.twitterService.postTweet(post.adminEmail, {
+                    text: post.content.text,
+                    mediaUrl: post.content.mediaUrl
                 });
-                return;
+                
+                // Update post with Twitter-specific data
+                await SocialPost.findByIdAndUpdate(post._id, {
+                    status: 'posted',
+                    postedAt: new Date(),
+                    'platformData.twitterPostId': result.tweet.id,
+                    'platformData.twitterPostUrl': `https://twitter.com/i/web/status/${result.tweet.id}`
+                });
+                
+            } else if (post.platform === 'nostr') {
+                // Check if we have the required Nostr data
+                if (!post.platformData?.nostrEventId || !post.platformData?.nostrSignature || !post.platformData?.nostrPubkey) {
+                    throw new Error('Missing required Nostr data: eventId, signature, or pubkey');
+                }
+
+                // Create the signed event object
+                const signedEvent = {
+                    id: post.platformData.nostrEventId,
+                    pubkey: post.platformData.nostrPubkey,
+                    created_at: Math.floor(Date.now() / 1000),
+                    kind: 1,
+                    tags: [],
+                    content: post.content.text,
+                    sig: post.platformData.nostrSignature
+                };
+
+                // Use NostrService to post
+                const relays = post.platformData.nostrRelays || this.nostrService.DEFAULT_RELAYS;
+                result = await this.nostrService.postToNostr({ signedEvent, relays });
+                
+                // Check if Nostr posting was actually successful
+                if (!result.success) {
+                    throw new Error(`Nostr posting failed: ${result.message}. Failed relays: ${result.failedRelays.map(r => `${r.relay} (${r.error})`).join(', ')}`);
+                }
+                
+                // Update post with Nostr-specific data
+                await SocialPost.findByIdAndUpdate(post._id, {
+                    status: 'posted',
+                    postedAt: new Date(),
+                    'platformData.nostrEventId': result.eventId,
+                    'platformData.nostrPostUrl': result.primalUrl
+                });
+                
+            } else {
+                throw new Error(`Unsupported platform: ${post.platform}`);
             }
 
-            // Publish the post
-            await this.publisher.publishPost(post);
-
-            // Mark job as completed
-            await QueueJob.findByIdAndUpdate(queueJob._id, {
-                status: 'completed',
-                completedAt: new Date()
-            });
-
-            console.log(`✅ Successfully processed post ${postId}`);
+            console.log(`✅ Successfully posted to ${post.platform}: ${post._id}`);
 
         } catch (error) {
-            console.error(`❌ Error processing queue job ${queueJob._id}:`, error);
+            console.error(`❌ Error processing post ${post._id}:`, error);
 
-            // Update job with error
-            await QueueJob.findByIdAndUpdate(queueJob._id, {
+            // Calculate next retry time (exponential backoff)
+            const nextRetryAt = new Date(Date.now() + Math.pow(2, post.attemptCount) * 60000); // 1min, 2min, 4min...
+
+            // Update post status
+            const updates = {
                 status: 'failed',
-                failedAt: new Date(),
-                lastError: error.message,
-                $push: {
-                    errorHistory: {
-                        attempt: queueJob.attempts + 1,
-                        error: error.message,
-                        timestamp: new Date()
-                    }
-                },
-                $inc: { attempts: 1 }
-            });
+                error: error.message,
+                failedAt: new Date()
+            };
 
-            // The SocialPost status will be updated by the publisher
+            // Only set retry time if under max attempts
+            if (post.attemptCount < post.maxAttempts) {
+                updates.nextRetryAt = nextRetryAt;
+                console.log(`📅 Will retry post ${post._id} at ${nextRetryAt.toISOString()}`);
+            } else {
+                console.log(`❌ Post ${post._id} exceeded max attempts (${post.maxAttempts}), giving up`);
+            }
+
+            await SocialPost.findByIdAndUpdate(post._id, updates);
         }
     }
 
@@ -253,21 +211,8 @@ class SocialPostProcessor {
                 }
             ]);
 
-            const queueStats = await QueueJob.aggregate([
-                {
-                    $match: { 'clipData.type': 'social-post' }
-                },
-                {
-                    $group: {
-                        _id: '$status',
-                        count: { $sum: 1 }
-                    }
-                }
-            ]);
-
             return {
                 posts: stats,
-                queue: queueStats,
                 lastCheck: new Date()
             };
 

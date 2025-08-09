@@ -1768,6 +1768,12 @@ app.listen(PORT, async () => {
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
     
+    // Start Social Post Processor
+    const SocialPostProcessor = require('./utils/SocialPostProcessor');
+    const socialProcessor = new SocialPostProcessor();
+    socialProcessor.start();
+    console.log('Social post processor started successfully');
+    
     // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
     if (SCHEDULER_ENABLED) {
       console.log('Setting up scheduled tasks...');

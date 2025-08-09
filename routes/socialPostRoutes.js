@@ -58,6 +58,25 @@ router.post('/posts', validatePrivs, async (req, res) => {
         const scheduledDate = new Date(scheduledFor);
 
         for (const platform of platforms) {
+            // Build platform-specific data
+            const platformData = {};
+            
+            if (platform === 'nostr' && req.body.platformData?.nostrEventId) {
+                // Handle Nostr-specific data
+                platformData.nostrEventId = req.body.platformData.nostrEventId;
+                platformData.nostrSignature = req.body.platformData.nostrSignature;
+                platformData.nostrPubkey = req.body.platformData.nostrPubkey;
+                platformData.nostrRelays = req.body.platformData.nostrRelays || [];
+            } else if (platform === 'twitter' && req.body.platformData?.twitterTokens) {
+                // Handle Twitter-specific data if needed
+                platformData.twitterTokens = req.body.platformData.twitterTokens;
+            }
+            
+            // Add any other platform-specific data
+            if (req.body.platformData) {
+                Object.assign(platformData, req.body.platformData);
+            }
+
             const socialPost = new SocialPost({
                 adminEmail: req.user.adminEmail,
                 platform,
@@ -66,7 +85,8 @@ router.post('/posts', validatePrivs, async (req, res) => {
                 content: {
                     text: text.trim(),
                     mediaUrl: mediaUrl || null
-                }
+                },
+                platformData
             });
 
             await socialPost.save();

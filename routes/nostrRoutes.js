@@ -250,85 +250,13 @@ router.post('/post', validatePrivs, async (req, res) => {
             });
         }
 
-        // Validate signed event structure
-        const requiredFields = ['id', 'pubkey', 'created_at', 'kind', 'content', 'sig'];
-        const missingFields = requiredFields.filter(field => !signedEvent[field]);
+        // Use the new NostrService
+        const NostrService = require('../utils/NostrService');
+        const nostrService = new NostrService();
         
-        if (missingFields.length > 0) {
-            return res.status(400).json({
-                error: 'Invalid signedEvent',
-                message: `Missing required fields: ${missingFields.join(', ')}`
-            });
-        }
-
-        if (!Array.isArray(signedEvent.tags)) {
-            return res.status(400).json({
-                error: 'Invalid signedEvent',
-                message: 'Event tags must be an array'
-            });
-        }
-
-        console.log('Publishing Nostr event:', {
-            id: signedEvent.id,
-            pubkey: signedEvent.pubkey.substring(0, 16) + '...',
-            contentLength: signedEvent.content.length,
-            relayCount: relays.length
-        });
-
-        // Publish to all relays in parallel
-        const publishPromises = relays.map(relay => 
-            publishEventToRelay(relay, signedEvent, 10000)
-        );
-
-        const results = await Promise.allSettled(publishPromises);
+        const result = await nostrService.postToNostr({ signedEvent, relays });
         
-        // Process results
-        const relayResults = results.map((result, index) => {
-            if (result.status === 'fulfilled') {
-                return result.value;
-            } else {
-                return {
-                    success: false,
-                    error: result.reason?.message || 'Unknown error',
-                    relay: relays[index]
-                };
-            }
-        });
-
-        const successCount = relayResults.filter(r => r.success).length;
-        const successfulRelays = relayResults.filter(r => r.success).map(r => r.relay);
-        const failedRelays = relayResults.filter(r => !r.success);
-
-        console.log(`Published to ${successCount}/${relays.length} relays`);
-
-        // Consider it successful if at least one relay accepted it
-        const overallSuccess = successCount > 0;
-
-        // Create Primal.net URL using bech32 encoding
-        let primalUrl = null;
-        if (overallSuccess) {
-            const bech32EventId = encodeBech32('nevent', signedEvent.id);
-            if (bech32EventId) {
-                primalUrl = `https://primal.net/e/${bech32EventId}`;
-            }
-        }
-
-        res.json({
-            success: overallSuccess,
-            message: overallSuccess 
-                ? `Nostr event published to ${successCount}/${relays.length} relays`
-                : 'Failed to publish to any relays',
-            eventId: signedEvent.id,
-            publishedRelays: successfulRelays,
-            failedRelays: failedRelays.map(r => ({ relay: r.relay, error: r.error })),
-            primalUrl,
-            stats: {
-                total: relays.length,
-                successful: successCount,
-                failed: relays.length - successCount
-            },
-            timestamp: new Date().toISOString()
-        });
+        res.json(result);
 
     } catch (error) {
         console.error('Error posting to Nostr:', error);
