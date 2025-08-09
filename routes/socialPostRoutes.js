@@ -181,7 +181,7 @@ router.get('/posts/:postId', validatePrivs, async (req, res) => {
         const { postId } = req.params;
 
         const post = await SocialPost.findOne({
-            postId,
+            _id: postId,
             adminEmail: req.user.adminEmail
         });
 
@@ -217,7 +217,7 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
 
         // Find the post
         const post = await SocialPost.findOne({
-            postId,
+            _id: postId,
             adminEmail: req.user.adminEmail
         });
 
@@ -292,7 +292,7 @@ router.delete('/posts/:postId', validatePrivs, async (req, res) => {
         const { postId } = req.params;
 
         const post = await SocialPost.findOne({
-            postId,
+            _id: postId,
             adminEmail: req.user.adminEmail
         });
 
@@ -349,7 +349,7 @@ router.post('/posts/:postId/retry', validatePrivs, async (req, res) => {
         const { postId } = req.params;
 
         const post = await SocialPost.findOne({
-            postId,
+            _id: postId,
             adminEmail: req.user.adminEmail
         });
 
