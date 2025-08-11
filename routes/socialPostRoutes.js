@@ -58,24 +58,14 @@ router.post('/posts', validatePrivs, async (req, res) => {
         const scheduledDate = new Date(scheduledFor);
 
         for (const platform of platforms) {
-            // Build platform-specific data
-            const platformData = {};
+            // For Nostr, use the entire platformData object as-is
+            const platformData = platform === 'nostr' ? 
+                { ...req.body.platformData } : // Use spread to create a new object
+                {}; // Empty object for other platforms
             
-            if (platform === 'nostr' && req.body.platformData?.nostrEventId) {
-                // Handle Nostr-specific data
-                platformData.nostrEventId = req.body.platformData.nostrEventId;
-                platformData.nostrSignature = req.body.platformData.nostrSignature;
-                platformData.nostrPubkey = req.body.platformData.nostrPubkey;
-                platformData.nostrCreatedAt = req.body.platformData.nostrCreatedAt; // Store original timestamp
-                platformData.nostrRelays = req.body.platformData.nostrRelays || [];
-            } else if (platform === 'twitter' && req.body.platformData?.twitterTokens) {
-                // Handle Twitter-specific data if needed
+            // Add Twitter-specific data if needed
+            if (platform === 'twitter' && req.body.platformData?.twitterTokens) {
                 platformData.twitterTokens = req.body.platformData.twitterTokens;
-            }
-            
-            // Add any other platform-specific data
-            if (req.body.platformData) {
-                Object.assign(platformData, req.body.platformData);
             }
 
             const socialPost = new SocialPost({
@@ -97,13 +87,14 @@ router.post('/posts', validatePrivs, async (req, res) => {
         res.json({
             success: true,
             message: `Created ${createdPosts.length} scheduled post(s)`,
-            posts: createdPosts.map(post => ({
-                _id: post._id,
-                platform: post.platform,
-                scheduledFor: post.scheduledFor,
-                status: post.status,
-                content: post.content
-            }))
+                            posts: createdPosts.map(post => ({
+                    _id: post._id,
+                    platform: post.platform,
+                    scheduledFor: post.scheduledFor,
+                    status: post.status,
+                    content: post.content,
+                    platformData: post.platformData
+                }))
         });
 
     } catch (error) {

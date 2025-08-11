@@ -141,7 +141,7 @@ class SocialPostProcessor {
                     status: 'posted',
                     postedAt: new Date(),
                     'platformData.nostrEventId': result.eventId,
-                    'platformData.nostrPostUrl': result.primalUrl
+                    'platformData.nostrPostUrl': post.platformData.nostrPostUrl // Keep the frontend-provided URL
                 });
                 
             } else {

@@ -53,7 +53,8 @@ const SocialPostSchema = new mongoose.Schema({
     nostrSignature: { type: String, required: false },
     nostrPubkey: { type: String, required: false },
     nostrCreatedAt: { type: Number, required: false }, // Unix timestamp used for signing
-    nostrRelays: [{ type: String }]
+    nostrRelays: [{ type: String }],
+    nostrPostUrl: { type: String, required: false } // URL for viewing on Primal
   },
   
   // Status tracking
