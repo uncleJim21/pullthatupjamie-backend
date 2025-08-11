@@ -2226,6 +2226,8 @@ You are a social media expert who creates engaging promotional posts for podcast
 Here's information about the clip:
 - Podcast: ${context.feedTitle}
 - Episode: ${context.episodeTitle}
+- Episode Description: ${context.episodeDescription}
+- Feed Description: ${context.feedDescription}
 - Clip Text: "${context.clipText}"
 ${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
 ${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
@@ -2234,7 +2236,7 @@ ${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: $
 
 Create a compelling promotional tweet that:
 1. no hash tags. no hash tags. no hash tags no hash tags. do not give me a hash tag. if you do I will be very upset. Do not even think about it.
-2. Primarily focuses on the clip content itself
+2. Primarily focuses on the clip text component itself
 3. Captures the essence of what makes this clip interesting
 4. Is shareable and attention-grabbing
 5. Includes relevant context about the podcast/episode when helpful
