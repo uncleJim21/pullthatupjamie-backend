@@ -129,24 +129,41 @@ function formatDuration(seconds) {
 }
 
 // Function to fetch episodes from RSS feed
-async function fetchPodcastEpisodes(feedUrl, limit = 35) {
+async function fetchPodcastEpisodes(feedUrl, feedId, limit = 35) {
   try {
     const response = await axios.post('https://rss-extractor-app-yufbq.ondigitalocean.app/getFeed', {
       feedUrl,
-      feedId: 7181269,
+      feedId: feedId, // Use the actual feedId parameter instead of hardcoded value
       limit
     }, {
       headers: {
         'accept': 'application/json',
         'content-type': 'application/json',
         'authorization': 'Bearer: no-token'
-      }
+      },
+      timeout: 10000 // Add timeout to prevent hanging requests
     });
 
     return response.data;
   } catch (error) {
     console.error('Error fetching podcast feed:', error);
-    throw error;
+    
+    // Handle specific error from RSS extractor service
+    if (error.response?.status === 500 && error.response?.data?.message === 'invalid code lengths set') {
+      throw new Error('RSS feed parsing failed - feed may be corrupted or unsupported');
+    }
+    
+    // Handle other HTTP errors
+    if (error.response) {
+      throw new Error(`RSS service error: ${error.response.status} - ${error.response.data?.message || 'Unknown error'}`);
+    }
+    
+    // Handle network/timeout errors
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      throw new Error('RSS service timeout - please try again later');
+    }
+    
+    throw new Error(`Failed to fetch podcast episodes: ${error.message}`);
   }
 }
 
@@ -161,27 +178,38 @@ async function getPodcastFeed(feedId) {
       // console.log(`feedData:${JSON.stringify(feedData,null,2)}`)
       // return {}
   
-      const feedResponse = await fetchPodcastEpisodes(feedData.feedUrl);
-      
-      if (!feedResponse?.episodes?.episodes || !Array.isArray(feedResponse.episodes.episodes)) {
-        throw new Error('Invalid feed data structure');
-      }
+      try {
+        const feedResponse = await fetchPodcastEpisodes(feedData.feedUrl, feedId);
+        
+        if (!feedResponse?.episodes?.episodes || !Array.isArray(feedResponse.episodes.episodes)) {
+          throw new Error('Invalid feed data structure');
+        }
 
-  
-      return {
-        ...feedData,
-        episodes: feedResponse.episodes.episodes.map(episode => ({
-          id: episode.itemUUID || `episode-${Date.now()}`,
-          title: episode.itemTitle || 'Untitled Episode',
-          date: episode.publishedDate ? new Date(episode.publishedDate * 1000).toLocaleDateString() : 'No date',
-          duration: episode.length ? formatDuration(episode.length) : '00:00',
-          audioUrl: episode.itemUrl || '',
-          description: episode.description ? sanitizeDescription(episode.description) : '',
-          episodeNumber: episode.episodeNumber || '',
-          episodeImage: episode.episodeImage || feedData.logoUrl,
-          listenLink: feedData.listenLink
-        }))
-      };
+        return {
+          ...feedData,
+          episodes: feedResponse.episodes.episodes.map(episode => ({
+            id: episode.itemUUID || `episode-${Date.now()}`,
+            title: episode.itemTitle || 'Untitled Episode',
+            date: episode.publishedDate ? new Date(episode.publishedDate * 1000).toLocaleDateString() : 'No date',
+            duration: episode.length ? formatDuration(episode.length) : '00:00',
+            audioUrl: episode.itemUrl || '',
+            description: episode.description ? sanitizeDescription(episode.description) : '',
+            episodeNumber: episode.episodeNumber || '',
+            episodeImage: episode.episodeImage || feedData.logoUrl,
+            listenLink: feedData.listenLink
+          }))
+        };
+      } catch (rssError) {
+        console.error('RSS service failed, returning basic feed data:', rssError.message);
+        
+        // Return basic feed data without episodes as fallback
+        return {
+          ...feedData,
+          episodes: [],
+          error: 'Episode data temporarily unavailable',
+          errorDetails: rssError.message
+        };
+      }
     } catch (error) {
       console.error('Error in getPodcastFeed:', error);
       throw error;

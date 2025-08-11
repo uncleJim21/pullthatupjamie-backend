@@ -40,6 +40,8 @@ const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Co
 const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
+const socialPostRoutes = require('./routes/socialPostRoutes');
+const nostrRoutes = require('./routes/nostrRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
@@ -1662,6 +1664,8 @@ app.use('/api/user-prefs', userPreferencesRoutes);
 app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
+app.use('/api/social', socialPostRoutes);
+app.use('/api/nostr', nostrRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
@@ -1763,6 +1767,12 @@ app.listen(PORT, async () => {
     await initializeJamieUserDB();
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
+    
+    // Start Social Post Processor
+    const SocialPostProcessor = require('./utils/SocialPostProcessor');
+    const socialProcessor = new SocialPostProcessor();
+    socialProcessor.start();
+    console.log('Social post processor started successfully');
     
     // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
     if (SCHEDULER_ENABLED) {
@@ -2216,6 +2226,8 @@ You are a social media expert who creates engaging promotional posts for podcast
 Here's information about the clip:
 - Podcast: ${context.feedTitle}
 - Episode: ${context.episodeTitle}
+- Episode Description: ${context.episodeDescription}
+- Feed Description: ${context.feedDescription}
 - Clip Text: "${context.clipText}"
 ${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
 ${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
@@ -2224,7 +2236,7 @@ ${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: $
 
 Create a compelling promotional tweet that:
 1. no hash tags. no hash tags. no hash tags no hash tags. do not give me a hash tag. if you do I will be very upset. Do not even think about it.
-2. Primarily focuses on the clip content itself
+2. Primarily focuses on the clip text component itself
 3. Captures the essence of what makes this clip interesting
 4. Is shareable and attention-grabbing
 5. Includes relevant context about the podcast/episode when helpful

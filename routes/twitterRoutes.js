@@ -1073,111 +1073,13 @@ router.post('/tweet', validatePrivs, async (req, res) => {
             });
         }
 
-        // Use retry wrapper for the entire tweet operation
-        const result = await executeWithTokenRefresh(req.user.adminEmail, async (newAccessToken) => {
-            console.log('🎯 TOKEN SELECTION:', {
-                hasNewAccessToken: !!newAccessToken,
-                usingNewToken: !!newAccessToken
-            });
-
-            // Prioritize the refreshed token from volatile memory to avoid race conditions
-            let accessToken = newAccessToken;
-            let tokens = null;
-
-            if (!accessToken) {
-                // Only query database if we don't have a fresh token from refresh
-                tokens = await getTwitterTokens(req.user.adminEmail);
-                if (!tokens?.oauthToken) {
-                    const error = new Error('No authentication tokens found. Please connect your Twitter account first.');
-                    error.code = 'TWITTER_NOT_CONNECTED';
-                    error.requiresReauth = true;
-                    throw error;
-                }
-                accessToken = tokens.oauthToken;
-            } else {
-                // We have a fresh token, but still need other token data for media uploads
-                tokens = await getTwitterTokens(req.user.adminEmail);
-            }
-
-            console.log('Using token source:', newAccessToken ? 'refreshed' : 'stored');
-
-            if (!accessToken) {
-                const error = new Error('No valid access token available. Please re-authenticate.');
-                error.code = 'TWITTER_AUTH_EXPIRED';
-                error.requiresReauth = true;
-                throw error;
-            }
-
-            const client = new TwitterApi(accessToken);
-
-            // Test token validity
-            console.log('Testing token validity...');
-            const testUser = await client.v2.me();
-            console.log('Token is valid for user:', testUser.data.username);
-
-            let mediaIds = [];
-            
-            // Upload media to Twitter if provided
-            if (mediaUrl) {
-                try {
-                    console.log('Downloading media from URL:', mediaUrl);
-                    const response = await fetch(mediaUrl, {
-                        headers: {
-                            'Accept': '*/*',
-                            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
-                        }
-                    });
-                    
-                    if (!response.ok) {
-                        throw new Error(`Failed to download media: ${response.status} ${response.statusText}`);
-                    }
-                    
-                    const contentType = response.headers.get('content-type') || 'video/mp4';
-                    console.log('Media content type:', contentType);
-                    
-                    const arrayBuffer = await response.arrayBuffer();
-                    const buffer = Buffer.from(arrayBuffer);
-                    console.log('Media buffer size:', buffer.length, 'bytes');
-                    
-                    console.log('Uploading media to Twitter using OAuth 1.0a...');
-                    
-                    // Use OAuth 1.0a for media uploads (required for media uploads)
-                    const mediaId = await uploadMediaWithOAuth1a(buffer, contentType, tokens);
-                    mediaIds.push(mediaId);
-                    
-                    console.log('Media upload successful, media ID:', mediaId);
-                } catch (error) {
-                    console.error('Media upload error details:', {
-                        message: error.message,
-                        code: error.code,
-                        data: error.data,
-                        stack: error.stack
-                    });
-                    throw new Error(`Failed to upload media to Twitter: ${error.message}`);
-                }
-            }
-
-            // Post the tweet with media if available
-            const tweetPayload = {
-                text
-            };
-
-            if (mediaIds.length > 0) {
-                tweetPayload.media = {
-                    media_ids: mediaIds
-                };
-            }
-
-            console.log('Posting tweet with payload:', tweetPayload);
-            const tweet = await client.v2.tweet(tweetPayload);
-            return tweet;
-        });
-
-        res.json({
-            success: true,
-            message: 'Tweet posted successfully',
-            tweet: result.data
-        });
+        // Use the new TwitterService
+        const TwitterService = require('../utils/TwitterService');
+        const twitterService = new TwitterService();
+        
+        const result = await twitterService.postTweet(req.user.adminEmail, { text, mediaUrl });
+        
+        res.json(result);
 
     } catch (error) {
         console.error('Error posting tweet:', error);
