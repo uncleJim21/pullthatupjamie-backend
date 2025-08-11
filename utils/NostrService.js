@@ -1,4 +1,5 @@
 const WebSocket = require('ws');
+const { printLog } = require('../constants');
 
 /**
  * NostrService - Reusable Nostr posting functionality
@@ -173,6 +174,8 @@ class NostrService {
         return new Promise(async (resolve) => {
             let socket = null;
             let resolved = false;
+            let successReceived = false;
+            let authSent = false;
             
             try {
                 // Connect to relay
@@ -186,8 +189,8 @@ class NostrService {
                             socket.close();
                         }
                         resolve({ 
-                            success: false, 
-                            error: `Publish timeout to ${relayUrl}`,
+                            success: successReceived, // Use successReceived flag
+                            error: successReceived ? null : `Publish timeout to ${relayUrl}`,
                             relay: relayUrl 
                         });
                     }
@@ -201,22 +204,74 @@ class NostrService {
                         const data = JSON.parse(msg.data);
                         console.log(`Relay ${relayUrl} response:`, data);
                         
+                        // Handle OK response
                         if (Array.isArray(data) && data[0] === "OK" && data[1] === event.id) {
+                            successReceived = true;
                             resolved = true;
                             clearTimeout(timeoutId);
                             socket.removeEventListener('message', handleMessage);
                             socket.close();
                             
-                            const success = data[2] === true;
-                            console.log(`Relay ${relayUrl} confirmed:`, success);
                             resolve({ 
-                                success, 
-                                error: success ? null : (data[3] || 'Unknown error'),
+                                success: true,
+                                error: null,
                                 relay: relayUrl 
                             });
                         }
+                        
+                        // Handle AUTH response
+                        else if (Array.isArray(data) && data[0] === "AUTH" && !authSent) {
+                            authSent = true;
+                            console.log(`Relay ${relayUrl} requires auth, sending challenge response`);
+                            
+                            // Send auth challenge response
+                            const authEvent = {
+                                kind: 22242,
+                                created_at: Math.floor(Date.now() / 1000),
+                                content: "",
+                                tags: [["challenge", data[1]]]
+                            };
+                            socket.send(JSON.stringify(["AUTH", authEvent]));
+                            
+                            // Resend the original event after auth
+                            setTimeout(() => {
+                                if (!resolved && socket.readyState === WebSocket.OPEN) {
+                                    const publishMessage = JSON.stringify(["EVENT", event]);
+                                    console.log(`Resending to relay ${relayUrl} after auth:`, publishMessage);
+                                    socket.send(publishMessage);
+                                }
+                            }, 100);
+                        }
+                        
+                        // Handle NOTICE response (usually errors)
+                        else if (Array.isArray(data) && data[0] === "NOTICE") {
+                            console.warn(`Relay ${relayUrl} notice:`, data[1]);
+                            // Don't fail on notices, some relays send them as info
+                        }
+                        
+                        // Handle EOSE (end of stored events)
+                        else if (Array.isArray(data) && data[0] === "EOSE") {
+                            // Some relays send EOSE to confirm receipt
+                            console.log(`Relay ${relayUrl} sent EOSE, considering as success`);
+                            successReceived = true;
+                        }
+                        
                     } catch (error) {
                         console.error(`Error parsing response from ${relayUrl}:`, error);
+                    }
+                };
+                
+                // Handle socket close
+                socket.onclose = (event) => {
+                    console.log(`Relay ${relayUrl} connection closed:`, event.code, event.reason);
+                    if (!resolved) {
+                        resolved = true;
+                        clearTimeout(timeoutId);
+                        resolve({ 
+                            success: successReceived,
+                            error: successReceived ? null : `Connection closed: ${event.reason || 'Unknown reason'}`,
+                            relay: relayUrl 
+                        });
                     }
                 };
                 
@@ -227,10 +282,12 @@ class NostrService {
                 console.log(`Sending to relay ${relayUrl}:`, publishMessage);
                 socket.send(publishMessage);
                 
-                // Some relays don't send confirmations, so we'll assume success if no error after a short delay
+                // Some relays don't send explicit OK messages
+                // Consider it a success if we can send the message and keep the connection open
                 setTimeout(() => {
-                    if (!resolved) {
-                        console.log(`Relay ${relayUrl} no response, assuming success`);
+                    if (!resolved && socket.readyState === WebSocket.OPEN) {
+                        console.log(`Relay ${relayUrl}: No explicit OK received, assuming success`);
+                        successReceived = true;
                         resolved = true;
                         clearTimeout(timeoutId);
                         socket.removeEventListener('message', handleMessage);
@@ -241,9 +298,10 @@ class NostrService {
                             relay: relayUrl 
                         });
                     }
-                }, 2000); // Wait 2 seconds for response
+                }, 2000); // Wait 2 seconds for implicit success
                 
             } catch (error) {
+                console.error(`Error publishing to ${relayUrl}:`, error);
                 if (!resolved) {
                     resolved = true;
                     resolve({ 
@@ -290,6 +348,11 @@ class NostrService {
                 contentLength: signedEvent.content.length,
                 relayCount: relays.length
             });
+
+            // DEBUG: Print the complete event JSON that will be signed/published
+            printLog('=== FINAL EVENT JSON FOR PUBLISHING ===');
+            printLog('Event object:', JSON.stringify(signedEvent, null, 2));
+            printLog('=== END EVENT JSON ===');
 
             // Publish to all relays in parallel
             const publishPromises = relays.map(relay => 

@@ -52,6 +52,7 @@ const SocialPostSchema = new mongoose.Schema({
     nostrEventId: { type: String, required: false },
     nostrSignature: { type: String, required: false },
     nostrPubkey: { type: String, required: false },
+    nostrCreatedAt: { type: Number, required: false }, // Unix timestamp used for signing
     nostrRelays: [{ type: String }]
   },
   

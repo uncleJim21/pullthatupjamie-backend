@@ -66,6 +66,7 @@ router.post('/posts', validatePrivs, async (req, res) => {
                 platformData.nostrEventId = req.body.platformData.nostrEventId;
                 platformData.nostrSignature = req.body.platformData.nostrSignature;
                 platformData.nostrPubkey = req.body.platformData.nostrPubkey;
+                platformData.nostrCreatedAt = req.body.platformData.nostrCreatedAt; // Store original timestamp
                 platformData.nostrRelays = req.body.platformData.nostrRelays || [];
             } else if (platform === 'twitter' && req.body.platformData?.twitterTokens) {
                 // Handle Twitter-specific data if needed
