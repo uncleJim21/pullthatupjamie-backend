@@ -284,6 +284,31 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
             updates.timezone = timezone;
         }
 
+        // Handle platform-specific data updates
+        if (post.platform === 'nostr' && req.body.platformData) {
+            const nostrData = req.body.platformData;
+            
+            // Validate required Nostr fields are present for update
+            if (nostrData.nostrEventId && nostrData.nostrSignature && 
+                nostrData.nostrPubkey && nostrData.nostrCreatedAt) {
+                
+                updates.platformData = {
+                    ...post.platformData, // Keep any existing fields
+                    nostrEventId: nostrData.nostrEventId,
+                    nostrSignature: nostrData.nostrSignature,
+                    nostrPubkey: nostrData.nostrPubkey,
+                    nostrCreatedAt: nostrData.nostrCreatedAt,
+                    nostrRelays: nostrData.nostrRelays || post.platformData.nostrRelays,
+                    nostrPostUrl: nostrData.nostrPostUrl
+                };
+            } else if (Object.keys(nostrData).length > 0) {
+                return res.status(400).json({
+                    error: 'Invalid Nostr data',
+                    message: 'When updating a Nostr post, all required Nostr fields must be provided (eventId, signature, pubkey, createdAt)'
+                });
+            }
+        }
+
         // Update the post
         const updatedPost = await SocialPost.findByIdAndUpdate(
             post._id,
