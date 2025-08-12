@@ -2183,14 +2183,33 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
       return res.status(400).json({ error: 'Clip has no text content' });
     }
     
-    // Fetch feed and episode data in parallel
+    // Fetch feed and episode data in parallel, and also get the first paragraph from Pinecone
     let feedData = null;
     let episodeData = null;
+    let firstParagraph = null;
     
     if (feedId && guid) {
-      [feedData, episodeData] = await Promise.all([
+      [feedData, episodeData, firstParagraph] = await Promise.all([
         getFeedById(feedId),
-        getEpisodeByGuid(guid)
+        getEpisodeByGuid(guid),
+        // Get first paragraph from Pinecone
+        (async () => {
+          try {
+            // Create a dummy vector for searching
+            const dummyVector = Array(1536).fill(0);
+            // Use findSimilarDiscussions which is already imported and configured
+            const results = await findSimilarDiscussions({
+              embedding: dummyVector,
+              feedIds: [feedId],
+              limit: 1,
+              query: '' // Empty query to just get first paragraph
+            });
+            return results?.[0] || null;
+          } catch (error) {
+            console.error('Error fetching first paragraph:', error);
+            return null;
+          }
+        })()
       ]);
     }
     
@@ -2209,6 +2228,7 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
       feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
       episodeDescription: truncateText(episodeData?.description || result.episodeDescription || ""),
       feedDescription: truncateText(feedData?.description || result.feedDescription || ""),
+      listenLink: firstParagraph?.listenLink || "",
       additionalPrefs
     };
     
@@ -2228,6 +2248,7 @@ Here's information about the clip:
 - Episode: ${context.episodeTitle}
 - Episode Description: ${context.episodeDescription}
 - Feed Description: ${context.feedDescription}
+- Listen Link: ${context.listenLink}
 - Clip Text: "${context.clipText}"
 ${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
 ${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
@@ -2240,9 +2261,10 @@ Create a compelling promotional tweet that:
 3. Captures the essence of what makes this clip interesting
 4. Is shareable and attention-grabbing
 5. Includes relevant context about the podcast/episode when helpful
-6. Stays under 200 characters
+6. Stays under 150 characters to make sure there's room for the share link
 7. If there is a guest make an effort to mention them and the host by name if it fits
 8. REMINDER: ABSOLUTELY NO HASHTAGS - this is critical as hashtags severely reduce engagement
+9. If the user asks for it reference the Listen Link when pushing for a call to action
 
 REMEMBER: DO NOT USE ANY HASHTAGS (#) AT ALL. NOT EVEN ONE.
 
