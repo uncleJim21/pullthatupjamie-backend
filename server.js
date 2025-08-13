@@ -31,7 +31,8 @@ const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
 const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
-const userPreferencesRoutes = require('./routes/userPreferences');
+const podcastPreferencesRoutes = require('./routes/podcastPreferencesRoutes');
+const appPreferencesRoutes = require('./routes/appPreferencesRoutes');
 const onDemandRunsRoutes = require('./routes/onDemandRuns');
 const adminEntitlementsRoutes = require('./routes/adminEntitlements');
 const { v4: uuidv4 } = require('uuid');
@@ -1660,7 +1661,11 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
-app.use('/api/user-prefs', userPreferencesRoutes);
+// Keep original route for backward compatibility
+app.use('/api/user-prefs', podcastPreferencesRoutes);
+// New route path
+app.use('/api/podcast-preferences', podcastPreferencesRoutes);
+app.use('/api/preferences', appPreferencesRoutes);
 app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);

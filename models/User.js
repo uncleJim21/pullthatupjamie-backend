@@ -19,6 +19,23 @@ const UserSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  app_preferences: {
+    type: new mongoose.Schema({
+      data: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+      },
+      schemaVersion: {
+        type: Number,
+        default: 20240320001 // YYYYMMDDXXX format
+      }
+    }, { _id: false }),
+    select: false,
+    default: () => ({
+      data: {},
+      schemaVersion: 20240320001
+    })
+  },
   password: {
     type: String,
     required: true
