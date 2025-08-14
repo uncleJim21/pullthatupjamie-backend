@@ -2233,7 +2233,7 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
       feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
       episodeDescription: truncateText(episodeData?.description || result.episodeDescription || ""),
       feedDescription: truncateText(feedData?.description || result.feedDescription || ""),
-      listenLink: firstParagraph?.listenLink || "",
+      listenLink: firstParagraph?.listenLink || episodeData?.listenLink || "",
       additionalPrefs
     };
     
@@ -2275,7 +2275,8 @@ REMEMBER: DO NOT USE ANY HASHTAGS (#) AT ALL. NOT EVEN ONE.
 
 Write only the social media post text, without any explanations or quotation marks.
 `;
-    console.log(`[INFO] Prompt: ${prompt}`);
+    printLog(`[INFO] Prompt: ${prompt}`);
+    printLog(`[More Info] Paragraph data: ${JSON.stringify(firstParagraph)} \n\nEpisode data:${JSON.stringify(episodeData)}`);
 
     // Call OpenAI with streaming
     const stream = await openai.chat.completions.create({
