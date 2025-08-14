@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { verifyToken } = require('../utils/tokenAuth');
+const { authenticateToken } = require('../middleware/authMiddleware');
 const ProPodcastUserPrefs = require('../models/ProPodcastUserPrefs');
 const { OpenAI } = require('openai');
 
@@ -105,11 +105,11 @@ If the request is invalid or completely unrelated to preferences, respond with:
 }`;
 
 /**
- * GET /api/user-prefs
- * Get user preferences using JWT token authentication
+ * GET /api/podcast-preferences
+ * Get podcast preferences using JWT token authentication
  * The email is extracted from the JWT token
  */
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
     try {
         // Email is available from the token verification middleware
         const { email } = req.user;
@@ -147,10 +147,10 @@ router.get('/', verifyToken, async (req, res) => {
 });
 
 /**
- * GET /api/user-prefs/:feedId
+ * GET /api/podcast-preferences/:feedId
  * Get user preferences for a specific feed
  */
-router.get('/:feedId', verifyToken, async (req, res) => {
+router.get('/:feedId', authenticateToken, async (req, res) => {
     try {
         const { email } = req.user;
         const { feedId } = req.params;
@@ -215,10 +215,10 @@ router.get('/:feedId', verifyToken, async (req, res) => {
 });
 
 /**
- * POST /api/user-prefs/:feedId/update
+ * POST /api/podcast-preferences/:feedId/update
  * Update user preferences using natural language input
  */
-router.post('/:feedId/update', verifyToken, async (req, res) => {
+router.post('/:feedId/update', authenticateToken, async (req, res) => {
     try {
         const { email } = req.user;
         const { feedId } = req.params;
