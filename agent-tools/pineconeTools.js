@@ -137,6 +137,7 @@ const pineconeTools = {
     findSimilarDiscussions : async ({ 
         embedding,
         feedIds, 
+        guid = null, // Optional guid to filter by specific episode
         limit = 5,
         query = '', // Optional text query for keyword matching
         hybridWeight = 0.7 // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
@@ -147,6 +148,7 @@ const pineconeTools = {
             const filter = {
                 type: "paragraph",
                 ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
+                ...(guid && { guid }),  // Add guid filter when provided
             };
             
             // Get more results than needed to allow for hybrid reranking
