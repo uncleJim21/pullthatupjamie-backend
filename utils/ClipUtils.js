@@ -360,7 +360,23 @@ class ClipUtils {
         
         console.log(`[DEBUG] Generating video for ${lookupHash}`);
         const { videoPath, videoGenerator } = await this.generateShareableVideo(clipData, audioPath, subtitles);
-
+        
+        // Wait for video generation to complete before proceeding
+        console.log(`[DEBUG] Waiting for video generation to complete for ${lookupHash}`);
+        await videoGenerator.generateVideo();
+        
+        // Verify the video file exists and is complete
+        if (!fs.existsSync(videoPath)) {
+            throw new Error(`Video file not found at ${videoPath} after generation completed`);
+        }
+        
+        // Get file stats to ensure it's not empty
+        const stats = fs.statSync(videoPath);
+        if (stats.size === 0) {
+            throw new Error(`Generated video file is empty: ${videoPath}`);
+        }
+        
+        console.log(`[DEBUG] Video generation complete for ${lookupHash}. File size: ${stats.size} bytes`);
         console.log(`[DEBUG] Uploading to CDN for ${lookupHash}`);
         const cdnFileId = `clips/${clipData.additionalFields.feedId}/${clipData.additionalFields.guid}/${lookupHash}-clip.mp4`;
 
