@@ -49,6 +49,7 @@ const mentionsRoutes = require('./routes/mentions');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
 const { updateEntitlementConfig } = require('./utils/entitlements');
+const GarbageCollector = require('./utils/GarbageCollector');
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -1779,6 +1780,12 @@ app.listen(PORT, async () => {
     socialProcessor.start();
     console.log('Social post processor started successfully');
     
+    // Start Garbage Collector
+    const garbageCollector = new GarbageCollector();
+    global.garbageCollector = garbageCollector; // Store globally for shutdown handlers
+    garbageCollector.start();
+    console.log('Garbage collector started successfully');
+    
     // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
     if (SCHEDULER_ENABLED) {
       console.log('Setting up scheduled tasks...');
@@ -1841,6 +1848,12 @@ process.on('SIGTERM', async () => {
   // ✅ GUARANTEED TRANSFER: Release jobs back to queue
   if (clipQueueManager) {
     await clipQueueManager.shutdown();
+  }
+  
+  // Stop garbage collector gracefully
+  if (global.garbageCollector) {
+    global.garbageCollector.stop();
+    console.log('Garbage collector stopped gracefully');
   }
   
   setTimeout(() => {
@@ -2950,6 +2963,46 @@ if (DEBUG_MODE) {
       });
     } catch (error) {
       console.error('Error triggering ingestor:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+  
+  // Add a debug endpoint to manually trigger garbage collection
+  app.post('/api/debug/trigger-gc', async (req, res) => {
+    try {
+      console.log(`[DEBUG] Manually triggering garbage collection`);
+      
+      // Get the garbage collector instance
+      const garbageCollector = new GarbageCollector();
+      await garbageCollector.runCleanup();
+      
+      res.json({
+        success: true,
+        message: 'Garbage collection triggered successfully',
+        status: garbageCollector.getStatus()
+      });
+    } catch (error) {
+      console.error('Error triggering garbage collection:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+  
+  // Add a debug endpoint to check garbage collector status
+  app.get('/api/debug/gc-status', (req, res) => {
+    try {
+      const garbageCollector = new GarbageCollector();
+      res.json({
+        success: true,
+        status: garbageCollector.getStatus()
+      });
+    } catch (error) {
+      console.error('Error getting garbage collector status:', error);
       res.status(500).json({
         success: false,
         error: error.message
