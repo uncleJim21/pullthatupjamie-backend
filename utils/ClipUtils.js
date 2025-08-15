@@ -44,6 +44,15 @@ class ClipUtils {
 
   async extractAudioClip(audioUrl, startTime, endTime) {
     console.log('[DEBUG] extractAudioClip - Inputs:', { audioUrl, startTime, endTime });
+    
+    // Log available disk space
+    const { execSync } = require('child_process');
+    try {
+        const dfOutput = execSync('df -h /tmp').toString();
+        console.log('[DEBUG] Temp directory space:', dfOutput);
+    } catch (e) {
+        console.warn('[WARN] Could not check disk space:', e.message);
+    }
 
     // Add validation for start and end times
     if (startTime === undefined || startTime === null) {
@@ -52,14 +61,36 @@ class ClipUtils {
     if (endTime === undefined || endTime === null) {
         throw new Error('End time is required for clip extraction');
     }
+    
+    // Calculate clip duration
+    const duration = endTime - startTime;
+    console.log(`[DEBUG] Clip duration: ${duration} seconds`);
 
     // Validate times are within reasonable bounds
     if (startTime < 0 || endTime < 0 || endTime <= startTime) {
         throw new Error('Invalid time range');
     }
 
-    const outputPath = `/tmp/clip-${Date.now()}.mp3`; 
+    // Create a unique directory for this extraction to prevent cleanup conflicts
+    const extractionId = Date.now();
+    const extractionDir = `/tmp/clip-${extractionId}`;
+    fs.mkdirSync(extractionDir, { recursive: true });
+    
+    const outputPath = path.join(extractionDir, `clip-${extractionId}.mp3`);
     console.log(`[DEBUG] Extracting audio to: ${outputPath}`);
+    
+    // Verify source audio is accessible
+    try {
+        const response = await axios.head(audioUrl);
+        console.log(`[DEBUG] Source audio accessible:`, {
+            status: response.status,
+            contentLength: response.headers['content-length'],
+            contentType: response.headers['content-type']
+        });
+    } catch (e) {
+        console.error(`[ERROR] Source audio not accessible:`, e.message);
+        throw new Error(`Source audio not accessible: ${e.message}`);
+    }
 
     return new Promise((resolve, reject) => {
         if (!audioUrl) {
@@ -94,8 +125,34 @@ class ClipUtils {
                 reject(new Error(`FFmpeg failed: ${err.message}`));
             })
             .on('end', () => {
-                console.log('[DEBUG] FFmpeg extraction completed:', outputPath);
+                // Verify the output file exists and has content
+                if (!fs.existsSync(outputPath)) {
+                    reject(new Error(`FFmpeg completed but output file not found: ${outputPath}`));
+                    return;
+                }
+                
+                const stats = fs.statSync(outputPath);
+                if (stats.size === 0) {
+                    reject(new Error(`FFmpeg completed but output file is empty: ${outputPath}`));
+                    return;
+                }
+                
+                console.log('[DEBUG] FFmpeg extraction completed:', {
+                    path: outputPath,
+                    size: stats.size,
+                    created: stats.birthtime,
+                    modified: stats.mtime
+                });
                 resolve(outputPath);
+            })
+            .on('error', (err, stdout, stderr) => {
+                console.error('[ERROR] FFmpeg error:', {
+                    error: err.message,
+                    stdout: stdout,
+                    stderr: stderr,
+                    command: err.message.includes('Command failed') ? err.message.split(':')[1] : 'unknown'
+                });
+                reject(err);
             })
             .save(outputPath);
     });
