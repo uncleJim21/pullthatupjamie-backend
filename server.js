@@ -2206,6 +2206,7 @@ app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) 
             const results = await findSimilarDiscussions({
               embedding: dummyVector,
               feedIds: [feedId],
+              guid: guid,  // Add guid filter to get paragraphs from correct episode
               limit: 1,
               query: '' // Empty query to just get first paragraph
             });
