@@ -49,6 +49,8 @@ const mentionsRoutes = require('./routes/mentions');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
 const { updateEntitlementConfig } = require('./utils/entitlements');
+const { checkAdminMode } = require('./middleware/authMiddleware');
+const { serviceHmac } = require('./middleware/hmac');
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -2955,6 +2957,18 @@ if (DEBUG_MODE) {
         error: error.message
       });
     }
+  });
+
+  // Simple debug endpoint to validate HMAC auth end-to-end
+  app.post('/api/debug/test-hmac', serviceHmac({ requiredScopes: ['svc:test'] }), (req, res) => {
+    res.json({
+      ok: true,
+      method: req.method,
+      path: req.path,
+      keyId: req.serviceAuth?.keyId || null,
+      scopes: req.serviceAuth?.scopes || [],
+      echo: req.body || null
+    });
   });
 }
 
