@@ -6,6 +6,7 @@
   "scripts": {
     "prebuild": "mkdir -p dbs && chmod 755 dbs",
     "test": "node test/test-hmac.js",
+    "test:hmac": "node test/test-hmac-all.js",
     "setup-subtitle-test": "node setup-subtitle-test.js",
     "test-subtitles": "node test-subtitles.js",
     "test-server-subtitles": "node test-server-subtitles.js"

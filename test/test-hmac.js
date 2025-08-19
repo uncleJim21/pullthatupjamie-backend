@@ -28,7 +28,7 @@ function sign({ method, path, query, body, keyId, secret, timestamp }) {
 
 async function main() {
   const host = process.env.HOST || 'localhost';
-  const port = process.env.PORT || 4131;
+  const port = process.env.PORT || 4132;
 
   // Prefer SVC_HMAC_KEYS_JSON; fallback to SHARED_HMAC_SECRET as keyId "default"
   let keyMap = {};

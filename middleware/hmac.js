@@ -31,14 +31,26 @@ const crypto = require('crypto');
 // Load key map from env (preferred: JSON), with fallback to a single secret
 function loadKeyMap() {
   const json = process.env.SVC_HMAC_KEYS_JSON;
+  const secretsAreBase64 = process.env.SVC_HMAC_SECRETS_BASE64 === 'true';
   if (json) {
     try {
       const parsed = JSON.parse(json);
-      if (parsed && typeof parsed === 'object') return parsed;
+      if (parsed && typeof parsed === 'object') {
+        if (!secretsAreBase64) return parsed;
+        const mapped = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          mapped[k] = Buffer.from(String(v), 'base64');
+        }
+        return mapped;
+      }
     } catch (_) {}
   }
   if (process.env.SHARED_HMAC_SECRET) {
-    return { default: process.env.SHARED_HMAC_SECRET };
+    return {
+      default: process.env.SVC_HMAC_SECRETS_BASE64 === 'true'
+        ? Buffer.from(String(process.env.SHARED_HMAC_SECRET), 'base64')
+        : process.env.SHARED_HMAC_SECRET
+    };
   }
   return {};
 }
@@ -162,7 +174,7 @@ function serviceHmac(options = {}) {
 
       // Build canonical elements
       const method = req.method || 'GET';
-      const path = req.path || '/';
+      const path = ((req.baseUrl || '') + (req.path || '/')) || '/';
       const queryString = buildSortedQueryString(req.query);
       const bodyHashHex = providedBodyHash || (req.rawBody ? sha256Hex(req.rawBody) : '');
 
