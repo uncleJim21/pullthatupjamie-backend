@@ -20,6 +20,7 @@ function assert(condition, message, status = 400) {
  * @param {string[]} params.platforms - e.g., ['twitter','nostr']
  * @param {string} [params.timezone='America/Chicago']
  * @param {Object} [params.platformData]
+ * @param {string} [params.scheduledPostSlotId]
  * @returns {Promise<Array>} created SocialPost documents
  */
 async function schedulePosts(params) {
@@ -30,7 +31,8 @@ async function schedulePosts(params) {
         scheduledFor,
         platforms,
         timezone = 'America/Chicago',
-        platformData: inputPlatformData = {}
+        platformData: inputPlatformData = {},
+        scheduledPostSlotId
     } = params || {};
 
     assert(adminEmail, 'Missing adminEmail');
@@ -58,6 +60,7 @@ async function schedulePosts(params) {
             platform,
             scheduledFor: scheduledDate,
             timezone,
+            scheduledPostSlotId,
             content: {
                 text: hasText ? String(text).trim() : '',
                 mediaUrl: hasMedia ? String(mediaUrl) : null

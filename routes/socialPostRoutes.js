@@ -12,7 +12,7 @@ const { schedulePosts } = require('../utils/SocialPostService');
  */
 router.post('/posts', validatePrivs, async (req, res) => {
     try {
-        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago' } = req.body;
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', scheduledPostSlotId } = req.body;
         const createdPosts = await schedulePosts({
             adminEmail: req.user.adminEmail,
             text,
@@ -20,7 +20,8 @@ router.post('/posts', validatePrivs, async (req, res) => {
             scheduledFor,
             platforms,
             timezone,
-            platformData: req.body.platformData
+            platformData: req.body.platformData,
+            scheduledPostSlotId
         });
         res.json({
             success: true,
@@ -47,7 +48,7 @@ router.post('/posts', validatePrivs, async (req, res) => {
 // HMAC-only duplicate endpoint (service-to-service scheduling)
 router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }), async (req, res) => {
     try {
-        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', adminEmail, platformData } = req.body;
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', adminEmail, platformData, scheduledPostSlotId } = req.body;
         // Service caller must provide adminEmail explicitly
         if (!adminEmail) {
             return res.status(400).json({ error: 'adminEmail is required for service scheduling' });
@@ -59,7 +60,8 @@ router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }
             scheduledFor,
             platforms,
             timezone,
-            platformData
+            platformData,
+            scheduledPostSlotId
         });
         res.json({
             success: true,
