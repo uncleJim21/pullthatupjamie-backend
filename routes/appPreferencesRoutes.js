@@ -111,7 +111,21 @@ router.put('/', authenticateToken, async (req, res) => {
       existingData.scheduledPostSlots = [];
     }
 
-    const mergedPreferences = deepMergeById(existingData, preferences);
+    let mergedPreferences = deepMergeById(existingData, preferences);
+
+    // Special-case: treat scheduledPostSlots as authoritative replacement to allow deletions
+    if (Object.prototype.hasOwnProperty.call(preferences, 'scheduledPostSlots')) {
+      if (preferences.scheduledPostSlots == null) {
+        mergedPreferences.scheduledPostSlots = [];
+      } else if (Array.isArray(preferences.scheduledPostSlots)) {
+        mergedPreferences.scheduledPostSlots = preferences.scheduledPostSlots;
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'scheduledPostSlots must be an array or null'
+        });
+      }
+    }
 
     // Persist merged preferences
     const user = await User.findOneAndUpdate(
