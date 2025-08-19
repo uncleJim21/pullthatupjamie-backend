@@ -45,6 +45,19 @@ function loadKeyMap() {
 
 const KEY_MAP = loadKeyMap();
 
+// Load allowed scopes map from env (keyId -> [scopes])
+function loadAllowedScopesMap() {
+  const json = process.env.ALLOWED_SCOPES_JSON;
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch (_) {}
+  return null;
+}
+
+const ALLOWED_SCOPES_MAP = loadAllowedScopesMap();
+
 function timingSafeEqualStr(a, b) {
   const aBuf = Buffer.from(a || '', 'utf8');
   const bBuf = Buffer.from(b || '', 'utf8');
@@ -158,9 +171,19 @@ function serviceHmac(options = {}) {
         return res.status(401).json({ error: 'Bad signature' });
       }
 
+      // Determine effective scopes: prefer server-defined map; fallback to header
+      let effectiveScopes = [];
+      let scopeSource = 'header';
+      if (ALLOWED_SCOPES_MAP && Array.isArray(ALLOWED_SCOPES_MAP[keyId])) {
+        effectiveScopes = ALLOWED_SCOPES_MAP[keyId].filter(Boolean);
+        scopeSource = 'server';
+      } else {
+        effectiveScopes = scopeStr ? scopeStr.split(' ').filter(Boolean) : [];
+      }
+
       // Scope check (optional)
       if (requiredScopes.length > 0) {
-        const tokenScopes = new Set(scopeStr.split(' ').filter(Boolean));
+        const tokenScopes = new Set(effectiveScopes);
         const ok = requiredScopes.every(s => tokenScopes.has(s));
         if (!ok) return res.status(403).json({ error: 'Insufficient scope' });
       }
@@ -168,7 +191,8 @@ function serviceHmac(options = {}) {
       // Attach minimal context
       req.serviceAuth = {
         keyId,
-        scopes: scopeStr ? scopeStr.split(' ').filter(Boolean) : []
+        scopes: effectiveScopes,
+        scopeSource
       };
 
       return next();

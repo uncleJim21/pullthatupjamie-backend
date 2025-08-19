@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const SocialPost = require('../models/SocialPost');
 const { validatePrivs } = require('../middleware/validate-privs');
+const { serviceHmac } = require('../middleware/hmac');
+const { schedulePosts } = require('../utils/SocialPostService');
 
 /**
  * POST /api/social/posts
@@ -10,84 +12,20 @@ const { validatePrivs } = require('../middleware/validate-privs');
  */
 router.post('/posts', validatePrivs, async (req, res) => {
     try {
-        const { 
-            text, 
-            mediaUrl, 
-            scheduledFor, 
-            platforms, // ['twitter', 'nostr'] for cross-posting
-            timezone = 'America/Chicago'
-        } = req.body;
-
-        // Validation - require either text OR media
-        const hasText = text && text.trim().length > 0;
-        const hasMedia = mediaUrl && mediaUrl.trim().length > 0;
-        
-        if (!hasText && !hasMedia) {
-            return res.status(400).json({
-                error: 'Missing content',
-                message: 'Either text or media URL is required'
-            });
-        }
-
-        if (!scheduledFor) {
-            return res.status(400).json({
-                error: 'Missing scheduledFor',
-                message: 'Scheduled date/time is required'
-            });
-        }
-
-        if (!platforms || !Array.isArray(platforms) || platforms.length === 0) {
-            return res.status(400).json({
-                error: 'Missing platforms',
-                message: 'At least one platform must be specified'
-            });
-        }
-
-        // Validate platforms
-        const validPlatforms = SocialPost.getPlatformOptions();
-        const invalidPlatforms = platforms.filter(p => !validPlatforms.includes(p));
-        if (invalidPlatforms.length > 0) {
-            return res.status(400).json({
-                error: 'Invalid platforms',
-                message: `Invalid platforms: ${invalidPlatforms.join(', ')}. Valid options: ${validPlatforms.join(', ')}`
-            });
-        }
-
-        // Create separate SocialPost for each platform
-        const createdPosts = [];
-        const scheduledDate = new Date(scheduledFor);
-
-        for (const platform of platforms) {
-            // For Nostr, use the entire platformData object as-is
-            const platformData = platform === 'nostr' ? 
-                { ...req.body.platformData } : // Use spread to create a new object
-                {}; // Empty object for other platforms
-            
-            // Add Twitter-specific data if needed
-            if (platform === 'twitter' && req.body.platformData?.twitterTokens) {
-                platformData.twitterTokens = req.body.platformData.twitterTokens;
-            }
-
-            const socialPost = new SocialPost({
-                adminEmail: req.user.adminEmail,
-                platform,
-                scheduledFor: scheduledDate,
-                timezone,
-                content: {
-                    text: text.trim(),
-                    mediaUrl: mediaUrl || null
-                },
-                platformData
-            });
-
-            await socialPost.save();
-            createdPosts.push(socialPost);
-        }
-
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago' } = req.body;
+        const createdPosts = await schedulePosts({
+            adminEmail: req.user.adminEmail,
+            text,
+            mediaUrl,
+            scheduledFor,
+            platforms,
+            timezone,
+            platformData: req.body.platformData
+        });
         res.json({
             success: true,
             message: `Created ${createdPosts.length} scheduled post(s)`,
-                            posts: createdPosts.map(post => ({
+            posts: createdPosts.map(post => ({
                     _id: post._id,
                     platform: post.platform,
                     scheduledFor: post.scheduledFor,
@@ -102,6 +40,43 @@ router.post('/posts', validatePrivs, async (req, res) => {
         res.status(500).json({
             error: 'Failed to create social post',
             message: error.message
+        });
+    }
+});
+
+// HMAC-only duplicate endpoint (service-to-service scheduling)
+router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }), async (req, res) => {
+    try {
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', adminEmail, platformData } = req.body;
+        // Service caller must provide adminEmail explicitly
+        if (!adminEmail) {
+            return res.status(400).json({ error: 'adminEmail is required for service scheduling' });
+        }
+        const createdPosts = await schedulePosts({
+            adminEmail,
+            text,
+            mediaUrl,
+            scheduledFor,
+            platforms,
+            timezone,
+            platformData
+        });
+        res.json({
+            success: true,
+            message: `Created ${createdPosts.length} scheduled post(s)`,
+            posts: createdPosts.map(post => ({
+                _id: post._id,
+                platform: post.platform,
+                scheduledFor: post.scheduledFor,
+                status: post.status,
+                content: post.content,
+                platformData: post.platformData
+            }))
+        });
+    } catch (error) {
+        console.error('Error scheduling social post (svc):', error);
+        res.status(error.status || 500).json({
+            error: error.message || 'Failed to create social post'
         });
     }
 });

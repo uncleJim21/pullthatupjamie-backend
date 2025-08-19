@@ -70,7 +70,7 @@ async function main() {
       'X-Svc-Timestamp': String(timestamp),
       'X-Svc-Body-Hash': bodyHashHex,
       'X-Svc-Signature': signature,
-      'X-Svc-Scope': 'svc:test'
+      // Scope header optional now; server-defined scopes recommended
     }
   };
 

@@ -2167,153 +2167,41 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
   }
 });
 
-// Promotional tweet generation endpoint with jamie-assist name
+// Promotional tweet generation endpoint with jamie-assist name (refactored to service)
+const { streamJamieAssist } = require('./utils/JamieAssistService');
 app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;
-    
-    console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
-    console.log(`[INFO] Additional prefs: ${additionalPrefs}`);
-    // Get the clip from WorkProductV2
-    const clip = await WorkProductV2.findOne({ lookupHash });
-    
-    if (!clip) {
-      return res.status(404).json({ error: 'Clip not found' });
-    }
-    
-    // If we have the essential identifiers, fetch the detailed data
-    const result = clip.result || {};
-    const { feedId, guid, clipText } = result;
-    
-    if (!clipText) {
-      return res.status(400).json({ error: 'Clip has no text content' });
-    }
-    
-    // Fetch feed and episode data in parallel, and also get the first paragraph from Pinecone
-    let feedData = null;
-    let episodeData = null;
-    let firstParagraph = null;
-    
-    if (feedId && guid) {
-      [feedData, episodeData, firstParagraph] = await Promise.all([
-        getFeedById(feedId),
-        getEpisodeByGuid(guid),
-        // Get first paragraph from Pinecone
-        (async () => {
-          try {
-            // Create a dummy vector for searching
-            const dummyVector = Array(1536).fill(0);
-            // Use findSimilarDiscussions which is already imported and configured
-            const results = await findSimilarDiscussions({
-              embedding: dummyVector,
-              feedIds: [feedId],
-              guid: guid,  // Add guid filter to get paragraphs from correct episode
-              limit: 1,
-              query: '' // Empty query to just get first paragraph
-            });
-            return results?.[0] || null;
-          } catch (error) {
-            console.error('Error fetching first paragraph:', error);
-            return null;
-          }
-        })()
-      ]);
-    }
-    
-    // Prepare context for the LLM
-    const truncateText = (text, wordLimit = 150) => {
-      if (!text) return "";
-      const words = text.split(/\s+/);
-      if (words.length <= wordLimit) return text;
-      return words.slice(0, wordLimit).join(' ') + '...';
-    };
-
-    // Prepare context for the LLM
-    const context = {
-      clipText: clipText || "No clip text available",
-      episodeTitle: episodeData?.title || result.episodeTitle || "Unknown episode",
-      feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
-      episodeDescription: truncateText(episodeData?.description || result.episodeDescription || ""),
-      feedDescription: truncateText(feedData?.description || result.feedDescription || ""),
-      listenLink: firstParagraph?.listenLink || episodeData?.listenLink || "",
-      additionalPrefs
-    };
-    
-    // Set up streaming response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    
-    // Create the prompt for the LLM
-    const prompt = `
-You are a social media expert who creates engaging promotional posts for podcast clips.
-
-⚠️ IMPORTANT: ABSOLUTELY NO HASHTAGS! Do not include any hashtags (words preceded by #) in your response. ⚠️
-
-Here's information about the clip:
-- Podcast: ${context.feedTitle}
-- Episode: ${context.episodeTitle}
-- Episode Description: ${context.episodeDescription}
-- Feed Description: ${context.feedDescription}
-- Listen Link: ${context.listenLink}
-- Clip Text: "${context.clipText}"
-${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
-${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
-
-${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters.'}
-
-Create a compelling promotional tweet that:
-1. no hash tags. no hash tags. no hash tags no hash tags. do not give me a hash tag. if you do I will be very upset. Do not even think about it.
-2. Primarily focuses on the clip text component itself
-3. Captures the essence of what makes this clip interesting
-4. Is shareable and attention-grabbing
-5. Includes relevant context about the podcast/episode when helpful
-6. Stays under 150 characters to make sure there's room for the share link
-7. If there is a guest make an effort to mention them and the host by name if it fits
-8. REMINDER: ABSOLUTELY NO HASHTAGS - this is critical as hashtags severely reduce engagement
-9. If the user asks for it reference the Listen Link when pushing for a call to action
-
-REMEMBER: DO NOT USE ANY HASHTAGS (#) AT ALL. NOT EVEN ONE.
-
-Write only the social media post text, without any explanations or quotation marks.
-`;
-    printLog(`[INFO] Prompt: ${prompt}`);
-    printLog(`[More Info] Paragraph data: ${JSON.stringify(firstParagraph)} \n\nEpisode data:${JSON.stringify(episodeData)}`);
-
-    // Call OpenAI with streaming
-    const stream = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 300
-    });
-    
-    // Stream the response to the client
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) {
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-    }
-    
-    // End the stream
-    res.write('data: [DONE]\n\n');
-    res.end();
-    
+    await streamJamieAssist(res, lookupHash, additionalPrefs);
   } catch (error) {
     console.error('Error in jamie-assist:', error);
-    
-    // If headers haven't been sent yet, return a JSON error
     if (!res.headersSent) {
-      return res.status(500).json({ 
-        error: 'Failed to generate promotional content',
-        details: error.message
-      });
+      return res.status(500).json({ error: 'Failed to generate promotional content', details: error.message });
     }
-    
-    // If streaming has started, send error in the stream
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+});
+
+// HMAC-only duplicate endpoint for service-to-service access
+app.post('/api/internal/jamie-assist/:lookupHash', serviceHmac({ requiredScopes: ['svc:jamie:assist'] }), async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    const { additionalPrefs = "" } = req.body;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    await streamJamieAssist(res, lookupHash, additionalPrefs);
+  } catch (error) {
+    console.error('Error in internal jamie-assist:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Failed to generate promotional content', details: error.message });
+    }
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
