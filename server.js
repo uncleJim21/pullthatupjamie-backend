@@ -2912,6 +2912,68 @@ if (DEBUG_MODE) {
       });
     }
   });
+
+  // Debug endpoint: show DB connection info and current user's jamieAssistDefaults
+  app.get('/api/debug/db-info', async (req, res) => {
+    try {
+      const conn = mongoose.connection;
+      const info = {
+        host: conn.host,
+        port: conn.port,
+        name: conn.name,
+        readyState: conn.readyState
+      };
+
+      let prefs = null;
+      try {
+        const authHeader = req.headers.authorization || '';
+        if (authHeader.startsWith('Bearer ')) {
+          const token = authHeader.split(' ')[1];
+          const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+          const { User } = require('./models/User');
+          const user = await User.findOne({ email: decoded.email })
+            .read('primary')
+            .select('+app_preferences')
+            .lean();
+          prefs = {
+            email: decoded.email,
+            jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
+            schemaVersion: user?.app_preferences?.schemaVersion ?? null
+          };
+        }
+      } catch (_) {}
+
+      res.json({ connection: info, userPreferences: prefs });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Debug endpoint: list all user docs matching token email and their jamieAssistDefaults
+  app.get('/api/debug/user-docs', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      if (!authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Missing token' });
+      }
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      const { User } = require('./models/User');
+      const docs = await User.find({ email: decoded.email })
+        .read('primary')
+        .select('+app_preferences email')
+        .lean();
+      const simplified = docs.map(d => ({
+        _id: d._id,
+        email: d.email,
+        jamieAssistDefaults: d?.app_preferences?.data?.jamieAssistDefaults ?? null,
+        schemaVersion: d?.app_preferences?.schemaVersion ?? null
+      }));
+      res.json({ count: simplified.length, docs: simplified });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 }
 
 

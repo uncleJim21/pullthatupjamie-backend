@@ -127,33 +127,63 @@ router.put('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // Persist merged preferences
-    const user = await User.findOneAndUpdate(
-      { email: req.user.email },
-      { 
-        $set: {
-          'app_preferences.data': mergedPreferences,
-          'app_preferences.schemaVersion': CURRENT_SCHEMA_VERSION
-        }
-      },
-      { 
-        new: true, 
-        select: '+app_preferences',
-        upsert: true, // Create app_preferences if it doesn't exist
-        setDefaultsOnInsert: true
+    // Special-case: primitive replacement for jamieAssistDefaults when provided
+    if (Object.prototype.hasOwnProperty.call(preferences, 'jamieAssistDefaults')) {
+      if (preferences.jamieAssistDefaults == null || typeof preferences.jamieAssistDefaults === 'string') {
+        mergedPreferences.jamieAssistDefaults = preferences.jamieAssistDefaults || '';
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'jamieAssistDefaults must be a string or null'
+        });
       }
-    );
+    }
 
-    console.log('Updated user preferences for:', user.email);
+    // Persist merged preferences with strong write concern, then re-read fresh from DB
+    // Update all docs that match this email in case of accidental duplicates
+    const updateFilter = { email: req.user.email };
+    const updateOperation = {
+      $set: {
+        'app_preferences.data': mergedPreferences,
+        'app_preferences.schemaVersion': CURRENT_SCHEMA_VERSION
+      }
+    };
+    const writeOptions = { upsert: true, writeConcern: { w: 'majority' } };
+    const writeResult = await User.updateMany(updateFilter, updateOperation, writeOptions);
 
-    const responseData = user.app_preferences.data || {};
+    // Wait briefly to ensure replication and read-after-write visibility even under lag
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    const user = await User.findOne({ email: req.user.email })
+      .read('primary')
+      .select('+app_preferences')
+      .lean();
+
+    console.log('Updated user preferences for:', user?.email);
+
+    const responseData = user?.app_preferences?.data || {};
     if (!Array.isArray(responseData.scheduledPostSlots)) {
       responseData.scheduledPostSlots = [];
     }
 
+    // Provide a read-back snapshot as a separate field for verification
+    const readbackData = responseData;
+
     res.json({
       preferences: responseData,
-      schemaVersion: user.app_preferences.schemaVersion
+      schemaVersion: user?.app_preferences?.schemaVersion || CURRENT_SCHEMA_VERSION,
+      dbReadbackPreferences: readbackData,
+      debugWrite: {
+        filter: updateFilter,
+        set: updateOperation.$set,
+        result: {
+          acknowledged: !!writeResult?.acknowledged,
+          matchedCount: writeResult?.matchedCount ?? null,
+          modifiedCount: writeResult?.modifiedCount ?? null,
+          upsertedCount: writeResult?.upsertedCount ?? null,
+          upsertedId: writeResult?.upsertedId ?? null
+        }
+      }
     });
   } catch (error) {
     console.error('Error updating user app preferences:', error);
