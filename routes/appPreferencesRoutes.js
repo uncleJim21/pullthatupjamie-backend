@@ -76,6 +76,9 @@ router.get('/', authenticateToken, async (req, res) => {
     if (!Array.isArray(preferencesData.scheduledPostSlots)) {
       preferencesData.scheduledPostSlots = [];
     }
+    if (typeof preferencesData.jamieFullAutoEnabled !== 'boolean') {
+      preferencesData.jamieFullAutoEnabled = false;
+    }
 
     res.json({
       preferences: preferencesData,
@@ -139,6 +142,20 @@ router.put('/', authenticateToken, async (req, res) => {
       }
     }
 
+    // Special-case: boolean replacement for jamieFullAutoEnabled when provided
+    if (Object.prototype.hasOwnProperty.call(preferences, 'jamieFullAutoEnabled')) {
+      if (preferences.jamieFullAutoEnabled == null) {
+        mergedPreferences.jamieFullAutoEnabled = false;
+      } else if (typeof preferences.jamieFullAutoEnabled === 'boolean') {
+        mergedPreferences.jamieFullAutoEnabled = preferences.jamieFullAutoEnabled;
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'jamieFullAutoEnabled must be a boolean or null'
+        });
+      }
+    }
+
     // Persist merged preferences with strong write concern, then re-read fresh from DB
     // Update all docs that match this email in case of accidental duplicates
     const updateFilter = { email: req.user.email };
@@ -168,23 +185,20 @@ router.put('/', authenticateToken, async (req, res) => {
 
     // Provide a read-back snapshot as a separate field for verification
     const readbackData = responseData;
-
-    res.json({
+    let response = {
       preferences: responseData,
       schemaVersion: user?.app_preferences?.schemaVersion || CURRENT_SCHEMA_VERSION,
-      dbReadbackPreferences: readbackData,
-      debugWrite: {
+    }
+    if (process.env.DEBUG_MODE === 'true') {
+      response.dbReadbackPreferences = readbackData;
+      response.debugWrite = {
         filter: updateFilter,
         set: updateOperation.$set,
-        result: {
-          acknowledged: !!writeResult?.acknowledged,
-          matchedCount: writeResult?.matchedCount ?? null,
-          modifiedCount: writeResult?.modifiedCount ?? null,
-          upsertedCount: writeResult?.upsertedCount ?? null,
-          upsertedId: writeResult?.upsertedId ?? null
-        }
+        result: writeResult
       }
-    });
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Error updating user app preferences:', error);
     res.status(500).json({ error: 'Failed to update preferences' });
