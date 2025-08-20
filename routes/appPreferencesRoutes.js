@@ -76,6 +76,9 @@ router.get('/', authenticateToken, async (req, res) => {
     if (!Array.isArray(preferencesData.scheduledPostSlots)) {
       preferencesData.scheduledPostSlots = [];
     }
+    if (typeof preferencesData.jamieFullAutoEnabled !== 'boolean') {
+      preferencesData.jamieFullAutoEnabled = false;
+    }
 
     res.json({
       preferences: preferencesData,
@@ -111,36 +114,91 @@ router.put('/', authenticateToken, async (req, res) => {
       existingData.scheduledPostSlots = [];
     }
 
-    const mergedPreferences = deepMergeById(existingData, preferences);
+    let mergedPreferences = deepMergeById(existingData, preferences);
 
-    // Persist merged preferences
-    const user = await User.findOneAndUpdate(
-      { email: req.user.email },
-      { 
-        $set: {
-          'app_preferences.data': mergedPreferences,
-          'app_preferences.schemaVersion': CURRENT_SCHEMA_VERSION
-        }
-      },
-      { 
-        new: true, 
-        select: '+app_preferences',
-        upsert: true, // Create app_preferences if it doesn't exist
-        setDefaultsOnInsert: true
+    // Special-case: treat scheduledPostSlots as authoritative replacement to allow deletions
+    if (Object.prototype.hasOwnProperty.call(preferences, 'scheduledPostSlots')) {
+      if (preferences.scheduledPostSlots == null) {
+        mergedPreferences.scheduledPostSlots = [];
+      } else if (Array.isArray(preferences.scheduledPostSlots)) {
+        mergedPreferences.scheduledPostSlots = preferences.scheduledPostSlots;
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'scheduledPostSlots must be an array or null'
+        });
       }
-    );
+    }
 
-    console.log('Updated user preferences for:', user.email);
+    // Special-case: primitive replacement for jamieAssistDefaults when provided
+    if (Object.prototype.hasOwnProperty.call(preferences, 'jamieAssistDefaults')) {
+      if (preferences.jamieAssistDefaults == null || typeof preferences.jamieAssistDefaults === 'string') {
+        mergedPreferences.jamieAssistDefaults = preferences.jamieAssistDefaults || '';
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'jamieAssistDefaults must be a string or null'
+        });
+      }
+    }
 
-    const responseData = user.app_preferences.data || {};
+    // Special-case: boolean replacement for jamieFullAutoEnabled when provided
+    if (Object.prototype.hasOwnProperty.call(preferences, 'jamieFullAutoEnabled')) {
+      if (preferences.jamieFullAutoEnabled == null) {
+        mergedPreferences.jamieFullAutoEnabled = false;
+      } else if (typeof preferences.jamieFullAutoEnabled === 'boolean') {
+        mergedPreferences.jamieFullAutoEnabled = preferences.jamieFullAutoEnabled;
+      } else {
+        return res.status(400).json({
+          error: 'Invalid preferences format',
+          message: 'jamieFullAutoEnabled must be a boolean or null'
+        });
+      }
+    }
+
+    // Persist merged preferences with strong write concern, then re-read fresh from DB
+    // Update all docs that match this email in case of accidental duplicates
+    const updateFilter = { email: req.user.email };
+    const updateOperation = {
+      $set: {
+        'app_preferences.data': mergedPreferences,
+        'app_preferences.schemaVersion': CURRENT_SCHEMA_VERSION
+      }
+    };
+    const writeOptions = { upsert: true, writeConcern: { w: 'majority' } };
+    const writeResult = await User.updateMany(updateFilter, updateOperation, writeOptions);
+
+    // Wait briefly to ensure replication and read-after-write visibility even under lag
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    const user = await User.findOne({ email: req.user.email })
+      .read('primary')
+      .select('+app_preferences')
+      .lean();
+
+    console.log('Updated user preferences for:', user?.email);
+
+    const responseData = user?.app_preferences?.data || {};
     if (!Array.isArray(responseData.scheduledPostSlots)) {
       responseData.scheduledPostSlots = [];
     }
 
-    res.json({
+    // Provide a read-back snapshot as a separate field for verification
+    const readbackData = responseData;
+    let response = {
       preferences: responseData,
-      schemaVersion: user.app_preferences.schemaVersion
-    });
+      schemaVersion: user?.app_preferences?.schemaVersion || CURRENT_SCHEMA_VERSION,
+    }
+    if (process.env.DEBUG_MODE === 'true') {
+      response.dbReadbackPreferences = readbackData;
+      response.debugWrite = {
+        filter: updateFilter,
+        set: updateOperation.$set,
+        result: writeResult
+      }
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Error updating user app preferences:', error);
     res.status(500).json({ error: 'Failed to update preferences' });

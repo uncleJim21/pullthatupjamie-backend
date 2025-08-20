@@ -49,6 +49,9 @@ const mentionsRoutes = require('./routes/mentions');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
 const { updateEntitlementConfig } = require('./utils/entitlements');
+const { checkAdminMode } = require('./middleware/authMiddleware');
+const { serviceHmac } = require('./middleware/hmac');
+const GarbageCollector = require('./utils/GarbageCollector');
 
 
 const mongoURI = process.env.MONGO_URI;
@@ -1779,6 +1782,12 @@ app.listen(PORT, async () => {
     socialProcessor.start();
     console.log('Social post processor started successfully');
     
+    // Start Garbage Collector
+    const garbageCollector = new GarbageCollector();
+    global.garbageCollector = garbageCollector; // Store globally for shutdown handlers
+    garbageCollector.start();
+    console.log('Garbage collector started successfully');
+    
     // Set up hard-coded scheduled tasks in Chicago timezone if scheduler is enabled
     if (SCHEDULER_ENABLED) {
       console.log('Setting up scheduled tasks...');
@@ -1841,6 +1850,12 @@ process.on('SIGTERM', async () => {
   // ✅ GUARANTEED TRANSFER: Release jobs back to queue
   if (clipQueueManager) {
     await clipQueueManager.shutdown();
+  }
+  
+  // Stop garbage collector gracefully
+  if (global.garbageCollector) {
+    global.garbageCollector.stop();
+    console.log('Garbage collector stopped gracefully');
   }
   
   setTimeout(() => {
@@ -2165,153 +2180,41 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
   }
 });
 
-// Promotional tweet generation endpoint with jamie-assist name
+// Promotional tweet generation endpoint with jamie-assist name (refactored to service)
+const { streamJamieAssist } = require('./utils/JamieAssistService');
 app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;
-    
-    console.log(`[INFO] Jamie Assist generating promotional content for clip: ${lookupHash}`);
-    console.log(`[INFO] Additional prefs: ${additionalPrefs}`);
-    // Get the clip from WorkProductV2
-    const clip = await WorkProductV2.findOne({ lookupHash });
-    
-    if (!clip) {
-      return res.status(404).json({ error: 'Clip not found' });
-    }
-    
-    // If we have the essential identifiers, fetch the detailed data
-    const result = clip.result || {};
-    const { feedId, guid, clipText } = result;
-    
-    if (!clipText) {
-      return res.status(400).json({ error: 'Clip has no text content' });
-    }
-    
-    // Fetch feed and episode data in parallel, and also get the first paragraph from Pinecone
-    let feedData = null;
-    let episodeData = null;
-    let firstParagraph = null;
-    
-    if (feedId && guid) {
-      [feedData, episodeData, firstParagraph] = await Promise.all([
-        getFeedById(feedId),
-        getEpisodeByGuid(guid),
-        // Get first paragraph from Pinecone
-        (async () => {
-          try {
-            // Create a dummy vector for searching
-            const dummyVector = Array(1536).fill(0);
-            // Use findSimilarDiscussions which is already imported and configured
-            const results = await findSimilarDiscussions({
-              embedding: dummyVector,
-              feedIds: [feedId],
-              guid: guid,  // Add guid filter to get paragraphs from correct episode
-              limit: 1,
-              query: '' // Empty query to just get first paragraph
-            });
-            return results?.[0] || null;
-          } catch (error) {
-            console.error('Error fetching first paragraph:', error);
-            return null;
-          }
-        })()
-      ]);
-    }
-    
-    // Prepare context for the LLM
-    const truncateText = (text, wordLimit = 150) => {
-      if (!text) return "";
-      const words = text.split(/\s+/);
-      if (words.length <= wordLimit) return text;
-      return words.slice(0, wordLimit).join(' ') + '...';
-    };
-
-    // Prepare context for the LLM
-    const context = {
-      clipText: clipText || "No clip text available",
-      episodeTitle: episodeData?.title || result.episodeTitle || "Unknown episode",
-      feedTitle: feedData?.title || result.feedTitle || "Unknown podcast",
-      episodeDescription: truncateText(episodeData?.description || result.episodeDescription || ""),
-      feedDescription: truncateText(feedData?.description || result.feedDescription || ""),
-      listenLink: firstParagraph?.listenLink || episodeData?.listenLink || "",
-      additionalPrefs
-    };
-    
-    // Set up streaming response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    
-    // Create the prompt for the LLM
-    const prompt = `
-You are a social media expert who creates engaging promotional posts for podcast clips.
-
-⚠️ IMPORTANT: ABSOLUTELY NO HASHTAGS! Do not include any hashtags (words preceded by #) in your response. ⚠️
-
-Here's information about the clip:
-- Podcast: ${context.feedTitle}
-- Episode: ${context.episodeTitle}
-- Episode Description: ${context.episodeDescription}
-- Feed Description: ${context.feedDescription}
-- Listen Link: ${context.listenLink}
-- Clip Text: "${context.clipText}"
-${context.episodeDescription ? `- Episode Description: ${context.episodeDescription}${context.episodeDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
-${context.feedDescription ? `- Podcast Description: ${context.feedDescription}${context.feedDescription.endsWith('...') ? ' (truncated)' : ''}` : ''}
-
-${typeof additionalPrefs === 'string' && additionalPrefs ? `User instructions: ${additionalPrefs}` : 'Use an engaging, conversational tone. Keep the tweet under 280 characters.'}
-
-Create a compelling promotional tweet that:
-1. no hash tags. no hash tags. no hash tags no hash tags. do not give me a hash tag. if you do I will be very upset. Do not even think about it.
-2. Primarily focuses on the clip text component itself
-3. Captures the essence of what makes this clip interesting
-4. Is shareable and attention-grabbing
-5. Includes relevant context about the podcast/episode when helpful
-6. Stays under 150 characters to make sure there's room for the share link
-7. If there is a guest make an effort to mention them and the host by name if it fits
-8. REMINDER: ABSOLUTELY NO HASHTAGS - this is critical as hashtags severely reduce engagement
-9. If the user asks for it reference the Listen Link when pushing for a call to action
-
-REMEMBER: DO NOT USE ANY HASHTAGS (#) AT ALL. NOT EVEN ONE.
-
-Write only the social media post text, without any explanations or quotation marks.
-`;
-    printLog(`[INFO] Prompt: ${prompt}`);
-    printLog(`[More Info] Paragraph data: ${JSON.stringify(firstParagraph)} \n\nEpisode data:${JSON.stringify(episodeData)}`);
-
-    // Call OpenAI with streaming
-    const stream = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 300
-    });
-    
-    // Stream the response to the client
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) {
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-    }
-    
-    // End the stream
-    res.write('data: [DONE]\n\n');
-    res.end();
-    
+    await streamJamieAssist(res, lookupHash, additionalPrefs);
   } catch (error) {
     console.error('Error in jamie-assist:', error);
-    
-    // If headers haven't been sent yet, return a JSON error
     if (!res.headersSent) {
-      return res.status(500).json({ 
-        error: 'Failed to generate promotional content',
-        details: error.message
-      });
+      return res.status(500).json({ error: 'Failed to generate promotional content', details: error.message });
     }
-    
-    // If streaming has started, send error in the stream
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+});
+
+// HMAC-only duplicate endpoint for service-to-service access
+app.post('/api/internal/jamie-assist/:lookupHash', serviceHmac({ requiredScopes: ['svc:jamie:assist'] }), async (req, res) => {
+  try {
+    const { lookupHash } = req.params;
+    const { additionalPrefs = "" } = req.body;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    await streamJamieAssist(res, lookupHash, additionalPrefs);
+  } catch (error) {
+    console.error('Error in internal jamie-assist:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Failed to generate promotional content', details: error.message });
+    }
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
@@ -2954,6 +2857,121 @@ if (DEBUG_MODE) {
         success: false,
         error: error.message
       });
+    }
+  });
+
+  // Simple debug endpoint to validate HMAC auth end-to-end
+  app.post('/api/debug/test-hmac', serviceHmac({ requiredScopes: ['svc:test'] }), (req, res) => {
+    res.json({
+      ok: true,
+      method: req.method,
+      path: req.path,
+      keyId: req.serviceAuth?.keyId || null,
+      scopes: req.serviceAuth?.scopes || [],
+      echo: req.body || null
+    });
+  });
+    
+  
+  // Add a debug endpoint to manually trigger garbage collection
+  app.post('/api/debug/trigger-gc', async (req, res) => {
+    try {
+      console.log(`[DEBUG] Manually triggering garbage collection`);
+      
+      // Get the garbage collector instance
+      const garbageCollector = new GarbageCollector();
+      await garbageCollector.runCleanup();
+      
+      res.json({
+        success: true,
+        message: 'Garbage collection triggered successfully',
+        status: garbageCollector.getStatus()
+      });
+    } catch (error) {
+      console.error('Error triggering garbage collection:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+  
+  // Add a debug endpoint to check garbage collector status
+  app.get('/api/debug/gc-status', (req, res) => {
+    try {
+      const garbageCollector = new GarbageCollector();
+      res.json({
+        success: true,
+        status: garbageCollector.getStatus()
+      });
+    } catch (error) {
+      console.error('Error getting garbage collector status:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Debug endpoint: show DB connection info and current user's jamieAssistDefaults
+  app.get('/api/debug/db-info', async (req, res) => {
+    try {
+      const conn = mongoose.connection;
+      const info = {
+        host: conn.host,
+        port: conn.port,
+        name: conn.name,
+        readyState: conn.readyState
+      };
+
+      let prefs = null;
+      try {
+        const authHeader = req.headers.authorization || '';
+        if (authHeader.startsWith('Bearer ')) {
+          const token = authHeader.split(' ')[1];
+          const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+          const { User } = require('./models/User');
+          const user = await User.findOne({ email: decoded.email })
+            .read('primary')
+            .select('+app_preferences')
+            .lean();
+          prefs = {
+            email: decoded.email,
+            jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
+            schemaVersion: user?.app_preferences?.schemaVersion ?? null
+          };
+        }
+      } catch (_) {}
+
+      res.json({ connection: info, userPreferences: prefs });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Debug endpoint: list all user docs matching token email and their jamieAssistDefaults
+  app.get('/api/debug/user-docs', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      if (!authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Missing token' });
+      }
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      const { User } = require('./models/User');
+      const docs = await User.find({ email: decoded.email })
+        .read('primary')
+        .select('+app_preferences email')
+        .lean();
+      const simplified = docs.map(d => ({
+        _id: d._id,
+        email: d.email,
+        jamieAssistDefaults: d?.app_preferences?.data?.jamieAssistDefaults ?? null,
+        schemaVersion: d?.app_preferences?.schemaVersion ?? null
+      }));
+      res.json({ count: simplified.length, docs: simplified });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
   });
 }

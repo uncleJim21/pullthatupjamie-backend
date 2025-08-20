@@ -28,6 +28,13 @@ const SocialPostSchema = new mongoose.Schema({
     type: String,
     default: 'America/Chicago' // Your existing timezone standard
   },
+
+  // Optional external scheduler slot identifier (for mapping from upstream systems)
+  scheduledPostSlotId: {
+    type: String,
+    required: false,
+    index: true
+  },
   
   // Content (simplified)
   content: {
