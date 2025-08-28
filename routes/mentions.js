@@ -808,4 +808,229 @@ router.delete('/pins/:pinId', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/mentions/pins/:pinId/link-nostr
+router.post('/pins/:pinId/link-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    const { npub } = req.body;
+    
+    console.log('Link Nostr request:', { pinId, npub });
+    
+    if (!npub) {
+      return res.status(400).json({ 
+        error: 'Missing npub',
+        message: 'npub field is required'
+      });
+    }
+
+    // Initialize NostrService for profile lookup
+    const NostrService = require('../utils/NostrService');
+    const nostrService = new NostrService();
+
+    // Validate npub format
+    if (!nostrService.isValidNpub(npub)) {
+      return res.status(400).json({
+        error: 'Invalid npub format',
+        message: 'Please provide a valid npub (e.g., npub1...)'
+      });
+    }
+
+    // Lookup Nostr profile
+    console.log('Looking up Nostr profile for:', npub);
+    const profileResult = await nostrService.lookupProfile(npub);
+    
+    if (!profileResult.success) {
+      return res.status(404).json({
+        error: 'Nostr profile not found',
+        message: profileResult.message,
+        stats: profileResult.stats,
+        failedRelays: profileResult.failedRelays
+      });
+    }
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pinIndex = user.mention_preferences.pinned_mentions.findIndex(pin => pin.id === pinId);
+    
+    if (pinIndex === -1) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    const pin = user.mention_preferences.pinned_mentions[pinIndex];
+
+    // Update pin with Nostr profile data
+    const updatedPin = {
+      ...pin,
+      nostr_profile: profileResult.profile,
+      is_cross_platform: true,
+      updated_at: new Date()
+    };
+
+    // Update the pin in the array
+    user.mention_preferences.pinned_mentions[pinIndex] = updatedPin;
+    
+    // Save the user
+    await user.save();
+
+    console.log('Successfully linked Nostr profile to pin:', {
+      pinId,
+      npub,
+      nostrName: profileResult.profile.name || profileResult.profile.displayName
+    });
+
+    res.json({
+      success: true,
+      message: 'Nostr profile linked successfully',
+      pin: updatedPin,
+      nostrProfile: profileResult.profile
+    });
+
+  } catch (error) {
+    console.error('Error linking Nostr profile to pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to link Nostr profile',
+      message: error.message 
+    });
+  }
+});
+
+// POST /api/mentions/pins/:pinId/unlink-nostr
+router.post('/pins/:pinId/unlink-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    
+    console.log('Unlink Nostr request for pin:', pinId);
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pinIndex = user.mention_preferences.pinned_mentions.findIndex(pin => pin.id === pinId);
+    
+    if (pinIndex === -1) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    const pin = user.mention_preferences.pinned_mentions[pinIndex];
+
+    // Update pin to remove Nostr profile
+    const updatedPin = {
+      ...pin,
+      nostr_profile: null,
+      is_cross_platform: false,
+      updated_at: new Date()
+    };
+
+    // Update the pin in the array
+    user.mention_preferences.pinned_mentions[pinIndex] = updatedPin;
+    
+    // Save the user
+    await user.save();
+
+    console.log('Successfully unlinked Nostr profile from pin:', pinId);
+
+    res.json({
+      success: true,
+      message: 'Nostr profile unlinked successfully',
+      pin: updatedPin
+    });
+
+  } catch (error) {
+    console.error('Error unlinking Nostr profile from pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to unlink Nostr profile',
+      message: error.message 
+    });
+  }
+});
+
+// GET /api/mentions/pins/:pinId/suggest-nostr
+router.get('/pins/:pinId/suggest-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    
+    console.log('Suggest Nostr profiles for pin:', pinId);
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pin = user.mention_preferences.pinned_mentions.find(pin => pin.id === pinId);
+    
+    if (!pin) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    if (!pin.twitter_profile) {
+      return res.status(400).json({
+        error: 'Pin must have Twitter profile for suggestions',
+        message: 'Cannot suggest Nostr profiles for non-Twitter pins'
+      });
+    }
+
+    // Search for existing cross-platform mappings
+    const twitterUsername = pin.twitter_profile.username;
+    const mappings = await SocialProfileMapping.find({
+      'twitter_profile.username': { $regex: new RegExp(`^${twitterUsername}$`, 'i') }
+    }).limit(5).lean();
+
+    const suggestions = mappings.map(mapping => ({
+      npub: mapping.nostr_profile.npub,
+      nostrProfile: mapping.nostr_profile,
+      confidence: mapping.confidence_score,
+      usageCount: mapping.usage_count,
+      verificationMethod: mapping.verification_method,
+      mappingId: mapping._id
+    }));
+
+    res.json({
+      success: true,
+      pin: pin,
+      suggestions: suggestions,
+      message: suggestions.length > 0 
+        ? `Found ${suggestions.length} potential Nostr mapping(s)` 
+        : 'No existing mappings found for this Twitter profile'
+    });
+
+  } catch (error) {
+    console.error('Error getting Nostr suggestions for pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to get suggestions',
+      message: error.message 
+    });
+  }
+});
+
 module.exports = router; 
