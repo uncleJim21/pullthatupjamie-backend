@@ -8,15 +8,11 @@ const { nip19 } = require('nostr-tools');
  */
 class NostrService {
     constructor() {
-        // Define relay pool for Nostr (same as your React component)
+        // Define relay pool for Nostr - Most reliable relays only
         this.DEFAULT_RELAYS = [
             "wss://relay.primal.net",
             "wss://relay.damus.io", 
-            "wss://nos.lol",
-            "wss://relay.mostr.pub",
-            "wss://nostr.land",
-            "wss://purplerelay.com",
-            "wss://relay.snort.social"
+            "wss://nos.lol"
         ];
 
         // Bech32 encoding constants

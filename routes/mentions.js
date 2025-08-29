@@ -14,7 +14,10 @@ function sendSSE(res, data, eventType = 'data') {
 // Promisified search functions
 async function searchPersonalPins(user, query) {
   try {
-    const userData = await User.findById(user.id).select('+mention_preferences +mentionPreferences');
+    // Use hardcoded admin email for admin mode, otherwise use token email
+    const userEmail = user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : user.email;
+    console.log('searchPersonalPins - Looking for user with email:', userEmail);
+    const userData = await User.findOne({ email: userEmail }).select('+mention_preferences +mentionPreferences');
     
     let pins = [];
     if (userData.mention_preferences?.pinned_mentions) {
@@ -48,20 +51,56 @@ async function searchPersonalPins(user, query) {
       return matchesQuery;
     });
 
+    // Backfill missing nprofile for existing Nostr pins
+    let needsSave = false;
+    for (let i = 0; i < matchingPins.length; i++) {
+      const pin = matchingPins[i];
+      if (pin.nostr_profile && pin.nostr_profile.npub && !pin.nostr_profile.nprofile) {
+        try {
+          const NostrService = require('../utils/NostrService');
+          const nostrService = new NostrService();
+          
+          // Generate nprofile from npub
+          const nprofile = nostrService.npubToNprofile(pin.nostr_profile.npub);
+          pin.nostr_profile.nprofile = nprofile;
+          
+          // Convert npub to pubkey if not provided
+          if (!pin.nostr_profile.pubkey) {
+            pin.nostr_profile.pubkey = nostrService.npubToHex(pin.nostr_profile.npub);
+          }
+          
+          needsSave = true;
+          console.log('Backfilled nprofile for existing pin:', pin.id);
+        } catch (error) {
+          console.warn('Failed to backfill nprofile for pin:', pin.id, error.message);
+        }
+      }
+    }
+    
+    // Save if we made any updates
+    if (needsSave && userData) {
+      try {
+        await userData.save();
+        console.log('Saved backfilled nprofile data');
+      } catch (error) {
+        console.warn('Failed to save backfilled data:', error.message);
+      }
+    }
+
     const results = matchingPins.map(pin => {
       const pinPlatform = pin.twitter_profile ? 'twitter' : 'nostr';
       const profileData = pin.twitter_profile || pin.nostr_profile;
       const username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
       
-      return {
+      const baseResult = {
         platform: pinPlatform,
         id: profileData?.id || null,
         username: username,
         name: profileData?.name || profileData?.displayName || username,
         verified: profileData?.verified || false,
         verified_type: profileData?.verified_type || null,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null,
+        profile_image_url: profileData?.profile_image_url || profileData?.picture || null,
+        description: profileData?.description || profileData?.about || null,
         public_metrics: profileData?.public_metrics || {
           followers_count: 0,
           following_count: 0,
@@ -74,6 +113,20 @@ async function searchPersonalPins(user, query) {
         lastUsed: null,
         crossPlatformMapping: null
       };
+
+      // Add Nostr-specific fields if this is a Nostr profile
+      if (pinPlatform === 'nostr' && pin.nostr_profile) {
+        baseResult.nostr_data = {
+          npub: pin.nostr_profile.npub,
+          nprofile: pin.nostr_profile.nprofile || null,
+          pubkey: pin.nostr_profile.pubkey || null,
+          nip05: pin.nostr_profile.nip05 || null,
+          lud16: pin.nostr_profile.lud16 || null,
+          website: pin.nostr_profile.website || null
+        };
+      }
+
+      return baseResult;
     });
 
     return { source: 'pins', results, error: null };
@@ -651,6 +704,28 @@ router.post('/pins', authenticateToken, async (req, res) => {
       });
     }
 
+    // For Nostr profiles, ensure we have nprofile if not provided
+    let enrichedProfileData = profileData || {};
+    if (platform === 'nostr' && username.startsWith('npub1') && !enrichedProfileData.nprofile) {
+      try {
+        const NostrService = require('../utils/NostrService');
+        const nostrService = new NostrService();
+        
+        // Generate nprofile from npub
+        const nprofile = nostrService.npubToNprofile(username);
+        enrichedProfileData.nprofile = nprofile;
+        
+        // Convert npub to pubkey if not provided
+        if (!enrichedProfileData.pubkey) {
+          enrichedProfileData.pubkey = nostrService.npubToHex(username);
+        }
+        
+        console.log('Generated nprofile for pin creation:', nprofile);
+      } catch (error) {
+        console.warn('Failed to generate nprofile for pin:', error.message);
+      }
+    }
+
     const user = await User.findById(req.user.id).select('+mention_preferences');
     
     if (!user.mention_preferences) {
@@ -679,20 +754,25 @@ router.post('/pins', authenticateToken, async (req, res) => {
       label: notes || '',
       twitter_profile: platform === 'twitter' ? { 
         username, 
-        id: profileData?.id || null,
-        name: profileData?.name || username,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null,
-        verified: profileData?.verified || false,
-        verified_type: profileData?.verified_type || null,
-        public_metrics: profileData?.public_metrics || null,
-        protected: profileData?.protected || false
+        id: enrichedProfileData?.id || null,
+        name: enrichedProfileData?.name || username,
+        profile_image_url: enrichedProfileData?.profile_image_url || null,
+        description: enrichedProfileData?.description || null,
+        verified: enrichedProfileData?.verified || false,
+        verified_type: enrichedProfileData?.verified_type || null,
+        public_metrics: enrichedProfileData?.public_metrics || null,
+        protected: enrichedProfileData?.protected || false
       } : null,
       nostr_profile: platform === 'nostr' ? { 
         npub: username,
-        displayName: profileData?.displayName || username,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null
+        displayName: enrichedProfileData?.displayName || username,
+        profile_image_url: enrichedProfileData?.profile_image_url || null,
+        description: enrichedProfileData?.description || null,
+        nprofile: enrichedProfileData?.nprofile || null,
+        pubkey: enrichedProfileData?.pubkey || null,
+        nip05: enrichedProfileData?.nip05 || null,
+        lud16: enrichedProfileData?.lud16 || null,
+        website: enrichedProfileData?.website || null
       } : null,
       is_cross_platform: isCrossPlatform,
       source_mapping_id: null,
@@ -870,11 +950,18 @@ router.post('/pins/:pinId/link-nostr', authenticateToken, async (req, res) => {
 
     const pin = user.mention_preferences.pinned_mentions[pinIndex];
 
-    // Update pin with Nostr profile data
+    // Update pin with Nostr profile data while preserving existing data
     const updatedPin = {
       ...pin,
-      nostr_profile: profileResult.profile,
+      id: pin.id, // Explicitly preserve the pin ID
+      label: pin.label, // Preserve label
+      twitter_profile: pin.twitter_profile, // Preserve Twitter data
+      nostr_profile: profileResult.profile, // Add/update Nostr data
       is_cross_platform: true,
+      source_mapping_id: pin.source_mapping_id,
+      mapping_confidence: pin.mapping_confidence,
+      usage_count: pin.usage_count,
+      is_adopted: pin.is_adopted,
       updated_at: new Date()
     };
 
