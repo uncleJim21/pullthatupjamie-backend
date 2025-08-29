@@ -327,7 +327,8 @@ router.post('/search/stream', authenticateToken, async (req, res) => {
               ...twitterUser,
               isPinned: true,
               pinId: matchingPin.pinId,
-              lastUsed: matchingPin.lastUsed
+              lastUsed: matchingPin.lastUsed,
+              crossPlatformMapping: matchingPin.crossPlatformMapping // Preserve cross-platform mapping from pins
             };
           }
           return twitterUser;
@@ -605,12 +606,18 @@ router.post('/search', authenticateToken, async (req, res) => {
     const mapping = includeCrossPlatformMappings && crossMappings.length > 0 ? 
       crossMappings.find(m => m.twitter_profile.username.toLowerCase() === tw.username.toLowerCase()) : null;
     
+    // Check if this Twitter profile is linked to a Nostr profile in personal pins
+    let nostrCrossPlatformMapping = null;
+    if (pinnedPin && pinnedPin.nostr_profile) {
+      nostrCrossPlatformMapping = `Connected to Nostr ${pinnedPin.nostr_profile.displayName || pinnedPin.nostr_profile.name || pinnedPin.nostr_profile.npub}`;
+    }
+    
     return {
       ...tw,
       isPinned: !!pinnedPin,
       pinId: pinnedPin?.id || null,
       lastUsed: pinnedPin?.lastUsed || null,
-      crossPlatformMapping: mapping ? {
+      crossPlatformMapping: nostrCrossPlatformMapping || (mapping ? {
         hasNostrMapping: true,
         nostrNpub: mapping.nostr_profile.npub,
         nostrDisplayName: mapping.nostr_profile.displayName || null,
@@ -618,7 +625,7 @@ router.post('/search', authenticateToken, async (req, res) => {
         verificationMethod: mapping.verification_method,
         isAdopted: false,
         mappingId: mapping._id.toString()
-      } : null
+      } : null)
     };
   });
   
@@ -654,6 +661,14 @@ router.post('/search', authenticateToken, async (req, res) => {
         // Add pinned profile that wasn't found in search results but matches the query
         const profileData = pinPlatform === 'twitter' ? pin.twitter_profile : pin.nostr_profile;
         
+        // Determine cross-platform mapping for pinned profiles
+        let crossPlatformMapping = null;
+        if (pinPlatform === 'twitter' && pin.nostr_profile) {
+          crossPlatformMapping = `Connected to Nostr ${pin.nostr_profile.displayName || pin.nostr_profile.name || pin.nostr_profile.npub}`;
+        } else if (pinPlatform === 'nostr' && pin.twitter_profile) {
+          crossPlatformMapping = `Connected to Twitter @${pin.twitter_profile.username}`;
+        }
+
         results.push({
           platform: pinPlatform,
           id: profileData?.id || null,
@@ -673,7 +688,18 @@ router.post('/search', authenticateToken, async (req, res) => {
           isPinned: true,
           pinId: pin.id,
           lastUsed: null, // TODO: Add lastUsed field to schema if needed
-          crossPlatformMapping: null
+          crossPlatformMapping: crossPlatformMapping,
+          // Add nostr_data for Nostr profiles to match streaming format
+          ...(pinPlatform === 'nostr' && {
+            nostr_data: {
+              npub: pin.nostr_profile.npub,
+              nprofile: pin.nostr_profile.nprofile || null,
+              pubkey: pin.nostr_profile.pubkey || null,
+              nip05: pin.nostr_profile.nip05 || null,
+              lud16: pin.nostr_profile.lud16 || null,
+              website: pin.nostr_profile.website || null
+            }
+          })
         });
       }
     });
