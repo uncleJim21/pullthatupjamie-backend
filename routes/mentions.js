@@ -98,64 +98,71 @@ async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr'])
       }
     }
 
-    const results = matchingPins.map(pin => {
-      // For cross-platform pins, determine which profile to show based on requested platforms
-      let pinPlatform, profileData, username;
-      
+    const results = [];
+    
+    matchingPins.forEach(pin => {
       const hasTwitter = pin.twitter_profile && pin.twitter_profile.username;
       const hasNostr = pin.nostr_profile && pin.nostr_profile.npub;
       
-      // If searching for specific platform and pin has that profile, prioritize it
-      if (platforms.includes('nostr') && !platforms.includes('twitter') && hasNostr) {
-        pinPlatform = 'nostr';
-        profileData = pin.nostr_profile;
-        username = pin.nostr_profile.npub;
-      } else if (platforms.includes('twitter') && !platforms.includes('nostr') && hasTwitter) {
-        pinPlatform = 'twitter';
-        profileData = pin.twitter_profile;
-        username = pin.twitter_profile.username;
-      } else {
-        // Default behavior: prioritize Twitter if both exist, or use whatever is available
-        pinPlatform = hasTwitter ? 'twitter' : 'nostr';
-        profileData = pin.twitter_profile || pin.nostr_profile;
-        username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
+      // Add Twitter profile if it exists and Twitter platform is requested
+      if (hasTwitter && platforms.includes('twitter')) {
+        const twitterResult = {
+          platform: 'twitter',
+          id: pin.twitter_profile.id || null,
+          username: pin.twitter_profile.username,
+          name: pin.twitter_profile.name || pin.twitter_profile.username,
+          verified: pin.twitter_profile.verified || false,
+          verified_type: pin.twitter_profile.verified_type || null,
+          profile_image_url: pin.twitter_profile.profile_image_url || null,
+          description: pin.twitter_profile.description || null,
+          public_metrics: pin.twitter_profile.public_metrics || {
+            followers_count: 0,
+            following_count: 0,
+            tweet_count: 0,
+            listed_count: 0
+          },
+          protected: pin.twitter_profile.protected || false,
+          isPinned: true,
+          pinId: pin.id,
+          lastUsed: null,
+          crossPlatformMapping: hasNostr ? `Connected to Nostr ${pin.nostr_profile.displayName || pin.nostr_profile.npub}` : null
+        };
+        results.push(twitterResult);
       }
       
-      const baseResult = {
-        platform: pinPlatform,
-        id: profileData?.id || null,
-        username: username,
-        name: profileData?.name || profileData?.displayName || username,
-        verified: profileData?.verified || false,
-        verified_type: profileData?.verified_type || null,
-        profile_image_url: profileData?.profile_image_url || profileData?.picture || null,
-        description: profileData?.description || profileData?.about || null,
-        public_metrics: profileData?.public_metrics || {
-          followers_count: 0,
-          following_count: 0,
-          tweet_count: 0,
-          listed_count: 0
-        },
-        protected: profileData?.protected || false,
-        isPinned: true,
-        pinId: pin.id,
-        lastUsed: null,
-        crossPlatformMapping: null
-      };
-
-      // Add Nostr-specific fields if this is a Nostr profile
-      if (pinPlatform === 'nostr' && pin.nostr_profile) {
-        baseResult.nostr_data = {
-          npub: pin.nostr_profile.npub,
-          nprofile: pin.nostr_profile.nprofile || null,
-          pubkey: pin.nostr_profile.pubkey || null,
-          nip05: pin.nostr_profile.nip05 || null,
-          lud16: pin.nostr_profile.lud16 || null,
-          website: pin.nostr_profile.website || null
+      // Add Nostr profile if it exists and Nostr platform is requested  
+      if (hasNostr && platforms.includes('nostr')) {
+        const nostrResult = {
+          platform: 'nostr',
+          id: null,
+          username: pin.nostr_profile.npub,
+          name: pin.nostr_profile.displayName || pin.nostr_profile.name || pin.nostr_profile.npub,
+          verified: false,
+          verified_type: null,
+          profile_image_url: pin.nostr_profile.profile_image_url || pin.nostr_profile.picture || null,
+          description: pin.nostr_profile.description || pin.nostr_profile.about || null,
+          public_metrics: {
+            followers_count: 0,
+            following_count: 0,
+            tweet_count: 0,
+            listed_count: 0
+          },
+          protected: false,
+          isPinned: true,
+          pinId: pin.id,
+          lastUsed: null,
+          crossPlatformMapping: hasTwitter ? `Connected to Twitter @${pin.twitter_profile.username}` : null,
+          nostr_data: {
+            npub: pin.nostr_profile.npub,
+            nprofile: pin.nostr_profile.nprofile || null,
+            pubkey: pin.nostr_profile.pubkey || null,
+            nip05: pin.nostr_profile.nip05 || null,
+            lud16: pin.nostr_profile.lud16 || null,
+            website: pin.nostr_profile.website || null
+          }
         };
+        results.push(nostrResult);
       }
-
-      return baseResult;
     });
 
     return { source: 'pins', results, error: null };
