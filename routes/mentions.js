@@ -172,22 +172,93 @@ async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr'])
   }
 }
 
-async function searchTwitterAPI(query, platforms) {
+async function searchTwitterAPI(query, platforms, user = null) {
   if (!platforms.includes('twitter')) {
     return { source: 'twitter', results: [], error: null };
   }
 
   try {
-    const client = new TwitterApi({
-      appKey: process.env.TWITTER_CONSUMER_KEY,
-      appSecret: process.env.TWITTER_CONSUMER_SECRET,
-    });
-    const appOnlyClient = await client.appLogin();
-    const response = await appOnlyClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
-      'user.fields': [
-        'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
-      ]
-    });
+    let client = null;
+    let authMethod = 'app-only';
+    
+    // First try: Use user OAuth tokens if available
+    if (user?.email) {
+      try {
+        const TwitterService = require('../utils/TwitterService');
+        const twitterService = new TwitterService();
+        
+        // Get user's admin email (handle both user ID lookup and direct email)
+        let adminEmail = user.email;
+        if (user.isAdminMode) {
+          adminEmail = 'jim.carucci+prod@protonmail.com';
+        }
+        
+        // Get tokens and create client with automatic refresh capability
+        const { getTwitterTokens } = require('../utils/ProPodcastUtils');
+        const tokens = await getTwitterTokens(adminEmail);
+        
+        if (tokens?.oauthToken) {
+          console.log('🔑 Using user OAuth tokens for Twitter search:', adminEmail);
+          client = new TwitterApi(tokens.oauthToken);
+          authMethod = 'user-oauth';
+          
+          // We'll wrap the actual API call in executeWithTokenRefresh later
+        } else {
+          throw new Error('No valid Twitter tokens found');
+        }
+        
+      } catch (userAuthError) {
+        console.log('🔄 User OAuth failed, falling back to app-only:', userAuthError.message);
+        // Fall through to app-only auth
+      }
+    }
+    
+    // Fallback: Use app-only authentication
+    if (!client) {
+      console.log('🔑 Using app-only authentication for Twitter search');
+      const appClient = new TwitterApi({
+        appKey: process.env.TWITTER_CONSUMER_KEY,
+        appSecret: process.env.TWITTER_CONSUMER_SECRET,
+      });
+      client = await appClient.appLogin();
+      authMethod = 'app-only';
+    }
+
+    let response;
+    
+    // If using user OAuth, wrap in token refresh logic
+    if (authMethod === 'user-oauth' && user?.email) {
+      const TwitterService = require('../utils/TwitterService');
+      const twitterService = new TwitterService();
+      
+      let adminEmail = user.email;
+      if (user.isAdminMode) {
+        adminEmail = 'jim.carucci+prod@protonmail.com';
+      }
+      
+      response = await twitterService.executeWithTokenRefresh(adminEmail, async (newAccessToken) => {
+        let apiClient = client;
+        
+        // If we got a refreshed token, create a new client with it
+        if (newAccessToken) {
+          console.log('🔄 Using refreshed token for Twitter search');
+          apiClient = new TwitterApi(newAccessToken);
+        }
+        
+        return await apiClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
+          'user.fields': [
+            'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
+          ]
+        });
+      });
+    } else {
+      // For app-only auth, just make the call directly
+      response = await client.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
+        'user.fields': [
+          'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
+        ]
+      });
+    }
 
     const results = (response.data || []).map(user => ({
       platform: 'twitter',
@@ -211,9 +282,25 @@ async function searchTwitterAPI(query, platforms) {
       crossPlatformMapping: null
     }));
 
-    return { source: 'twitter', results, error: null };
+    console.log(`✅ Twitter search successful (${authMethod}): ${results.length} results`);
+    return { source: 'twitter', results, error: null, authMethod };
   } catch (error) {
     console.error('Error searching Twitter API:', error);
+    
+    // Enhanced error handling for rate limits
+    if (error.code === 429) {
+      const isAppLimit = error.headers?.['x-app-limit-24hour-remaining'] === '0';
+      const resetTime = error.headers?.['x-app-limit-24hour-reset'] || error.headers?.['x-rate-limit-reset'];
+      
+      return { 
+        source: 'twitter', 
+        results: [], 
+        error: `Rate limit exceeded (${isAppLimit ? 'daily app limit' : 'rate limit'}). Reset at: ${resetTime ? new Date(resetTime * 1000).toISOString() : 'unknown'}`,
+        rateLimited: true,
+        isAppLimit
+      };
+    }
+    
     return { source: 'twitter', results: [], error: error.message };
   }
 }
@@ -272,7 +359,7 @@ router.post('/search/stream', authenticateToken, async (req, res) => {
     searchPromises.push(searchPersonalPins(req.user, query, platforms));
   }
   
-  searchPromises.push(searchTwitterAPI(query, platforms));
+  searchPromises.push(searchTwitterAPI(query, platforms, req.user));
   
   if (includeCrossPlatformMappings) {
     searchPromises.push(searchCrossPlatformMappings(query, limit));
@@ -459,48 +546,25 @@ router.post('/search', authenticateToken, async (req, res) => {
     });
   }
 
-  // Twitter search (exact username match for MVP)
+  // Twitter search using the updated function with user OAuth priority
   let twitterResults = [];
   if (platforms.includes('twitter')) {
-    try {
-      const client = new TwitterApi({
-        appKey: process.env.TWITTER_CONSUMER_KEY,
-        appSecret: process.env.TWITTER_CONSUMER_SECRET,
-      });
-      const appOnlyClient = await client.appLogin();
-      const response = await appOnlyClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
-        'user.fields': [
-          'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
-        ]
-      });
-      
-      twitterResults = (response.data || []).map(user => ({
-        platform: 'twitter',
-        id: user.id,
-        username: user.username,
-        name: user.name,
-        verified: user.verified || false,
-        verified_type: user.verified_type || null,
-        profile_image_url: user.profile_image_url || null,
-        description: user.description || null,
-        public_metrics: user.public_metrics || {
-          followers_count: 0,
-          following_count: 0,
-          tweet_count: 0,
-          listed_count: 0
-        },
-        protected: user.protected || false,
-        isPinned: false, // Will be updated later based on personal pins
-        pinId: null, // Will be updated later based on personal pins
-        lastUsed: null, // Will be updated later based on personal pins
-        crossPlatformMapping: null // Will be updated later based on cross-mappings
-      }));
-    } catch (err) {
+    const twitterSearchResult = await searchTwitterAPI(query, platforms, req.user);
+    
+    if (twitterSearchResult.error && !twitterSearchResult.rateLimited) {
       return res.status(500).json({
         error: 'TWITTER_API_ERROR',
-        message: err.message
+        message: twitterSearchResult.error,
+        authMethod: twitterSearchResult.authMethod
       });
     }
+    
+    // If rate limited, continue with empty results but log the issue
+    if (twitterSearchResult.rateLimited) {
+      console.warn('Twitter search rate limited:', twitterSearchResult.error);
+    }
+    
+    twitterResults = twitterSearchResult.results || [];
   }
 
   // Nostr search (placeholder)
