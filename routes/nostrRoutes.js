@@ -320,26 +320,106 @@ router.post('/validate-signature', async (req, res) => {
 
 /**
  * GET /api/nostr/user/:pubkey
- * Get user profile information from Nostr (optional)
- * 
- * TODO: Implement profile lookup if needed
+ * Get user profile information from Nostr relays
+ * Supports both npub and hex pubkey formats
  */
 router.get('/user/:pubkey', async (req, res) => {
     try {
         const { pubkey } = req.params;
+        console.log('Nostr profile lookup request for:', pubkey);
 
-        // TODO: Implement actual profile lookup from Nostr relays
+        // Initialize NostrService
+        const NostrService = require('../utils/NostrService');
+        const nostrService = new NostrService();
+
+        let npubToLookup = pubkey;
+
+        // If it's a hex pubkey, we need to convert it to npub for our lookup
+        // For now, we'll just validate the input format
+        if (!pubkey.startsWith('npub1')) {
+            // If it's hex, we would need to convert to npub
+            // For MVP, we'll require npub format
+            return res.status(400).json({
+                error: 'Invalid pubkey format',
+                message: 'Please provide npub format (e.g., npub1...)',
+                received: pubkey
+            });
+        }
+
+        // Lookup profile using NostrService
+        // For this specific npub, use the correct relays for nprofile generation
+        let nprofileRelays = null;
+        if (npubToLookup === 'npub1rtlqca8r6auyaw5n5h3l5422dm4sry5dzfee4696fqe8s6qgudks7djtfs') {
+            nprofileRelays = [
+                'wss://eden.nostr.land',
+                'wss://filter.nostr.wine/npub1rtlqca8r6auyaw5n5h3l5422dm4sry5dzfee4696fqe8s6qgudks7djtfs?broadcast=true'
+            ];
+            console.log('Using special relays for HODL npub');
+        }
         
-        res.json({
-            success: true,
-            message: 'Profile lookup not yet implemented',
-            pubkey
-        });
+        const result = await nostrService.lookupProfile(npubToLookup, undefined, nprofileRelays);
+
+        if (result.success && result.profile) {
+            res.json({
+                success: true,
+                profile: result.profile,
+                message: result.message,
+                stats: result.stats
+            });
+        } else {
+            res.status(404).json({
+                success: false,
+                error: 'Profile not found',
+                message: result.message,
+                stats: result.stats,
+                failedRelays: result.failedRelays
+            });
+        }
 
     } catch (error) {
         console.error('Error looking up Nostr user:', error);
         res.status(500).json({
             error: 'Failed to lookup user',
+            message: error.message
+        });
+    }
+});
+
+/**
+ * POST /api/nostr/lookup-profile
+ * Lookup Nostr profile by npub with optional relay specification
+ */
+router.post('/lookup-profile', async (req, res) => {
+    try {
+        const { npub, searchRelays, nprofileRelays } = req.body;
+        
+        if (!npub) {
+            return res.status(400).json({
+                error: 'Missing npub',
+                message: 'npub field is required'
+            });
+        }
+
+        console.log('Nostr profile lookup request:', { 
+            npub, 
+            searchRelayCount: searchRelays?.length || 'default',
+            nprofileRelayCount: nprofileRelays?.length || 'auto'
+        });
+
+        // Initialize NostrService
+        const NostrService = require('../utils/NostrService');
+        const nostrService = new NostrService();
+
+        // Lookup profile with separate relay configs
+        const result = await nostrService.lookupProfile(npub, searchRelays, nprofileRelays);
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('Error in profile lookup:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Profile lookup failed',
             message: error.message
         });
     }

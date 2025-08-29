@@ -12,9 +12,12 @@ function sendSSE(res, data, eventType = 'data') {
 }
 
 // Promisified search functions
-async function searchPersonalPins(user, query) {
+async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr']) {
   try {
-    const userData = await User.findById(user.id).select('+mention_preferences +mentionPreferences');
+    // Use hardcoded admin email for admin mode, otherwise use token email
+    const userEmail = user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : user.email;
+    console.log('searchPersonalPins - Looking for user with email:', userEmail);
+    const userData = await User.findOne({ email: userEmail }).select('+mention_preferences +mentionPreferences');
     
     let pins = [];
     if (userData.mention_preferences?.pinned_mentions) {
@@ -30,13 +33,24 @@ async function searchPersonalPins(user, query) {
     });
 
     const matchingPins = validPins.filter(pin => {
+      // First check if pin matches requested platforms
+      const hasTwitter = pin.twitter_profile && pin.twitter_profile.username;
+      const hasNostr = pin.nostr_profile && pin.nostr_profile.npub;
+      
+      const matchesPlatform = 
+        (platforms.includes('twitter') && hasTwitter) ||
+        (platforms.includes('nostr') && hasNostr);
+      
+      if (!matchesPlatform) return false;
+      
+      // Then check if pin matches the search query
       let pinUsername = null;
       let pinName = null;
       
-      if (pin.twitter_profile && pin.twitter_profile.username) {
+      if (hasTwitter) {
         pinUsername = pin.twitter_profile.username;
         pinName = pin.twitter_profile.name;
-      } else if (pin.nostr_profile && pin.nostr_profile.npub) {
+      } else if (hasNostr) {
         pinUsername = pin.nostr_profile.npub;
         pinName = pin.nostr_profile.displayName;
       }
@@ -48,32 +62,107 @@ async function searchPersonalPins(user, query) {
       return matchesQuery;
     });
 
-    const results = matchingPins.map(pin => {
-      const pinPlatform = pin.twitter_profile ? 'twitter' : 'nostr';
-      const profileData = pin.twitter_profile || pin.nostr_profile;
-      const username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
+    // Backfill missing nprofile for existing Nostr pins
+    let needsSave = false;
+    for (let i = 0; i < matchingPins.length; i++) {
+      const pin = matchingPins[i];
+      if (pin.nostr_profile && pin.nostr_profile.npub && !pin.nostr_profile.nprofile) {
+        try {
+          const NostrService = require('../utils/NostrService');
+          const nostrService = new NostrService();
+          
+          // Generate nprofile from npub
+          const nprofile = nostrService.npubToNprofile(pin.nostr_profile.npub);
+          pin.nostr_profile.nprofile = nprofile;
+          
+          // Convert npub to pubkey if not provided
+          if (!pin.nostr_profile.pubkey) {
+            pin.nostr_profile.pubkey = nostrService.npubToHex(pin.nostr_profile.npub);
+          }
+          
+          needsSave = true;
+          console.log('Backfilled nprofile for existing pin:', pin.id);
+        } catch (error) {
+          console.warn('Failed to backfill nprofile for pin:', pin.id, error.message);
+        }
+      }
+    }
+    
+    // Save if we made any updates
+    if (needsSave && userData) {
+      try {
+        await userData.save();
+        console.log('Saved backfilled nprofile data');
+      } catch (error) {
+        console.warn('Failed to save backfilled data:', error.message);
+      }
+    }
+
+    const results = [];
+    
+    matchingPins.forEach(pin => {
+      const hasTwitter = pin.twitter_profile && pin.twitter_profile.username;
+      const hasNostr = pin.nostr_profile && pin.nostr_profile.npub;
       
-      return {
-        platform: pinPlatform,
-        id: profileData?.id || null,
-        username: username,
-        name: profileData?.name || profileData?.displayName || username,
-        verified: profileData?.verified || false,
-        verified_type: profileData?.verified_type || null,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null,
-        public_metrics: profileData?.public_metrics || {
-          followers_count: 0,
-          following_count: 0,
-          tweet_count: 0,
-          listed_count: 0
-        },
-        protected: profileData?.protected || false,
-        isPinned: true,
-        pinId: pin.id,
-        lastUsed: null,
-        crossPlatformMapping: null
-      };
+      // Add Twitter profile if it exists and Twitter platform is requested
+      if (hasTwitter && platforms.includes('twitter')) {
+        const twitterResult = {
+          platform: 'twitter',
+          id: pin.twitter_profile.id || null,
+          username: pin.twitter_profile.username,
+          name: pin.twitter_profile.name || pin.twitter_profile.username,
+          verified: pin.twitter_profile.verified || false,
+          verified_type: pin.twitter_profile.verified_type || null,
+          profile_image_url: pin.twitter_profile.profile_image_url || null,
+          description: pin.twitter_profile.description || null,
+          public_metrics: pin.twitter_profile.public_metrics || {
+            followers_count: 0,
+            following_count: 0,
+            tweet_count: 0,
+            listed_count: 0
+          },
+          protected: pin.twitter_profile.protected || false,
+          isPinned: true,
+          pinId: pin.id,
+          lastUsed: null,
+          crossPlatformMapping: hasNostr ? `Connected to Nostr ${pin.nostr_profile.displayName || pin.nostr_profile.npub}` : null
+        };
+        results.push(twitterResult);
+      }
+      
+      // Add Nostr profile if it exists and Nostr platform is requested  
+      if (hasNostr && platforms.includes('nostr')) {
+        const nostrResult = {
+          platform: 'nostr',
+          id: null,
+          username: pin.nostr_profile.npub,
+          name: pin.nostr_profile.displayName || pin.nostr_profile.name || pin.nostr_profile.npub,
+          verified: false,
+          verified_type: null,
+          profile_image_url: pin.nostr_profile.profile_image_url || pin.nostr_profile.picture || null,
+          description: pin.nostr_profile.description || pin.nostr_profile.about || null,
+          public_metrics: {
+            followers_count: 0,
+            following_count: 0,
+            tweet_count: 0,
+            listed_count: 0
+          },
+          protected: false,
+          isPinned: true,
+          pinId: pin.id,
+          lastUsed: null,
+          crossPlatformMapping: hasTwitter ? `Connected to Twitter @${pin.twitter_profile.username}` : null,
+          nostr_data: {
+            npub: pin.nostr_profile.npub,
+            nprofile: pin.nostr_profile.nprofile || null,
+            pubkey: pin.nostr_profile.pubkey || null,
+            nip05: pin.nostr_profile.nip05 || null,
+            lud16: pin.nostr_profile.lud16 || null,
+            website: pin.nostr_profile.website || null
+          }
+        };
+        results.push(nostrResult);
+      }
     });
 
     return { source: 'pins', results, error: null };
@@ -180,7 +269,7 @@ router.post('/search/stream', authenticateToken, async (req, res) => {
   const searchPromises = [];
   
   if (includePersonalPins) {
-    searchPromises.push(searchPersonalPins(req.user, query));
+    searchPromises.push(searchPersonalPins(req.user, query, platforms));
   }
   
   searchPromises.push(searchTwitterAPI(query, platforms));
@@ -238,7 +327,8 @@ router.post('/search/stream', authenticateToken, async (req, res) => {
               ...twitterUser,
               isPinned: true,
               pinId: matchingPin.pinId,
-              lastUsed: matchingPin.lastUsed
+              lastUsed: matchingPin.lastUsed,
+              crossPlatformMapping: matchingPin.crossPlatformMapping // Preserve cross-platform mapping from pins
             };
           }
           return twitterUser;
@@ -516,12 +606,18 @@ router.post('/search', authenticateToken, async (req, res) => {
     const mapping = includeCrossPlatformMappings && crossMappings.length > 0 ? 
       crossMappings.find(m => m.twitter_profile.username.toLowerCase() === tw.username.toLowerCase()) : null;
     
+    // Check if this Twitter profile is linked to a Nostr profile in personal pins
+    let nostrCrossPlatformMapping = null;
+    if (pinnedPin && pinnedPin.nostr_profile) {
+      nostrCrossPlatformMapping = `Connected to Nostr ${pinnedPin.nostr_profile.displayName || pinnedPin.nostr_profile.name || pinnedPin.nostr_profile.npub}`;
+    }
+    
     return {
       ...tw,
       isPinned: !!pinnedPin,
       pinId: pinnedPin?.id || null,
       lastUsed: pinnedPin?.lastUsed || null,
-      crossPlatformMapping: mapping ? {
+      crossPlatformMapping: nostrCrossPlatformMapping || (mapping ? {
         hasNostrMapping: true,
         nostrNpub: mapping.nostr_profile.npub,
         nostrDisplayName: mapping.nostr_profile.displayName || null,
@@ -529,7 +625,7 @@ router.post('/search', authenticateToken, async (req, res) => {
         verificationMethod: mapping.verification_method,
         isAdopted: false,
         mappingId: mapping._id.toString()
-      } : null
+      } : null)
     };
   });
   
@@ -565,6 +661,14 @@ router.post('/search', authenticateToken, async (req, res) => {
         // Add pinned profile that wasn't found in search results but matches the query
         const profileData = pinPlatform === 'twitter' ? pin.twitter_profile : pin.nostr_profile;
         
+        // Determine cross-platform mapping for pinned profiles
+        let crossPlatformMapping = null;
+        if (pinPlatform === 'twitter' && pin.nostr_profile) {
+          crossPlatformMapping = `Connected to Nostr ${pin.nostr_profile.displayName || pin.nostr_profile.name || pin.nostr_profile.npub}`;
+        } else if (pinPlatform === 'nostr' && pin.twitter_profile) {
+          crossPlatformMapping = `Connected to Twitter @${pin.twitter_profile.username}`;
+        }
+
         results.push({
           platform: pinPlatform,
           id: profileData?.id || null,
@@ -584,7 +688,18 @@ router.post('/search', authenticateToken, async (req, res) => {
           isPinned: true,
           pinId: pin.id,
           lastUsed: null, // TODO: Add lastUsed field to schema if needed
-          crossPlatformMapping: null
+          crossPlatformMapping: crossPlatformMapping,
+          // Add nostr_data for Nostr profiles to match streaming format
+          ...(pinPlatform === 'nostr' && {
+            nostr_data: {
+              npub: pin.nostr_profile.npub,
+              nprofile: pin.nostr_profile.nprofile || null,
+              pubkey: pin.nostr_profile.pubkey || null,
+              nip05: pin.nostr_profile.nip05 || null,
+              lud16: pin.nostr_profile.lud16 || null,
+              website: pin.nostr_profile.website || null
+            }
+          })
         });
       }
     });
@@ -651,6 +766,28 @@ router.post('/pins', authenticateToken, async (req, res) => {
       });
     }
 
+    // For Nostr profiles, ensure we have nprofile if not provided
+    let enrichedProfileData = profileData || {};
+    if (platform === 'nostr' && username.startsWith('npub1') && !enrichedProfileData.nprofile) {
+      try {
+        const NostrService = require('../utils/NostrService');
+        const nostrService = new NostrService();
+        
+        // Generate nprofile from npub
+        const nprofile = nostrService.npubToNprofile(username);
+        enrichedProfileData.nprofile = nprofile;
+        
+        // Convert npub to pubkey if not provided
+        if (!enrichedProfileData.pubkey) {
+          enrichedProfileData.pubkey = nostrService.npubToHex(username);
+        }
+        
+        console.log('Generated nprofile for pin creation:', nprofile);
+      } catch (error) {
+        console.warn('Failed to generate nprofile for pin:', error.message);
+      }
+    }
+
     const user = await User.findById(req.user.id).select('+mention_preferences');
     
     if (!user.mention_preferences) {
@@ -679,20 +816,25 @@ router.post('/pins', authenticateToken, async (req, res) => {
       label: notes || '',
       twitter_profile: platform === 'twitter' ? { 
         username, 
-        id: profileData?.id || null,
-        name: profileData?.name || username,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null,
-        verified: profileData?.verified || false,
-        verified_type: profileData?.verified_type || null,
-        public_metrics: profileData?.public_metrics || null,
-        protected: profileData?.protected || false
+        id: enrichedProfileData?.id || null,
+        name: enrichedProfileData?.name || username,
+        profile_image_url: enrichedProfileData?.profile_image_url || null,
+        description: enrichedProfileData?.description || null,
+        verified: enrichedProfileData?.verified || false,
+        verified_type: enrichedProfileData?.verified_type || null,
+        public_metrics: enrichedProfileData?.public_metrics || null,
+        protected: enrichedProfileData?.protected || false
       } : null,
       nostr_profile: platform === 'nostr' ? { 
         npub: username,
-        displayName: profileData?.displayName || username,
-        profile_image_url: profileData?.profile_image_url || null,
-        description: profileData?.description || null
+        displayName: enrichedProfileData?.displayName || username,
+        profile_image_url: enrichedProfileData?.profile_image_url || null,
+        description: enrichedProfileData?.description || null,
+        nprofile: enrichedProfileData?.nprofile || null,
+        pubkey: enrichedProfileData?.pubkey || null,
+        nip05: enrichedProfileData?.nip05 || null,
+        lud16: enrichedProfileData?.lud16 || null,
+        website: enrichedProfileData?.website || null
       } : null,
       is_cross_platform: isCrossPlatform,
       source_mapping_id: null,
@@ -805,6 +947,238 @@ router.delete('/pins/:pinId', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error deleting personal pin:', error);
     res.status(500).json({ error: 'Failed to delete personal pin' });
+  }
+});
+
+// POST /api/mentions/pins/:pinId/link-nostr
+router.post('/pins/:pinId/link-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    const { npub } = req.body;
+    
+    console.log('Link Nostr request:', { pinId, npub });
+    
+    if (!npub) {
+      return res.status(400).json({ 
+        error: 'Missing npub',
+        message: 'npub field is required'
+      });
+    }
+
+    // Initialize NostrService for profile lookup
+    const NostrService = require('../utils/NostrService');
+    const nostrService = new NostrService();
+
+    // Validate npub format
+    if (!nostrService.isValidNpub(npub)) {
+      return res.status(400).json({
+        error: 'Invalid npub format',
+        message: 'Please provide a valid npub (e.g., npub1...)'
+      });
+    }
+
+    // Lookup Nostr profile
+    console.log('Looking up Nostr profile for:', npub);
+    const profileResult = await nostrService.lookupProfile(npub);
+    
+    if (!profileResult.success) {
+      return res.status(404).json({
+        error: 'Nostr profile not found',
+        message: profileResult.message,
+        stats: profileResult.stats,
+        failedRelays: profileResult.failedRelays
+      });
+    }
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pinIndex = user.mention_preferences.pinned_mentions.findIndex(pin => pin.id === pinId);
+    
+    if (pinIndex === -1) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    const pin = user.mention_preferences.pinned_mentions[pinIndex];
+
+    // Update pin with Nostr profile data while preserving existing data
+    const updatedPin = {
+      ...pin,
+      id: pin.id, // Explicitly preserve the pin ID
+      label: pin.label, // Preserve label
+      twitter_profile: pin.twitter_profile, // Preserve Twitter data
+      nostr_profile: profileResult.profile, // Add/update Nostr data
+      is_cross_platform: true,
+      source_mapping_id: pin.source_mapping_id,
+      mapping_confidence: pin.mapping_confidence,
+      usage_count: pin.usage_count,
+      is_adopted: pin.is_adopted,
+      updated_at: new Date()
+    };
+
+    // Update the pin in the array
+    user.mention_preferences.pinned_mentions[pinIndex] = updatedPin;
+    
+    // Save the user
+    await user.save();
+
+    console.log('Successfully linked Nostr profile to pin:', {
+      pinId,
+      npub,
+      nostrName: profileResult.profile.name || profileResult.profile.displayName
+    });
+
+    res.json({
+      success: true,
+      message: 'Nostr profile linked successfully',
+      pin: updatedPin,
+      nostrProfile: profileResult.profile
+    });
+
+  } catch (error) {
+    console.error('Error linking Nostr profile to pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to link Nostr profile',
+      message: error.message 
+    });
+  }
+});
+
+// POST /api/mentions/pins/:pinId/unlink-nostr
+router.post('/pins/:pinId/unlink-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    
+    console.log('Unlink Nostr request for pin:', pinId);
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pinIndex = user.mention_preferences.pinned_mentions.findIndex(pin => pin.id === pinId);
+    
+    if (pinIndex === -1) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    const pin = user.mention_preferences.pinned_mentions[pinIndex];
+
+    // Update pin to remove Nostr profile
+    const updatedPin = {
+      ...pin,
+      nostr_profile: null,
+      is_cross_platform: false,
+      updated_at: new Date()
+    };
+
+    // Update the pin in the array
+    user.mention_preferences.pinned_mentions[pinIndex] = updatedPin;
+    
+    // Save the user
+    await user.save();
+
+    console.log('Successfully unlinked Nostr profile from pin:', pinId);
+
+    res.json({
+      success: true,
+      message: 'Nostr profile unlinked successfully',
+      pin: updatedPin
+    });
+
+  } catch (error) {
+    console.error('Error unlinking Nostr profile from pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to unlink Nostr profile',
+      message: error.message 
+    });
+  }
+});
+
+// GET /api/mentions/pins/:pinId/suggest-nostr
+router.get('/pins/:pinId/suggest-nostr', authenticateToken, async (req, res) => {
+  try {
+    const { pinId } = req.params;
+    
+    console.log('Suggest Nostr profiles for pin:', pinId);
+
+    // Get user and find the pin
+    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
+    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    
+    if (!user || !user.mention_preferences?.pinned_mentions) {
+      return res.status(404).json({ 
+        error: 'User or pins not found' 
+      });
+    }
+
+    // Find the specific pin
+    const pin = user.mention_preferences.pinned_mentions.find(pin => pin.id === pinId);
+    
+    if (!pin) {
+      return res.status(404).json({ 
+        error: 'Pin not found',
+        message: `Pin with id ${pinId} not found`
+      });
+    }
+
+    if (!pin.twitter_profile) {
+      return res.status(400).json({
+        error: 'Pin must have Twitter profile for suggestions',
+        message: 'Cannot suggest Nostr profiles for non-Twitter pins'
+      });
+    }
+
+    // Search for existing cross-platform mappings
+    const twitterUsername = pin.twitter_profile.username;
+    const mappings = await SocialProfileMapping.find({
+      'twitter_profile.username': { $regex: new RegExp(`^${twitterUsername}$`, 'i') }
+    }).limit(5).lean();
+
+    const suggestions = mappings.map(mapping => ({
+      npub: mapping.nostr_profile.npub,
+      nostrProfile: mapping.nostr_profile,
+      confidence: mapping.confidence_score,
+      usageCount: mapping.usage_count,
+      verificationMethod: mapping.verification_method,
+      mappingId: mapping._id
+    }));
+
+    res.json({
+      success: true,
+      pin: pin,
+      suggestions: suggestions,
+      message: suggestions.length > 0 
+        ? `Found ${suggestions.length} potential Nostr mapping(s)` 
+        : 'No existing mappings found for this Twitter profile'
+    });
+
+  } catch (error) {
+    console.error('Error getting Nostr suggestions for pin:', error);
+    res.status(500).json({ 
+      error: 'Failed to get suggestions',
+      message: error.message 
+    });
   }
 });
 
