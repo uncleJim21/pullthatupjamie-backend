@@ -12,7 +12,7 @@ function sendSSE(res, data, eventType = 'data') {
 }
 
 // Promisified search functions
-async function searchPersonalPins(user, query) {
+async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr']) {
   try {
     // Use hardcoded admin email for admin mode, otherwise use token email
     const userEmail = user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : user.email;
@@ -33,13 +33,24 @@ async function searchPersonalPins(user, query) {
     });
 
     const matchingPins = validPins.filter(pin => {
+      // First check if pin matches requested platforms
+      const hasTwitter = pin.twitter_profile && pin.twitter_profile.username;
+      const hasNostr = pin.nostr_profile && pin.nostr_profile.npub;
+      
+      const matchesPlatform = 
+        (platforms.includes('twitter') && hasTwitter) ||
+        (platforms.includes('nostr') && hasNostr);
+      
+      if (!matchesPlatform) return false;
+      
+      // Then check if pin matches the search query
       let pinUsername = null;
       let pinName = null;
       
-      if (pin.twitter_profile && pin.twitter_profile.username) {
+      if (hasTwitter) {
         pinUsername = pin.twitter_profile.username;
         pinName = pin.twitter_profile.name;
-      } else if (pin.nostr_profile && pin.nostr_profile.npub) {
+      } else if (hasNostr) {
         pinUsername = pin.nostr_profile.npub;
         pinName = pin.nostr_profile.displayName;
       }
@@ -88,9 +99,27 @@ async function searchPersonalPins(user, query) {
     }
 
     const results = matchingPins.map(pin => {
-      const pinPlatform = pin.twitter_profile ? 'twitter' : 'nostr';
-      const profileData = pin.twitter_profile || pin.nostr_profile;
-      const username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
+      // For cross-platform pins, determine which profile to show based on requested platforms
+      let pinPlatform, profileData, username;
+      
+      const hasTwitter = pin.twitter_profile && pin.twitter_profile.username;
+      const hasNostr = pin.nostr_profile && pin.nostr_profile.npub;
+      
+      // If searching for specific platform and pin has that profile, prioritize it
+      if (platforms.includes('nostr') && !platforms.includes('twitter') && hasNostr) {
+        pinPlatform = 'nostr';
+        profileData = pin.nostr_profile;
+        username = pin.nostr_profile.npub;
+      } else if (platforms.includes('twitter') && !platforms.includes('nostr') && hasTwitter) {
+        pinPlatform = 'twitter';
+        profileData = pin.twitter_profile;
+        username = pin.twitter_profile.username;
+      } else {
+        // Default behavior: prioritize Twitter if both exist, or use whatever is available
+        pinPlatform = hasTwitter ? 'twitter' : 'nostr';
+        profileData = pin.twitter_profile || pin.nostr_profile;
+        username = pin.twitter_profile?.username || pin.nostr_profile?.npub;
+      }
       
       const baseResult = {
         platform: pinPlatform,
@@ -233,7 +262,7 @@ router.post('/search/stream', authenticateToken, async (req, res) => {
   const searchPromises = [];
   
   if (includePersonalPins) {
-    searchPromises.push(searchPersonalPins(req.user, query));
+    searchPromises.push(searchPersonalPins(req.user, query, platforms));
   }
   
   searchPromises.push(searchTwitterAPI(query, platforms));
