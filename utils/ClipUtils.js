@@ -6,7 +6,7 @@ const fs = require('fs');
 const axios = require('axios');
 const VideoGenerator = require('./VideoGenerator');
 const DigitalOceanSpacesManager = require('./DigitalOceanSpacesManager');
-const { WorkProductV2, calculateLookupHash } = require('../models/WorkProductV2');
+const { WorkProductV2, calculateLookupHash, calculateEditHash } = require('../models/WorkProductV2');
 
 
 class ClipUtils {
@@ -424,6 +424,363 @@ class ClipUtils {
     } catch (error) {
         console.error(`[ERROR] _backgroundProcessClip CRASHED for ${lookupHash}:`, error);
     }
+  }
+
+  /**
+   * Validates that a CDN URL belongs to our storage buckets
+   * @param {string} cdnUrl - The CDN URL to validate
+   * @returns {boolean} - True if URL is from our CDN
+   */
+  validateOurCdnUrl(cdnUrl) {
+    if (!cdnUrl || typeof cdnUrl !== 'string') {
+      return false;
+    }
+
+    const allowedDomains = [
+      process.env.SPACES_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
+      process.env.SPACES_CLIP_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
+    ].filter(Boolean); // Remove any undefined values
+
+    return allowedDomains.some(domain => cdnUrl.includes(domain));
+  }
+
+  /**
+   * Checks if a CDN file exists and gets its metadata
+   * @param {string} cdnUrl - The CDN URL to check
+   * @returns {Object} - File metadata including size, type, etc.
+   */
+  async validateCdnFile(cdnUrl) {
+    const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
+    console.log(`${debugPrefix} Validating CDN file: ${cdnUrl}`);
+
+    try {
+      // Make a HEAD request to check file existence without downloading
+      const response = await axios({
+        method: 'head',
+        url: cdnUrl,
+        timeout: 10000,
+        validateStatus: status => status === 200
+      });
+
+      const contentType = response.headers['content-type'] || '';
+      const contentLength = parseInt(response.headers['content-length'] || '0');
+      
+      // Check if it's a video or audio file
+      const isVideo = contentType.startsWith('video/');
+      const isAudio = contentType.startsWith('audio/');
+      
+      if (!isVideo && !isAudio) {
+        throw new Error(`Unsupported file type: ${contentType}`);
+      }
+
+      // Check file size (2GB limit)
+      const maxSize = 2 * 1024 * 1024 * 1024; // 2GB
+      if (contentLength > maxSize) {
+        throw new Error(`File too large: ${contentLength} bytes (max: ${maxSize})`);
+      }
+
+      console.log(`${debugPrefix} File validation successful: ${contentType}, ${contentLength} bytes`);
+      
+      return {
+        exists: true,
+        contentType,
+        contentLength,
+        isVideo,
+        isAudio
+      };
+    } catch (error) {
+      console.error(`${debugPrefix} File validation failed: ${error.message}`);
+      throw new Error(`CDN file validation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Main orchestrator for video edit requests
+   * TODO: Consider quota limits for video editing in future releases
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds  
+   * @param {boolean} useSubtitles - Whether to include subtitles
+   * @param {string} feedId - Feed ID for organizing uploads
+   * @returns {Object} - Status and lookup hash
+   */
+  async processEditRequest(cdnUrl, startTime, endTime, useSubtitles = false, feedId = 'unknown') {
+    const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
+    console.log(`${debugPrefix} Processing edit request: ${cdnUrl}, ${startTime}s-${endTime}s`);
+
+    try {
+      // Validate inputs
+      if (!this.validateOurCdnUrl(cdnUrl)) {
+        throw new Error('CDN URL must be from our storage buckets');
+      }
+
+      const duration = endTime - startTime;
+      if (duration <= 0) {
+        throw new Error('End time must be greater than start time');
+      }
+
+      if (duration > 600) { // 10 minutes max
+        throw new Error('Edit duration cannot exceed 10 minutes');
+      }
+
+      // Validate CDN file exists
+      await this.validateCdnFile(cdnUrl);
+
+      // Generate deterministic hash
+      const lookupHash = calculateEditHash(cdnUrl, startTime, endTime, useSubtitles);
+      console.log(`${debugPrefix} Generated lookupHash: ${lookupHash}`);
+
+      // Check for existing edit
+      const existingEdit = await WorkProductV2.findOne({ lookupHash });
+      if (existingEdit) {
+        if (existingEdit.cdnFileId) {
+          console.log(`${debugPrefix} Edit already exists: ${existingEdit.cdnFileId}`);
+          return { status: 'completed', lookupHash, url: existingEdit.cdnFileId };
+        } else {
+          console.log(`${debugPrefix} Edit already processing: ${lookupHash}`);
+          return { status: 'processing', lookupHash, pollUrl: `/api/edit-status/${lookupHash}` };
+        }
+      }
+
+      // Extract parent filename for tracking
+      const urlParts = cdnUrl.split('/');
+      const parentFileName = urlParts[urlParts.length - 1];
+      const parentFileBase = parentFileName.replace(/\.[^/.]+$/, ""); // Remove extension
+      
+      // Create database entry
+      await WorkProductV2.create({
+        type: 'video-edit',
+        lookupHash,
+        status: 'queued',
+        cdnFileId: null,
+        result: {
+          originalUrl: cdnUrl,
+          parentFileName: parentFileName,
+          parentFileBase: parentFileBase,
+          editStart: startTime,
+          editEnd: endTime,
+          editDuration: duration,
+          useSubtitles: useSubtitles,
+          processingStrategy: 'full', // Phase 1: full download
+          feedId: feedId
+        }
+      });
+
+      console.log(`${debugPrefix} Database entry created for ${lookupHash}`);
+
+      // Start background processing
+      this._backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles, feedId).catch(err => {
+        console.error(`${debugPrefix} Background processing failed:`, err);
+        // Update database with error status
+        WorkProductV2.findOneAndUpdate(
+          { lookupHash },
+          { status: 'failed', error: err.message }
+        ).catch(dbErr => console.error(`${debugPrefix} Error updating database: ${dbErr.message}`));
+      });
+
+      return { 
+        status: 'processing', 
+        lookupHash, 
+        pollUrl: `/api/edit-status/${lookupHash}` 
+      };
+
+    } catch (error) {
+      console.error(`${debugPrefix} Edit request failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Background processing for video editing - Phase 1: Full download strategy
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier for this edit
+   * @param {boolean} useSubtitles - Whether to include subtitles
+   * @param {string} feedId - Feed ID for organizing uploads
+   */
+  async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown') {
+    const debugPrefix = `[EDIT-VIDEO-BG][${lookupHash}]`;
+    console.log(`${debugPrefix} Starting background processing`);
+
+    try {
+      // Update status to processing
+      await WorkProductV2.findOneAndUpdate(
+        { lookupHash },
+        { status: 'processing' }
+      );
+
+      // Phase 1: Full download strategy
+      console.log(`${debugPrefix} Downloading source file from CDN`);
+      const tempSourcePath = path.join(os.tmpdir(), `edit-source-${Date.now()}.tmp`);
+      
+      // Download the source file
+      const response = await axios({
+        method: 'get',
+        url: cdnUrl,
+        responseType: 'stream',
+        timeout: 300000 // 5 minutes timeout for large files
+      });
+
+      const writer = fs.createWriteStream(tempSourcePath);
+      response.data.pipe(writer);
+
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+      console.log(`${debugPrefix} Source file downloaded to: ${tempSourcePath}`);
+
+      // Get actual duration and validate edit range
+      try {
+        const actualDuration = await this._getFileDuration(tempSourcePath);
+        console.log(`${debugPrefix} Source file duration: ${actualDuration}s`);
+        
+        if (endTime > actualDuration) {
+          throw new Error(`End time (${endTime}s) exceeds video duration (${actualDuration}s)`);
+        }
+        
+        if (startTime >= actualDuration) {
+          throw new Error(`Start time (${startTime}s) exceeds video duration (${actualDuration}s)`);
+        }
+        
+        // Update database with actual duration for reference
+        await WorkProductV2.findOneAndUpdate(
+          { lookupHash },
+          { 'result.sourceDuration': actualDuration }
+        );
+        
+      } catch (durationError) {
+        console.error(`${debugPrefix} Duration validation failed: ${durationError.message}`);
+        throw durationError;
+      }
+
+      // Extract the segment using FFmpeg
+      const outputPath = path.join(os.tmpdir(), `edit-output-${Date.now()}.mp4`);
+      await this._extractSegmentWithFFmpeg(tempSourcePath, outputPath, startTime, endTime);
+
+      console.log(`${debugPrefix} Segment extracted to: ${outputPath}`);
+
+      // Extract parent filename from CDN URL for directory structure
+      const urlParts = cdnUrl.split('/');
+      const parentFileName = urlParts[urlParts.length - 1];
+      const parentFileBase = parentFileName.replace(/\.[^/.]+$/, ""); // Remove extension
+      
+      // Upload to CDN in parent-children structure
+      const cdnFileId = `jamie-pro/${feedId}/uploads/${parentFileBase}-children/${lookupHash}.mp4`;
+      const outputBuffer = await fs.promises.readFile(outputPath);
+      
+      const uploadedUrl = await this.spacesManager.uploadFile(
+        process.env.SPACES_CLIP_BUCKET_NAME,
+        cdnFileId,
+        outputBuffer,
+        'video/mp4'
+      );
+
+      console.log(`${debugPrefix} Uploaded to CDN: ${uploadedUrl}`);
+
+      // Update database with completion
+      await WorkProductV2.findOneAndUpdate(
+        { lookupHash },
+        { 
+          status: 'completed',
+          cdnFileId: uploadedUrl,
+          'result.completedAt': new Date()
+        }
+      );
+
+      // Cleanup temp files
+      try {
+        if (fs.existsSync(tempSourcePath)) await fs.promises.unlink(tempSourcePath);
+        if (fs.existsSync(outputPath)) await fs.promises.unlink(outputPath);
+        console.log(`${debugPrefix} Temporary files cleaned up`);
+      } catch (cleanupError) {
+        console.warn(`${debugPrefix} Cleanup warning: ${cleanupError.message}`);
+      }
+
+      console.log(`${debugPrefix} Processing completed successfully`);
+
+    } catch (error) {
+      console.error(`${debugPrefix} Processing failed: ${error.message}`);
+      
+      // Update database with error
+      await WorkProductV2.findOneAndUpdate(
+        { lookupHash },
+        { 
+          status: 'failed',
+          error: error.message 
+        }
+      ).catch(dbErr => console.error(`${debugPrefix} Failed to update error status: ${dbErr.message}`));
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Get the duration of a video file using FFprobe
+   * 
+   * @param {string} filePath - Path to the video file
+   * @returns {number} - Duration in seconds
+   */
+  async _getFileDuration(filePath) {
+    const { promisify } = require('util');
+    const exec = promisify(require('child_process').exec);
+    
+    try {
+      const { stdout } = await exec(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      );
+      return parseFloat(stdout.trim());
+    } catch (error) {
+      throw new Error(`Failed to get file duration: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extract a video segment using FFmpeg
+   * 
+   * @param {string} inputPath - Path to source file
+   * @param {string} outputPath - Path for output file
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   */
+  async _extractSegmentWithFFmpeg(inputPath, outputPath, startTime, endTime) {
+    const debugPrefix = `[FFMPEG-EXTRACT][${Date.now()}]`;
+    const duration = endTime - startTime;
+
+    console.log(`${debugPrefix} Extracting ${duration}s segment from ${startTime}s to ${endTime}s`);
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .seekInput(startTime)
+        .duration(duration)
+        .outputOptions([
+          '-y', // Overwrite output files
+          '-c:v', 'libx264', // Video codec
+          '-c:a', 'aac', // Audio codec  
+          '-movflags', '+faststart', // Optimize for streaming
+          '-pix_fmt', 'yuv420p' // Ensure compatibility
+        ])
+        .toFormat('mp4')
+        .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
+        .on('progress', progress => {
+          if (progress.percent) {
+            console.log(`${debugPrefix} Progress: ${progress.percent.toFixed(1)}%`);
+          }
+        })
+        .on('error', err => {
+          console.error(`${debugPrefix} FFmpeg error: ${err.message}`);
+          reject(new Error(`Video processing failed: ${err.message}`));
+        })
+        .on('end', () => {
+          console.log(`${debugPrefix} FFmpeg extraction completed`);
+          resolve();
+        })
+        .save(outputPath);
+    });
   }
 
 }

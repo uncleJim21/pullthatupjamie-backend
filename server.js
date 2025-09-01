@@ -902,7 +902,143 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
   }
 });
 
+///Video Editing Endpoints
 
+app.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
+  const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
+  console.log(`${debugPrefix} ==== /api/edit-video ENDPOINT CALLED ====`);
+  const { cdnUrl, startTime, endTime, useSubtitles = false } = req.body;
+
+  console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
+  
+  // Validate required parameters
+  if (!cdnUrl) {
+      console.error(`${debugPrefix} Missing required parameter: cdnUrl`);
+      return res.status(400).json({ error: 'cdnUrl is required' });
+  }
+
+  if (startTime === undefined || endTime === undefined) {
+      console.error(`${debugPrefix} Missing required parameters: startTime and endTime`);
+      return res.status(400).json({ error: 'startTime and endTime are required' });
+  }
+
+  if (typeof startTime !== 'number' || typeof endTime !== 'number') {
+      console.error(`${debugPrefix} Invalid parameter types: startTime and endTime must be numbers`);
+      return res.status(400).json({ error: 'startTime and endTime must be numbers' });
+  }
+
+  try {
+      console.log(`${debugPrefix} Processing edit request for: ${cdnUrl}`);
+      console.log(`${debugPrefix} Time range: ${startTime}s to ${endTime}s (${endTime - startTime}s duration)`);
+      
+      const result = await clipUtils.processEditRequest(cdnUrl, startTime, endTime, useSubtitles, req.podcastAdmin?.feedId);
+      
+      console.log(`${debugPrefix} Edit request processed successfully: ${JSON.stringify(result)}`);
+      return res.status(202).json(result);
+
+  } catch (error) {
+      console.error(`${debugPrefix} Error in edit-video endpoint: ${error.message}`);
+      console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+      return res.status(500).json({ 
+          error: 'Failed to process edit request',
+          details: error.message 
+      });
+  }
+});
+
+// Status check endpoint for video edits
+app.get('/api/edit-status/:lookupHash', async (req, res) => {
+  const { lookupHash } = req.params;
+  const debugPrefix = `[EDIT-STATUS][${lookupHash}]`;
+
+  try {
+      console.log(`${debugPrefix} Checking status for edit: ${lookupHash}`);
+      
+      const edit = await WorkProductV2.findOne({ lookupHash });
+
+      if (!edit) {
+          console.log(`${debugPrefix} Edit not found`);
+          return res.status(404).json({ status: 'not_found' });
+      }
+
+      if (edit.status === 'completed' && edit.cdnFileId) {
+          console.log(`${debugPrefix} Edit completed: ${edit.cdnFileId}`);
+          return res.json({
+              status: 'completed',
+              url: edit.cdnFileId,
+              lookupHash
+          });
+      }
+
+      if (edit.status === 'failed') {
+          console.log(`${debugPrefix} Edit failed: ${edit.error}`);
+          return res.json({
+              status: 'failed',
+              error: edit.error,
+              lookupHash
+          });
+      }
+
+      console.log(`${debugPrefix} Edit still processing, status: ${edit.status}`);
+      return res.json({
+          status: edit.status || 'processing',
+          lookupHash
+      });
+
+  } catch (error) {
+      console.error(`${debugPrefix} Error checking edit status: ${error.message}`);
+      return res.status(500).json({ 
+          error: 'Failed to check edit status',
+          details: error.message 
+      });
+  }
+});
+
+// Get all child edits of a parent video file
+app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, async (req, res) => {
+  const { parentFileName } = req.params;
+  const debugPrefix = `[EDIT-CHILDREN][${parentFileName}]`;
+
+  try {
+    console.log(`${debugPrefix} Getting children for parent: ${parentFileName}`);
+    
+    // Remove extension from parent filename for base matching
+    const parentFileBase = parentFileName.replace(/\.[^/.]+$/, "");
+    
+    // Find all edits for this parent file
+    const childEdits = await WorkProductV2.find({
+      type: 'video-edit',
+      'result.parentFileBase': parentFileBase
+    }).sort({ createdAt: -1 }); // Most recent first
+
+    console.log(`${debugPrefix} Found ${childEdits.length} child edits`);
+
+    // Format the response
+    const formattedEdits = childEdits.map(edit => ({
+      lookupHash: edit.lookupHash,
+      status: edit.status,
+      url: edit.cdnFileId,
+      editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
+      duration: edit.result.editDuration,
+      createdAt: edit.createdAt,
+      originalUrl: edit.result.originalUrl
+    }));
+
+    return res.json({
+      parentFileName,
+      parentFileBase,
+      childCount: formattedEdits.length,
+      children: formattedEdits
+    });
+
+  } catch (error) {
+    console.error(`${debugPrefix} Error getting child edits: ${error.message}`);
+    return res.status(500).json({ 
+      error: 'Failed to get child edits',
+      details: error.message 
+    });
+  }
+});
 
 ///Podcast Search
 
@@ -1508,6 +1644,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Parse pagination parameters
     const pageSize = 50; // Fixed page size of 50 items
     const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
+    const includeChildren = req.query.includeChildren !== 'false'; // Default to true
     
     if (page < 1) {
       return res.status(400).json({ error: "Page number must be 1 or greater" });
@@ -1569,6 +1706,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Process the results to make them more user-friendly
     const uploads = allContents
       .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
+      .filter(item => !item.Key.includes('-children/')) // Filter out child edit files from main list
       .map(item => {
         // Extract just the filename from the full path
         const fileName = item.Key.replace(prefix, '');
@@ -1581,6 +1719,61 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
           publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
         };
       });
+
+    // Add child relationship data if requested
+    if (includeChildren) {
+      console.log(`Adding child relationship data for ${uploads.length} uploads`);
+      
+      try {
+        // Get all file bases for batch query
+        const fileBases = uploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
+        
+        // Single database query to get all child edits at once
+        const allChildEdits = await WorkProductV2.find({
+          type: 'video-edit',
+          'result.parentFileBase': { $in: fileBases }
+        }).sort({ createdAt: -1 });
+        
+        console.log(`Found ${allChildEdits.length} total child edits`);
+        
+        // Group child edits by parent file base
+        const childEditsByParent = {};
+        allChildEdits.forEach(edit => {
+          const parentBase = edit.result.parentFileBase;
+          if (!childEditsByParent[parentBase]) {
+            childEditsByParent[parentBase] = [];
+          }
+          childEditsByParent[parentBase].push(edit);
+        });
+        
+        // Add children to each upload
+        uploads.forEach(upload => {
+          const fileBase = upload.fileName.replace(/\.[^/.]+$/, "");
+          const childEdits = childEditsByParent[fileBase] || [];
+          
+          upload.children = childEdits.map(edit => ({
+            lookupHash: edit.lookupHash,
+            status: edit.status,
+            url: edit.cdnFileId,
+            editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
+            duration: edit.result.editDuration,
+            createdAt: edit.createdAt
+          }));
+
+          upload.childCount = upload.children.length;
+          upload.hasChildren = upload.children.length > 0;
+        });
+        
+      } catch (error) {
+        console.error(`Failed to get children data: ${error.message}`);
+        // Set empty children for all uploads on error
+        uploads.forEach(upload => {
+          upload.children = [];
+          upload.childCount = 0;
+          upload.hasChildren = false;
+        });
+      }
+    }
     
     // Calculate pagination metadata
     const hasNextPage = hasMoreItems;
@@ -1599,7 +1792,13 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
         hasPreviousPage,
         totalCount: realTotalCount
       },
-      feedId
+      feedId,
+      includeChildren,
+      childrenSummary: includeChildren ? {
+        totalParents: uploads.length,
+        parentsWithChildren: uploads.filter(u => u.hasChildren).length,
+        totalChildren: uploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
+      } : null
     });
     
   } catch (error) {
