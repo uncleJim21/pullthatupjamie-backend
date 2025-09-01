@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const axios = require('axios');
+const { performance } = require('perf_hooks');
 const VideoGenerator = require('./VideoGenerator');
 const DigitalOceanSpacesManager = require('./DigitalOceanSpacesManager');
 const { WorkProductV2, calculateLookupHash, calculateEditHash } = require('../models/WorkProductV2');
@@ -22,6 +23,22 @@ class ClipUtils {
           timeout: 30000
       }
     );
+    
+    // Memory management configuration
+    this.memoryConfig = {
+      maxMemoryUsage: 1024 * 1024 * 1024, // 1GB max memory usage
+      largeFileThreshold: 100 * 1024 * 1024, // 100MB threshold for range extraction
+      rangeBufferSize: 10 * 1024 * 1024, // 10MB buffer around extract range
+      maxConcurrentProcessing: 2, // Limit concurrent processing
+      cleanupIntervalMs: 30000 // 30 seconds cleanup interval
+    };
+    
+    // Active processing tracking
+    this.activeProcesses = new Map();
+    this.tempFiles = new Set();
+    
+    // Start periodic cleanup
+    this.startMemoryManagement();
   }
 
   truncateMiddle(str, maxLength, ellipsis = '...') {
@@ -40,6 +57,117 @@ class ClipUtils {
     const back = str.substring(str.length - backLength).trim();
     
     return `${front}${ellipsis}${back}`;
+  }
+
+  /**
+   * Memory management and monitoring utilities
+   */
+  startMemoryManagement() {
+    // Periodic cleanup of temp files and memory monitoring
+    this.cleanupInterval = setInterval(() => {
+      this.performMemoryCleanup();
+    }, this.memoryConfig.cleanupIntervalMs);
+    
+    console.log('[MEMORY] Memory management started');
+  }
+  
+  stopMemoryManagement() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    console.log('[MEMORY] Memory management stopped');
+  }
+  
+  getMemoryUsage() {
+    const usage = process.memoryUsage();
+    return {
+      rss: usage.rss, // Resident Set Size
+      heapUsed: usage.heapUsed,
+      heapTotal: usage.heapTotal,
+      external: usage.external,
+      arrayBuffers: usage.arrayBuffers
+    };
+  }
+  
+  checkMemoryPressure() {
+    const usage = this.getMemoryUsage();
+    const totalUsage = usage.rss;
+    
+    if (totalUsage > this.memoryConfig.maxMemoryUsage) {
+      console.warn(`[MEMORY] High memory usage detected: ${Math.round(totalUsage / 1024 / 1024)}MB`);
+      return true;
+    }
+    return false;
+  }
+  
+  async performMemoryCleanup() {
+    const debugPrefix = `[MEMORY-CLEANUP][${Date.now()}]`;
+    
+    try {
+      // Check memory usage
+      const usage = this.getMemoryUsage();
+      const totalMB = Math.round(usage.rss / 1024 / 1024);
+      
+      if (totalMB > 500) { // Log when usage is high
+        console.log(`${debugPrefix} Memory usage: ${totalMB}MB, Active processes: ${this.activeProcesses.size}`);
+      }
+      
+      // Clean up orphaned temp files
+      const orphanedFiles = [];
+      for (const filePath of this.tempFiles) {
+        try {
+          if (fs.existsSync(filePath)) {
+            const stats = fs.statSync(filePath);
+            const ageMs = Date.now() - stats.mtime.getTime();
+            
+            // Remove files older than 1 hour
+            if (ageMs > 60 * 60 * 1000) {
+              await fs.promises.unlink(filePath);
+              orphanedFiles.push(filePath);
+            }
+          }
+        } catch (err) {
+          // File already removed or permission error
+          orphanedFiles.push(filePath);
+        }
+      }
+      
+      // Remove from tracking
+      orphanedFiles.forEach(file => this.tempFiles.delete(file));
+      
+      if (orphanedFiles.length > 0) {
+        console.log(`${debugPrefix} Cleaned up ${orphanedFiles.length} orphaned temp files`);
+      }
+      
+      // Force garbage collection if available and memory pressure is high
+      if (global.gc && this.checkMemoryPressure()) {
+        console.log(`${debugPrefix} Forcing garbage collection due to memory pressure`);
+        global.gc();
+      }
+      
+    } catch (error) {
+      console.error(`${debugPrefix} Cleanup error: ${error.message}`);
+    }
+  }
+  
+  registerTempFile(filePath) {
+    this.tempFiles.add(filePath);
+  }
+  
+  unregisterTempFile(filePath) {
+    this.tempFiles.delete(filePath);
+  }
+  
+  async cleanupTempFile(filePath) {
+    try {
+      if (fs.existsSync(filePath)) {
+        await fs.promises.unlink(filePath);
+      }
+      this.unregisterTempFile(filePath);
+    } catch (error) {
+      console.warn(`[CLEANUP] Failed to clean up ${filePath}: ${error.message}`);
+    }
   }
 
   async extractAudioClip(audioUrl, startTime, endTime) {
@@ -592,6 +720,227 @@ class ClipUtils {
   }
 
   /**
+   * Smart extraction strategy selector - Phase 2: Range extraction optimization
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier
+   * @param {Object} fileMetadata - File size and type info
+   * @returns {string} - Path to extracted segment
+   */
+  async _smartExtractSegment(cdnUrl, startTime, endTime, lookupHash, fileMetadata) {
+    const debugPrefix = `[SMART-EXTRACT][${lookupHash}]`;
+    const duration = endTime - startTime;
+    const fileSize = fileMetadata.contentLength;
+    
+    console.log(`${debugPrefix} File size: ${Math.round(fileSize / 1024 / 1024)}MB, Duration: ${duration}s`);
+    
+    // Strategy selection based on file size and extraction parameters
+    const shouldUseRangeExtraction = (
+      fileSize > this.memoryConfig.largeFileThreshold && // File is large
+      duration < 300 && // Extract duration < 5 minutes
+      startTime > 30 // Not extracting from very beginning
+    );
+    
+    if (shouldUseRangeExtraction) {
+      console.log(`${debugPrefix} Using range extraction strategy`);
+      return await this._extractWithRangeRequests(cdnUrl, startTime, endTime, lookupHash);
+    } else {
+      console.log(`${debugPrefix} Using full download strategy`);
+      return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
+    }
+  }
+  
+  /**
+   * Range-based extraction using HTTP range requests and streaming
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier
+   * @returns {string} - Path to extracted segment
+   */
+  async _extractWithRangeRequests(cdnUrl, startTime, endTime, lookupHash) {
+    const debugPrefix = `[RANGE-EXTRACT][${lookupHash}]`;
+    const startMemory = this.getMemoryUsage();
+    
+    try {
+      console.time(`${debugPrefix} RangeExtraction`);
+      
+      // Use FFmpeg's built-in HTTP range capabilities
+      const outputPath = path.join(os.tmpdir(), `edit-range-${Date.now()}.mp4`);
+      this.registerTempFile(outputPath);
+      
+      await this._extractSegmentWithFFmpegRange(cdnUrl, outputPath, startTime, endTime);
+      
+      console.timeEnd(`${debugPrefix} RangeExtraction`);
+      
+      const endMemory = this.getMemoryUsage();
+      const memoryDelta = Math.round((endMemory.rss - startMemory.rss) / 1024 / 1024);
+      console.log(`${debugPrefix} Range extraction complete, memory delta: ${memoryDelta}MB`);
+      
+      return outputPath;
+      
+    } catch (error) {
+      console.error(`${debugPrefix} Range extraction failed: ${error.message}`);
+      // Fallback to full download
+      console.log(`${debugPrefix} Falling back to full download`);
+      return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
+    }
+  }
+  
+  /**
+   * Full download extraction with memory management
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier
+   * @returns {string} - Path to extracted segment
+   */
+  async _extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash) {
+    const debugPrefix = `[FULL-DOWNLOAD][${lookupHash}]`;
+    const startMemory = this.getMemoryUsage();
+    
+    try {
+      console.time(`${debugPrefix} FullDownload`);
+      
+      // Check memory pressure before download
+      if (this.checkMemoryPressure()) {
+        throw new Error('Cannot proceed: memory pressure too high');
+      }
+      
+      const tempSourcePath = path.join(os.tmpdir(), `edit-source-${Date.now()}.tmp`);
+      this.registerTempFile(tempSourcePath);
+      
+      // Download with streaming and memory monitoring
+      console.log(`${debugPrefix} Downloading source file`);
+      await this._downloadFileWithMemoryManagement(cdnUrl, tempSourcePath, lookupHash);
+      
+      // Get duration and validate
+      const actualDuration = await this._getFileDuration(tempSourcePath);
+      console.log(`${debugPrefix} Source duration: ${actualDuration}s`);
+      
+      if (endTime > actualDuration) {
+        throw new Error(`End time (${endTime}s) exceeds video duration (${actualDuration}s)`);
+      }
+      
+      // Extract segment
+      const outputPath = path.join(os.tmpdir(), `edit-output-${Date.now()}.mp4`);
+      this.registerTempFile(outputPath);
+      
+      await this._extractSegmentWithFFmpeg(tempSourcePath, outputPath, startTime, endTime);
+      
+      // Cleanup source file immediately
+      await this.cleanupTempFile(tempSourcePath);
+      
+      console.timeEnd(`${debugPrefix} FullDownload`);
+      
+      const endMemory = this.getMemoryUsage();
+      const memoryDelta = Math.round((endMemory.rss - startMemory.rss) / 1024 / 1024);
+      console.log(`${debugPrefix} Full download complete, memory delta: ${memoryDelta}MB`);
+      
+      return outputPath;
+      
+    } catch (error) {
+      console.error(`${debugPrefix} Full download failed: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Memory-managed file download with progress monitoring
+   */
+  async _downloadFileWithMemoryManagement(cdnUrl, outputPath, lookupHash) {
+    const debugPrefix = `[DOWNLOAD][${lookupHash}]`;
+    
+    return new Promise(async (resolve, reject) => {
+      try {
+        const response = await axios({
+          method: 'get',
+          url: cdnUrl,
+          responseType: 'stream',
+          timeout: 300000 // 5 minutes
+        });
+        
+        const writer = fs.createWriteStream(outputPath);
+        let downloadedBytes = 0;
+        let lastMemoryCheck = Date.now();
+        
+        response.data.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          
+          // Check memory every 10MB downloaded
+          if (downloadedBytes % (10 * 1024 * 1024) === 0 || Date.now() - lastMemoryCheck > 5000) {
+            if (this.checkMemoryPressure()) {
+              writer.destroy();
+              reject(new Error('Download aborted due to memory pressure'));
+              return;
+            }
+            lastMemoryCheck = Date.now();
+          }
+        });
+        
+        response.data.pipe(writer);
+        
+        writer.on('finish', () => {
+          console.log(`${debugPrefix} Downloaded ${Math.round(downloadedBytes / 1024 / 1024)}MB`);
+          resolve();
+        });
+        
+        writer.on('error', reject);
+        response.data.on('error', reject);
+        
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+  
+  /**
+   * FFmpeg extraction using HTTP range requests (no local download)
+   */
+  async _extractSegmentWithFFmpegRange(inputUrl, outputPath, startTime, endTime) {
+    const debugPrefix = `[FFMPEG-RANGE][${Date.now()}]`;
+    const duration = endTime - startTime;
+    
+    console.log(`${debugPrefix} Range-extracting ${duration}s from ${startTime}s to ${endTime}s`);
+    
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputUrl)
+        .seekInput(startTime)
+        .duration(duration)
+        .outputOptions([
+          '-y', // Overwrite output files
+          '-c:v', 'libx264', // Video codec
+          '-c:a', 'aac', // Audio codec
+          '-movflags', '+faststart', // Optimize for streaming
+          '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-reconnect', '1', // Enable reconnection
+          '-reconnect_streamed', '1', // Enable reconnection for streams
+          '-reconnect_delay_max', '5' // Max reconnection delay
+        ])
+        .toFormat('mp4')
+        .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
+        .on('progress', progress => {
+          if (progress.percent) {
+            console.log(`${debugPrefix} Progress: ${progress.percent.toFixed(1)}%`);
+          }
+        })
+        .on('error', err => {
+          console.error(`${debugPrefix} FFmpeg error: ${err.message}`);
+          reject(new Error(`Range extraction failed: ${err.message}`));
+        })
+        .on('end', () => {
+          console.log(`${debugPrefix} Range extraction completed`);
+          resolve();
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
    * Background processing for video editing - Phase 1: Full download strategy
    * 
    * @param {string} cdnUrl - Source CDN URL
@@ -603,64 +952,36 @@ class ClipUtils {
    */
   async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown') {
     const debugPrefix = `[EDIT-VIDEO-BG][${lookupHash}]`;
-    console.log(`${debugPrefix} Starting background processing`);
+    console.log(`${debugPrefix} Starting Phase 2 background processing`);
+
+    // Register this process for tracking
+    const processInfo = {
+      lookupHash,
+      startTime: Date.now(),
+      cdnUrl,
+      editRange: `${startTime}s-${endTime}s`,
+      memoryAtStart: this.getMemoryUsage()
+    };
+    this.activeProcesses.set(lookupHash, processInfo);
+
+    let outputPath = null;
 
     try {
       // Update status to processing
       await WorkProductV2.findOneAndUpdate(
         { lookupHash },
-        { status: 'processing' }
+        { 
+          status: 'processing',
+          'result.processingStrategy': 'phase2-smart'
+        }
       );
 
-      // Phase 1: Full download strategy
-      console.log(`${debugPrefix} Downloading source file from CDN`);
-      const tempSourcePath = path.join(os.tmpdir(), `edit-source-${Date.now()}.tmp`);
+      // Get file metadata for smart extraction strategy
+      const fileMetadata = await this.validateCdnFile(cdnUrl);
       
-      // Download the source file
-      const response = await axios({
-        method: 'get',
-        url: cdnUrl,
-        responseType: 'stream',
-        timeout: 300000 // 5 minutes timeout for large files
-      });
-
-      const writer = fs.createWriteStream(tempSourcePath);
-      response.data.pipe(writer);
-
-      await new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-
-      console.log(`${debugPrefix} Source file downloaded to: ${tempSourcePath}`);
-
-      // Get actual duration and validate edit range
-      try {
-        const actualDuration = await this._getFileDuration(tempSourcePath);
-        console.log(`${debugPrefix} Source file duration: ${actualDuration}s`);
-        
-        if (endTime > actualDuration) {
-          throw new Error(`End time (${endTime}s) exceeds video duration (${actualDuration}s)`);
-        }
-        
-        if (startTime >= actualDuration) {
-          throw new Error(`Start time (${startTime}s) exceeds video duration (${actualDuration}s)`);
-        }
-        
-        // Update database with actual duration for reference
-        await WorkProductV2.findOneAndUpdate(
-          { lookupHash },
-          { 'result.sourceDuration': actualDuration }
-        );
-        
-      } catch (durationError) {
-        console.error(`${debugPrefix} Duration validation failed: ${durationError.message}`);
-        throw durationError;
-      }
-
-      // Extract the segment using FFmpeg
-      const outputPath = path.join(os.tmpdir(), `edit-output-${Date.now()}.mp4`);
-      await this._extractSegmentWithFFmpeg(tempSourcePath, outputPath, startTime, endTime);
+      // Use smart extraction (Phase 2)
+      console.log(`${debugPrefix} Using smart extraction strategy`);
+      outputPath = await this._smartExtractSegment(cdnUrl, startTime, endTime, lookupHash, fileMetadata);
 
       console.log(`${debugPrefix} Segment extracted to: ${outputPath}`);
 
@@ -671,6 +992,12 @@ class ClipUtils {
       
       // Upload to CDN in parent-children structure
       const cdnFileId = `jamie-pro/${feedId}/uploads/${parentFileBase}-children/${lookupHash}.mp4`;
+      
+      // Read output file with memory management
+      if (this.checkMemoryPressure()) {
+        throw new Error('Memory pressure too high for upload');
+      }
+      
       const outputBuffer = await fs.promises.readFile(outputPath);
       
       const uploadedUrl = await this.spacesManager.uploadFile(
@@ -682,40 +1009,53 @@ class ClipUtils {
 
       console.log(`${debugPrefix} Uploaded to CDN: ${uploadedUrl}`);
 
-      // Update database with completion
+      // Calculate processing metrics
+      const endMemory = this.getMemoryUsage();
+      const processingTime = Date.now() - processInfo.startTime;
+      const memoryDelta = Math.round((endMemory.rss - processInfo.memoryAtStart.rss) / 1024 / 1024);
+
+      // Update database with completion and metrics
       await WorkProductV2.findOneAndUpdate(
         { lookupHash },
         { 
           status: 'completed',
           cdnFileId: uploadedUrl,
-          'result.completedAt': new Date()
+          'result.completedAt': new Date(),
+          'result.processingTimeMs': processingTime,
+          'result.memoryDeltaMB': memoryDelta,
+          'result.strategy': processInfo.strategy || 'smart-auto'
         }
       );
 
       // Cleanup temp files
-      try {
-        if (fs.existsSync(tempSourcePath)) await fs.promises.unlink(tempSourcePath);
-        if (fs.existsSync(outputPath)) await fs.promises.unlink(outputPath);
-        console.log(`${debugPrefix} Temporary files cleaned up`);
-      } catch (cleanupError) {
-        console.warn(`${debugPrefix} Cleanup warning: ${cleanupError.message}`);
+      if (outputPath) {
+        await this.cleanupTempFile(outputPath);
       }
 
-      console.log(`${debugPrefix} Processing completed successfully`);
+      console.log(`${debugPrefix} Processing completed successfully in ${processingTime}ms, memory delta: ${memoryDelta}MB`);
 
     } catch (error) {
       console.error(`${debugPrefix} Processing failed: ${error.message}`);
+      
+      // Cleanup temp files on error
+      if (outputPath) {
+        await this.cleanupTempFile(outputPath);
+      }
       
       // Update database with error
       await WorkProductV2.findOneAndUpdate(
         { lookupHash },
         { 
           status: 'failed',
-          error: error.message 
+          error: error.message,
+          'result.failedAt': new Date()
         }
       ).catch(dbErr => console.error(`${debugPrefix} Failed to update error status: ${dbErr.message}`));
       
       throw error;
+    } finally {
+      // Remove from active processes
+      this.activeProcesses.delete(lookupHash);
     }
   }
 
@@ -736,6 +1076,77 @@ class ClipUtils {
       return parseFloat(stdout.trim());
     } catch (error) {
       throw new Error(`Failed to get file duration: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get processing statistics and memory usage
+   */
+  getProcessingStats() {
+    const usage = this.getMemoryUsage();
+    return {
+      memoryUsage: {
+        rss: Math.round(usage.rss / 1024 / 1024), // MB
+        heapUsed: Math.round(usage.heapUsed / 1024 / 1024), // MB
+        heapTotal: Math.round(usage.heapTotal / 1024 / 1024), // MB
+        external: Math.round(usage.external / 1024 / 1024) // MB
+      },
+      activeProcesses: this.activeProcesses.size,
+      trackedTempFiles: this.tempFiles.size,
+      config: {
+        maxMemoryMB: Math.round(this.memoryConfig.maxMemoryUsage / 1024 / 1024),
+        largeFileThresholdMB: Math.round(this.memoryConfig.largeFileThreshold / 1024 / 1024),
+        maxConcurrent: this.memoryConfig.maxConcurrentProcessing
+      },
+      activeProcessDetails: Array.from(this.activeProcesses.values()).map(process => ({
+        lookupHash: process.lookupHash,
+        editRange: process.editRange,
+        runningTimeMs: Date.now() - process.startTime,
+        startMemoryMB: Math.round(process.memoryAtStart.rss / 1024 / 1024)
+      }))
+    };
+  }
+  
+  /**
+   * Graceful shutdown - cleanup all resources
+   */
+  async shutdown() {
+    const debugPrefix = `[CLIPUTILS-SHUTDOWN]`;
+    console.log(`${debugPrefix} Starting graceful shutdown`);
+    
+    try {
+      // Stop memory management
+      this.stopMemoryManagement();
+      
+      // Wait for active processes to complete (with timeout)
+      const maxWaitMs = 30000; // 30 seconds
+      const startWait = Date.now();
+      
+      while (this.activeProcesses.size > 0 && (Date.now() - startWait) < maxWaitMs) {
+        console.log(`${debugPrefix} Waiting for ${this.activeProcesses.size} active processes to complete...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      if (this.activeProcesses.size > 0) {
+        console.warn(`${debugPrefix} ${this.activeProcesses.size} processes still active after timeout`);
+      }
+      
+      // Cleanup all tracked temp files
+      const tempFileArray = Array.from(this.tempFiles);
+      console.log(`${debugPrefix} Cleaning up ${tempFileArray.length} temp files`);
+      
+      await Promise.all(tempFileArray.map(async (filePath) => {
+        try {
+          await this.cleanupTempFile(filePath);
+        } catch (error) {
+          console.warn(`${debugPrefix} Failed to cleanup ${filePath}: ${error.message}`);
+        }
+      }));
+      
+      console.log(`${debugPrefix} Shutdown completed`);
+      
+    } catch (error) {
+      console.error(`${debugPrefix} Shutdown error: ${error.message}`);
     }
   }
 

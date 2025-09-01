@@ -2051,6 +2051,12 @@ process.on('SIGTERM', async () => {
     await clipQueueManager.shutdown();
   }
   
+  // Shutdown clip processing with memory cleanup
+  if (clipUtils) {
+    await clipUtils.shutdown();
+    console.log('ClipUtils shutdown gracefully');
+  }
+  
   // Stop garbage collector gracefully
   if (global.garbageCollector) {
     global.garbageCollector.stop();
@@ -2063,11 +2069,28 @@ process.on('SIGTERM', async () => {
   }, 1000);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down gracefully');
   
   if (SCHEDULER_ENABLED) {
     scheduler.stopAllTasks();
+  }
+  
+  // ✅ GUARANTEED TRANSFER: Release jobs back to queue
+  if (clipQueueManager) {
+    await clipQueueManager.shutdown();
+  }
+  
+  // Shutdown clip processing with memory cleanup
+  if (clipUtils) {
+    await clipUtils.shutdown();
+    console.log('ClipUtils shutdown gracefully');
+  }
+  
+  // Stop garbage collector gracefully
+  if (global.garbageCollector) {
+    global.garbageCollector.stop();
+    console.log('Garbage collector stopped gracefully');
   }
   
   // Close database connections and exit
@@ -3072,6 +3095,24 @@ if (DEBUG_MODE) {
   });
     
   
+  // Debug endpoint to monitor video processing statistics
+  app.get('/api/debug/clip-processing-stats', (req, res) => {
+    try {
+      const stats = clipUtils.getProcessingStats();
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        stats
+      });
+    } catch (error) {
+      console.error('Error getting clip processing stats:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
   // Add a debug endpoint to manually trigger garbage collection
   app.post('/api/debug/trigger-gc', async (req, res) => {
     try {
