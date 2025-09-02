@@ -49,6 +49,7 @@ const verifyPodcastAdminMiddleware = async (req, res, next) => {
  * Retrieve automation settings for a podcast admin
  * The feedId is automatically determined from the admin's email token
  */
+//force deploy
 router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
   try {
     const { email, feedId: adminFeedId } = req.podcastAdmin;
