@@ -47,21 +47,11 @@ const verifyPodcastAdminMiddleware = async (req, res, next) => {
 /**
  * GET /api/automation-settings
  * Retrieve automation settings for a podcast admin
- * Query params: ?feedId={feedId} (optional, for validation)
+ * The feedId is automatically determined from the admin's email token
  */
 router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
   try {
     const { email, feedId: adminFeedId } = req.podcastAdmin;
-    const { feedId } = req.query;
-    
-    // If feedId is provided in query, validate it matches the admin's feedId
-    if (feedId && feedId !== adminFeedId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Unauthorized access to this feed',
-        code: 403
-      });
-    }
 
     // Find user by email from token
     const user = await User.findOne({ email }).select('+app_preferences');
@@ -136,14 +126,7 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
       });
     }
 
-    // Validate feedId if provided in curationSettings
-    if (curationSettings?.feedId && curationSettings.feedId !== adminFeedId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Unauthorized access to this feed',
-        code: 403
-      });
-    }
+    // No need to validate feedId - it's automatically set from the admin's token
 
     // Load existing preferences
     const existingUser = await User.findOne({ email }).select('+app_preferences');
