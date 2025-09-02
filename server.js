@@ -46,6 +46,7 @@ const nostrRoutes = require('./routes/nostrRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
+const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
 const { updateEntitlementConfig } = require('./utils/entitlements');
@@ -122,7 +123,7 @@ app.use(session({
 }));
 
 // Environment variables with defaults
-const PORT = process.env.PORT || 4131;
+const PORT = process.env.PORT || 4132;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-4o-mini';
 
 const validateSpacesConfig = () => {
@@ -1674,6 +1675,7 @@ app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
+app.use('/api/automation-settings', automationSettingsRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
