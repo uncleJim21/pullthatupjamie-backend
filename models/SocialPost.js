@@ -67,7 +67,7 @@ const SocialPostSchema = new mongoose.Schema({
   // Status tracking
   status: {
     type: String,
-    enum: ['scheduled', 'processing', 'posted', 'failed', 'cancelled'],
+    enum: ['scheduled', 'processing', 'posted', 'failed', 'cancelled', 'unsigned'],
     default: 'scheduled',
     index: true
   },
@@ -108,7 +108,7 @@ SocialPostSchema.index({ status: 1, nextRetryAt: 1 });
 
 // Static method to get all status options
 SocialPostSchema.statics.getStatusOptions = function() {
-  return ['scheduled', 'processing', 'posted', 'failed', 'cancelled'];
+  return ['scheduled', 'processing', 'posted', 'failed', 'cancelled', 'unsigned'];
 };
 
 // Static method to get all platform options
