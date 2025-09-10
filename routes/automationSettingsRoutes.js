@@ -79,8 +79,16 @@ router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
     // This could be extended to store feed-specific topics in the future
     const curationTopics = preferencesData.curationTopics || [];
 
+    // Get platform automation settings
+    const twitterOAuthEnabled = typeof preferencesData.twitterOAuthEnabled === 'boolean' 
+      ? preferencesData.twitterOAuthEnabled 
+      : false;
+    const nostrAutomationEnabled = typeof preferencesData.nostrAutomationEnabled === 'boolean' 
+      ? preferencesData.nostrAutomationEnabled 
+      : false;
+
     // Build response according to the schema
-    const automationSettings = {
+    const responseData = {
       curationSettings: {
         topics: curationTopics,
         feedId: adminFeedId
@@ -92,12 +100,16 @@ router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
         scheduledPostSlots: scheduledPostSlots,
         randomizePostTime: randomizePostTime
       },
+      automationSettings: {
+        twitterOAuthEnabled: twitterOAuthEnabled,
+        nostrAutomationEnabled: nostrAutomationEnabled
+      },
       automationEnabled: jamieFullAutoEnabled
     };
 
     res.json({
       success: true,
-      data: automationSettings
+      data: responseData
     });
   } catch (error) {
     console.error('Error fetching automation settings:', error);
@@ -116,10 +128,10 @@ router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
 router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
   try {
     const { email, feedId: adminFeedId } = req.podcastAdmin;
-    const { curationSettings, postingStyle, postingSchedule, automationEnabled } = req.body;
+    const { curationSettings, postingStyle, postingSchedule, automationSettings, automationEnabled } = req.body;
 
     // Validate request structure
-    if (!curationSettings && !postingStyle && !postingSchedule && typeof automationEnabled !== 'boolean') {
+    if (!curationSettings && !postingStyle && !postingSchedule && !automationSettings && typeof automationEnabled !== 'boolean') {
       return res.status(400).json({
         success: false,
         error: 'Invalid request format. At least one setting must be provided.',
@@ -220,6 +232,17 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
       }
     }
 
+    // Update platform automation settings
+    if (automationSettings) {
+      if (typeof automationSettings.twitterOAuthEnabled === 'boolean') {
+        updates.twitterOAuthEnabled = automationSettings.twitterOAuthEnabled;
+      }
+      
+      if (typeof automationSettings.nostrAutomationEnabled === 'boolean') {
+        updates.nostrAutomationEnabled = automationSettings.nostrAutomationEnabled;
+      }
+    }
+
     // Update automation enabled flag
     if (typeof automationEnabled === 'boolean') {
       updates.jamieFullAutoEnabled = automationEnabled;
@@ -251,7 +274,7 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
     const responseData = updatedUser?.app_preferences?.data || {};
     
     // Build response in the same format as GET
-    const automationSettings = {
+    const updatedSettings = {
       curationSettings: {
         topics: responseData.curationTopics || [],
         feedId: adminFeedId
@@ -263,12 +286,16 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
         scheduledPostSlots: responseData.scheduledPostSlots || [],
         randomizePostTime: responseData.randomizePostTime || false
       },
+      automationSettings: {
+        twitterOAuthEnabled: responseData.twitterOAuthEnabled || false,
+        nostrAutomationEnabled: responseData.nostrAutomationEnabled || false
+      },
       automationEnabled: responseData.jamieFullAutoEnabled || false
     };
 
     res.json({
       success: true,
-      data: automationSettings,
+      data: updatedSettings,
       message: 'Automation settings updated successfully'
     });
   } catch (error) {

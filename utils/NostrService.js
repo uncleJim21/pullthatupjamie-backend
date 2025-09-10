@@ -863,6 +863,169 @@ class NostrService {
             throw structuredError;
         }
     }
+
+    /**
+     * Sign and promote an unsigned Nostr post to scheduled status
+     * This method handles the PUT endpoint functionality for signing unsigned posts
+     * 
+     * @param {string} postId - The ID of the unsigned post to sign and promote
+     * @param {Object} signedEventData - The signed Nostr event data from frontend
+     * @param {string} signedEventData.signedEvent - Complete signed Nostr event
+     * @param {Date} [signedEventData.newScheduledDate] - Optional new scheduled date
+     * @returns {Promise<Object>} Result of the signing and promotion operation
+     */
+    async signAndPromotePost(postId, signedEventData) {
+        try {
+            const { signedEvent, newScheduledDate } = signedEventData;
+            
+            // Validate the signed event
+            if (!signedEvent) {
+                throw new Error('Signed Nostr event is required');
+            }
+
+            // Validate signed event structure
+            const requiredFields = ['id', 'pubkey', 'created_at', 'kind', 'content', 'sig'];
+            const missingFields = requiredFields.filter(field => !signedEvent[field]);
+            
+            if (missingFields.length > 0) {
+                throw new Error(`Missing required fields in signed event: ${missingFields.join(', ')}`);
+            }
+
+            if (!Array.isArray(signedEvent.tags)) {
+                throw new Error('Event tags must be an array');
+            }
+
+            printLog('=== SIGNING AND PROMOTING NOSTR POST ===');
+            printLog(`Post ID: ${postId}`);
+            printLog(`Event ID: ${signedEvent.id}`);
+            printLog(`Pubkey: ${signedEvent.pubkey.substring(0, 16)}...`);
+            printLog(`Content length: ${signedEvent.content.length}`);
+            if (newScheduledDate) {
+                printLog(`New scheduled date: ${newScheduledDate.toISOString()}`);
+            }
+
+            // Create Primal URL using bech32 encoding
+            const bech32EventId = this.encodeBech32('nevent', signedEvent.id);
+            const primalUrl = bech32EventId ? `https://primal.net/e/${bech32EventId}` : null;
+
+            // Prepare the update data for the scheduled post
+            const updateData = {
+                status: 'scheduled', // Promote from 'unsigned' to 'scheduled'
+                platformData: {
+                    nostrEventId: signedEvent.id,
+                    nostrSignature: signedEvent.sig,
+                    nostrPubkey: signedEvent.pubkey,
+                    nostrCreatedAt: signedEvent.created_at,
+                    nostrRelays: this.DEFAULT_RELAYS,
+                    nostrPostUrl: primalUrl,
+                    signedEvent: signedEvent // Store complete signed event for publishing
+                }
+            };
+
+            // Update scheduled date if provided
+            if (newScheduledDate) {
+                updateData.scheduledFor = newScheduledDate.toISOString();
+                updateData.timezone = "America/Chicago";
+            }
+
+            printLog('=== UPDATE DATA PREPARED ===');
+            printLog(`Status change: unsigned -> scheduled`);
+            printLog(`Platform data keys: ${Object.keys(updateData.platformData).join(', ')}`);
+            printLog(`Primal URL: ${primalUrl || 'Not generated'}`);
+
+            return {
+                success: true,
+                message: 'Post successfully signed and promoted to scheduled status',
+                postId: postId,
+                eventId: signedEvent.id,
+                primalUrl: primalUrl,
+                updateData: updateData,
+                timestamp: new Date().toISOString()
+            };
+
+        } catch (error) {
+            console.error('Error signing and promoting Nostr post:', error);
+            
+            return {
+                success: false,
+                message: error.message || 'Failed to sign and promote post',
+                postId: postId,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            };
+        }
+    }
+
+    /**
+     * Batch sign and promote multiple unsigned Nostr posts
+     * Useful for "Sign All" functionality
+     * 
+     * @param {Array} postsData - Array of objects containing postId and signedEventData
+     * @returns {Promise<Object>} Batch operation results
+     */
+    async batchSignAndPromotePosts(postsData) {
+        try {
+            printLog('=== BATCH SIGNING AND PROMOTING POSTS ===');
+            printLog(`Processing ${postsData.length} posts`);
+
+            const results = [];
+            let successCount = 0;
+            let failureCount = 0;
+
+            for (let i = 0; i < postsData.length; i++) {
+                const { postId, signedEventData } = postsData[i];
+                
+                try {
+                    const result = await this.signAndPromotePost(postId, signedEventData);
+                    results.push(result);
+                    
+                    if (result.success) {
+                        successCount++;
+                        printLog(`✓ Post ${i + 1}/${postsData.length}: ${postId} signed successfully`);
+                    } else {
+                        failureCount++;
+                        printLog(`✗ Post ${i + 1}/${postsData.length}: ${postId} failed - ${result.message}`);
+                    }
+                } catch (error) {
+                    failureCount++;
+                    const errorResult = {
+                        success: false,
+                        postId: postId,
+                        message: error.message || 'Unexpected error during signing',
+                        error: error.message
+                    };
+                    results.push(errorResult);
+                    printLog(`✗ Post ${i + 1}/${postsData.length}: ${postId} failed - ${error.message}`);
+                }
+            }
+
+            printLog('=== BATCH OPERATION COMPLETE ===');
+            printLog(`Total: ${postsData.length}, Success: ${successCount}, Failed: ${failureCount}`);
+
+            return {
+                success: successCount > 0,
+                message: `Batch operation completed: ${successCount} succeeded, ${failureCount} failed`,
+                totalPosts: postsData.length,
+                successCount: successCount,
+                failureCount: failureCount,
+                results: results,
+                timestamp: new Date().toISOString()
+            };
+
+        } catch (error) {
+            console.error('Error in batch sign and promote operation:', error);
+            
+            return {
+                success: false,
+                message: 'Batch operation failed',
+                error: error.message,
+                totalPosts: postsData.length,
+                successCount: 0,
+                failureCount: postsData.length,
+                timestamp: new Date().toISOString()
+            };
+        }
+    }
 }
 
 module.exports = NostrService;
