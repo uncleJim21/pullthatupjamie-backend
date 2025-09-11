@@ -916,6 +916,13 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   try {
     const response = await getPodcastFeed(feedId);
     
+    // Remove updatedAt field from response
+    if (response && typeof response === 'object') {
+      delete response.updatedAt;
+      delete response.twitterTokens;
+      delete response.queuedEpisodeGuids;
+    }
+    
     // Add cache headers
     res.setHeader('Cache-Control', 'public, max-age=300');
     res.json(response);
