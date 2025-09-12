@@ -340,7 +340,8 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
                     nostrPubkey: nostrData.nostrPubkey,
                     nostrCreatedAt: nostrData.nostrCreatedAt,
                     nostrRelays: nostrData.nostrRelays || post.platformData.nostrRelays,
-                    nostrPostUrl: nostrData.nostrPostUrl
+                    nostrPostUrl: nostrData.nostrPostUrl,
+                    signedEvent: nostrData.signedEvent // Store the complete signed event
                 };
                 
                 // If signing an unsigned post, change status to scheduled
