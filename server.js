@@ -2983,6 +2983,57 @@ if (DEBUG_MODE) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Debug endpoint: get the most recent Nostr post with full URL details
+  app.get('/api/debug/latest-nostr-post', async (req, res) => {
+    try {
+      const SocialPost = require('./models/SocialPost');
+      
+      // Get the most recent posted Nostr post
+      const latestPost = await SocialPost.findOne({
+        platform: 'nostr',
+        status: 'posted'
+      })
+      .sort({ postedAt: -1 })
+      .lean();
+
+      if (!latestPost) {
+        return res.status(404).json({ 
+          error: 'No posted Nostr posts found' 
+        });
+      }
+
+      // Extract the URL details
+      const urlDetails = {
+        fullUrl: latestPost.platformData?.nostrPostUrl,
+        urlLength: latestPost.platformData?.nostrPostUrl?.length || 0,
+        isTruncated: latestPost.platformData?.nostrPostUrl?.endsWith('...') || false,
+        eventId: latestPost.platformData?.nostrEventId,
+        eventIdLength: latestPost.platformData?.nostrEventId?.length || 0
+      };
+
+      res.json({
+        success: true,
+        post: {
+          _id: latestPost._id,
+          adminEmail: latestPost.adminEmail,
+          status: latestPost.status,
+          postedAt: latestPost.postedAt,
+          content: latestPost.content,
+          platformData: latestPost.platformData
+        },
+        urlAnalysis: urlDetails,
+        message: 'Latest posted Nostr post retrieved successfully'
+      });
+
+    } catch (error) {
+      console.error('Error fetching latest Nostr post:', error);
+      res.status(500).json({ 
+        error: 'Failed to fetch latest Nostr post',
+        details: error.message 
+      });
+    }
+  });
 }
 
 
