@@ -261,7 +261,7 @@ router.get('/posts/:postId', validatePrivs, async (req, res) => {
 router.put('/posts/:postId', validatePrivs, async (req, res) => {
     try {
         const { postId } = req.params;
-        const { text, mediaUrl, scheduledFor, timezone } = req.body;
+        const { text, mediaUrl, scheduledFor, newScheduledDate, timezone } = req.body;
 
         // Find the post
         const post = await SocialPost.findOne({
@@ -312,8 +312,10 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
             });
         }
 
-        if (scheduledFor !== undefined) {
-            updates.scheduledFor = new Date(scheduledFor);
+        // Handle scheduled date update - prioritize newScheduledDate over scheduledFor
+        const dateToUpdate = newScheduledDate !== undefined ? newScheduledDate : scheduledFor;
+        if (dateToUpdate !== undefined) {
+            updates.scheduledFor = new Date(dateToUpdate);
         }
 
         if (timezone !== undefined) {
