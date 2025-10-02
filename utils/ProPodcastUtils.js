@@ -6,10 +6,27 @@ const { ProPodcastDetails } = require('../models/ProPodcastDetails');
  * @returns {Promise<Object|null>} - Returns the podcast details or null if not found.
  */
 async function getProPodcastByFeedId(feedId) {
+  const { printLog } = require('../constants');
+  const dbQueryStartTime = Date.now();
+  
+  printLog(`🔍 [TIMING] Starting database query for feedId: ${feedId}`);
+  
   try {
     const podcast = await ProPodcastDetails.findOne({ feedId }).lean();
+    
+    const dbQueryEndTime = Date.now();
+    const queryTime = dbQueryEndTime - dbQueryStartTime;
+    
+    if (podcast) {
+      printLog(`✅ [TIMING] Database query successful in ${queryTime}ms - Found: ${podcast.title}`);
+    } else {
+      printLog(`❌ [TIMING] Database query completed in ${queryTime}ms - No podcast found`);
+    }
+    
     return podcast || null;
   } catch (error) {
+    const dbErrorTime = Date.now() - dbQueryStartTime;
+    printLog(`❌ [TIMING] Database query failed after ${dbErrorTime}ms: ${error.message}`);
     console.error(`Error fetching podcast with feedId ${feedId}:`, error);
     throw new Error('Database query failed');
   }
