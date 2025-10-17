@@ -114,16 +114,15 @@ class SocialPostProcessor {
                     throw new Error('Missing required Nostr data: eventId, signature, or pubkey');
                 }
 
-                // Create the signed event object - exactly matching the frontend structure
-                // IMPORTANT: We use the exact content from the frontend, which already includes
-                // the media URL and signature in the correct format
-                const signedEvent = {
+                // Use the exact signed event from the frontend - don't reconstruct it
+                // The frontend has already signed the complete event with the correct content
+                const signedEvent = post.platformData.signedEvent || {
                     id: post.platformData.nostrEventId,
                     pubkey: post.platformData.nostrPubkey,
                     created_at: post.platformData.nostrCreatedAt,
                     kind: 1,
-                    tags: [], // Must be empty array for signature to match
-                    content: post.content.text, // Already contains media URL and signature in correct format
+                    tags: [],
+                    content: post.content.text,
                     sig: post.platformData.nostrSignature
                 };
 

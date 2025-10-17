@@ -45,6 +45,65 @@ router.post('/posts', validatePrivs, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/social/posts/unsigned
+ * Create unsigned Nostr notes for later user interaction (agent use)
+ */
+router.post('/posts/unsigned', serviceHmac({ requiredScopes: ['svc:social:schedule'] }), async (req, res) => {
+    try {
+        const { text, mediaUrl, scheduledFor, adminEmail, scheduledPostSlotId } = req.body;
+        
+        // Service caller must provide adminEmail explicitly
+        if (!adminEmail) {
+            return res.status(400).json({ error: 'adminEmail is required for agent scheduling' });
+        }
+        
+        // Validate content - either text or media required
+        const hasText = !!(text && String(text).trim().length > 0);
+        const hasMedia = !!(mediaUrl && String(mediaUrl).trim().length > 0);
+        if (!hasText && !hasMedia) {
+            return res.status(400).json({ error: 'Either text or media URL is required' });
+        }
+        
+        // Create unsigned Nostr post
+        const socialPost = new SocialPost({
+            adminEmail,
+            platform: 'nostr', // Always Nostr for unsigned posts
+            scheduledFor: scheduledFor ? new Date(scheduledFor) : new Date(),
+            timezone: 'America/Chicago',
+            scheduledPostSlotId,
+            content: {
+                text: hasText ? String(text).trim() : '',
+                mediaUrl: hasMedia ? String(mediaUrl) : null
+            },
+            status: 'unsigned', // Set as unsigned for later signing
+            platformData: {} // Empty, will be populated when signed
+        });
+
+        await socialPost.save();
+        
+        res.json({
+            success: true,
+            message: 'Created unsigned Nostr note for user interaction',
+            post: {
+                _id: socialPost._id,
+                platform: socialPost.platform,
+                scheduledFor: socialPost.scheduledFor,
+                status: socialPost.status,
+                content: socialPost.content,
+                adminEmail: socialPost.adminEmail
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error creating unsigned Nostr note:', error);
+        res.status(500).json({
+            error: 'Failed to create unsigned note',
+            message: error.message
+        });
+    }
+});
+
 // HMAC-only duplicate endpoint (service-to-service scheduling)
 router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }), async (req, res) => {
     try {
@@ -202,7 +261,7 @@ router.get('/posts/:postId', validatePrivs, async (req, res) => {
 router.put('/posts/:postId', validatePrivs, async (req, res) => {
     try {
         const { postId } = req.params;
-        const { text, mediaUrl, scheduledFor, timezone } = req.body;
+        const { text, mediaUrl, scheduledFor, newScheduledDate, timezone } = req.body;
 
         // Find the post
         const post = await SocialPost.findOne({
@@ -218,10 +277,10 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
         }
 
         // Check if post can be edited
-        if (post.status !== 'scheduled') {
+        if (post.status !== 'scheduled' && post.status !== 'unsigned') {
             return res.status(400).json({
                 error: 'Cannot edit post',
-                message: `Posts with status '${post.status}' cannot be edited. Only 'scheduled' posts can be modified.`
+                message: `Posts with status '${post.status}' cannot be edited. Only 'scheduled' and 'unsigned' posts can be modified.`
             });
         }
 
@@ -253,17 +312,24 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
             });
         }
 
-        if (scheduledFor !== undefined) {
-            updates.scheduledFor = new Date(scheduledFor);
+        // Handle scheduled date update - prioritize newScheduledDate over scheduledFor
+        const dateToUpdate = newScheduledDate !== undefined ? newScheduledDate : scheduledFor;
+        if (dateToUpdate !== undefined) {
+            updates.scheduledFor = new Date(dateToUpdate);
         }
 
         if (timezone !== undefined) {
             updates.timezone = timezone;
         }
 
-        // Handle platform-specific data updates
+        // Handle platform-specific data updates and unsigned → scheduled transition
         if (post.platform === 'nostr' && req.body.platformData) {
             const nostrData = req.body.platformData;
+            
+            // Check if this is signing an unsigned post
+            const isSigningUnsignedPost = post.status === 'unsigned' && 
+                nostrData.nostrEventId && nostrData.nostrSignature && 
+                nostrData.nostrPubkey && nostrData.nostrCreatedAt;
             
             // Validate required Nostr fields are present for update
             if (nostrData.nostrEventId && nostrData.nostrSignature && 
@@ -276,13 +342,29 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
                     nostrPubkey: nostrData.nostrPubkey,
                     nostrCreatedAt: nostrData.nostrCreatedAt,
                     nostrRelays: nostrData.nostrRelays || post.platformData.nostrRelays,
-                    nostrPostUrl: nostrData.nostrPostUrl
+                    nostrPostUrl: nostrData.nostrPostUrl,
+                    signedEvent: nostrData.signedEvent // Store the complete signed event
                 };
+                
+                // If signing an unsigned post, change status to scheduled
+                if (isSigningUnsignedPost) {
+                    updates.status = 'scheduled';
+                    console.log(`Converting unsigned post ${post._id} to scheduled status`);
+                }
+                
             } else if (Object.keys(nostrData).length > 0) {
-                return res.status(400).json({
-                    error: 'Invalid Nostr data',
-                    message: 'When updating a Nostr post, all required Nostr fields must be provided (eventId, signature, pubkey, createdAt)'
-                });
+                // For unsigned posts, provide more helpful error message
+                if (post.status === 'unsigned') {
+                    return res.status(400).json({
+                        error: 'Incomplete signing data',
+                        message: 'To sign an unsigned Nostr post, all required fields must be provided: nostrEventId, nostrSignature, nostrPubkey, nostrCreatedAt'
+                    });
+                } else {
+                    return res.status(400).json({
+                        error: 'Invalid Nostr data',
+                        message: 'When updating a Nostr post, all required Nostr fields must be provided (eventId, signature, pubkey, createdAt)'
+                    });
+                }
             }
         }
 

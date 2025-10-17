@@ -130,6 +130,13 @@ function formatDuration(seconds) {
 
 // Function to fetch episodes from RSS feed
 async function fetchPodcastEpisodes(feedUrl, feedId, limit = 35) {
+  const { printLog } = require('../constants');
+  const rssRequestStartTime = Date.now();
+  
+  printLog(`📡 [TIMING] Starting RSS request to external service...`);
+  printLog(`🔗 [TIMING] RSS URL: ${feedUrl}`);
+  printLog(`⏱️ [TIMING] Timeout set to: 10000ms`);
+  
   try {
     const response = await axios.post('https://rss-extractor-app-yufbq.ondigitalocean.app/getFeed', {
       feedUrl,
@@ -144,48 +151,100 @@ async function fetchPodcastEpisodes(feedUrl, feedId, limit = 35) {
       timeout: 10000 // Add timeout to prevent hanging requests
     });
 
+    const rssRequestEndTime = Date.now();
+    const rssRequestTime = rssRequestEndTime - rssRequestStartTime;
+    
+    printLog(`✅ [TIMING] RSS service responded in ${rssRequestTime}ms`);
+    printLog(`📊 [TIMING] RSS response status: ${response.status}`);
+    printLog(`📦 [TIMING] RSS response size: ${JSON.stringify(response.data).length} characters`);
+    
+    if (response.data?.episodes?.episodes) {
+      printLog(`🎧 [TIMING] RSS returned ${response.data.episodes.episodes.length} episodes`);
+    }
+
     return response.data;
   } catch (error) {
+    const rssErrorTime = Date.now() - rssRequestStartTime;
+    printLog(`❌ [TIMING] RSS service failed after ${rssErrorTime}ms`);
+    
     console.error('Error fetching podcast feed:', error);
     
     // Handle specific error from RSS extractor service
     if (error.response?.status === 500 && error.response?.data?.message === 'invalid code lengths set') {
+      printLog(`❌ [TIMING] RSS parsing error: invalid code lengths set`);
       throw new Error('RSS feed parsing failed - feed may be corrupted or unsupported');
     }
     
     // Handle other HTTP errors
     if (error.response) {
+      printLog(`❌ [TIMING] RSS HTTP error: ${error.response.status} - ${error.response.data?.message || 'Unknown error'}`);
       throw new Error(`RSS service error: ${error.response.status} - ${error.response.data?.message || 'Unknown error'}`);
     }
     
     // Handle network/timeout errors
     if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      printLog(`❌ [TIMING] RSS timeout error: ${error.code}`);
       throw new Error('RSS service timeout - please try again later');
     }
     
+    printLog(`❌ [TIMING] RSS unknown error: ${error.message}`);
     throw new Error(`Failed to fetch podcast episodes: ${error.message}`);
   }
 }
 
 // Main service function to get feed data
 async function getPodcastFeed(feedId) {
+    const { printLog } = require('../constants');
+    const serviceStartTime = Date.now();
+    
+    printLog(`🔍 [TIMING] getPodcastFeed started for feedId: ${feedId}`);
+    
     try {
+      // Try to get cached data first
+      const cachedData = await global.podcastRssCache?.getPodcastData(feedId);
+      
+      if (cachedData) {
+        const cacheTime = Date.now() - serviceStartTime;
+        printLog(`⚡ [TIMING] Cache hit! Returning cached data in ${cacheTime}ms`);
+        return cachedData;
+      }
+
+      // Fallback to original logic if no cache or cache miss
+      printLog(`🔄 [TIMING] Cache miss, falling back to direct RSS fetch`);
+      
+      const dbStartTime = Date.now();
+      printLog(`🗄️ [TIMING] Querying database for feed data...`);
+      
       const feedData = await getProPodcastByFeedId(feedId);
+      
+      const dbEndTime = Date.now();
+      printLog(`✅ [TIMING] Database query completed in ${dbEndTime - dbStartTime}ms`);
+      
       if (!feedData) {
+        printLog(`❌ [TIMING] Feed not found in database`);
         throw new Error('Feed not found');
       }
 
-      // console.log(`feedData:${JSON.stringify(feedData,null,2)}`)
-      // return {}
+      printLog(`📋 [TIMING] Found feed: ${feedData.title} by ${feedData.creator}`);
   
       try {
+        const rssStartTime = Date.now();
+        printLog(`📡 [TIMING] Fetching episodes from RSS service...`);
+        
         const feedResponse = await fetchPodcastEpisodes(feedData.feedUrl, feedId);
         
+        const rssEndTime = Date.now();
+        printLog(`✅ [TIMING] RSS service completed in ${rssEndTime - rssStartTime}ms`);
+        
         if (!feedResponse?.episodes?.episodes || !Array.isArray(feedResponse.episodes.episodes)) {
+          printLog(`❌ [TIMING] Invalid RSS response structure`);
           throw new Error('Invalid feed data structure');
         }
 
-        return {
+        const mappingStartTime = Date.now();
+        printLog(`🔄 [TIMING] Mapping ${feedResponse.episodes.episodes.length} episodes...`);
+
+        const result = {
           ...feedData,
           episodes: feedResponse.episodes.episodes.map(episode => ({
             id: episode.itemUUID || `episode-${Date.now()}`,
@@ -199,18 +258,35 @@ async function getPodcastFeed(feedId) {
             listenLink: feedData.listenLink
           }))
         };
+        
+        const mappingEndTime = Date.now();
+        printLog(`✅ [TIMING] Episode mapping completed in ${mappingEndTime - mappingStartTime}ms`);
+        
+        const totalServiceTime = Date.now() - serviceStartTime;
+        printLog(`🎯 [TIMING] getPodcastFeed total time: ${totalServiceTime}ms`);
+        
+        return result;
       } catch (rssError) {
+        const rssErrorTime = Date.now() - serviceStartTime;
+        printLog(`⚠️ [TIMING] RSS service failed after ${rssErrorTime}ms: ${rssError.message}`);
         console.error('RSS service failed, returning basic feed data:', rssError.message);
         
         // Return basic feed data without episodes as fallback
-        return {
+        const fallbackResult = {
           ...feedData,
           episodes: [],
           error: 'Episode data temporarily unavailable',
           errorDetails: rssError.message
         };
+        
+        const totalFallbackTime = Date.now() - serviceStartTime;
+        printLog(`🔄 [TIMING] Fallback response prepared in ${totalFallbackTime}ms`);
+        
+        return fallbackResult;
       }
     } catch (error) {
+      const errorTime = Date.now() - serviceStartTime;
+      printLog(`❌ [TIMING] getPodcastFeed failed after ${errorTime}ms: ${error.message}`);
       console.error('Error in getPodcastFeed:', error);
       throw error;
     }

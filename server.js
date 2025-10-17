@@ -46,6 +46,7 @@ const nostrRoutes = require('./routes/nostrRoutes');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
+const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
 const { updateEntitlementConfig } = require('./utils/entitlements');
@@ -122,7 +123,7 @@ app.use(session({
 }));
 
 // Environment variables with defaults
-const PORT = process.env.PORT || 4131;
+const PORT = process.env.PORT || 4132;
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gpt-4o-mini';
 
 const validateSpacesConfig = () => {
@@ -230,6 +231,11 @@ const feedCacheManager = new FeedCacheManager({
   secretAccessKey: process.env.SPACES_SECRET_ACCESS_KEY,
   bucketName: process.env.SPACES_BUCKET_NAME
 });
+
+// Initialize podcast RSS cache manager
+const PodcastRssCacheManager = require('./utils/PodcastRssCacheManager');
+const podcastRssCache = new PodcastRssCacheManager();
+global.podcastRssCache = podcastRssCache; // Make it globally available
 
 const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
@@ -1045,16 +1051,42 @@ app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, asyn
 // Add this endpoint to your Express server (server.js/index.js)
 
 app.get('/api/podcast-feed/:feedId', async (req, res) => {
+  const { printLog } = require('./constants');
   const { feedId } = req.params;
-  console.log(`Fetching podcast feed for ID: ${feedId}`);
+  const requestStartTime = Date.now();
+  
+  printLog(`🚀 [TIMING] Starting podcast feed request for ID: ${feedId} at ${new Date().toISOString()}`);
   
   try {
+    const serviceStartTime = Date.now();
+    printLog(`📡 [TIMING] Calling getPodcastFeed service...`);
+    
     const response = await getPodcastFeed(feedId);
+    
+    const serviceEndTime = Date.now();
+    printLog(`✅ [TIMING] getPodcastFeed service completed in ${serviceEndTime - serviceStartTime}ms`);
+    
+    // Remove updatedAt field from response
+    const cleanupStartTime = Date.now();
+    if (response && typeof response === 'object') {
+      delete response.updatedAt;
+      delete response.twitterTokens;
+      delete response.queuedEpisodeGuids;
+    }
+    const cleanupEndTime = Date.now();
+    printLog(`🧹 [TIMING] Response cleanup completed in ${cleanupEndTime - cleanupStartTime}ms`);
     
     // Add cache headers
     res.setHeader('Cache-Control', 'public, max-age=300');
+    
+    const totalTime = Date.now() - requestStartTime;
+    printLog(`🎯 [TIMING] Total request time: ${totalTime}ms`);
+    printLog(`📊 [TIMING] Response contains ${response?.episodes?.length || 0} episodes`);
+    
     res.json(response);
   } catch (error) {
+    const errorTime = Date.now() - requestStartTime;
+    printLog(`❌ [TIMING] Request failed after ${errorTime}ms - Error: ${error.message}`);
     console.error('Error fetching podcast feed:', error);
     const statusCode = error.message === 'Feed not found' ? 404 : 500;
     res.status(statusCode).json({ 
@@ -1873,6 +1905,7 @@ app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
+app.use('/api/automation-settings', automationSettingsRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
@@ -1944,6 +1977,55 @@ if (DEBUG_MODE) {
     } catch (error) {
       console.error('Error in limbo cleanup:', error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Debug endpoint to check podcast RSS cache status
+  app.get('/api/debug/podcast-cache-status', async (req, res) => {
+    try {
+      const stats = global.podcastRssCache?.getCacheStats() || { error: 'Cache not initialized' };
+      res.json({
+        success: true,
+        cacheStats: stats,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error getting cache status:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Debug endpoint to manually refresh podcast cache
+  app.post('/api/debug/refresh-podcast-cache', async (req, res) => {
+    try {
+      const { feedId } = req.body;
+      
+      if (feedId) {
+        // Refresh specific podcast
+        const result = await global.podcastRssCache?.refreshPodcastData(feedId);
+        res.json({
+          success: true,
+          message: `Refreshed cache for feedId: ${feedId}`,
+          data: result ? 'Success' : 'Failed'
+        });
+      } else {
+        // Refresh all podcasts
+        const result = await global.podcastRssCache?.refreshAllPodcasts();
+        res.json({
+          success: true,
+          message: 'Refreshed all podcast caches',
+          result: result
+        });
+      }
+    } catch (error) {
+      console.error('Error refreshing podcast cache:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
     }
   });
 }
@@ -2026,6 +2108,28 @@ app.listen(PORT, async () => {
           }
         );
       }
+
+      // Schedule hourly podcast RSS cache refresh
+      scheduler.scheduleTask(
+        'podcast-rss-cache-refresh',
+        ['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00', '08:00', '09:00', '10:00', '11:00', 
+         '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00'],
+        async () => {
+          try {
+            const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+            console.log(`[SCHEDULED TASK] Starting podcast RSS cache refresh at ${now} (Chicago time)`);
+            
+            const result = await podcastRssCache.refreshAllPodcasts();
+            console.log(`[SCHEDULED TASK] Podcast RSS cache refresh completed: ${result.successful} successful, ${result.failed} failed`);
+            
+            // Clean up expired entries
+            podcastRssCache.cleanupExpiredEntries();
+            
+          } catch (error) {
+            console.error(`[SCHEDULED TASK] Error in podcast RSS cache refresh:`, error.message);
+          }
+        }
+      );
     } else {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
@@ -3212,6 +3316,57 @@ if (DEBUG_MODE) {
       res.json({ count: simplified.length, docs: simplified });
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Debug endpoint: get the most recent Nostr post with full URL details
+  app.get('/api/debug/latest-nostr-post', async (req, res) => {
+    try {
+      const SocialPost = require('./models/SocialPost');
+      
+      // Get the most recent posted Nostr post
+      const latestPost = await SocialPost.findOne({
+        platform: 'nostr',
+        status: 'posted'
+      })
+      .sort({ postedAt: -1 })
+      .lean();
+
+      if (!latestPost) {
+        return res.status(404).json({ 
+          error: 'No posted Nostr posts found' 
+        });
+      }
+
+      // Extract the URL details
+      const urlDetails = {
+        fullUrl: latestPost.platformData?.nostrPostUrl,
+        urlLength: latestPost.platformData?.nostrPostUrl?.length || 0,
+        isTruncated: latestPost.platformData?.nostrPostUrl?.endsWith('...') || false,
+        eventId: latestPost.platformData?.nostrEventId,
+        eventIdLength: latestPost.platformData?.nostrEventId?.length || 0
+      };
+
+      res.json({
+        success: true,
+        post: {
+          _id: latestPost._id,
+          adminEmail: latestPost.adminEmail,
+          status: latestPost.status,
+          postedAt: latestPost.postedAt,
+          content: latestPost.content,
+          platformData: latestPost.platformData
+        },
+        urlAnalysis: urlDetails,
+        message: 'Latest posted Nostr post retrieved successfully'
+      });
+
+    } catch (error) {
+      console.error('Error fetching latest Nostr post:', error);
+      res.status(500).json({ 
+        error: 'Failed to fetch latest Nostr post',
+        details: error.message 
+      });
     }
   });
 }
