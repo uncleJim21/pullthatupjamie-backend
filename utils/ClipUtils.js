@@ -8,6 +8,7 @@ const { performance } = require('perf_hooks');
 const VideoGenerator = require('./VideoGenerator');
 const DigitalOceanSpacesManager = require('./DigitalOceanSpacesManager');
 const { WorkProductV2, calculateLookupHash, calculateEditHash } = require('../models/WorkProductV2');
+const SubtitleUtils = require('./SubtitleUtils');
 
 
 class ClipUtils {
@@ -631,9 +632,10 @@ class ClipUtils {
    * @param {number} endTime - End time in seconds  
    * @param {boolean} useSubtitles - Whether to include subtitles
    * @param {string} feedId - Feed ID for organizing uploads
+   * @param {Array} clientSubtitles - Optional client-provided subtitles
    * @returns {Object} - Status and lookup hash
    */
-  async processEditRequest(cdnUrl, startTime, endTime, useSubtitles = false, feedId = 'unknown') {
+  async processEditRequest(cdnUrl, startTime, endTime, useSubtitles = false, feedId = 'unknown', clientSubtitles = null) {
     const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
     console.log(`${debugPrefix} Processing edit request: ${cdnUrl}, ${startTime}s-${endTime}s`);
 
@@ -698,7 +700,7 @@ class ClipUtils {
       console.log(`${debugPrefix} Database entry created for ${lookupHash}`);
 
       // Start background processing
-      this._backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles, feedId).catch(err => {
+      this._backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles, feedId, clientSubtitles).catch(err => {
         console.error(`${debugPrefix} Background processing failed:`, err);
         // Update database with error status
         WorkProductV2.findOneAndUpdate(
@@ -949,8 +951,9 @@ class ClipUtils {
    * @param {string} lookupHash - Unique identifier for this edit
    * @param {boolean} useSubtitles - Whether to include subtitles
    * @param {string} feedId - Feed ID for organizing uploads
+   * @param {Array} clientSubtitles - Optional client-provided subtitles
    */
-  async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown') {
+  async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown', clientSubtitles = null) {
     const debugPrefix = `[EDIT-VIDEO-BG][${lookupHash}]`;
     console.log(`${debugPrefix} Starting Phase 2 background processing`);
 
@@ -985,6 +988,81 @@ class ClipUtils {
 
       console.log(`${debugPrefix} Segment extracted to: ${outputPath}`);
 
+      // SUBTITLE PROCESSING FOR EDIT-VIDEO
+      // DESIGN NOTE: This subtitle processing is specific to edit-video workflow.
+      // It uses SRT + FFmpeg approach for performance. If we switch to Canvas rendering,
+      // we would replace this section with SubtitleUtils.renderSubtitlesWithCanvas().
+      
+      let finalVideoPath = outputPath; // Default to extracted video
+      
+      if (useSubtitles) {
+        console.log(`${debugPrefix} Processing subtitles for video edit`);
+        
+        try {
+          // Step 1: Extract GUID from CDN URL (for fallback auto-generation)
+          const guid = SubtitleUtils.extractGuidFromCdnUrl(cdnUrl);
+          
+          // Step 2: Process subtitles using new flexible method
+          console.log(`${debugPrefix} Processing subtitles (client provided: ${!!clientSubtitles}, GUID available: ${!!guid})`);
+          const subtitles = await SubtitleUtils.processSubtitlesForVideoEdit(clientSubtitles, guid, startTime, endTime);
+          
+          if (subtitles && subtitles.length > 0) {
+            console.log(`${debugPrefix} Generated ${subtitles.length} subtitles`);
+            
+            // Step 3: Create SRT file
+            const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.srt`);
+            await SubtitleUtils.createSRTFile(subtitles, srtPath);
+            
+            // Step 4: Use FFmpeg to burn subtitles into video
+            const videoWithSubtitlesPath = path.join(os.tmpdir(), `${lookupHash}-with-subtitles.mp4`);
+            await this._extractSegmentWithSubtitles(outputPath, videoWithSubtitlesPath, srtPath);
+            
+            // Step 5: Update final video path and cleanup original
+            finalVideoPath = videoWithSubtitlesPath;
+            await this.cleanupTempFile(outputPath); // Clean up original extracted video
+            
+            console.log(`${debugPrefix} Subtitles successfully added to video`);
+            
+            // Update database with subtitle info
+            await WorkProductV2.findOneAndUpdate(
+              { lookupHash },
+              { 
+                'result.hasSubtitles': true,
+                'result.subtitleCount': subtitles.length,
+                'result.subtitleMethod': clientSubtitles ? 'client-provided' : 'auto-generated'
+              }
+            );
+            
+          } else {
+            console.log(`${debugPrefix} No subtitles found for the specified time range`);
+            
+            // Update database to indicate subtitle attempt was made
+            await WorkProductV2.findOneAndUpdate(
+              { lookupHash },
+              { 
+                'result.hasSubtitles': false,
+                'result.subtitleCount': 0,
+                'result.subtitleMethod': clientSubtitles ? 'client-provided' : 'auto-generated'
+              }
+            );
+          }
+          
+        } catch (subtitleError) {
+          console.error(`${debugPrefix} Subtitle processing failed: ${subtitleError.message}`);
+          
+          // Don't fail the entire operation if subtitles fail
+          // Just log the error and continue without subtitles
+          await WorkProductV2.findOneAndUpdate(
+            { lookupHash },
+            { 
+              'result.hasSubtitles': false,
+              'result.subtitleError': subtitleError.message,
+              'result.subtitleMethod': clientSubtitles ? 'client-provided' : 'auto-generated'
+            }
+          );
+        }
+      }
+
       // Extract parent filename from CDN URL for directory structure
       const urlParts = cdnUrl.split('/');
       const parentFileName = urlParts[urlParts.length - 1];
@@ -993,12 +1071,12 @@ class ClipUtils {
       // Upload to CDN in parent-children structure
       const cdnFileId = `jamie-pro/${feedId}/uploads/${parentFileBase}-children/${lookupHash}.mp4`;
       
-      // Read output file with memory management
+      // Read final video file with memory management
       if (this.checkMemoryPressure()) {
         throw new Error('Memory pressure too high for upload');
       }
       
-      const outputBuffer = await fs.promises.readFile(outputPath);
+      const outputBuffer = await fs.promises.readFile(finalVideoPath);
       
       const uploadedUrl = await this.spacesManager.uploadFile(
         process.env.SPACES_CLIP_BUCKET_NAME,
@@ -1028,6 +1106,9 @@ class ClipUtils {
       );
 
       // Cleanup temp files
+      if (finalVideoPath && finalVideoPath !== outputPath) {
+        await this.cleanupTempFile(finalVideoPath);
+      }
       if (outputPath) {
         await this.cleanupTempFile(outputPath);
       }
@@ -1188,6 +1269,50 @@ class ClipUtils {
         })
         .on('end', () => {
           console.log(`${debugPrefix} FFmpeg extraction completed`);
+          resolve();
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
+   * Burn subtitles into a video using FFmpeg's subtitle filter
+   * 
+   * DESIGN NOTE: This method uses FFmpeg's subtitle filter for performance.
+   * If we switch to Canvas rendering, this method would be replaced with
+   * a call to SubtitleUtils.renderSubtitlesWithCanvas().
+   * 
+   * @param {string} inputPath - Path to source video file
+   * @param {string} outputPath - Path for output video with subtitles
+   * @param {string} srtPath - Path to SRT subtitle file
+   */
+  async _extractSegmentWithSubtitles(inputPath, outputPath, srtPath) {
+    const debugPrefix = `[FFMPEG-SUBTITLES][${Date.now()}]`;
+    console.log(`${debugPrefix} Burning subtitles into video`);
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .outputOptions([
+          '-y', // Overwrite output files
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}`, // Subtitle filter
+          '-c:v', 'libx264', // Video codec
+          '-c:a', 'aac', // Audio codec
+          '-movflags', '+faststart', // Optimize for streaming
+          '-pix_fmt', 'yuv420p' // Ensure compatibility
+        ])
+        .toFormat('mp4')
+        .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
+        .on('progress', progress => {
+          if (progress.percent) {
+            console.log(`${debugPrefix} Progress: ${progress.percent.toFixed(1)}%`);
+          }
+        })
+        .on('error', err => {
+          console.error(`${debugPrefix} FFmpeg subtitle error: ${err.message}`);
+          reject(new Error(`Subtitle processing failed: ${err.message}`));
+        })
+        .on('end', () => {
+          console.log(`${debugPrefix} FFmpeg subtitle processing completed`);
           resolve();
         })
         .save(outputPath);

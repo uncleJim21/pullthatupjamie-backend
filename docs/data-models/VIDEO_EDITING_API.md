@@ -73,7 +73,19 @@ Creates a new video edit by extracting a segment from an existing video file.
   "cdnUrl": "https://your-bucket.domain.com/jamie-pro/550168/uploads/video.mp4",
   "startTime": 8.0,
   "endTime": 14.0,
-  "useSubtitles": false
+  "useSubtitles": true,
+  "subtitles": [
+    {
+      "start": 8.0,
+      "end": 10.5,
+      "text": "Welcome back to the podcast everyone"
+    },
+    {
+      "start": 10.5,
+      "end": 14.0,
+      "text": "Today we're diving deep into AI"
+    }
+  ]
 }
 ```
 
@@ -82,7 +94,8 @@ Creates a new video edit by extracting a segment from an existing video file.
 - `cdnUrl` (string, required): CDN URL of the source video file. Must be from your storage buckets.
 - `startTime` (number, required): Start time in seconds (supports decimals to nearest 0.1s)
 - `endTime` (number, required): End time in seconds (supports decimals to nearest 0.1s)
-- `useSubtitles` (boolean, optional): Whether to include subtitles. Defaults to `false`. (Phase 3 feature)
+- `useSubtitles` (boolean, optional): Whether to include subtitles. Defaults to `false`.
+- `subtitles` (array, optional): Client-provided subtitles array. If provided and `useSubtitles` is true, these will be used instead of auto-generation. Each subtitle object should have `start`, `end`, and `text` properties.
 
 #### Response
 
@@ -459,7 +472,31 @@ Each completed edit includes performance metrics:
 
 - **Phase 1** ✅: Basic functionality with full download
 - **Phase 2** ✅: Smart range extraction optimization with robust memory management
-- **Phase 3** 📋: Subtitle integration support
+- **Phase 3** ✅: Subtitle integration support with SRT + FFmpeg rendering
+
+### Subtitle Implementation
+
+The video editing API uses a **flexible subtitle approach** with two options:
+
+#### **Option 1: Client-Provided Subtitles (Recommended)**
+- **Client Control**: Clients provide their own subtitle array with precise timing
+- **Format**: Array of objects with `{start, end, text}` properties
+- **Performance**: Fastest processing since no transcript lookup is needed
+- **Flexibility**: Clients can customize subtitle content and timing
+
+#### **Option 2: Auto-Generated Subtitles (Fallback)**
+- **Automatic Generation**: Subtitles generated from transcript JSON data
+- **Same Logic**: Uses the same generation logic as make-clip
+- **Requires GUID**: Needs podcast GUID to access transcript data
+- **Performance**: Slightly slower due to transcript processing
+
+#### **Processing Flow**
+1. **Priority Check**: If `subtitles` array is provided and `useSubtitles` is true, use client subtitles
+2. **Fallback**: If no client subtitles but `useSubtitles` is true, attempt auto-generation
+3. **SRT Conversion**: Convert subtitle array to SRT format for FFmpeg processing
+4. **Burned Subtitles**: Subtitles permanently embedded using FFmpeg's subtitle filter
+
+**Note**: The implementation includes comments for easy switching to Canvas rendering if needed.
 
 ### Large File Handling
 

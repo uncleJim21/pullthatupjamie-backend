@@ -913,7 +913,7 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
 app.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
   const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/edit-video ENDPOINT CALLED ====`);
-  const { cdnUrl, startTime, endTime, useSubtitles = false } = req.body;
+  const { cdnUrl, startTime, endTime, useSubtitles = false, subtitles = null } = req.body;
 
   console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
   
@@ -937,7 +937,7 @@ app.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
       console.log(`${debugPrefix} Processing edit request for: ${cdnUrl}`);
       console.log(`${debugPrefix} Time range: ${startTime}s to ${endTime}s (${endTime - startTime}s duration)`);
       
-      const result = await clipUtils.processEditRequest(cdnUrl, startTime, endTime, useSubtitles, req.podcastAdmin?.feedId);
+      const result = await clipUtils.processEditRequest(cdnUrl, startTime, endTime, useSubtitles, req.podcastAdmin?.feedId, subtitles);
       
       console.log(`${debugPrefix} Edit request processed successfully: ${JSON.stringify(result)}`);
       return res.status(202).json(result);
