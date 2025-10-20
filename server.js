@@ -237,6 +237,11 @@ const PodcastRssCacheManager = require('./utils/PodcastRssCacheManager');
 const podcastRssCache = new PodcastRssCacheManager();
 global.podcastRssCache = podcastRssCache; // Make it globally available
 
+// Initialize edit children cache manager
+const EditChildrenCacheManager = require('./utils/EditChildrenCacheManager');
+const editChildrenCache = new EditChildrenCacheManager();
+global.editChildrenCache = editChildrenCache; // Make it globally available
+
 const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
   maxConcurrent: 4,
@@ -1011,6 +1016,24 @@ app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, asyn
     // Remove extension from parent filename for base matching
     const parentFileBase = parentFileName.replace(/\.[^/.]+$/, "");
     
+    // Try cache first
+    const cachedData = await global.editChildrenCache.getChildren(parentFileBase);
+    
+    if (cachedData) {
+      console.log(`${debugPrefix} Returning cached data with ${cachedData.childCount} children`);
+      return res.json({
+        parentFileName,
+        parentFileBase,
+        childCount: cachedData.childCount,
+        children: cachedData.children,
+        cached: true,
+        lastUpdated: cachedData.lastUpdated
+      });
+    }
+
+    // Cache miss - fetch fresh data
+    console.log(`${debugPrefix} Cache miss - fetching fresh data from database`);
+    
     // Find all edits for this parent file
     const childEdits = await WorkProductV2.find({
       type: 'video-edit',
@@ -1034,7 +1057,8 @@ app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, asyn
       parentFileName,
       parentFileBase,
       childCount: formattedEdits.length,
-      children: formattedEdits
+      children: formattedEdits,
+      cached: false
     });
 
   } catch (error) {
@@ -1991,6 +2015,25 @@ if (DEBUG_MODE) {
       });
     } catch (error) {
       console.error('Error getting cache status:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Debug endpoint to check edit children cache status
+  app.get('/api/debug/edit-children-cache-status', async (req, res) => {
+    try {
+      const stats = global.editChildrenCache?.getStats() || { error: 'Cache not initialized' };
+      res.json({
+        success: true,
+        cacheStats: stats,
+        cachedParents: global.editChildrenCache?.getCachedKeys() || [],
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error getting edit children cache status:', error);
       res.status(500).json({
         success: false,
         error: error.message

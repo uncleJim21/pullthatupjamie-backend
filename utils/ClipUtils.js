@@ -697,6 +697,12 @@ class ClipUtils {
         }
       });
 
+      // Invalidate cache for this parent file
+      if (global.editChildrenCache) {
+        global.editChildrenCache.invalidate(parentFileBase);
+        console.log(`${debugPrefix} Invalidated cache for parentFileBase: ${parentFileBase}`);
+      }
+
       console.log(`${debugPrefix} Database entry created for ${lookupHash}`);
 
       // Start background processing
