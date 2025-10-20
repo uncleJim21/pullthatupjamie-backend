@@ -1009,8 +1009,8 @@ class ClipUtils {
           if (subtitles && subtitles.length > 0) {
             console.log(`${debugPrefix} Generated ${subtitles.length} subtitles`);
             
-            // Step 3: Create ASS file
-            const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.ass`);
+            // Step 3: Create SRT file
+            const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.srt`);
             await SubtitleUtils.createSRTFile(subtitles, srtPath);
             
             // Step 4: Use FFmpeg to burn subtitles into video
@@ -1294,11 +1294,12 @@ class ClipUtils {
       ffmpeg(inputPath)
         .outputOptions([
           '-y', // Overwrite output files
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontName=Helvetica,FontSize=12,PrimaryColour=&H00FFFFFF,OutlineColour=&H66000000,BorderStyle=3,Outline=2,Shadow=2,Alignment=2,MarginV=40,MarginL=70,MarginR=70'`, // Force all styling through FFmpeg
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,MarginV=40,MarginL=70,MarginR=70'`, // White text with thick black outline
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
-          '-pix_fmt', 'yuv420p' // Ensure compatibility
+          '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-sn' // Strip any existing subtitle streams from input
         ])
         .toFormat('mp4')
         .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))

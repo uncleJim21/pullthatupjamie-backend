@@ -43,10 +43,26 @@ class SubtitleUtils {
         return await SubtitleUtils.generateSubtitlesFromTranscript(guid, startTime, endTime);
       }
       
-      // Adjust timestamps to be relative to video start if needed
-      const adjustedSubtitles = SubtitleUtils.adjustSubtitleTimestamps(clientSubtitles, startTime);
+      // DEDUPLICATION: Remove duplicate subtitles based on start time and text
+      const deduplicatedSubtitles = SubtitleUtils.deduplicateSubtitles(clientSubtitles);
+      console.log(`${debugPrefix} Deduplicated from ${clientSubtitles.length} to ${deduplicatedSubtitles.length} subtitles`);
       
-      console.log(`${debugPrefix} Client subtitles processed successfully`);
+      // Check if these are individual words (need grouping) or already grouped
+      const needsGrouping = deduplicatedSubtitles.length > 10 && deduplicatedSubtitles.every(sub => 
+        sub.text && sub.text.split(' ').length === 1
+      );
+      
+      let processedSubtitles = deduplicatedSubtitles;
+      
+      if (needsGrouping) {
+        console.log(`${debugPrefix} Client provided individual words, grouping into chunks of 5`);
+        processedSubtitles = SubtitleUtils.groupWordsIntoChunks(deduplicatedSubtitles, 5);
+      }
+      
+      // Adjust timestamps to be relative to video start if needed
+      const adjustedSubtitles = SubtitleUtils.adjustSubtitleTimestamps(processedSubtitles, startTime);
+      
+      console.log(`${debugPrefix} Client subtitles processed successfully (${adjustedSubtitles.length} chunks)`);
       return adjustedSubtitles;
     }
     
@@ -60,6 +76,33 @@ class SubtitleUtils {
     console.log(`${debugPrefix} No subtitles available (no client subtitles and no GUID)`);
     return [];
   }
+
+  /**
+   * Remove duplicate subtitles based on start time and text
+   * 
+   * @param {Array} subtitles - Array of subtitle objects
+   * @returns {Array} Deduplicated array of subtitles
+   */
+  static deduplicateSubtitles(subtitles) {
+    const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
+    console.log(`${debugPrefix} Deduplicating ${subtitles.length} subtitles`);
+    
+    const seen = new Set();
+    const deduplicated = [];
+    
+    for (const subtitle of subtitles) {
+      // Create a unique key based on start time and text
+      const key = `${subtitle.start}-${subtitle.text}`;
+      
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(subtitle);
+      }
+    }
+    
+    console.log(`${debugPrefix} Deduplication complete: ${subtitles.length} -> ${deduplicated.length}`);
+    return deduplicated;
+  }
   
   /**
    * Generate subtitles from transcript JSON for any video edit
@@ -72,7 +115,7 @@ class SubtitleUtils {
    */
   static async generateSubtitlesFromTranscript(guid, startTime, endTime) {
     const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
-    console.log(`${debugPrefix} Generating subtitles for GUID: ${guid}, range: ${startTime}s-${endTime}s`);
+    console.log(`${debugPrefix} Generating word-level subtitles for GUID: ${guid}, range: ${startTime}s-${endTime}s`);
     
     if (!guid) {
       console.error(`${debugPrefix} Missing GUID parameter`);
@@ -85,26 +128,61 @@ class SubtitleUtils {
     }
     
     try {
-      // Import the existing function from server.js
-      // Note: This maintains compatibility with existing make-clip workflow
+      // Import the existing word-level function from server.js
+      // Note: This uses the same word-level timestamps as make-clip workflow
       const { getWordTimestampsFromFullTranscriptJSON } = require('../server');
       
-      console.time(`${debugPrefix} Subtitle-Generation-Time`);
-      const subtitles = await getWordTimestampsFromFullTranscriptJSON(guid, startTime, endTime);
-      console.timeEnd(`${debugPrefix} Subtitle-Generation-Time`);
+      console.time(`${debugPrefix} Word-Level-Subtitle-Generation-Time`);
+      const wordSubtitles = await getWordTimestampsFromFullTranscriptJSON(guid, startTime, endTime);
+      console.timeEnd(`${debugPrefix} Word-Level-Subtitle-Generation-Time`);
       
-      if (!subtitles || !Array.isArray(subtitles)) {
-        console.error(`${debugPrefix} Invalid subtitles returned: ${typeof subtitles}`);
+      if (!wordSubtitles || !Array.isArray(wordSubtitles)) {
+        console.error(`${debugPrefix} Invalid subtitles returned: ${typeof wordSubtitles}`);
         return [];
       }
       
-      console.log(`${debugPrefix} Generated ${subtitles.length} subtitles`);
-      return subtitles;
+      // Group words into chunks of 5 (same as make-clip VideoGenerator logic)
+      const groupedSubtitles = SubtitleUtils.groupWordsIntoChunks(wordSubtitles, 5);
+      
+      console.log(`${debugPrefix} Generated ${wordSubtitles.length} word-level subtitles, grouped into ${groupedSubtitles.length} chunks`);
+      return groupedSubtitles;
       
     } catch (error) {
-      console.error(`${debugPrefix} Failed to generate subtitles: ${error.message}`);
+      console.error(`${debugPrefix} Failed to generate word-level subtitles: ${error.message}`);
       throw error;
     }
+  }
+
+  /**
+   * Group individual word subtitles into chunks for FFmpeg
+   * Each chunk stays visible until the last word in that chunk is spoken
+   * 
+   * @param {Array} wordSubtitles - Array of individual word subtitle objects
+   * @param {number} chunkSize - Number of words per chunk (default 5)
+   * @returns {Array} Array of grouped subtitle objects with proper timing
+   */
+  static groupWordsIntoChunks(wordSubtitles, chunkSize = 5) {
+    const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
+    console.log(`${debugPrefix} Grouping ${wordSubtitles.length} words into chunks of ${chunkSize} for FFmpeg`);
+    
+    if (wordSubtitles.length === 0) return [];
+    
+    const chunks = [];
+    
+    for (let i = 0; i < wordSubtitles.length; i += chunkSize) {
+      const group = wordSubtitles.slice(i, i + chunkSize);
+      if (group.length > 0) {
+        chunks.push({
+          text: group.map(word => word.text).join(' '),
+          start: group[0].start,  // Start when first word begins
+          end: group[group.length - 1].end,  // End when last word ends
+          confidence: group.reduce((sum, word) => sum + (word.confidence || 0), 0) / group.length
+        });
+      }
+    }
+    
+    console.log(`${debugPrefix} Created ${chunks.length} subtitle chunks (timing based on actual word timing)`);
+    return chunks;
   }
 
   /**
@@ -166,25 +244,14 @@ class SubtitleUtils {
    */
   static async createSRTFile(subtitles, outputPath) {
     const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
-    console.log(`${debugPrefix} Creating ASS file with ${subtitles.length} subtitles`);
+    console.log(`${debugPrefix} Creating SRT file with ${subtitles.length} subtitles`);
     
     if (!subtitles || !Array.isArray(subtitles) || subtitles.length === 0) {
       throw new Error('No subtitles provided for subtitle creation');
     }
     
     try {
-      // Create ASS (Advanced SubStation Alpha) format - styling handled by FFmpeg force_style
-      let assContent = `[Script Info]
-Title: Video Subtitles
-ScriptType: v4.00+
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,12,&H00FFFFFF,&H000000FF,&HB0000000,&H80000000,0,0,0,0,100,100,0,0,3,2,2,2,10,10,10,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-`;
+      let srtContent = '';
       
       subtitles.forEach((subtitle, index) => {
         // Validate subtitle format
@@ -193,18 +260,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           return;
         }
         
-        // Convert seconds to ASS time format (H:MM:SS.CC)
-        const startTime = SubtitleUtils.formatASSTime(subtitle.start);
-        const endTime = SubtitleUtils.formatASSTime(subtitle.end);
+        // Convert seconds to SRT time format (HH:MM:SS,mmm)
+        const startTime = SubtitleUtils.formatSRTTime(subtitle.start);
+        const endTime = SubtitleUtils.formatSRTTime(subtitle.end);
         
-        // Add subtitle entry in ASS format
-        assContent += `Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${subtitle.text}\n`;
+        // Add subtitle entry
+        srtContent += `${index + 1}\n`;
+        srtContent += `${startTime} --> ${endTime}\n`;
+        srtContent += `${subtitle.text}\n\n`;
       });
       
-      // Write ASS file
-      await fs.promises.writeFile(outputPath, assContent, 'utf8');
+      // Write SRT file
+      await fs.promises.writeFile(outputPath, srtContent, 'utf8');
       
       console.log(`${debugPrefix} SRT file created: ${outputPath}`);
+      console.log(`${debugPrefix} SRT content preview: ${srtContent.substring(0, 200)}...`);
       return outputPath;
       
     } catch (error) {
