@@ -1700,7 +1700,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Parse pagination parameters
     const pageSize = 50; // Fixed page size of 50 items
     const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
-    const includeChildren = req.query.includeChildren !== 'false'; // Default to true
+    const includeChildren = req.query.includeChildren === 'true'; // Default to false for performance
     
     if (page < 1) {
       return res.status(400).json({ error: "Page number must be 1 or greater" });

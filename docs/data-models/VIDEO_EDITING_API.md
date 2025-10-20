@@ -220,18 +220,18 @@ Enhanced to include parent-child relationship information.
 #### Query Parameters
 
 - `page` (number, optional): Page number for pagination. Defaults to 1.
-- `includeChildren` (boolean, optional): Whether to include child edit information. Defaults to `true`.
+- `includeChildren` (boolean, optional): Whether to include child edit information. Defaults to `false` for better performance.
 
 #### Example Requests
 
 ```bash
-# Include children (default)
+# Exclude children (default - faster)
 GET /api/list-uploads?page=1
 
 # Include children explicitly
 GET /api/list-uploads?page=1&includeChildren=true
 
-# Exclude children for faster response
+# Exclude children explicitly
 GET /api/list-uploads?page=1&includeChildren=false
 ```
 
