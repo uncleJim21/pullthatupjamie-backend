@@ -1009,8 +1009,8 @@ class ClipUtils {
           if (subtitles && subtitles.length > 0) {
             console.log(`${debugPrefix} Generated ${subtitles.length} subtitles`);
             
-            // Step 3: Create SRT file
-            const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.srt`);
+            // Step 3: Create ASS file
+            const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.ass`);
             await SubtitleUtils.createSRTFile(subtitles, srtPath);
             
             // Step 4: Use FFmpeg to burn subtitles into video
@@ -1294,7 +1294,7 @@ class ClipUtils {
       ffmpeg(inputPath)
         .outputOptions([
           '-y', // Overwrite output files
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}`, // Subtitle filter
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}`, // Subtitle filter (ASS format has built-in styling)
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming

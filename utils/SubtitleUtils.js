@@ -166,14 +166,25 @@ class SubtitleUtils {
    */
   static async createSRTFile(subtitles, outputPath) {
     const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
-    console.log(`${debugPrefix} Creating SRT file with ${subtitles.length} subtitles`);
+    console.log(`${debugPrefix} Creating ASS file with ${subtitles.length} subtitles`);
     
     if (!subtitles || !Array.isArray(subtitles) || subtitles.length === 0) {
-      throw new Error('No subtitles provided for SRT creation');
+      throw new Error('No subtitles provided for subtitle creation');
     }
     
     try {
-      let srtContent = '';
+      // Create ASS (Advanced SubStation Alpha) format for better styling control
+      let assContent = `[Script Info]
+Title: Video Subtitles
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Helvetica,12,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,2,2,70,70,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
       
       subtitles.forEach((subtitle, index) => {
         // Validate subtitle format
@@ -182,18 +193,16 @@ class SubtitleUtils {
           return;
         }
         
-        // Convert seconds to SRT time format (HH:MM:SS,mmm)
-        const startTime = SubtitleUtils.formatSRTTime(subtitle.start);
-        const endTime = SubtitleUtils.formatSRTTime(subtitle.end);
+        // Convert seconds to ASS time format (H:MM:SS.CC)
+        const startTime = SubtitleUtils.formatASSTime(subtitle.start);
+        const endTime = SubtitleUtils.formatASSTime(subtitle.end);
         
-        // Add subtitle entry
-        srtContent += `${index + 1}\n`;
-        srtContent += `${startTime} --> ${endTime}\n`;
-        srtContent += `${subtitle.text}\n\n`;
+        // Add subtitle entry in ASS format
+        assContent += `Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${subtitle.text}\n`;
       });
       
-      // Write SRT file
-      await fs.promises.writeFile(outputPath, srtContent, 'utf8');
+      // Write ASS file
+      await fs.promises.writeFile(outputPath, assContent, 'utf8');
       
       console.log(`${debugPrefix} SRT file created: ${outputPath}`);
       return outputPath;
@@ -217,6 +226,15 @@ class SubtitleUtils {
     const milliseconds = Math.floor((seconds % 1) * 1000);
     
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${milliseconds.toString().padStart(3, '0')}`;
+  }
+
+  static formatASSTime(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const centiseconds = Math.floor((seconds % 1) * 100);
+    
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
   }
   
   /**
