@@ -1294,7 +1294,7 @@ class ClipUtils {
       ffmpeg(inputPath)
         .outputOptions([
           '-y', // Overwrite output files
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}`, // Subtitle filter (ASS format has built-in styling)
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontName=Helvetica,FontSize=12,PrimaryColour=&H00FFFFFF,OutlineColour=&H66000000,BorderStyle=3,Outline=2,Shadow=2,Alignment=2,MarginV=40,MarginL=70,MarginR=70'`, // Force all styling through FFmpeg
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming

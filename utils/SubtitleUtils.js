@@ -173,14 +173,14 @@ class SubtitleUtils {
     }
     
     try {
-      // Create ASS (Advanced SubStation Alpha) format for better styling control
+      // Create ASS (Advanced SubStation Alpha) format - styling handled by FFmpeg force_style
       let assContent = `[Script Info]
 Title: Video Subtitles
 ScriptType: v4.00+
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Helvetica,12,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,2,2,70,70,40,1
+Style: Default,Arial,12,&H00FFFFFF,&H000000FF,&HB0000000,&H80000000,0,0,0,0,100,100,0,0,3,2,2,2,10,10,10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
