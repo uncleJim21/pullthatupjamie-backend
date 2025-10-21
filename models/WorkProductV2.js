@@ -27,6 +27,8 @@ const WorkProductV2Schema = new mongoose.Schema({
     default: 'queued',
     required: false,
   },
+}, {
+  timestamps: true // Add createdAt and updatedAt fields
 });
 
 /**

@@ -66,7 +66,7 @@ class EditChildrenCacheManager {
             const childEdits = await WorkProductV2.find({
                 type: 'video-edit',
                 'result.parentFileBase': parentFileBase
-            }).sort({ createdAt: -1 }); // Most recent first
+            });
 
             printLog(`📊 [EDIT-CHILDREN-CACHE] Found ${childEdits.length} child edits for parentFileBase: ${parentFileBase}`);
 
@@ -80,6 +80,24 @@ class EditChildrenCacheManager {
                 createdAt: edit.createdAt,
                 originalUrl: edit.result.originalUrl
             }));
+
+            // Sort by createdAt (most recent first), with null values at the end
+            formattedEdits.sort((a, b) => {
+                // If both have createdAt, sort by most recent first
+                if (a.createdAt && b.createdAt) {
+                    return new Date(b.createdAt) - new Date(a.createdAt);
+                }
+                // If only a has createdAt, a comes first
+                if (a.createdAt && !b.createdAt) {
+                    return -1;
+                }
+                // If only b has createdAt, b comes first
+                if (!a.createdAt && b.createdAt) {
+                    return 1;
+                }
+                // If neither has createdAt, maintain original order (or sort by _id)
+                return 0;
+            });
 
             const childrenData = {
                 parentFileBase,
