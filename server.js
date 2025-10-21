@@ -1727,23 +1727,21 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Create a new S3 client for this operation
     const client = clipSpacesManager.createClient();
     
-    // Set up pagination parameters for S3 listing
+    // Fetch ALL objects from S3 (we'll paginate after sorting)
     let continuationToken = null;
     let allContents = [];
     let hasMoreItems = true;
     let totalCount = 0;
-    let directoryCount = 0; // Track total number of directories across all pages
+    let directoryCount = 0; // Track total number of directories
     
-    // If we're requesting a page other than the first, we need to fetch all previous pages
-    // to get the correct continuation token
-    // It's not ideal, but S3 doesn't support direct offset pagination
-    let currentPage = 1;
-    
-    while (hasMoreItems && currentPage <= page) {
+    // Fetch all objects from S3 to enable proper sorting
+    let batchCount = 0;
+    while (hasMoreItems) {
+      batchCount++;
       const listParams = {
         Bucket: bucketName,
         Prefix: prefix,
-        MaxKeys: pageSize
+        MaxKeys: 1000 // Fetch in larger batches for efficiency
       };
       
       // Add the continuation token if we have one from a previous request
@@ -1751,9 +1749,13 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
         listParams.ContinuationToken = continuationToken;
       }
       
+      console.log(`S3 Batch ${batchCount}: Fetching with prefix: ${prefix}`);
+      
       // Execute the command
       const command = new ListObjectsV2Command(listParams);
       const response = await client.send(command);
+      
+      console.log(`S3 Batch ${batchCount}: Got ${response.Contents?.length || 0} items, IsTruncated: ${response.IsTruncated}`);
       
       // Count directories in this response
       const directoriesInThisPage = (response.Contents || []).filter(item => item.Key.endsWith('/')).length;
@@ -1762,20 +1764,17 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       // Update total count (including directories for now)
       totalCount += response.Contents?.length || 0;
       
-      // If this is the page we want, store the contents
-      if (currentPage === page) {
-        allContents = response.Contents || [];
-      }
+      // Add all contents to our collection
+      allContents = allContents.concat(response.Contents || []);
       
       // Check if there are more items to fetch
       hasMoreItems = response.IsTruncated;
       
       // Update the continuation token for the next request
       continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-      
-      // Move to the next page
-      currentPage++;
     }
+    
+    console.log(`S3 Fetch Complete: ${batchCount} batches, ${allContents.length} total items, ${directoryCount} directories`);
     
     // Process the results to make them more user-friendly
     const uploads = allContents
@@ -1792,15 +1791,41 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
           lastModified: item.LastModified,
           publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
         };
+      })
+      // Sort by lastModified DESC (most recent first), with deterministic secondary sort by key
+      .sort((a, b) => {
+        // Convert to Date objects for proper comparison
+        const dateA = new Date(a.lastModified);
+        const dateB = new Date(b.lastModified);
+        const timeDiff = dateB.getTime() - dateA.getTime();
+        
+        if (timeDiff !== 0) return timeDiff;
+        return a.key.localeCompare(b.key); // Secondary sort for consistency
       });
+    
+    console.log(`Total files found: ${uploads.length}`);
+    console.log(`First 3 files (most recent):`, uploads.slice(0, 3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
+    console.log(`Last 3 files (oldest):`, uploads.slice(-3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
+
+    // Apply server-side pagination to sorted results
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedUploads = uploads.slice(startIndex, endIndex);
+    
+    // Calculate pagination metadata
+    const totalFileCount = uploads.length; // Total files after filtering
+    const hasNextPage = endIndex < totalFileCount;
+    const hasPreviousPage = page > 1;
+    
+    console.log(`Pagination debug - Page: ${page}, Total files: ${totalFileCount}, Start: ${startIndex}, End: ${endIndex}, Paginated count: ${paginatedUploads.length}`);
 
     // Add child relationship data if requested
     if (includeChildren) {
-      console.log(`Adding child relationship data for ${uploads.length} uploads`);
+      console.log(`Adding child relationship data for ${paginatedUploads.length} uploads`);
       
       try {
-        // Get all file bases for batch query
-        const fileBases = uploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
+        // Get all file bases for batch query (only for paginated results)
+        const fileBases = paginatedUploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
         
         // Single database query to get all child edits at once
         const allChildEdits = await WorkProductV2.find({
@@ -1821,7 +1846,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
         });
         
         // Add children to each upload
-        uploads.forEach(upload => {
+        paginatedUploads.forEach(upload => {
           const fileBase = upload.fileName.replace(/\.[^/.]+$/, "");
           const childEdits = childEditsByParent[fileBase] || [];
           
@@ -1841,7 +1866,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       } catch (error) {
         console.error(`Failed to get children data: ${error.message}`);
         // Set empty children for all uploads on error
-        uploads.forEach(upload => {
+        paginatedUploads.forEach(upload => {
           upload.children = [];
           upload.childCount = 0;
           upload.hasChildren = false;
@@ -1849,29 +1874,22 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       }
     }
     
-    // Calculate pagination metadata
-    const hasNextPage = hasMoreItems;
-    const hasPreviousPage = page > 1;
-    
-    // Calculate the real total count by subtracting all directories
-    const realTotalCount = totalCount - directoryCount;
-    
     // Return the list of uploads with pagination metadata
     res.json({
-      uploads,
+      uploads: paginatedUploads,
       pagination: {
         page,
         pageSize,
         hasNextPage,
         hasPreviousPage,
-        totalCount: realTotalCount
+        totalCount: totalFileCount
       },
       feedId,
       includeChildren,
       childrenSummary: includeChildren ? {
-        totalParents: uploads.length,
-        parentsWithChildren: uploads.filter(u => u.hasChildren).length,
-        totalChildren: uploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
+        totalParents: paginatedUploads.length,
+        parentsWithChildren: paginatedUploads.filter(u => u.hasChildren).length,
+        totalChildren: paginatedUploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
       } : null
     });
     
