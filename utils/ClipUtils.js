@@ -31,7 +31,11 @@ class ClipUtils {
       largeFileThreshold: 100 * 1024 * 1024, // 100MB threshold for range extraction
       rangeBufferSize: 10 * 1024 * 1024, // 10MB buffer around extract range
       maxConcurrentProcessing: 2, // Limit concurrent processing
-      cleanupIntervalMs: 30000 // 30 seconds cleanup interval
+      cleanupIntervalMs: 30000, // 30 seconds cleanup interval
+      // NEW: Smart chunking configuration
+      smartChunkingThreshold: 50 * 1024 * 1024, // 50MB threshold for smart chunking
+      maxChunkDuration: 600, // 10 minutes max duration for chunking
+      chunkBufferMB: 1 // 1MB buffer before/after chunk
     };
     
     // Active processing tracking
@@ -744,22 +748,168 @@ class ClipUtils {
     
     console.log(`${debugPrefix} File size: ${Math.round(fileSize / 1024 / 1024)}MB, Duration: ${duration}s`);
     
-    // Strategy selection based on file size and extraction parameters
+    // IMPROVED: More aggressive range extraction strategy
     const shouldUseRangeExtraction = (
-      fileSize > this.memoryConfig.largeFileThreshold && // File is large
-      duration < 300 && // Extract duration < 5 minutes
-      startTime > 30 // Not extracting from very beginning
+      fileSize > this.memoryConfig.smartChunkingThreshold && // File is >50MB (configurable)
+      duration < this.memoryConfig.maxChunkDuration && // Extract duration < 10 minutes (configurable)
+      fileSize > duration * 1024 * 1024 // File is dense (>1MB per second)
     );
     
+    // IMPROVED: Always try range extraction first for large files, fallback to full download
     if (shouldUseRangeExtraction) {
-      console.log(`${debugPrefix} Using range extraction strategy`);
-      return await this._extractWithRangeRequests(cdnUrl, startTime, endTime, lookupHash);
+      console.log(`${debugPrefix} Using improved range extraction strategy`);
+      try {
+        return await this._extractWithSmartChunking(cdnUrl, startTime, endTime, lookupHash, fileMetadata);
+      } catch (rangeError) {
+        console.warn(`${debugPrefix} Range extraction failed, falling back to full download: ${rangeError.message}`);
+        return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
+      }
     } else {
-      console.log(`${debugPrefix} Using full download strategy`);
+      console.log(`${debugPrefix} Using full download strategy (file too small or dense)`);
       return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
     }
   }
   
+  /**
+   * NEW: Smart chunking with true HTTP range requests
+   * Downloads only the necessary byte ranges instead of full file
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier
+   * @param {Object} fileMetadata - File size and type info
+   * @returns {string} - Path to extracted segment
+   */
+  async _extractWithSmartChunking(cdnUrl, startTime, endTime, lookupHash, fileMetadata) {
+    const debugPrefix = `[SMART-CHUNKING][${lookupHash}]`;
+    const startMemory = this.getMemoryUsage();
+    
+    try {
+      console.time(`${debugPrefix} SmartChunking`);
+      
+      // Calculate approximate byte ranges for the time segment
+      const fileSize = fileMetadata.contentLength;
+      const totalDuration = await this._getVideoDurationFromUrl(cdnUrl);
+      const duration = endTime - startTime;
+      
+      // Estimate byte positions (rough approximation)
+      const bytesPerSecond = fileSize / totalDuration;
+      const bufferBytes = this.memoryConfig.chunkBufferMB * 1024 * 1024;
+      const startByte = Math.max(0, Math.floor(startTime * bytesPerSecond) - bufferBytes); // Configurable buffer before
+      const endByte = Math.min(fileSize - 1, Math.ceil(endTime * bytesPerSecond) + bufferBytes); // Configurable buffer after
+      
+      console.log(`${debugPrefix} Downloading bytes ${startByte}-${endByte} (${Math.round((endByte - startByte) / 1024 / 1024)}MB) of ${Math.round(fileSize / 1024 / 1024)}MB file`);
+      
+      // Download only the chunk we need
+      const chunkPath = path.join(os.tmpdir(), `edit-chunk-${Date.now()}.tmp`);
+      this.registerTempFile(chunkPath);
+      
+      await this._downloadByteRange(cdnUrl, chunkPath, startByte, endByte);
+      
+      // Extract the exact segment from the chunk
+      const outputPath = path.join(os.tmpdir(), `edit-range-${Date.now()}.mp4`);
+      this.registerTempFile(outputPath);
+      
+      // Adjust start time relative to chunk start
+      const chunkStartTime = startByte / bytesPerSecond;
+      const adjustedStartTime = Math.max(0, startTime - chunkStartTime);
+      const adjustedEndTime = Math.min(duration, endTime - chunkStartTime);
+      
+      await this._extractSegmentWithFFmpeg(chunkPath, outputPath, adjustedStartTime, adjustedEndTime);
+      
+      // Cleanup chunk file
+      await this.cleanupTempFile(chunkPath);
+      
+      console.timeEnd(`${debugPrefix} SmartChunking`);
+      
+      const endMemory = this.getMemoryUsage();
+      const memoryDelta = Math.round((endMemory.rss - startMemory.rss) / 1024 / 1024);
+      console.log(`${debugPrefix} Smart chunking complete, memory delta: ${memoryDelta}MB`);
+      
+      return outputPath;
+      
+    } catch (error) {
+      console.error(`${debugPrefix} Smart chunking failed: ${error.message}`);
+      throw error; // Let caller handle fallback
+    }
+  }
+
+  /**
+   * Download a specific byte range from a URL using HTTP range requests
+   * 
+   * @param {string} url - Source URL
+   * @param {string} outputPath - Local file path to save to
+   * @param {number} startByte - Start byte position
+   * @param {number} endByte - End byte position
+   */
+  async _downloadByteRange(url, outputPath, startByte, endByte) {
+    const debugPrefix = `[BYTE-RANGE-DOWNLOAD]`;
+    console.log(`${debugPrefix} Downloading range ${startByte}-${endByte}`);
+    
+    return new Promise(async (resolve, reject) => {
+      try {
+        const response = await axios({
+          method: 'get',
+          url: url,
+          headers: {
+            'Range': `bytes=${startByte}-${endByte}`
+          },
+          responseType: 'stream',
+          timeout: 300000 // 5 minutes
+        });
+        
+        if (response.status !== 206) {
+          throw new Error(`Expected HTTP 206 (Partial Content), got ${response.status}`);
+        }
+        
+        const writer = fs.createWriteStream(outputPath);
+        let downloadedBytes = 0;
+        
+        response.data.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+        });
+        
+        response.data.pipe(writer);
+        
+        writer.on('finish', () => {
+          console.log(`${debugPrefix} Downloaded ${Math.round(downloadedBytes / 1024 / 1024)}MB`);
+          resolve();
+        });
+        
+        writer.on('error', reject);
+        response.data.on('error', reject);
+        
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Get video duration from URL without downloading the full file
+   * Uses FFprobe with HTTP range requests to get metadata
+   * 
+   * @param {string} url - Video URL
+   * @returns {number} - Duration in seconds
+   */
+  async _getVideoDurationFromUrl(url) {
+    const { promisify } = require('util');
+    const exec = promisify(require('child_process').exec);
+    
+    try {
+      // Use FFprobe to get duration from URL without downloading
+      const { stdout } = await exec(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${url}"`
+      );
+      return parseFloat(stdout.trim());
+    } catch (error) {
+      console.warn(`Failed to get duration from URL, using fallback: ${error.message}`);
+      // Fallback: assume 1 hour duration for calculation
+      return 3600;
+    }
+  }
+
   /**
    * Range-based extraction using HTTP range requests and streaming
    * 
