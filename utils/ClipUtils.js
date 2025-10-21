@@ -1179,13 +1179,19 @@ class ClipUtils {
             
             console.log(`${debugPrefix} Subtitles successfully added to video`);
             
-            // Update database with subtitle info
+            // Extract text content from subtitles for clipText
+            const clipText = SubtitleUtils.extractTextFromSubtitles(subtitles);
+            console.log(`${debugPrefix} Extracted clipText (${clipText.length} chars): "${clipText.substring(0, 100)}${clipText.length > 100 ? '...' : ''}"`);
+            
+            // Update database with subtitle info and clipText
             await WorkProductV2.findOneAndUpdate(
               { lookupHash },
               { 
                 'result.hasSubtitles': true,
                 'result.subtitleCount': subtitles.length,
-                'result.subtitleMethod': clientSubtitles ? 'client-provided' : 'auto-generated'
+                'result.subtitleMethod': clientSubtitles ? 'client-provided' : 'auto-generated',
+                'result.clipText': clipText,
+                'result.textSource': 'subtitles'
               }
             );
             

@@ -354,6 +354,27 @@ class SubtitleUtils {
   }
   
   /**
+   * Extract text content from subtitles array for use as clipText
+   * 
+   * @param {Array} subtitles - Array of subtitle objects with {text, start, end, confidence}
+   * @returns {string} Combined text content from all subtitles
+   */
+  static extractTextFromSubtitles(subtitles) {
+    if (!subtitles || !Array.isArray(subtitles) || subtitles.length === 0) {
+      return '';
+    }
+    
+    // Extract text from each subtitle and join with spaces
+    const textContent = subtitles
+      .filter(subtitle => subtitle && subtitle.text && typeof subtitle.text === 'string')
+      .map(subtitle => subtitle.text.trim())
+      .filter(text => text.length > 0)
+      .join(' ');
+    
+    return textContent;
+  }
+
+  /**
    * ALTERNATIVE RENDERING APPROACH: Canvas-based subtitle rendering
    * 
    * DESIGN NOTE: This function is a placeholder for future Canvas-based rendering
