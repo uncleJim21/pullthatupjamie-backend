@@ -11,6 +11,15 @@ RUN apt-get update && apt-get install -y \
     libgif-dev \
     librsvg2-dev \
     ffmpeg \
+    fontconfig \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Microsoft Core Fonts (includes Impact)
+RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
+    && fc-cache -f -v \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory

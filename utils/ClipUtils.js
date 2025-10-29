@@ -788,19 +788,24 @@ class ClipUtils {
       
       // Use FFmpeg to extract directly from HTTP URL
       // FFmpeg will seek to the position and only download what's needed
+      // Optimized settings for consistent performance across different hardware
       await new Promise((resolve, reject) => {
         ffmpeg(cdnUrl)
-          .seekInput(startTime)
+          .inputOptions([
+            '-ss', startTime.toString(), // Accurate seeking - seek to exact timestamp
+            '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+          ])
           .duration(duration)
           .outputOptions([
             '-y', // Overwrite output files
             '-c:v', 'libx264', // Video codec
-            '-preset', 'fast', // Faster encoding
+            '-preset', 'veryfast', // Much faster encoding, minimal quality loss
             '-crf', '23', // Good quality
-            '-c:a', 'aac', // Audio codec
+            '-c:a', 'copy', // Copy audio stream (no re-encoding needed)
             '-movflags', '+faststart', // Optimize for streaming
             '-pix_fmt', 'yuv420p', // Ensure compatibility
-            '-avoid_negative_ts', 'make_zero' // Handle timestamp issues
+            '-avoid_negative_ts', 'make_zero', // Handle timestamp issues
+            '-threads', '0' // Use all available CPU cores
           ])
           .toFormat('mp4')
           .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
@@ -1477,7 +1482,10 @@ class ClipUtils {
 
     return new Promise((resolve, reject) => {
       ffmpeg(inputPath)
-        .seekInput(startTime)
+        .inputOptions([
+          '-ss', startTime.toString(), // Accurate seeking
+          '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+        ])
         .duration(duration)
         .outputOptions([
           '-y', // Overwrite output files
