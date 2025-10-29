@@ -732,7 +732,7 @@ class ClipUtils {
   }
 
   /**
-   * Smart extraction strategy selector - Phase 2: Range extraction optimization
+   * Smart extraction strategy selector - uses FFmpeg's HTTP streaming for efficiency
    * 
    * @param {string} cdnUrl - Source CDN URL
    * @param {number} startTime - Start time in seconds
@@ -748,31 +748,99 @@ class ClipUtils {
     
     console.log(`${debugPrefix} File size: ${Math.round(fileSize / 1024 / 1024)}MB, Duration: ${duration}s`);
     
-    // IMPROVED: More aggressive range extraction strategy
-    const shouldUseRangeExtraction = (
-      fileSize > this.memoryConfig.smartChunkingThreshold && // File is >50MB (configurable)
-      duration < this.memoryConfig.maxChunkDuration && // Extract duration < 10 minutes (configurable)
-      fileSize > duration * 1024 * 1024 // File is dense (>1MB per second)
-    );
-    
-    // IMPROVED: Always try range extraction first for large files, fallback to full download
-    if (shouldUseRangeExtraction) {
-      console.log(`${debugPrefix} Using improved range extraction strategy`);
+    // For MP4 files, use FFmpeg's HTTP streaming with seek - much more efficient
+    // This avoids downloading the full file while maintaining compatibility
+    if (fileMetadata.contentType === 'video/mp4' && duration < 300) { // Under 5 minutes
+      console.log(`${debugPrefix} Using FFmpeg HTTP streaming with seek (no download required)`);
       try {
-        return await this._extractWithSmartChunking(cdnUrl, startTime, endTime, lookupHash, fileMetadata);
-      } catch (rangeError) {
-        console.warn(`${debugPrefix} Range extraction failed, falling back to full download: ${rangeError.message}`);
+        return await this._extractWithFFmpegHttpStream(cdnUrl, startTime, endTime, lookupHash);
+      } catch (streamError) {
+        console.warn(`${debugPrefix} HTTP streaming failed, falling back to full download: ${streamError.message}`);
         return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
       }
     } else {
-      console.log(`${debugPrefix} Using full download strategy (file too small or dense)`);
+      console.log(`${debugPrefix} Using full download strategy (file type or duration requires it)`);
       return await this._extractWithFullDownload(cdnUrl, startTime, endTime, lookupHash);
     }
   }
   
   /**
+   * Extract video segment using FFmpeg's built-in HTTP streaming
+   * This is the most efficient method - FFmpeg seeks directly via HTTP without downloading the full file
+   * 
+   * @param {string} cdnUrl - Source CDN URL
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} lookupHash - Unique identifier
+   * @returns {string} - Path to extracted segment
+   */
+  async _extractWithFFmpegHttpStream(cdnUrl, startTime, endTime, lookupHash) {
+    const debugPrefix = `[FFMPEG-HTTP-STREAM][${lookupHash}]`;
+    const startMemory = this.getMemoryUsage();
+    const duration = endTime - startTime;
+    
+    try {
+      console.time(`${debugPrefix} HttpStream`);
+      console.log(`${debugPrefix} Extracting ${duration}s segment directly via HTTP streaming`);
+      
+      const outputPath = path.join(os.tmpdir(), `edit-stream-${Date.now()}.mp4`);
+      this.registerTempFile(outputPath);
+      
+      // Use FFmpeg to extract directly from HTTP URL
+      // FFmpeg will seek to the position and only download what's needed
+      await new Promise((resolve, reject) => {
+        ffmpeg(cdnUrl)
+          .seekInput(startTime)
+          .duration(duration)
+          .outputOptions([
+            '-y', // Overwrite output files
+            '-c:v', 'libx264', // Video codec
+            '-preset', 'fast', // Faster encoding
+            '-crf', '23', // Good quality
+            '-c:a', 'aac', // Audio codec
+            '-movflags', '+faststart', // Optimize for streaming
+            '-pix_fmt', 'yuv420p', // Ensure compatibility
+            '-avoid_negative_ts', 'make_zero' // Handle timestamp issues
+          ])
+          .toFormat('mp4')
+          .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
+          .on('progress', progress => {
+            if (progress.percent) {
+              console.log(`${debugPrefix} Progress: ${progress.percent.toFixed(1)}%`);
+            }
+          })
+          .on('error', err => {
+            console.error(`${debugPrefix} FFmpeg error: ${err.message}`);
+            reject(new Error(`HTTP stream extraction failed: ${err.message}`));
+          })
+          .on('end', () => {
+            console.log(`${debugPrefix} Extraction completed`);
+            resolve();
+          })
+          .save(outputPath);
+      });
+      
+      console.timeEnd(`${debugPrefix} HttpStream`);
+      
+      const endMemory = this.getMemoryUsage();
+      const memoryDelta = Math.round((endMemory.rss - startMemory.rss) / 1024 / 1024);
+      console.log(`${debugPrefix} HTTP streaming complete, memory delta: ${memoryDelta}MB`);
+      
+      return outputPath;
+      
+    } catch (error) {
+      console.error(`${debugPrefix} HTTP streaming failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * NEW: Smart chunking with true HTTP range requests
    * Downloads only the necessary byte ranges instead of full file
+   * 
+   * NOTE: This approach is fundamentally flawed for MP4 files because MP4 requires
+   * the moov atom (metadata) to be present. Use FFmpeg HTTP streaming instead.
+   * Keeping this for reference but it's deprecated.
    * 
    * @param {string} cdnUrl - Source CDN URL
    * @param {number} startTime - Start time in seconds
