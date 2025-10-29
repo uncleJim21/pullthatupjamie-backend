@@ -173,7 +173,7 @@ class SubtitleUtils {
       const group = wordSubtitles.slice(i, i + chunkSize);
       if (group.length > 0) {
         chunks.push({
-          text: group.map(word => word.text).join(' '),
+          text: group.map(word => word.text).join(' ').toUpperCase(), // Convert to uppercase
           start: group[0].start,  // Start when first word begins
           end: group[group.length - 1].end,  // End when last word ends
           confidence: group.reduce((sum, word) => sum + (word.confidence || 0), 0) / group.length

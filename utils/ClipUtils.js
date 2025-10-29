@@ -1456,7 +1456,7 @@ class ClipUtils {
       ffmpeg(inputPath)
         .outputOptions([
           '-y', // Overwrite output files
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=0,MarginV=40,MarginL=70,MarginR=70'`, // White text with thick black outline
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H00303030,Outline=0.5,Shadow=0,MarginV=30,Alignment=2'`, // Large Impact font, white text, subtle dark gray outline, centered at bottom
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
