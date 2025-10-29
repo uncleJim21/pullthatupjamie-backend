@@ -16,7 +16,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Microsoft Core Fonts (includes Impact)
-RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+# Need to enable contrib repository for ttf-mscorefonts-installer
+RUN echo "deb http://deb.debian.org/debian bullseye contrib" >> /etc/apt/sources.list \
+    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
     && apt-get update \
     && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
     && fc-cache -f -v \
