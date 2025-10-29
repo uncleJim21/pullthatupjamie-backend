@@ -4,7 +4,7 @@ const crypto = require('crypto');//force push
 const WorkProductV2Schema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['ptuj-clip','on-demand-jamie-episodes'],  // ✅ Correct type enforced
+    enum: ['ptuj-clip','on-demand-jamie-episodes','video-edit'],  // ✅ Correct type enforced
     required: true,
   },
   result: {
@@ -27,6 +27,8 @@ const WorkProductV2Schema = new mongoose.Schema({
     default: 'queued',
     required: false,
   },
+}, {
+  timestamps: true // Add createdAt and updatedAt fields
 });
 
 /**
@@ -60,5 +62,25 @@ const calculateLookupHash = (clipData, timestamps = null) => {
     return lookupHash
 };
 
+/**
+ * Generate a deterministic lookup hash for video edit operations.
+ * 
+ * @param {string} cdnUrl - The source CDN URL 
+ * @param {number} startTime - Start time in seconds
+ * @param {number} endTime - End time in seconds
+ * @param {boolean} useSubtitles - Whether subtitles are enabled
+ * @returns {string} - A unique hash for the edit operation
+ */
+const calculateEditHash = (cdnUrl, startTime, endTime, useSubtitles = false) => {
+    // Normalize inputs for consistency
+    const normalizedUrl = cdnUrl.toLowerCase().trim();
+    const normalizedStart = Math.round(startTime * 10) / 10; // Round to nearest 0.1
+    const normalizedEnd = Math.round(endTime * 10) / 10;
+    
+    const hashInput = `edit:${normalizedUrl}:${normalizedStart}:${normalizedEnd}:${useSubtitles}`;
+    const hash = crypto.createHash('sha256').update(hashInput).digest('hex').substring(0, 16);
+    return `edit-${hash}`;
+};
+
 const WorkProductV2 = mongoose.model('WorkProductV2', WorkProductV2Schema);
-module.exports = { WorkProductV2, calculateLookupHash };
+module.exports = { WorkProductV2, calculateLookupHash, calculateEditHash };

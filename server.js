@@ -237,6 +237,11 @@ const PodcastRssCacheManager = require('./utils/PodcastRssCacheManager');
 const podcastRssCache = new PodcastRssCacheManager();
 global.podcastRssCache = podcastRssCache; // Make it globally available
 
+// Initialize edit children cache manager
+const EditChildrenCacheManager = require('./utils/EditChildrenCacheManager');
+const editChildrenCache = new EditChildrenCacheManager();
+global.editChildrenCache = editChildrenCache; // Make it globally available
+
 const clipUtils = new ClipUtils();
 const clipQueueManager = new ClipQueueManager({
   maxConcurrent: 4,
@@ -908,7 +913,180 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
   }
 });
 
+///Video Editing Endpoints
 
+app.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
+  const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
+  console.log(`${debugPrefix} ==== /api/edit-video ENDPOINT CALLED ====`);
+  const { cdnUrl, startTime, endTime, useSubtitles = false, subtitles = null } = req.body;
+
+  console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
+  
+  // Validate required parameters
+  if (!cdnUrl) {
+      console.error(`${debugPrefix} Missing required parameter: cdnUrl`);
+      return res.status(400).json({ error: 'cdnUrl is required' });
+  }
+
+  if (startTime === undefined || endTime === undefined) {
+      console.error(`${debugPrefix} Missing required parameters: startTime and endTime`);
+      return res.status(400).json({ error: 'startTime and endTime are required' });
+  }
+
+  if (typeof startTime !== 'number' || typeof endTime !== 'number') {
+      console.error(`${debugPrefix} Invalid parameter types: startTime and endTime must be numbers`);
+      return res.status(400).json({ error: 'startTime and endTime must be numbers' });
+  }
+
+  try {
+      console.log(`${debugPrefix} Processing edit request for: ${cdnUrl}`);
+      console.log(`${debugPrefix} Time range: ${startTime}s to ${endTime}s (${endTime - startTime}s duration)`);
+      
+      const result = await clipUtils.processEditRequest(cdnUrl, startTime, endTime, useSubtitles, req.podcastAdmin?.feedId, subtitles);
+      
+      console.log(`${debugPrefix} Edit request processed successfully: ${JSON.stringify(result)}`);
+      return res.status(202).json(result);
+
+  } catch (error) {
+      console.error(`${debugPrefix} Error in edit-video endpoint: ${error.message}`);
+      console.error(`${debugPrefix} Stack trace: ${error.stack}`);
+      return res.status(500).json({ 
+          error: 'Failed to process edit request',
+          details: error.message 
+      });
+  }
+});
+
+// Status check endpoint for video edits
+app.get('/api/edit-status/:lookupHash', async (req, res) => {
+  const { lookupHash } = req.params;
+  const debugPrefix = `[EDIT-STATUS][${lookupHash}]`;
+
+  try {
+      console.log(`${debugPrefix} Checking status for edit: ${lookupHash}`);
+      
+      const edit = await WorkProductV2.findOne({ lookupHash });
+
+      if (!edit) {
+          console.log(`${debugPrefix} Edit not found`);
+          return res.status(404).json({ status: 'not_found' });
+      }
+
+      if (edit.status === 'completed' && edit.cdnFileId) {
+          console.log(`${debugPrefix} Edit completed: ${edit.cdnFileId}`);
+          return res.json({
+              status: 'completed',
+              url: edit.cdnFileId,
+              lookupHash
+          });
+      }
+
+      if (edit.status === 'failed') {
+          console.log(`${debugPrefix} Edit failed: ${edit.error}`);
+          return res.json({
+              status: 'failed',
+              error: edit.error,
+              lookupHash
+          });
+      }
+
+      console.log(`${debugPrefix} Edit still processing, status: ${edit.status}`);
+      return res.json({
+          status: edit.status || 'processing',
+          lookupHash
+      });
+
+  } catch (error) {
+      console.error(`${debugPrefix} Error checking edit status: ${error.message}`);
+      return res.status(500).json({ 
+          error: 'Failed to check edit status',
+          details: error.message 
+      });
+  }
+});
+
+// Get all child edits of a parent video file
+app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, async (req, res) => {
+  const { parentFileName } = req.params;
+  const debugPrefix = `[EDIT-CHILDREN][${parentFileName}]`;
+
+  try {
+    console.log(`${debugPrefix} Getting children for parent: ${parentFileName}`);
+    
+    // Remove extension from parent filename for base matching
+    const parentFileBase = parentFileName.replace(/\.[^/.]+$/, "");
+    
+    // Try cache first
+    const cachedData = await global.editChildrenCache.getChildren(parentFileBase);
+    
+    if (cachedData) {
+      console.log(`${debugPrefix} Returning cached data with ${cachedData.childCount} children`);
+      return res.json({
+        parentFileName,
+        parentFileBase,
+        childCount: cachedData.childCount,
+        children: cachedData.children,
+        cached: true,
+        lastUpdated: cachedData.lastUpdated
+      });
+    }
+
+    // Cache miss - fetch fresh data
+    console.log(`${debugPrefix} Cache miss - fetching fresh data from database`);
+    
+    // Find all edits for this parent file
+    const childEdits = await WorkProductV2.find({
+      type: 'video-edit',
+      'result.parentFileBase': parentFileBase
+    });
+
+    console.log(`${debugPrefix} Found ${childEdits.length} child edits`);
+
+    // Format the response
+    const formattedEdits = childEdits.map(edit => ({
+      lookupHash: edit.lookupHash,
+      status: edit.status,
+      url: edit.cdnFileId,
+      editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
+      duration: edit.result.editDuration,
+      createdAt: edit.createdAt,
+      originalUrl: edit.result.originalUrl
+    }));
+
+    // Sort by createdAt (most recent first), with null values at the end
+    formattedEdits.sort((a, b) => {
+      // If both have createdAt, sort by most recent first
+      if (a.createdAt && b.createdAt) {
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      }
+      // If only a has createdAt, a comes first
+      if (a.createdAt && !b.createdAt) {
+        return -1;
+      }
+      // If only b has createdAt, b comes first
+      if (!a.createdAt && b.createdAt) {
+        return 1;
+      }
+      // If neither has createdAt, maintain original order
+      return 0;
+    });
+
+    return res.json({
+      parentFileName,
+      parentFileBase,
+      childCount: formattedEdits.length,
+      children: formattedEdits,
+      cached: false
+    });
+
+  } catch (error) {
+    console.error(`${debugPrefix} Error getting child edits: ${error.message}`);
+    return res.status(500).json({ 
+      error: 'Failed to get child edits',
+      details: error.message 
+    });
+  }
+});
 
 ///Podcast Search
 
@@ -1540,6 +1718,7 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Parse pagination parameters
     const pageSize = 50; // Fixed page size of 50 items
     const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
+    const includeChildren = req.query.includeChildren === 'true'; // Default to false for performance
     
     if (page < 1) {
       return res.status(400).json({ error: "Page number must be 1 or greater" });
@@ -1548,23 +1727,21 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
     // Create a new S3 client for this operation
     const client = clipSpacesManager.createClient();
     
-    // Set up pagination parameters for S3 listing
+    // Fetch ALL objects from S3 (we'll paginate after sorting)
     let continuationToken = null;
     let allContents = [];
     let hasMoreItems = true;
     let totalCount = 0;
-    let directoryCount = 0; // Track total number of directories across all pages
+    let directoryCount = 0; // Track total number of directories
     
-    // If we're requesting a page other than the first, we need to fetch all previous pages
-    // to get the correct continuation token
-    // It's not ideal, but S3 doesn't support direct offset pagination
-    let currentPage = 1;
-    
-    while (hasMoreItems && currentPage <= page) {
+    // Fetch all objects from S3 to enable proper sorting
+    let batchCount = 0;
+    while (hasMoreItems) {
+      batchCount++;
       const listParams = {
         Bucket: bucketName,
         Prefix: prefix,
-        MaxKeys: pageSize
+        MaxKeys: 1000 // Fetch in larger batches for efficiency
       };
       
       // Add the continuation token if we have one from a previous request
@@ -1572,9 +1749,13 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
         listParams.ContinuationToken = continuationToken;
       }
       
+      console.log(`S3 Batch ${batchCount}: Fetching with prefix: ${prefix}`);
+      
       // Execute the command
       const command = new ListObjectsV2Command(listParams);
       const response = await client.send(command);
+      
+      console.log(`S3 Batch ${batchCount}: Got ${response.Contents?.length || 0} items, IsTruncated: ${response.IsTruncated}`);
       
       // Count directories in this response
       const directoriesInThisPage = (response.Contents || []).filter(item => item.Key.endsWith('/')).length;
@@ -1583,24 +1764,22 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
       // Update total count (including directories for now)
       totalCount += response.Contents?.length || 0;
       
-      // If this is the page we want, store the contents
-      if (currentPage === page) {
-        allContents = response.Contents || [];
-      }
+      // Add all contents to our collection
+      allContents = allContents.concat(response.Contents || []);
       
       // Check if there are more items to fetch
       hasMoreItems = response.IsTruncated;
       
       // Update the continuation token for the next request
       continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-      
-      // Move to the next page
-      currentPage++;
     }
+    
+    console.log(`S3 Fetch Complete: ${batchCount} batches, ${allContents.length} total items, ${directoryCount} directories`);
     
     // Process the results to make them more user-friendly
     const uploads = allContents
       .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
+      .filter(item => !item.Key.includes('-children/')) // Filter out child edit files from main list
       .map(item => {
         // Extract just the filename from the full path
         const fileName = item.Key.replace(prefix, '');
@@ -1612,26 +1791,106 @@ app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
           lastModified: item.LastModified,
           publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
         };
+      })
+      // Sort by lastModified DESC (most recent first), with deterministic secondary sort by key
+      .sort((a, b) => {
+        // Convert to Date objects for proper comparison
+        const dateA = new Date(a.lastModified);
+        const dateB = new Date(b.lastModified);
+        const timeDiff = dateB.getTime() - dateA.getTime();
+        
+        if (timeDiff !== 0) return timeDiff;
+        return a.key.localeCompare(b.key); // Secondary sort for consistency
       });
     
+    console.log(`Total files found: ${uploads.length}`);
+    console.log(`First 3 files (most recent):`, uploads.slice(0, 3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
+    console.log(`Last 3 files (oldest):`, uploads.slice(-3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
+
+    // Apply server-side pagination to sorted results
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedUploads = uploads.slice(startIndex, endIndex);
+    
     // Calculate pagination metadata
-    const hasNextPage = hasMoreItems;
+    const totalFileCount = uploads.length; // Total files after filtering
+    const hasNextPage = endIndex < totalFileCount;
     const hasPreviousPage = page > 1;
     
-    // Calculate the real total count by subtracting all directories
-    const realTotalCount = totalCount - directoryCount;
+    console.log(`Pagination debug - Page: ${page}, Total files: ${totalFileCount}, Start: ${startIndex}, End: ${endIndex}, Paginated count: ${paginatedUploads.length}`);
+
+    // Add child relationship data if requested
+    if (includeChildren) {
+      console.log(`Adding child relationship data for ${paginatedUploads.length} uploads`);
+      
+      try {
+        // Get all file bases for batch query (only for paginated results)
+        const fileBases = paginatedUploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
+        
+        // Single database query to get all child edits at once
+        const allChildEdits = await WorkProductV2.find({
+          type: 'video-edit',
+          'result.parentFileBase': { $in: fileBases }
+        }).sort({ createdAt: -1 });
+        
+        console.log(`Found ${allChildEdits.length} total child edits`);
+        
+        // Group child edits by parent file base
+        const childEditsByParent = {};
+        allChildEdits.forEach(edit => {
+          const parentBase = edit.result.parentFileBase;
+          if (!childEditsByParent[parentBase]) {
+            childEditsByParent[parentBase] = [];
+          }
+          childEditsByParent[parentBase].push(edit);
+        });
+        
+        // Add children to each upload
+        paginatedUploads.forEach(upload => {
+          const fileBase = upload.fileName.replace(/\.[^/.]+$/, "");
+          const childEdits = childEditsByParent[fileBase] || [];
+          
+          upload.children = childEdits.map(edit => ({
+            lookupHash: edit.lookupHash,
+            status: edit.status,
+            url: edit.cdnFileId,
+            editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
+            duration: edit.result.editDuration,
+            createdAt: edit.createdAt
+          }));
+
+          upload.childCount = upload.children.length;
+          upload.hasChildren = upload.children.length > 0;
+        });
+        
+      } catch (error) {
+        console.error(`Failed to get children data: ${error.message}`);
+        // Set empty children for all uploads on error
+        paginatedUploads.forEach(upload => {
+          upload.children = [];
+          upload.childCount = 0;
+          upload.hasChildren = false;
+        });
+      }
+    }
     
     // Return the list of uploads with pagination metadata
     res.json({
-      uploads,
+      uploads: paginatedUploads,
       pagination: {
         page,
         pageSize,
         hasNextPage,
         hasPreviousPage,
-        totalCount: realTotalCount
+        totalCount: totalFileCount
       },
-      feedId
+      feedId,
+      includeChildren,
+      childrenSummary: includeChildren ? {
+        totalParents: paginatedUploads.length,
+        parentsWithChildren: paginatedUploads.filter(u => u.hasChildren).length,
+        totalChildren: paginatedUploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
+      } : null
     });
     
   } catch (error) {
@@ -1799,6 +2058,25 @@ if (DEBUG_MODE) {
     }
   });
 
+  // Debug endpoint to check edit children cache status
+  app.get('/api/debug/edit-children-cache-status', async (req, res) => {
+    try {
+      const stats = global.editChildrenCache?.getStats() || { error: 'Cache not initialized' };
+      res.json({
+        success: true,
+        cacheStats: stats,
+        cachedParents: global.editChildrenCache?.getCachedKeys() || [],
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error getting edit children cache status:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
   // Debug endpoint to manually refresh podcast cache
   app.post('/api/debug/refresh-podcast-cache', async (req, res) => {
     try {
@@ -1956,6 +2234,12 @@ process.on('SIGTERM', async () => {
     await clipQueueManager.shutdown();
   }
   
+  // Shutdown clip processing with memory cleanup
+  if (clipUtils) {
+    await clipUtils.shutdown();
+    console.log('ClipUtils shutdown gracefully');
+  }
+  
   // Stop garbage collector gracefully
   if (global.garbageCollector) {
     global.garbageCollector.stop();
@@ -1968,11 +2252,28 @@ process.on('SIGTERM', async () => {
   }, 1000);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down gracefully');
   
   if (SCHEDULER_ENABLED) {
     scheduler.stopAllTasks();
+  }
+  
+  // ✅ GUARANTEED TRANSFER: Release jobs back to queue
+  if (clipQueueManager) {
+    await clipQueueManager.shutdown();
+  }
+  
+  // Shutdown clip processing with memory cleanup
+  if (clipUtils) {
+    await clipUtils.shutdown();
+    console.log('ClipUtils shutdown gracefully');
+  }
+  
+  // Stop garbage collector gracefully
+  if (global.garbageCollector) {
+    global.garbageCollector.stop();
+    console.log('Garbage collector stopped gracefully');
   }
   
   // Close database connections and exit
@@ -2977,6 +3278,24 @@ if (DEBUG_MODE) {
   });
     
   
+  // Debug endpoint to monitor video processing statistics
+  app.get('/api/debug/clip-processing-stats', (req, res) => {
+    try {
+      const stats = clipUtils.getProcessingStats();
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        stats
+      });
+    } catch (error) {
+      console.error('Error getting clip processing stats:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
   // Add a debug endpoint to manually trigger garbage collection
   app.post('/api/debug/trigger-gc', async (req, res) => {
     try {
