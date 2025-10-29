@@ -801,7 +801,7 @@ class ClipUtils {
             '-c:v', 'libx264', // Video codec
             '-preset', 'veryfast', // Much faster encoding, minimal quality loss
             '-crf', '23', // Good quality
-            '-c:a', 'copy', // Copy audio stream (no re-encoding needed)
+            '-c:a', // Copy audio stream (no re-encoding needed)
             '-movflags', '+faststart', // Optimize for streaming
             '-pix_fmt', 'yuv420p', // Ensure compatibility
             '-avoid_negative_ts', 'make_zero', // Handle timestamp issues
