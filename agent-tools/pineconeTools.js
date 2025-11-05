@@ -140,16 +140,41 @@ const pineconeTools = {
         guid = null, // Optional guid to filter by specific episode
         limit = 5,
         query = '', // Optional text query for keyword matching
-        hybridWeight = 0.7 // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
+        hybridWeight = 0.7, // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
+        minDate = null, // Optional minimum date filter (ISO string or timestamp)
+        maxDate = null, // Optional maximum date filter (ISO string or timestamp)
+        episodeName = null // Optional episode name EXACT MATCH filter (must match metadata.episode exactly)
     }) => {
         try {
             const intFeedIds = feedIds.map(feedId => parseInt(feedId, 10)).filter(id => !isNaN(id));
             
+            // Build Pinecone filter with all metadata constraints
             const filter = {
                 type: "paragraph",
                 ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
                 ...(guid && { guid }),  // Add guid filter when provided
             };
+            
+            // Add date filters using timestamp (more precise than date strings)
+            if (minDate) {
+                const minTimestamp = new Date(minDate).getTime();
+                filter.publishedTimestamp = { $gte: minTimestamp };
+            }
+            if (maxDate) {
+                const maxTimestamp = new Date(maxDate).getTime();
+                // Merge with existing publishedTimestamp filter if minDate was set
+                if (filter.publishedTimestamp) {
+                    filter.publishedTimestamp.$lte = maxTimestamp;
+                } else {
+                    filter.publishedTimestamp = { $lte: maxTimestamp };
+                }
+            }
+            
+            // Add episode name filter (EXACT MATCH ONLY - no substring matching)
+            if (episodeName && episodeName.trim()) {
+                filter.episode = { $eq: episodeName.trim() };
+                console.log(`Filtering by exact episode name: "${episodeName.trim()}"`);
+            }
             
             // Get more results than needed to allow for hybrid reranking
             const vectorLimit = Math.min(limit * 3, 20);
@@ -160,30 +185,40 @@ const pineconeTools = {
                 topK: vectorLimit,
                 includeMetadata: true,
             });
+            
+            console.log(`Pinecone returned ${queryResult.matches?.length || 0} results after filtering`);
+            
+            // If no matches from Pinecone, return empty results immediately
+            if (!queryResult.matches || queryResult.matches.length === 0) {
+                console.log('No matches from Pinecone - returning empty results');
+                return [];
+            }
+            
+            const matches = queryResult.matches;
     
-            // If no text query provided, return original vector results
+            // If no text query provided, return filtered vector results
             if (!query.trim()) {
-                return pineconeTools.formatResults(queryResult.matches.slice(0, limit));
+                return pineconeTools.formatResults(matches.slice(0, limit));
             }
     
-            // Calculate keyword relevance scores
+            // Calculate keyword relevance scores on filtered matches
             const tfidf = new TfIdf();
             
             // Add query to TF-IDF
             tfidf.addDocument(tokenizer.tokenize(query.toLowerCase()));
             
-            // Add all retrieved documents
-            queryResult.matches.forEach(match => {
+            // Add all filtered documents
+            matches.forEach(match => {
                 tfidf.addDocument(tokenizer.tokenize(match.metadata.text.toLowerCase()));
             });
     
             // Calculate hybrid scores and rerank
-            const hybridResults = queryResult.matches.map((match, index) => {
+            const hybridResults = matches.map((match, index) => {
                 // Vector similarity score is already normalized between 0 and 1
                 const vectorScore = match.score;
                 
                 // Normalize TF-IDF scores relative to the maximum score in the set
-                const rawKeywordScores = queryResult.matches.map((m, i) => 
+                const rawKeywordScores = matches.map((m, i) => 
                     tfidf.tfidf(tokenizer.tokenize(query.toLowerCase()), i + 1)
                 );
                 const maxKeywordScore = Math.max(...rawKeywordScores);
