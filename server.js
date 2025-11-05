@@ -1138,7 +1138,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 });
 
 app.post('/api/search-quotes', async (req, res) => {
-  let { query,feedIds=[], limit = 5 } = req.body;
+  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null } = req.body;
   limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
   printLog(`/api/search-quotes req:`,req)
 
@@ -1155,7 +1155,10 @@ app.post('/api/search-quotes', async (req, res) => {
       embedding,
       feedIds,
       limit,
-      query
+      query,
+      minDate,
+      maxDate,
+      episodeName
     });
 
     // Format and return the results
