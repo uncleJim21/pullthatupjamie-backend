@@ -1612,7 +1612,7 @@ function sanitizeFileName(fileName) {
 }
 
 app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req, res) => {
-  const { fileName, fileType, acl = 'public-read' } = req.body;
+  const { fileName, fileType, acl = 'public-read', cacheControl = false } = req.body;
 
   if (!fileName || !fileType) {
     return res.status(400).json({ error: "File name and type are required" });
@@ -1680,10 +1680,11 @@ app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req
       fileType, 
       expiresIn,
       maxSizeBytes,
-      acl
+      acl,
+      cacheControl
     );
 
-    console.log(`Generated pre-signed URL for ${bucketName}/${key}`);
+    console.log(`Generated pre-signed URL for ${bucketName}/${key}${cacheControl ? ' with Cache-Control' : ''}`);
 
     res.json({ 
       uploadUrl, 
@@ -1691,7 +1692,8 @@ app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req
       feedId,
       publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${key}`,
       maxSizeBytes,
-      maxSizeMB: Math.round(maxSizeBytes / (1024 * 1024))
+      maxSizeMB: Math.round(maxSizeBytes / (1024 * 1024)),
+      cacheControl: cacheControl || false
     });
   } catch (error) {
     console.error("Error generating pre-signed URL:", error);
