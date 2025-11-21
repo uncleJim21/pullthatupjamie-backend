@@ -205,8 +205,8 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
       }
     }
 
-    async generatePresignedUploadUrl(bucketName, key, contentType, expiresIn = 3600, maxSizeBytes = 1024 * 1024 * 100, acl = 'public-read') {
-      console.log(`Generating pre-signed URL for ${bucketName}/${key} (contentType: ${contentType}, acl: ${acl || 'none'})`);
+    async generatePresignedUploadUrl(bucketName, key, contentType, expiresIn = 3600, maxSizeBytes = 1024 * 1024 * 100, acl = 'public-read', cacheControl = false) {
+      console.log(`Generating pre-signed URL for ${bucketName}/${key} (contentType: ${contentType}, acl: ${acl || 'none'}, cacheControl: ${cacheControl || 'none'})`);
       
       const command = new PutObjectCommand({
         Bucket: bucketName,
@@ -218,6 +218,15 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
       if (acl) {
         console.log(`Setting ACL to ${acl}`);
         command.input.ACL = acl;
+      }
+
+      // Add Cache-Control header if specified
+      if (cacheControl) {
+        const cacheControlValue = typeof cacheControl === 'string' 
+          ? cacheControl 
+          : 'public, max-age=31536000, immutable';
+        console.log(`Setting Cache-Control to ${cacheControlValue}`);
+        command.input.CacheControl = cacheControlValue;
       }
 
       // Set configuration for the signed URL
