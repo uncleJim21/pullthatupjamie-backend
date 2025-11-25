@@ -2504,6 +2504,142 @@ app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
   }
 });
 
+// Get hierarchy endpoint - fetches paragraph, chapter, episode, and feed
+app.get('/api/get-hierarchy', async (req, res) => {
+  try {
+    const { paragraphId } = req.query;
+    
+    // Validate required parameter
+    if (!paragraphId) {
+      return res.status(400).json({ 
+        error: 'Missing required parameter: paragraphId',
+        example: '/api/get-hierarchy?paragraphId=https___lexfridman_com__p_6320_p715'
+      });
+    }
+
+    console.log(`Fetching hierarchy for paragraph: ${paragraphId}`);
+
+    // Initialize Pinecone
+    const { Pinecone } = require('@pinecone-database/pinecone');
+    const pinecone = new Pinecone({
+      apiKey: process.env.PINECONE_API_KEY,
+    });
+    const index = pinecone.index(process.env.PINECONE_INDEX);
+
+    // Step 1: Fetch the paragraph
+    const paragraphFetch = await index.fetch([paragraphId]);
+    
+    if (!paragraphFetch.records || !paragraphFetch.records[paragraphId]) {
+      return res.status(404).json({ 
+        error: 'Paragraph not found',
+        paragraphId 
+      });
+    }
+
+    const paragraphData = paragraphFetch.records[paragraphId];
+    const paragraph = {
+      id: paragraphId,
+      metadata: paragraphData.metadata
+    };
+
+    // Extract guid and feedId from paragraph
+    const guid = paragraph.metadata.guid;
+    const feedId = paragraph.metadata.feedId;
+    const paragraphStartTime = paragraph.metadata.start_time;
+    const paragraphEndTime = paragraph.metadata.end_time;
+
+    if (!guid || !feedId) {
+      return res.status(400).json({ 
+        error: 'Paragraph missing required metadata (guid or feedId)',
+        paragraphId,
+        metadata: paragraph.metadata
+      });
+    }
+
+    console.log(`Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
+
+    // Step 2: Query for chapter using timestamp filter
+    const dummyVector = Array(1536).fill(0);
+    const chapterQuery = await index.query({
+      vector: dummyVector,
+      filter: {
+        type: "chapter",
+        guid: guid,
+        startTime: { $lte: paragraphStartTime },
+        endTime: { $gte: paragraphEndTime }
+      },
+      topK: 1,
+      includeMetadata: true
+    });
+
+    let chapter = null;
+    if (chapterQuery.matches && chapterQuery.matches.length > 0) {
+      chapter = {
+        id: chapterQuery.matches[0].id,
+        metadata: chapterQuery.matches[0].metadata
+      };
+      console.log(`Found chapter: ${chapter.id}`);
+    } else {
+      console.log('No chapter found for this paragraph');
+    }
+
+    // Step 3: Fetch episode by constructing episode ID
+    const episodeId = `episode_${guid}`;
+    const episodeFetch = await index.fetch([episodeId]);
+    
+    let episode = null;
+    if (episodeFetch.records && episodeFetch.records[episodeId]) {
+      episode = {
+        id: episodeId,
+        metadata: episodeFetch.records[episodeId].metadata
+      };
+      console.log(`Found episode: ${episodeId}`);
+    } else {
+      console.log('No episode found');
+    }
+
+    // Step 4: Fetch feed by constructing feed ID
+    const feedIdStr = `feed_${feedId}`;
+    const feedFetch = await index.fetch([feedIdStr]);
+    
+    let feed = null;
+    if (feedFetch.records && feedFetch.records[feedIdStr]) {
+      feed = {
+        id: feedIdStr,
+        metadata: feedFetch.records[feedIdStr].metadata
+      };
+      console.log(`Found feed: ${feedIdStr}`);
+    } else {
+      console.log('No feed found');
+    }
+
+    // Build hierarchical path string
+    let path = '';
+    if (feed) path += feed.metadata.title || 'Unknown Feed';
+    if (episode) path += ` > ${episode.metadata.title || 'Unknown Episode'}`;
+    if (chapter) path += ` > Chapter ${chapter.metadata.chapterNumber || '?'}: ${chapter.metadata.headline || 'Untitled'}`;
+
+    // Return complete hierarchy
+    res.json({
+      paragraphId,
+      hierarchy: {
+        paragraph,
+        chapter,
+        episode,
+        feed
+      },
+      path: path || 'Unknown'
+    });
+
+  } catch (error) {
+    console.error('Error fetching hierarchy:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch hierarchy',
+      details: error.message
+    });
+  }
+});
+
 /**
  * Alternative method to fetch transcript JSON directly from Digital Ocean Spaces
  * using dedicated transcript bucket credentials
