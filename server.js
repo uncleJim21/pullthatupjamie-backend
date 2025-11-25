@@ -2392,6 +2392,118 @@ app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
   }
 });
 
+// Fetch adjacent paragraphs endpoint
+app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
+  try {
+    const { paragraphId, adjacentSteps = 3 } = req.query;
+    
+    // Validate required parameter
+    if (!paragraphId) {
+      return res.status(400).json({ 
+        error: 'Missing required parameter: paragraphId',
+        example: '/api/fetch-adjacent-paragraphs?paragraphId=0012a7a4-bc1c-11ef-a566-bf3ecfcd8d34_p24&adjacentSteps=3'
+      });
+    }
+
+    // Parse adjacentSteps as integer
+    const steps = parseInt(adjacentSteps, 10);
+    if (isNaN(steps) || steps < 0) {
+      return res.status(400).json({ 
+        error: 'adjacentSteps must be a non-negative number',
+        provided: adjacentSteps
+      });
+    }
+
+    console.log(`Fetching adjacent paragraphs for: ${paragraphId}, steps: ${steps}`);
+
+    // Parse the paragraph ID to extract base GUID and paragraph number
+    if (!paragraphId.includes('_p')) {
+      return res.status(400).json({ 
+        error: 'Invalid paragraph ID format. Expected format: {guid}_p{number}',
+        example: '0012a7a4-bc1c-11ef-a566-bf3ecfcd8d34_p24',
+        provided: paragraphId
+      });
+    }
+
+    const lastPIndex = paragraphId.lastIndexOf('_p');
+    const baseId = paragraphId.substring(0, lastPIndex);
+    const paragraphNumStr = paragraphId.substring(lastPIndex + 2);
+    const paragraphNum = parseInt(paragraphNumStr, 10);
+
+    if (isNaN(paragraphNum)) {
+      return res.status(400).json({ 
+        error: 'Invalid paragraph number. Must be a number after _p',
+        provided: paragraphNumStr
+      });
+    }
+
+    // Calculate range (avoid negative paragraph numbers)
+    const startNum = Math.max(0, paragraphNum - steps);
+    const endNum = paragraphNum + steps;
+
+    // Generate array of paragraph IDs to fetch
+    const paragraphIds = [];
+    for (let i = startNum; i <= endNum; i++) {
+      paragraphIds.push(`${baseId}_p${i}`);
+    }
+
+    console.log(`Fetching paragraph range: ${startNum} to ${endNum} (${paragraphIds.length} total)`);
+
+    // Fetch all paragraphs from Pinecone using batch fetch
+    const { Pinecone } = require('@pinecone-database/pinecone');
+    const pinecone = new Pinecone({
+      apiKey: process.env.PINECONE_API_KEY,
+    });
+    const index = pinecone.index(process.env.PINECONE_INDEX);
+    
+    const fetchResult = await index.fetch(paragraphIds);
+
+    // Process results and maintain order
+    const paragraphs = [];
+    const missing = [];
+
+    for (const id of paragraphIds) {
+      if (fetchResult.records && fetchResult.records[id]) {
+        const record = fetchResult.records[id];
+        paragraphs.push({
+          id: id,
+          metadata: record.metadata,
+          text: record.metadata?.text || null,
+          start_time: record.metadata?.start_time || null,
+          end_time: record.metadata?.end_time || null,
+          episode: record.metadata?.episode || null,
+          creator: record.metadata?.creator || null,
+        });
+      } else {
+        missing.push(id);
+      }
+    }
+
+    console.log(`Found ${paragraphs.length} paragraphs, ${missing.length} missing`);
+
+    // Return structured response
+    res.json({
+      requestedId: paragraphId,
+      adjacentSteps: steps,
+      range: {
+        start: startNum,
+        end: endNum
+      },
+      paragraphs: paragraphs,
+      found: paragraphs.length,
+      missing: missing,
+      totalRequested: paragraphIds.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching adjacent paragraphs:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch adjacent paragraphs',
+      details: error.message
+    });
+  }
+});
+
 /**
  * Alternative method to fetch transcript JSON directly from Digital Ocean Spaces
  * using dedicated transcript bucket credentials
