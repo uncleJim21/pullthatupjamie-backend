@@ -2392,6 +2392,88 @@ app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
   }
 });
 
+// Get episode with all its chapters
+app.get('/api/episode-with-chapters/:guid', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    console.log(`Fetching episode with chapters for GUID: ${guid}`);
+    
+    // Initialize Pinecone
+    const { Pinecone } = require('@pinecone-database/pinecone');
+    const pinecone = new Pinecone({
+      apiKey: process.env.PINECONE_API_KEY,
+    });
+    const index = pinecone.index(process.env.PINECONE_INDEX);
+    
+    // Step 1: Fetch the episode
+    const episodeId = `episode_${guid}`;
+    const episodeFetch = await index.fetch([episodeId]);
+    
+    if (!episodeFetch.records || !episodeFetch.records[episodeId]) {
+      return res.status(404).json({ 
+        error: 'Episode not found',
+        guid 
+      });
+    }
+    
+    const episode = {
+      id: episodeId,
+      guid: guid,
+      metadata: episodeFetch.records[episodeId].metadata
+    };
+    
+    console.log(`Found episode: ${episode.metadata.title || 'Unknown Title'}`);
+    
+    // Step 2: Query for all chapters with this guid
+    const dummyVector = Array(1536).fill(0);
+    const chaptersQuery = await index.query({
+      vector: dummyVector,
+      filter: {
+        type: "chapter",
+        guid: guid
+      },
+      topK: 100, // Get up to 100 chapters (should be more than enough)
+      includeMetadata: true
+    });
+    
+    // Format chapters
+    const chapters = chaptersQuery.matches.map(match => ({
+      id: match.id,
+      metadata: match.metadata,
+      chapterNumber: match.metadata.chapterNumber,
+      headline: match.metadata.headline,
+      startTime: match.metadata.startTime,
+      endTime: match.metadata.endTime
+    }));
+    
+    // Sort chapters by chapter number or start time
+    chapters.sort((a, b) => {
+      if (a.chapterNumber !== undefined && b.chapterNumber !== undefined) {
+        return a.chapterNumber - b.chapterNumber;
+      }
+      return (a.startTime || 0) - (b.startTime || 0);
+    });
+    
+    console.log(`Found ${chapters.length} chapters for episode`);
+    
+    res.json({
+      success: true,
+      guid,
+      episode,
+      chapters,
+      chapterCount: chapters.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching episode with chapters:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch episode with chapters',
+      details: error.message,
+      guid: req.params.guid
+    });
+  }
+});
+
 // Fetch adjacent paragraphs endpoint
 app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
   try {
