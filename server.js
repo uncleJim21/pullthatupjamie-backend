@@ -3701,6 +3701,218 @@ if (DEBUG_MODE) {
       });
     }
   });
+
+  // Debug endpoint: delete podcast files (step by step implementation)
+  app.post('/api/debug/delete-podcast-files', async (req, res) => {
+    try {
+      const { guid } = req.body;
+      const debugPrefix = `[DELETE-PODCAST][${guid}]`;
+      
+      if (!guid) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: guid'
+        });
+      }
+      
+      console.log(`${debugPrefix} Starting podcast deletion process`);
+      
+      // Initialize Pinecone
+      const { Pinecone } = require('@pinecone-database/pinecone');
+      const pinecone = new Pinecone({
+        apiKey: process.env.PINECONE_API_KEY,
+      });
+      const index = pinecone.index(process.env.PINECONE_INDEX);
+      
+      const deletionStats = {
+        paragraphsDeleted: 0,
+        chaptersDeleted: 0,
+        episodeDeleted: false,
+        mp3Deleted: false,
+        transcriptDeleted: false,
+        totalDeleted: 0
+      };
+      
+      // First, get the episode data to find feedId for mp3 deletion
+      let feedId = null;
+      let episodeData = null;
+      
+      try {
+        const episodeId = `episode_${guid}`;
+        const episodeFetch = await index.fetch([episodeId]);
+        
+        if (episodeFetch.records && episodeFetch.records[episodeId]) {
+          episodeData = episodeFetch.records[episodeId].metadata;
+          feedId = episodeData.feedId;
+          console.log(`${debugPrefix} Found feedId: ${feedId} from episode metadata`);
+        } else {
+          console.warn(`${debugPrefix} Episode not found in Pinecone, cannot determine feedId for mp3 deletion`);
+        }
+      } catch (episodeError) {
+        console.warn(`${debugPrefix} Error fetching episode data: ${episodeError.message}`);
+      }
+      
+      // Step 1: Delete the podcast mp3 from spaces bucket
+      console.log(`${debugPrefix} Step 1: Deleting podcast mp3 from spaces bucket`);
+      if (feedId && spacesManager) {
+        try {
+          const mp3Key = `${feedId}/${guid}.mp3`;
+          const bucketName = process.env.SPACES_BUCKET_NAME;
+          
+          console.log(`${debugPrefix} Attempting to delete mp3: ${bucketName}/${mp3Key}`);
+          await spacesManager.deleteFile(bucketName, mp3Key);
+          
+          deletionStats.mp3Deleted = true;
+          console.log(`${debugPrefix} Successfully deleted mp3 file`);
+        } catch (mp3Error) {
+          console.warn(`${debugPrefix} Failed to delete mp3: ${mp3Error.message}`);
+          // Don't fail the entire operation if mp3 deletion fails
+        }
+      } else {
+        console.warn(`${debugPrefix} Skipping mp3 deletion - feedId: ${feedId}, spacesManager: ${!!spacesManager}`);
+      }
+      
+      // Step 2: Delete the podcast transcript
+      console.log(`${debugPrefix} Step 2: Deleting podcast transcript from spaces bucket`);
+      if (transcriptSpacesManager) {
+        try {
+          const transcriptKey = `${guid}.json`;
+          const transcriptBucket = process.env.TRANSCRIPT_SPACES_BUCKET_NAME;
+          
+          console.log(`${debugPrefix} Attempting to delete transcript: ${transcriptBucket}/${transcriptKey}`);
+          await transcriptSpacesManager.deleteFile(transcriptBucket, transcriptKey);
+          
+          deletionStats.transcriptDeleted = true;
+          console.log(`${debugPrefix} Successfully deleted transcript file`);
+        } catch (transcriptError) {
+          console.warn(`${debugPrefix} Failed to delete transcript: ${transcriptError.message}`);
+          // Don't fail the entire operation if transcript deletion fails
+        }
+      } else {
+        console.warn(`${debugPrefix} Skipping transcript deletion - transcriptSpacesManager not initialized`);
+      }
+      
+      // Step 3: Delete all Pinecone entities (paragraphs, chapters, episode)
+      console.log(`${debugPrefix} Starting Pinecone entity deletion`);
+      
+      // Create a dummy vector for querying (required by Pinecone)
+      const dummyVector = Array(1536).fill(0);
+      
+      // Step 3a: Delete all paragraphs with this guid
+      console.log(`${debugPrefix} Querying for paragraphs...`);
+      let paragraphsRemaining = true;
+      let paragraphBatchCount = 0;
+      
+      while (paragraphsRemaining) {
+        paragraphBatchCount++;
+        console.log(`${debugPrefix} Paragraph deletion batch ${paragraphBatchCount}`);
+        
+        // Query for paragraphs with this guid (limit to 50 due to Pinecone limitations)
+        const paragraphQuery = await index.query({
+          vector: dummyVector,
+          filter: {
+            guid: guid,
+            type: { $ne: "chapter" } // Exclude chapters, we'll handle them separately
+          },
+          topK: 50,
+          includeMetadata: true
+        });
+        
+        if (!paragraphQuery.matches || paragraphQuery.matches.length === 0) {
+          console.log(`${debugPrefix} No more paragraphs found`);
+          paragraphsRemaining = false;
+          break;
+        }
+        
+        const paragraphIds = paragraphQuery.matches.map(match => match.id);
+        console.log(`${debugPrefix} Found ${paragraphIds.length} paragraphs to delete`);
+        
+        // Delete these paragraphs (Pinecone delete can handle arrays)
+        await index.deleteMany(paragraphIds);
+        deletionStats.paragraphsDeleted += paragraphIds.length;
+        deletionStats.totalDeleted += paragraphIds.length;
+        
+        console.log(`${debugPrefix} Deleted ${paragraphIds.length} paragraphs (total so far: ${deletionStats.paragraphsDeleted})`);
+        
+        // If we got less than 50, we're done
+        if (paragraphIds.length < 50) {
+          paragraphsRemaining = false;
+        }
+      }
+      
+      // Step 3b: Delete all chapters with this guid
+      console.log(`${debugPrefix} Querying for chapters...`);
+      let chaptersRemaining = true;
+      let chapterBatchCount = 0;
+      
+      while (chaptersRemaining) {
+        chapterBatchCount++;
+        console.log(`${debugPrefix} Chapter deletion batch ${chapterBatchCount}`);
+        
+        // Query for chapters with this guid
+        const chapterQuery = await index.query({
+          vector: dummyVector,
+          filter: {
+            type: "chapter",
+            guid: guid
+          },
+          topK: 50,
+          includeMetadata: true
+        });
+        
+        if (!chapterQuery.matches || chapterQuery.matches.length === 0) {
+          console.log(`${debugPrefix} No more chapters found`);
+          chaptersRemaining = false;
+          break;
+        }
+        
+        const chapterIds = chapterQuery.matches.map(match => match.id);
+        console.log(`${debugPrefix} Found ${chapterIds.length} chapters to delete`);
+        
+        // Delete these chapters
+        await index.deleteMany(chapterIds);
+        deletionStats.chaptersDeleted += chapterIds.length;
+        deletionStats.totalDeleted += chapterIds.length;
+        
+        console.log(`${debugPrefix} Deleted ${chapterIds.length} chapters (total so far: ${deletionStats.chaptersDeleted})`);
+        
+        // If we got less than 50, we're done
+        if (chapterIds.length < 50) {
+          chaptersRemaining = false;
+        }
+      }
+      
+      // Step 3c: Delete the episode record
+      console.log(`${debugPrefix} Deleting episode record...`);
+      const episodeId = `episode_${guid}`;
+      
+      try {
+        await index.deleteOne(episodeId);
+        deletionStats.episodeDeleted = true;
+        deletionStats.totalDeleted += 1;
+        console.log(`${debugPrefix} Deleted episode: ${episodeId}`);
+      } catch (episodeError) {
+        console.warn(`${debugPrefix} Failed to delete episode ${episodeId}: ${episodeError.message}`);
+      }
+      
+      console.log(`${debugPrefix} Deletion complete. Stats:`, deletionStats);
+      
+      res.json({
+        success: true,
+        message: 'Podcast deletion completed',
+        guid: guid,
+        feedId: feedId,
+        stats: deletionStats
+      });
+    } catch (error) {
+      console.error('Error in delete-podcast-files endpoint:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        stack: error.stack
+      });
+    }
+  });
 }
 
 

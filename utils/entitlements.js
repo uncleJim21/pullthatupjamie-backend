@@ -50,20 +50,30 @@ const initializeEntitlement = async (identifier, identifierType, entitlementType
   const nextResetDate = new Date(now);
   nextResetDate.setDate(nextResetDate.getDate() + config.periodLengthDays);
   
-  const entitlement = new Entitlement({
-    identifier,
-    identifierType,
-    entitlementType,
-    usedCount: 0,
-    maxUsage: config.maxUsage,
-    periodStart: now,
-    periodLengthDays: config.periodLengthDays,
-    nextResetDate,
-    lastUsed: now,
-    status: 'active'
-  });
+  // Use findOneAndUpdate with upsert to avoid duplicate key errors
+  const entitlement = await Entitlement.findOneAndUpdate(
+    {
+      identifier,
+      identifierType,
+      entitlementType
+    },
+    {
+      usedCount: 0,
+      maxUsage: config.maxUsage,
+      periodStart: now,
+      periodLengthDays: config.periodLengthDays,
+      nextResetDate,
+      lastUsed: now,
+      status: 'active'
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
   
-  return await entitlement.save();
+  return entitlement;
 };
 
 /**
@@ -80,8 +90,12 @@ const checkEntitlementEligibility = async (identifier, identifierType, entitleme
       entitlementType
     });
     
-    // If no entitlement exists or period has expired, initialize new entitlement
-    if (!entitlement || isPeriodExpired(entitlement.periodStart, entitlement.periodLengthDays)) {
+    // If no entitlement exists, initialize new entitlement
+    if (!entitlement) {
+      entitlement = await initializeEntitlement(identifier, identifierType, entitlementType);
+    }
+    // If period has expired, reset the entitlement
+    else if (isPeriodExpired(entitlement.periodStart, entitlement.periodLengthDays)) {
       entitlement = await initializeEntitlement(identifier, identifierType, entitlementType);
     }
     

@@ -463,9 +463,21 @@ router.post('/update-ondemand-quota', async (req, res) => {
                 });
 
                 if (entitlement) {
-                    // Update existing entitlement and reset count to 0
-                    entitlement.maxUsage = process.env.JAMIE_PRO_ON_DEMAND_QUOTA || 4;
-                    entitlement.usedCount = 0;
+                    // Update existing entitlement - don't reset usedCount unless period expired
+                    const periodExpired = entitlement.nextResetDate && new Date() >= entitlement.nextResetDate;
+                    
+                    entitlement.maxUsage = parseInt(process.env.JAMIE_PRO_ON_DEMAND_QUOTA) || 8;
+                    
+                    // Only reset usedCount if period has expired
+                    if (periodExpired) {
+                        entitlement.usedCount = 0;
+                        const now = new Date();
+                        entitlement.periodStart = now;
+                        const nextResetDate = new Date(now);
+                        nextResetDate.setDate(nextResetDate.getDate() + 30);
+                        entitlement.nextResetDate = nextResetDate;
+                    }
+                    
                     entitlement.status = 'active';
                     entitlement.lastUsed = new Date();
                     await entitlement.save();
