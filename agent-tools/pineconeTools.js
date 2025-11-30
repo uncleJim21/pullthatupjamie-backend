@@ -132,6 +132,10 @@ const pineconeTools = {
                 sequence: match.metadata.sequence || null,
                 num_words: match.metadata.num_words || null,
             },
+            // Include embedding values if present (for 3D projection)
+            ...(match.values && { embedding: match.values }),
+            // Include type for hierarchy level
+            hierarchyLevel: match.metadata.type || 'paragraph'
         }));
     },
     findSimilarDiscussions : async ({ 
@@ -143,10 +147,28 @@ const pineconeTools = {
         hybridWeight = 0.7, // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
         minDate = null, // Optional minimum date filter (ISO string or timestamp)
         maxDate = null, // Optional maximum date filter (ISO string or timestamp)
-        episodeName = null // Optional episode name EXACT MATCH filter (must match metadata.episode exactly)
+        episodeName = null, // Optional episode name EXACT MATCH filter (must match metadata.episode exactly)
+        includeValues = false // Optional: include embedding vectors in response (NOT USED - will re-embed instead)
     }) => {
+        const debugPrefix = '[PINECONE-SEARCH]';
+        const { printLog } = require('../constants');
+        
+        printLog(`${debugPrefix} ========== findSimilarDiscussions CALLED ==========`);
+        printLog(`${debugPrefix} Parameters:`, {
+            feedIds: feedIds.length,
+            guid,
+            limit,
+            query: query.substring(0, 50) + (query.length > 50 ? '...' : ''),
+            minDate,
+            maxDate,
+            episodeName,
+            includeValues: includeValues ? 'REQUESTED (will re-embed instead)' : 'false'
+        });
+        
         try {
+            printLog(`${debugPrefix} Step 1: Building Pinecone filter...`);
             const intFeedIds = feedIds.map(feedId => parseInt(feedId, 10)).filter(id => !isNaN(id));
+            printLog(`${debugPrefix} Parsed ${intFeedIds.length} feed IDs:`, intFeedIds);
             
             // Build Pinecone filter with all metadata constraints
             const filter = {
@@ -159,6 +181,7 @@ const pineconeTools = {
             if (minDate) {
                 const minTimestamp = new Date(minDate).getTime();
                 filter.publishedTimestamp = { $gte: minTimestamp };
+                printLog(`${debugPrefix} Added minDate filter: ${minDate} (${minTimestamp})`);
             }
             if (maxDate) {
                 const maxTimestamp = new Date(maxDate).getTime();
@@ -168,39 +191,63 @@ const pineconeTools = {
                 } else {
                     filter.publishedTimestamp = { $lte: maxTimestamp };
                 }
+                printLog(`${debugPrefix} Added maxDate filter: ${maxDate} (${maxTimestamp})`);
             }
             
             // Add episode name filter (EXACT MATCH ONLY - no substring matching)
             if (episodeName && episodeName.trim()) {
                 filter.episode = { $eq: episodeName.trim() };
-                console.log(`Filtering by exact episode name: "${episodeName.trim()}"`);
+                printLog(`${debugPrefix} Added episode name filter: "${episodeName.trim()}"`);
             }
             
-            // Get more results than needed to allow for hybrid reranking
-            const vectorLimit = Math.min(limit * 3, 20);
+            printLog(`${debugPrefix} Final filter:`, JSON.stringify(filter));
+            
+            // SIMPLIFIED APPROACH: Always use standard query (no includeValues)
+            // If embeddings are needed, caller will re-embed using the returned text
+            let vectorLimit = Math.min(limit * 3, 20); // Normal behavior for reranking
+            printLog(`${debugPrefix} Using vectorLimit: ${vectorLimit}`);
+            
+            printLog(`${debugPrefix} Step 2: Querying Pinecone (topK: ${vectorLimit}, includeMetadata: true)...`);
+            const queryStartTime = Date.now();
             
             const queryResult = await index.query({
                 vector: embedding,
                 filter,
                 topK: vectorLimit,
                 includeMetadata: true,
+                includeValues: false, // Never request values from Pinecone
             });
             
-            console.log(`Pinecone returned ${queryResult.matches?.length || 0} results after filtering`);
+            const queryTime = Date.now() - queryStartTime;
+            printLog(`${debugPrefix} ✓ Pinecone query completed in ${queryTime}ms`);
+            printLog(`${debugPrefix} Received ${queryResult.matches?.length || 0} matches`);
             
             // If no matches from Pinecone, return empty results immediately
             if (!queryResult.matches || queryResult.matches.length === 0) {
-                console.log('No matches from Pinecone - returning empty results');
+                printLog(`${debugPrefix} ✗ No matches from Pinecone - returning empty results`);
                 return [];
             }
             
             const matches = queryResult.matches;
+            printLog(`${debugPrefix} Step 3: Processing ${matches.length} matches...`);
+            
+            // Log first match for debugging
+            if (matches.length > 0) {
+                printLog(`${debugPrefix} Sample match:`, {
+                    id: matches[0].id,
+                    score: matches[0].score,
+                    hasMetadata: !!matches[0].metadata,
+                    textLength: matches[0].metadata?.text?.length
+                });
+            }
     
             // If no text query provided, return filtered vector results
             if (!query.trim()) {
+                printLog(`${debugPrefix} No text query - returning ${Math.min(matches.length, limit)} vector results`);
                 return pineconeTools.formatResults(matches.slice(0, limit));
             }
     
+            printLog(`${debugPrefix} Step 4: Performing hybrid reranking with TF-IDF...`);
             // Calculate keyword relevance scores on filtered matches
             const tfidf = new TfIdf();
             
@@ -241,8 +288,15 @@ const pineconeTools = {
                 .sort((a, b) => b.score - a.score)
                 .slice(0, limit);
     
+            printLog(`${debugPrefix} ✓ Hybrid reranking complete - returning ${rerankedResults.length} results`);
+            printLog(`${debugPrefix} ========== findSimilarDiscussions COMPLETE ==========`);
+            
             return pineconeTools.formatResults(rerankedResults);
         } catch (error) {
+            const { printLog } = require('../constants');
+            printLog(`${debugPrefix} ========== ERROR IN findSimilarDiscussions ==========`);
+            printLog(`${debugPrefix} ✗ Error:`, error.message);
+            printLog(`${debugPrefix} Stack:`, error.stack);
             console.error("Error in findSimilarDiscussions:", error);
             throw error;
         }

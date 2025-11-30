@@ -1,6 +1,55 @@
-# IP-Based On-Demand Runs Test Scripts
+# Test Scripts
 
-This directory contains test scripts for the IP-based on-demand runs functionality.
+This directory contains test scripts for various backend functionality.
+
+---
+
+## 3D Search Test Scripts
+
+### `test-3d-search.js` - Integration Tests for 3D Search
+Tests the `/api/search-quotes-3d` endpoint with various scenarios.
+
+```bash
+# Make sure server is running first
+npm start
+
+# Run tests (in another terminal)
+./test/test-3d-search.js
+# or
+node test/test-3d-search.js
+```
+
+**What it tests:**
+- Standard search (100 results)
+- Fast mode (50 results) 
+- Small result set (10 results)
+- With filters (feed + date)
+- Insufficient results error (<4 points)
+
+**Expected**: 5/5 tests pass in ~30-60 seconds
+
+### `test-umap-projector.js` - Unit Tests for UMAP Projector
+Tests the UmapProjector utility independently.
+
+```bash
+./test/test-umap-projector.js
+# or
+node test/test-umap-projector.js
+```
+
+**What it tests:**
+- Basic projection (10 points)
+- Large projection (100 points)
+- Fast mode performance
+- Minimum points requirement
+- Deterministic results (seeded random)
+- Invalid input handling
+
+**Expected**: 6/6 tests pass in ~10-15 seconds
+
+---
+
+## IP-Based On-Demand Runs Test Scripts
 
 ## Test Scripts
 

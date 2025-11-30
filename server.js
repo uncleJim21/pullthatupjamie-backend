@@ -1139,7 +1139,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 
 app.post('/api/search-quotes', async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null } = req.body;
-  limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
+  limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   printLog(`/api/search-quotes req:`,req)
 
   try {
@@ -1195,6 +1195,259 @@ app.post('/api/search-quotes', async (req, res) => {
       error: 'Failed to search quotes',
       details: error.message 
     });
+  }
+});
+
+// 3D Semantic Search endpoint for galaxy view visualization
+app.post('/api/search-quotes-3d', async (req, res) => {
+  const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  let { query, feedIds=[], limit = 100, minDate = null, maxDate = null, episodeName = null, fastMode = false } = req.body;
+  
+  printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
+  printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
+  
+  // Use requested limit directly (capped at 50 for re-embedding approach)
+  limit = Math.min(50, Math.max(1, Math.floor(limit)));
+  printLog(`[${requestId}] Using limit: ${limit} (max 50 for performance)`);
+  
+  const effectiveLimit = limit; // Use it directly
+  
+  const startTime = Date.now();
+  const timings = {
+    embedding: 0,
+    search: 0,
+    reembedding: 0,
+    umap: 0,
+    total: 0
+  };
+
+  printLog(`[${requestId}] ========== 3D SEARCH REQUEST ==========`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}`);
+
+  if (!query) {
+    printLog(`[${requestId}] ERROR: Missing query parameter`);
+    return res.status(400).json({ error: 'Query is required' });
+  }
+
+  try {
+    // Step 1: Get query embedding
+    printLog(`[${requestId}] Step 1: Starting embedding generation...`);
+    console.time(`[${requestId}] Embedding`);
+    const embeddingStart = Date.now();
+    
+    const embeddingResponse = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: query
+    });
+    
+    const embedding = embeddingResponse.data[0].embedding;
+    timings.embedding = Date.now() - embeddingStart;
+    console.timeEnd(`[${requestId}] Embedding`);
+    printLog(`[${requestId}] ✓ Embedding generated successfully in ${timings.embedding}ms`);
+    printLog(`[${requestId}] Embedding dimensions: ${embedding.length}`);
+
+    // Step 2: Search Pinecone (WITHOUT embeddings - will re-embed on server)
+    printLog(`[${requestId}] Step 2: Starting Pinecone search (WITHOUT includeValues)...`);
+    printLog(`[${requestId}] Pinecone query params:`, {
+      limit: effectiveLimit,
+      feedIds,
+      minDate,
+      maxDate,
+      episodeName,
+      includeValues: false // We'll re-embed the text instead
+    });
+    console.time(`[${requestId}] Pinecone-Search`);
+    const searchStart = Date.now();
+    
+    const similarDiscussions = await findSimilarDiscussions({
+      embedding,
+      feedIds,
+      limit: effectiveLimit,
+      query,
+      minDate,
+      maxDate,
+      episodeName,
+      includeValues: false // Don't request embeddings from Pinecone
+    });
+    
+    timings.search = Date.now() - searchStart;
+    console.timeEnd(`[${requestId}] Pinecone-Search`);
+    printLog(`[${requestId}] ✓ Pinecone search completed in ${timings.search}ms`);
+    printLog(`[${requestId}] Found ${similarDiscussions.length} results`);
+
+    // Step 3: Check minimum results requirement
+    printLog(`[${requestId}] Step 3: Validating result count (need ≥4 for UMAP)...`);
+    // TEMPORARY: Allow less than 4 for debugging
+    if (similarDiscussions.length < 1) {
+      printLog(`[${requestId}] ✗ NO RESULTS: ${similarDiscussions.length}`);
+      return res.status(400).json({ 
+        error: 'No results found',
+        message: `No results found for query.`,
+        resultCount: similarDiscussions.length
+      });
+    }
+    printLog(`[${requestId}] ✓ Result count validation passed: ${similarDiscussions.length} results`);
+    
+    // TEMPORARY: If less than 4, skip UMAP and just return results
+    if (similarDiscussions.length < 4) {
+      printLog(`[${requestId}] ⚠️ Less than 4 results (${similarDiscussions.length}) - skipping UMAP for debugging`);
+      timings.total = Date.now() - startTime;
+      return res.json({
+        query,
+        results: similarDiscussions.map(r => {
+          const { embedding, ...rest } = r;
+          return { ...rest, coordinates3d: { x: 0, y: 0, z: 0 } }; // Dummy coords
+        }),
+        total: similarDiscussions.length,
+        model: "text-embedding-ada-002",
+        metadata: {
+          numResults: similarDiscussions.length,
+          embeddingTimeMs: timings.embedding,
+          searchTimeMs: timings.search,
+          umapTimeMs: 0,
+          totalTimeMs: timings.total,
+          fastMode: false,
+          umapConfig: 'skipped',
+          debugMode: true,
+          skippedUMAP: true
+        }
+      });
+    }
+
+    // Step 4: Extract embeddings from results
+    printLog(`[${requestId}] Step 4: Re-generating embeddings for ${similarDiscussions.length} results...`);
+    printLog(`[${requestId}] NOTE: Using server-side re-embedding (Pinecone includeValues doesn't work)`);
+    
+    console.time(`[${requestId}] Re-embedding`);
+    const reembedStart = Date.now();
+    
+    // Extract text from all results for batch embedding
+    const texts = similarDiscussions.map(result => result.quote || '');
+    printLog(`[${requestId}] Extracted ${texts.length} text snippets`);
+    printLog(`[${requestId}] Sample text (first 100 chars): "${texts[0].substring(0, 100)}..."`);
+    
+    // Batch embed all texts at once (OpenAI supports up to 2048 inputs)
+    printLog(`[${requestId}] Calling OpenAI batch embeddings API...`);
+    const batchEmbeddingResponse = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: texts
+    });
+    
+    const embeddings = batchEmbeddingResponse.data.map(item => item.embedding);
+    timings.reembedding = Date.now() - reembedStart;
+    console.timeEnd(`[${requestId}] Re-embedding`);
+    
+    printLog(`[${requestId}] ✓ Re-embedded ${embeddings.length} texts in ${timings.reembedding}ms`);
+    printLog(`[${requestId}] Embedding dimensions: ${embeddings[0].length}`);
+    printLog(`[${requestId}] Cost estimate: ~$${(texts.join(' ').length / 1000 * 0.0001).toFixed(4)}`);
+
+    // Step 5: Project to 3D using UMAP
+    printLog(`[${requestId}] Step 5: Starting UMAP projection to 3D...`);
+    printLog(`[${requestId}] UMAP mode: ${fastMode ? 'FAST' : 'STANDARD'}`);
+    console.time(`[${requestId}] UMAP-Projection`);
+    const umapStart = Date.now();
+    
+    const UmapProjector = require('./utils/UmapProjector');
+    const projectorConfig = fastMode 
+      ? UmapProjector.getFastModeConfig() 
+      : {}; // Use default config
+    
+    printLog(`[${requestId}] Creating UMAP projector with config:`, projectorConfig);
+    const projector = new UmapProjector(projectorConfig);
+    
+    printLog(`[${requestId}] Calling UMAP project() with ${embeddings.length} embeddings...`);
+    const coordinates3d = await projector.project(embeddings);
+    
+    timings.umap = Date.now() - umapStart;
+    console.timeEnd(`[${requestId}] UMAP-Projection`);
+    printLog(`[${requestId}] ✓ UMAP projection completed in ${timings.umap}ms`);
+    printLog(`[${requestId}] Generated ${coordinates3d.length} 3D coordinates`);
+    printLog(`[${requestId}] Sample coordinate:`, coordinates3d[0]);
+
+    // Step 6: Attach 3D coordinates to results
+    printLog(`[${requestId}] Step 6: Attaching 3D coordinates to results...`);
+    const results3d = similarDiscussions.map((result, index) => {
+      // Remove embedding from response (too large, not needed by client)
+      const { embedding, ...resultWithoutEmbedding } = result;
+      
+      return {
+        ...resultWithoutEmbedding,
+        coordinates3d: coordinates3d[index]
+        // hierarchyLevel already added by formatResults
+      };
+    });
+    printLog(`[${requestId}] ✓ Attached coordinates to ${results3d.length} results`);
+
+    // Calculate total time
+    timings.total = Date.now() - startTime;
+
+    printLog(`[${requestId}] ========== 3D SEARCH COMPLETED SUCCESSFULLY ==========`);
+    printLog(`[${requestId}] Performance breakdown:`);
+    printLog(`[${requestId}]   - Query Embedding: ${timings.embedding}ms`);
+    printLog(`[${requestId}]   - Pinecone Search: ${timings.search}ms`);
+    printLog(`[${requestId}]   - Re-embedding: ${timings.reembedding}ms`);
+    printLog(`[${requestId}]   - UMAP Projection: ${timings.umap}ms`);
+    printLog(`[${requestId}]   - Total: ${timings.total}ms`);
+    printLog(`[${requestId}] Returning ${results3d.length} results with 3D coordinates`);
+
+    // Return results with metadata
+    res.json({
+      query,
+      results: results3d,
+      total: results3d.length,
+      model: "text-embedding-ada-002",
+      metadata: {
+        numResults: results3d.length,
+        embeddingTimeMs: timings.embedding,
+        searchTimeMs: timings.search,
+        reembeddingTimeMs: timings.reembedding,
+        umapTimeMs: timings.umap,
+        totalTimeMs: timings.total,
+        fastMode: fastMode,
+        umapConfig: fastMode ? 'fast' : 'standard',
+        limitCapped: limit !== effectiveLimit,
+        requestedLimit: limit,
+        effectiveLimit: effectiveLimit,
+        approach: 'server-side-reembedding'
+      }
+    });
+
+  } catch (error) {
+    timings.total = Date.now() - startTime;
+    
+    printLog(`[${requestId}] ========== 3D SEARCH FAILED ==========`);
+    printLog(`[${requestId}] ✗ Error after ${timings.total}ms:`, error.message);
+    printLog(`[${requestId}] Error type:`, error.constructor.name);
+    printLog(`[${requestId}] Stack trace:`, error.stack);
+    
+    console.error(`[${requestId}] ERROR: ${error.message}`);
+    console.error(`[${requestId}] Stack trace:`, error.stack);
+    
+    // Determine appropriate error response
+    if (error.message.includes('at least 4 points') || error.message.includes('Insufficient results')) {
+      printLog(`[${requestId}] Error category: INSUFFICIENT_RESULTS`);
+      return res.status(400).json({ 
+        error: 'Insufficient results for 3D visualization',
+        message: error.message,
+        details: error.message 
+      });
+    } else if (error.message.includes('UMAP') || error.message.includes('projection')) {
+      printLog(`[${requestId}] Error category: UMAP_FAILURE`);
+      return res.status(500).json({ 
+        error: 'Failed to generate 3D projection',
+        message: 'The dimensionality reduction algorithm encountered an error. Please try again.',
+        details: error.message,
+        requestId
+      });
+    } else {
+      printLog(`[${requestId}] Error category: GENERAL_ERROR`);
+      return res.status(500).json({ 
+        error: 'Failed to perform 3D search',
+        message: 'An unexpected error occurred. Please try again.',
+        details: error.message,
+        requestId
+      });
+    }
   }
 });
 
