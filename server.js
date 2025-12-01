@@ -1201,7 +1201,7 @@ app.post('/api/search-quotes', async (req, res) => {
 // 3D Semantic Search endpoint for galaxy view visualization
 app.post('/api/search-quotes-3d', async (req, res) => {
   const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { query, feedIds=[], limit = 100, minDate = null, maxDate = null, episodeName = null, fastMode = false } = req.body;
+  let { query, feedIds=[], limit = 100, minDate = null, maxDate = null, episodeName = null, fastMode = false, extractAxisLabels = false } = req.body;
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -1218,6 +1218,7 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     search: 0,
     reembedding: 0,
     umap: 0,
+    axisLabeling: 0,
     total: 0
   };
 
@@ -1378,6 +1379,157 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     });
     printLog(`[${requestId}] ✓ Attached coordinates to ${results3d.length} results`);
 
+    // Step 7: Extract axis labels (optional)
+    let axisLabels = null;
+    if (extractAxisLabels && results3d.length >= 7) {
+      printLog(`[${requestId}] Step 7: Extracting axis labels for semantic space...`);
+      console.time(`[${requestId}] Axis-Labeling`);
+      const labelingStart = Date.now();
+      
+      try {
+        // Find 7 cardinal points: center, +/-X, +/-Y, +/-Z
+        const findClosestPoint = (targetX, targetY, targetZ) => {
+          let minDist = Infinity;
+          let closestIndex = 0;
+          
+          results3d.forEach((result, index) => {
+            const { x, y, z } = result.coordinates3d;
+            const dist = Math.sqrt(
+              Math.pow(x - targetX, 2) + 
+              Math.pow(y - targetY, 2) + 
+              Math.pow(z - targetZ, 2)
+            );
+            if (dist < minDist) {
+              minDist = dist;
+              closestIndex = index;
+            }
+          });
+          
+          return closestIndex;
+        };
+        
+        const cardinalIndices = {
+          center: findClosestPoint(0, 0, 0),
+          xPositive: findClosestPoint(1, 0, 0),
+          xNegative: findClosestPoint(-1, 0, 0),
+          yPositive: findClosestPoint(0, 1, 0),
+          yNegative: findClosestPoint(0, -1, 0),
+          zPositive: findClosestPoint(0, 0, 1),
+          zNegative: findClosestPoint(0, 0, -1)
+        };
+        
+        printLog(`[${requestId}] Found cardinal point indices:`, cardinalIndices);
+        
+        // Extract texts from cardinal points
+        const getTextFromResult = (result) => {
+          // Use appropriate field based on hierarchyLevel
+          let text = '';
+          
+          switch(result.hierarchyLevel) {
+            case 'paragraph':
+              text = result.quote || result.text || '';
+              break;
+            case 'chapter':
+              text = result.summary || result.headline || '';
+              break;
+            case 'episode':
+              text = result.description || result.title || '';
+              break;
+            case 'feed':
+              text = result.description || result.title || '';
+              break;
+            default:
+              // Fallback: try all fields
+              text = result.quote || result.text || result.summary || result.description || '';
+          }
+          
+          // Final fallback if still empty
+          if (!text || text.length < 20) {
+            text = `${result.episode || result.title || ''} by ${result.creator || ''}`.trim() || 'No text available';
+          }
+          
+          return text;
+        };
+        
+        const cardinalTexts = {
+          center: getTextFromResult(results3d[cardinalIndices.center]),
+          xPositive: getTextFromResult(results3d[cardinalIndices.xPositive]),
+          xNegative: getTextFromResult(results3d[cardinalIndices.xNegative]),
+          yPositive: getTextFromResult(results3d[cardinalIndices.yPositive]),
+          yNegative: getTextFromResult(results3d[cardinalIndices.yNegative]),
+          zPositive: getTextFromResult(results3d[cardinalIndices.zPositive]),
+          zNegative: getTextFromResult(results3d[cardinalIndices.zNegative])
+        };
+        
+        printLog(`[${requestId}] Extracted texts from cardinal points (truncated):`, 
+          Object.fromEntries(
+            Object.entries(cardinalTexts).map(([k, v]) => [k, v.substring(0, 80) + '...'])
+          )
+        );
+        
+        // Log text lengths and hierarchy levels to debug
+        printLog(`[${requestId}] Cardinal points metadata:`, 
+          Object.fromEntries(
+            Object.entries(cardinalIndices).map(([k, idx]) => [
+              k, 
+              {
+                hierarchyLevel: results3d[idx].hierarchyLevel,
+                textLength: cardinalTexts[k].length,
+                hasQuote: !!results3d[idx].quote,
+                hasDescription: !!results3d[idx].description,
+                hasSummary: !!results3d[idx].summary
+              }
+            ])
+          )
+        );
+        
+        // Call OpenAI to generate labels
+        printLog(`[${requestId}] Calling OpenAI to generate semantic labels...`);
+        const labelingPrompt = `You are analyzing a 3D semantic space visualization where similar content clusters together. For each text excerpt below, provide a concise thematic label (1-3 words maximum) that captures its core concept.
+
+1. CENTER (average of all content): "${cardinalTexts.center.substring(0, 300)}"
+
+2. +X AXIS (one semantic extreme): "${cardinalTexts.xPositive.substring(0, 300)}"
+
+3. -X AXIS (opposite semantic extreme): "${cardinalTexts.xNegative.substring(0, 300)}"
+
+4. +Y AXIS (another semantic dimension): "${cardinalTexts.yPositive.substring(0, 300)}"
+
+5. -Y AXIS (opposite dimension): "${cardinalTexts.yNegative.substring(0, 300)}"
+
+6. +Z AXIS (third semantic dimension): "${cardinalTexts.zPositive.substring(0, 300)}"
+
+7. -Z AXIS (opposite dimension): "${cardinalTexts.zNegative.substring(0, 300)}"
+
+Return ONLY valid JSON in this exact format (no markdown, no explanation):
+{"center": "label", "xPositive": "label", "xNegative": "label", "yPositive": "label", "yNegative": "label", "zPositive": "label", "zNegative": "label"}`;
+
+        const labelingResponse = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: labelingPrompt }],
+          temperature: 0.3,
+          max_tokens: 150
+        });
+        
+        const labelsText = labelingResponse.choices[0].message.content.trim();
+        printLog(`[${requestId}] Raw OpenAI response:`, labelsText);
+        
+        axisLabels = JSON.parse(labelsText);
+        
+        timings.axisLabeling = Date.now() - labelingStart;
+        console.timeEnd(`[${requestId}] Axis-Labeling`);
+        printLog(`[${requestId}] ✓ Generated axis labels in ${timings.axisLabeling}ms:`, axisLabels);
+        
+      } catch (error) {
+        printLog(`[${requestId}] ✗ Failed to generate axis labels:`, error.message);
+        printLog(`[${requestId}] Continuing without axis labels...`);
+        timings.axisLabeling = Date.now() - labelingStart;
+        // Don't fail the entire request, just skip axis labels
+      }
+    } else if (extractAxisLabels) {
+      printLog(`[${requestId}] Skipping axis labels: need at least 7 results (got ${results3d.length})`);
+    }
+
     // Calculate total time
     timings.total = Date.now() - startTime;
 
@@ -1387,11 +1539,12 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     printLog(`[${requestId}]   - Pinecone Search: ${timings.search}ms`);
     printLog(`[${requestId}]   - Re-embedding: ${timings.reembedding}ms`);
     printLog(`[${requestId}]   - UMAP Projection: ${timings.umap}ms`);
+    if (extractAxisLabels) printLog(`[${requestId}]   - Axis Labeling: ${timings.axisLabeling}ms`);
     printLog(`[${requestId}]   - Total: ${timings.total}ms`);
     printLog(`[${requestId}] Returning ${results3d.length} results with 3D coordinates`);
 
     // Return results with metadata
-    res.json({
+    const response = {
       query,
       results: results3d,
       total: results3d.length,
@@ -1402,6 +1555,7 @@ app.post('/api/search-quotes-3d', async (req, res) => {
         searchTimeMs: timings.search,
         reembeddingTimeMs: timings.reembedding,
         umapTimeMs: timings.umap,
+        axisLabelingTimeMs: timings.axisLabeling,
         totalTimeMs: timings.total,
         fastMode: fastMode,
         umapConfig: fastMode ? 'fast' : 'standard',
@@ -1410,7 +1564,14 @@ app.post('/api/search-quotes-3d', async (req, res) => {
         effectiveLimit: effectiveLimit,
         approach: 'server-side-reembedding'
       }
-    });
+    };
+    
+    // Add axis labels if generated
+    if (axisLabels) {
+      response.axisLabels = axisLabels;
+    }
+    
+    res.json(response);
 
   } catch (error) {
     timings.total = Date.now() - startTime;

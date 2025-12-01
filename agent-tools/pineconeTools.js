@@ -113,7 +113,10 @@ const pineconeTools = {
             shareUrl: `${baseUrl}/share?clip=${match.id}`,
             listenLink: match.metadata.listenLink || "",
             quote: match.metadata.text || "Quote unavailable",
-            episode: match.metadata.episode || "Unknown episode",
+            summary: match.metadata.summary || null,  // For chapters
+            headline: match.metadata.headline || null, // For chapters  
+            description: match.metadata.description || null, // For episodes
+            episode: match.metadata.episode || match.metadata.title || "Unknown episode",
             creator: match.metadata.creator || "Creator not specified",
             audioUrl: match.metadata.audioUrl || "URL unavailable",
             episodeImage: match.metadata.episodeImage || "Image unavailable",
@@ -172,7 +175,7 @@ const pineconeTools = {
             
             // Build Pinecone filter with all metadata constraints
             const filter = {
-                type: "paragraph",
+                type: { $ne: "feed" }, // Exclude feed-level results, allow episode/chapter/paragraph
                 ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
                 ...(guid && { guid }),  // Add guid filter when provided
             };
@@ -256,7 +259,13 @@ const pineconeTools = {
             
             // Add all filtered documents
             matches.forEach(match => {
-                tfidf.addDocument(tokenizer.tokenize(match.metadata.text.toLowerCase()));
+                // Use appropriate text field based on type: text (paragraph), summary (chapter), description (episode/feed)
+                const text = match.metadata?.text || match.metadata?.summary || match.metadata?.description || '';
+                if (text) {
+                    tfidf.addDocument(tokenizer.tokenize(text.toLowerCase()));
+                } else {
+                    tfidf.addDocument([]); // Empty document for missing text
+                }
             });
     
             // Calculate hybrid scores and rerank
