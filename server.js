@@ -3000,20 +3000,28 @@ app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
   }
 });
 
-// Get hierarchy endpoint - fetches paragraph, chapter, episode, and feed
+// Get hierarchy endpoint - fetches paragraph/chapter, episode, and feed
 app.get('/api/get-hierarchy', async (req, res) => {
   try {
-    const { paragraphId } = req.query;
+    const { paragraphId, chapterId } = req.query;
     
-    // Validate required parameter
-    if (!paragraphId) {
+    // Validate: must provide exactly one of paragraphId or chapterId
+    if (!paragraphId && !chapterId) {
       return res.status(400).json({ 
-        error: 'Missing required parameter: paragraphId',
-        example: '/api/get-hierarchy?paragraphId=https___lexfridman_com__p_6320_p715'
+        error: 'Missing required parameter: paragraphId or chapterId',
+        examples: [
+          '/api/get-hierarchy?paragraphId=b046291e-2e15-4ae5-87e6-4f569283c79a_p6',
+          '/api/get-hierarchy?chapterId=b046291e-2e15-4ae5-87e6-4f569283c79a_chunked_chapter_1'
+        ]
       });
     }
-
-    console.log(`Fetching hierarchy for paragraph: ${paragraphId}`);
+    
+    if (paragraphId && chapterId) {
+      return res.status(400).json({ 
+        error: 'Cannot provide both paragraphId and chapterId. Choose one.',
+        provided: { paragraphId, chapterId }
+      });
+    }
 
     // Initialize Pinecone
     const { Pinecone } = require('@pinecone-database/pinecone');
@@ -3022,68 +3030,117 @@ app.get('/api/get-hierarchy', async (req, res) => {
     });
     const index = pinecone.index(process.env.PINECONE_INDEX);
 
-    // Step 1: Fetch the paragraph
-    const paragraphFetch = await index.fetch([paragraphId]);
-    
-    if (!paragraphFetch.records || !paragraphFetch.records[paragraphId]) {
-      return res.status(404).json({ 
-        error: 'Paragraph not found',
-        paragraphId 
-      });
-    }
-
-    const paragraphData = paragraphFetch.records[paragraphId];
-    const paragraph = {
-      id: paragraphId,
-      metadata: paragraphData.metadata
-    };
-
-    // Extract guid and feedId from paragraph
-    const guid = paragraph.metadata.guid;
-    const feedId = paragraph.metadata.feedId;
-    const paragraphStartTime = paragraph.metadata.start_time;
-    const paragraphEndTime = paragraph.metadata.end_time;
-
-    if (!guid || !feedId) {
-      return res.status(400).json({ 
-        error: 'Paragraph missing required metadata (guid or feedId)',
-        paragraphId,
-        metadata: paragraph.metadata
-      });
-    }
-
-    console.log(`Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
-
-    // Step 2: Query for chapter using timestamp filter
-    const dummyVector = Array(1536).fill(0);
-    const chapterQuery = await index.query({
-      vector: dummyVector,
-      filter: {
-        type: "chapter",
-        guid: guid,
-        startTime: { $lte: paragraphStartTime },
-        endTime: { $gte: paragraphEndTime }
-      },
-      topK: 1,
-      includeMetadata: true
-    });
-
+    let paragraph = null;
     let chapter = null;
-    if (chapterQuery.matches && chapterQuery.matches.length > 0) {
+    let episode = null;
+    let feed = null;
+    let guid = null;
+    let feedId = null;
+    let startingPoint = null;
+
+    if (chapterId) {
+      // CHAPTER MODE: Start from chapter, go UP only
+      console.log(`Fetching hierarchy for chapter: ${chapterId}`);
+      startingPoint = 'chapter';
+
+      // Step 1: Fetch the chapter directly
+      const chapterFetch = await index.fetch([chapterId]);
+      
+      if (!chapterFetch.records || !chapterFetch.records[chapterId]) {
+        return res.status(404).json({ 
+          error: 'Chapter not found',
+          chapterId 
+        });
+      }
+
+      const chapterData = chapterFetch.records[chapterId];
       chapter = {
-        id: chapterQuery.matches[0].id,
-        metadata: chapterQuery.matches[0].metadata
+        id: chapterId,
+        metadata: chapterData.metadata
       };
-      console.log(`Found chapter: ${chapter.id}`);
+
+      // Extract guid and feedId from chapter
+      guid = chapter.metadata.guid;
+      feedId = chapter.metadata.feedId;
+
+      if (!guid || !feedId) {
+        return res.status(400).json({ 
+          error: 'Chapter missing required metadata (guid or feedId)',
+          chapterId,
+          metadata: chapter.metadata
+        });
+      }
+
+      console.log(`Chapter guid: ${guid}, feedId: ${feedId}`);
+
     } else {
-      console.log('No chapter found for this paragraph');
+      // PARAGRAPH MODE: Start from paragraph, go UP
+      console.log(`Fetching hierarchy for paragraph: ${paragraphId}`);
+      startingPoint = 'paragraph';
+
+      // Step 1: Fetch the paragraph
+      const paragraphFetch = await index.fetch([paragraphId]);
+      
+      if (!paragraphFetch.records || !paragraphFetch.records[paragraphId]) {
+        return res.status(404).json({ 
+          error: 'Paragraph not found',
+          paragraphId 
+        });
+      }
+
+      const paragraphData = paragraphFetch.records[paragraphId];
+      paragraph = {
+        id: paragraphId,
+        metadata: paragraphData.metadata
+      };
+
+      // Extract guid and feedId from paragraph
+      guid = paragraph.metadata.guid;
+      feedId = paragraph.metadata.feedId;
+      const paragraphStartTime = paragraph.metadata.start_time;
+      const paragraphEndTime = paragraph.metadata.end_time;
+
+      if (!guid || !feedId) {
+        return res.status(400).json({ 
+          error: 'Paragraph missing required metadata (guid or feedId)',
+          paragraphId,
+          metadata: paragraph.metadata
+        });
+      }
+
+      console.log(`Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
+
+      // Step 2: Query for chapter using timestamp filter
+      const dummyVector = Array(1536).fill(0);
+      const chapterQuery = await index.query({
+        vector: dummyVector,
+        filter: {
+          type: "chapter",
+          guid: guid,
+          startTime: { $lte: paragraphStartTime },
+          endTime: { $gte: paragraphEndTime }
+        },
+        topK: 1,
+        includeMetadata: true
+      });
+
+      if (chapterQuery.matches && chapterQuery.matches.length > 0) {
+        chapter = {
+          id: chapterQuery.matches[0].id,
+          metadata: chapterQuery.matches[0].metadata
+        };
+        console.log(`Found chapter: ${chapter.id}`);
+      } else {
+        console.log('No chapter found for this paragraph');
+      }
     }
+
+    // COMMON: Fetch episode and feed (going UP)
 
     // Step 3: Fetch episode by constructing episode ID
     const episodeId = `episode_${guid}`;
     const episodeFetch = await index.fetch([episodeId]);
     
-    let episode = null;
     if (episodeFetch.records && episodeFetch.records[episodeId]) {
       episode = {
         id: episodeId,
@@ -3098,7 +3155,6 @@ app.get('/api/get-hierarchy', async (req, res) => {
     const feedIdStr = `feed_${feedId}`;
     const feedFetch = await index.fetch([feedIdStr]);
     
-    let feed = null;
     if (feedFetch.records && feedFetch.records[feedIdStr]) {
       feed = {
         id: feedIdStr,
@@ -3117,7 +3173,9 @@ app.get('/api/get-hierarchy', async (req, res) => {
 
     // Return complete hierarchy
     res.json({
-      paragraphId,
+      ...(paragraphId && { paragraphId }),
+      ...(chapterId && { chapterId }),
+      startingPoint,
       hierarchy: {
         paragraph,
         chapter,
