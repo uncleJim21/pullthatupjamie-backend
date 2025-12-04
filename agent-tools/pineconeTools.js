@@ -108,39 +108,55 @@ const pineconeTools = {
     },
     formatResults : (matches) => {
         const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
-        return matches.map((match) => ({
-            shareLink: match.id,
-            shareUrl: `${baseUrl}/share?clip=${match.id}`,
-            listenLink: match.metadata.listenLink || "",
-            quote: match.metadata.text || "Quote unavailable",
-            summary: match.metadata.summary || null,  // For chapters
-            headline: match.metadata.headline || null, // For chapters  
-            description: match.metadata.description || null, // For episodes
-            episode: match.metadata.episode || match.metadata.title || "Unknown episode",
-            creator: match.metadata.creator || "Creator not specified",
-            audioUrl: match.metadata.audioUrl || "URL unavailable",
-            episodeImage: match.metadata.episodeImage || "Image unavailable",
-            date: match.metadata.publishedDate || "Date not provided",
-            published: match.metadata.publishedDate || match.metadata.publishedTimestamp || null,
-            similarity: {
-                combined: parseFloat(match.score.toFixed(4)),
-                vector: parseFloat(match.originalScore?.toFixed(4)) || parseFloat(match.score.toFixed(4)),
-            },
-            timeContext: {
-                start_time: match.metadata.start_time || null,
-                end_time: match.metadata.end_time || null,
-            },
-            additionalFields: {
-                feedId: match.metadata.feedId || null,
-                guid: match.metadata.guid || null,
-                sequence: match.metadata.sequence || null,
-                num_words: match.metadata.num_words || null,
-            },
-            // Include embedding values if present (for 3D projection)
-            ...(match.values && { embedding: match.values }),
-            // Include type for hierarchy level
-            hierarchyLevel: match.metadata.type || 'paragraph'
-        }));
+        return matches.map((match) => {
+            const hierarchyLevel = match.metadata.type || 'paragraph';
+            
+            // For chapters, prefer the chapter headline/title as the primary text
+            const quote =
+                hierarchyLevel === 'chapter'
+                    ? (match.metadata.headline ||
+                       match.metadata.summary ||
+                       match.metadata.text ||
+                       "Quote unavailable")
+                    : (match.metadata.text ||
+                       match.metadata.summary ||
+                       match.metadata.headline ||
+                       "Quote unavailable");
+
+            return {
+                shareLink: match.id,
+                shareUrl: `${baseUrl}/share?clip=${match.id}`,
+                listenLink: match.metadata.listenLink || "",
+                quote,
+                summary: match.metadata.summary || null,  // For chapters
+                headline: match.metadata.headline || null, // For chapters  
+                description: match.metadata.description || null, // For episodes
+                episode: match.metadata.episode || match.metadata.title || "Unknown episode",
+                creator: match.metadata.creator || "Creator not specified",
+                audioUrl: match.metadata.audioUrl || "URL unavailable",
+                episodeImage: match.metadata.episodeImage || "Image unavailable",
+                date: match.metadata.publishedDate || "Date not provided",
+                published: match.metadata.publishedDate || match.metadata.publishedTimestamp || null,
+                similarity: {
+                    combined: parseFloat(match.score.toFixed(4)),
+                    vector: parseFloat(match.originalScore?.toFixed(4)) || parseFloat(match.score.toFixed(4)),
+                },
+                timeContext: {
+                    start_time: match.metadata.start_time || null,
+                    end_time: match.metadata.end_time || null,
+                },
+                additionalFields: {
+                    feedId: match.metadata.feedId || null,
+                    guid: match.metadata.guid || null,
+                    sequence: match.metadata.sequence || null,
+                    num_words: match.metadata.num_words || null,
+                },
+                // Include embedding values if present (for 3D projection)
+                ...(match.values && { embedding: match.values }),
+                // Include type for hierarchy level
+                hierarchyLevel
+            };
+        });
     },
     findSimilarDiscussions : async ({ 
         embedding,
