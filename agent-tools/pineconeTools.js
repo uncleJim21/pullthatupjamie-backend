@@ -121,6 +121,7 @@ const pineconeTools = {
             audioUrl: match.metadata.audioUrl || "URL unavailable",
             episodeImage: match.metadata.episodeImage || "Image unavailable",
             date: match.metadata.publishedDate || "Date not provided",
+            published: match.metadata.publishedDate || match.metadata.publishedTimestamp || null,
             similarity: {
                 combined: parseFloat(match.score.toFixed(4)),
                 vector: parseFloat(match.originalScore?.toFixed(4)) || parseFloat(match.score.toFixed(4)),
@@ -441,7 +442,10 @@ const pineconeTools = {
                 creator: queryResult.matches[0].metadata.creator || "Unknown Creator",
                 feedId: queryResult.matches[0].metadata.feedId || null,
                 audioUrl: queryResult.matches[0].metadata.audioUrl || null,
-                episodeImage: queryResult.matches[0].metadata.episodeImage || queryResult.matches[0].metadata.image || null,
+                episodeImage: queryResult.matches[0].metadata.episodeImage 
+                              || queryResult.matches[0].metadata.image 
+                              || queryResult.matches[0].metadata.imageUrl 
+                              || null,
                 duration: queryResult.matches[0].metadata.duration || null,
                 listenLink: queryResult.matches[0].metadata.listenLink || null,
                 // Include any other relevant metadata fields

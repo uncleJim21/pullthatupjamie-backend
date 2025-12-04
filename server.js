@@ -1289,6 +1289,88 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     }
     printLog(`[${requestId}] ✓ Result count validation passed: ${similarDiscussions.length} results`);
     
+    // Step 3b: Enrich chapter/paragraph results with episode metadata
+    printLog(`[${requestId}] Step 3b: Enriching results with episode metadata where missing...`);
+    const episodeCache = {};
+    const guidsToFetch = new Set();
+
+    // First pass: collect GUIDs for which we need episode data
+    similarDiscussions.forEach(result => {
+      // We care about non-feed items that have a guid in additionalFields
+      const guidForResult = result?.additionalFields?.guid;
+      const level = result?.hierarchyLevel;
+
+      if (!guidForResult) return;
+      if (level !== 'chapter' && level !== 'paragraph') return;
+
+      // Only fetch if key episode fields are missing or generic
+      const missingEpisodeTitle = !result.episode || result.episode === 'Unknown episode';
+      const missingEpisodeImage = !result.episodeImage || result.episodeImage === 'Image unavailable';
+      const missingAudioUrl = !result.audioUrl || result.audioUrl === 'URL unavailable';
+
+      if (missingEpisodeTitle || missingEpisodeImage || missingAudioUrl) {
+        guidsToFetch.add(guidForResult);
+      }
+    });
+
+    printLog(
+      `[${requestId}] Episode enrichment: identified ${guidsToFetch.size} GUIDs needing episode data`
+    );
+
+    // Fetch episode data in parallel for all needed GUIDs
+    if (guidsToFetch.size > 0) {
+      const guidList = Array.from(guidsToFetch);
+      const episodePromises = guidList.map(async guid => {
+        try {
+          const episodeData = await getEpisodeByGuid(guid);
+          if (episodeData) {
+            episodeCache[guid] = episodeData;
+          } else {
+            printLog(`[${requestId}] Episode enrichment: no episode found for guid=${guid}`);
+          }
+        } catch (e) {
+          printLog(
+            `[${requestId}] Episode enrichment: error fetching episode for guid=${guid}: ${e.message}`
+          );
+        }
+      });
+
+      await Promise.all(episodePromises);
+      printLog(
+        `[${requestId}] Episode enrichment: fetched metadata for ${
+          Object.keys(episodeCache).length
+        } episodes`
+      );
+
+      // Second pass: apply episode metadata to chapter/paragraph results
+      similarDiscussions.forEach(result => {
+        const guidForResult = result?.additionalFields?.guid;
+        const level = result?.hierarchyLevel;
+        if (!guidForResult) return;
+        if (level !== 'chapter' && level !== 'paragraph') return;
+
+        const ep = episodeCache[guidForResult];
+        if (!ep) return;
+
+        // Fill in missing/generic fields from episode metadata
+        if (!result.episode || result.episode === 'Unknown episode') {
+          result.episode = ep.title || result.episode;
+        }
+        if (!result.episodeImage || result.episodeImage === 'Image unavailable') {
+          if (ep.episodeImage) result.episodeImage = ep.episodeImage;
+        }
+        if (!result.audioUrl || result.audioUrl === 'URL unavailable') {
+          if (ep.audioUrl) result.audioUrl = ep.audioUrl;
+        }
+        if (!result.creator || result.creator === 'Creator not specified') {
+          if (ep.creator) result.creator = ep.creator;
+        }
+        if (!result.description && ep.description) {
+          result.description = ep.description;
+        }
+      });
+    }
+    
     // TEMPORARY: If less than 4, skip UMAP and just return results
     if (similarDiscussions.length < 4) {
       printLog(`[${requestId}] ⚠️ Less than 4 results (${similarDiscussions.length}) - skipping UMAP for debugging`);
