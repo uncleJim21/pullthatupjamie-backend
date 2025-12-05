@@ -1702,6 +1702,16 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   printLog(`[${requestId}] Request body:`, { query, model, mode });
   printLog(`[${requestId}] DEFAULT_MODEL:`, DEFAULT_MODEL);
   printLog(`[${requestId}] Auth info:`, req.auth);
+
+  // Temporary phase-out: short-circuit this endpoint with a clear, user-facing message.
+  // Using 410 Gone to indicate the feature was intentionally removed.
+  printLog(`[${requestId}] STREAM SEARCH DISABLED: endpoint phased out, returning 410 Gone`);
+  const obfuscatedContact = 'jim [at] cascdr [dot] xyz (remove the brackets and spaces)';
+  return res.status(410).json({
+    error: 'stream_search_disabled',
+    message: 'The streaming web search feature has been phased out and is no longer available.',
+    contact: obfuscatedContact
+  });
  
   if (!query) {
     printLog(`[${requestId}] ERROR: Missing query parameter`);
