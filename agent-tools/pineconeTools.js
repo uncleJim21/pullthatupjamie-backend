@@ -21,6 +21,35 @@ const pinecone = new Pinecone({
 
 const index = pinecone.index(PINECONE_INDEX);
 
+// Global timeout (in ms) for any Pinecone operation invoked from this module
+const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
+
+/**
+ * Wrap a Pinecone operation in a timeout for robustness.
+ * @param {string} operationName - Human-readable name for logging/errors
+ * @param {() => Promise<any>} fn - Function that returns a Pinecone promise
+ */
+const withPineconeTimeout = async (operationName, fn) => {
+    const timeoutMs = PINECONE_TIMEOUT_MS;
+    return Promise.race([
+        fn(),
+        new Promise((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`Pinecone operation "${operationName}" timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+        })
+    ]);
+};
+
+const pineconeQuery = (operationName, params) =>
+    withPineconeTimeout(operationName, () => index.query(params));
+
+const pineconeFetch = (operationName, ids) =>
+    withPineconeTimeout(operationName, () => index.fetch(ids));
+
+const pineconeDescribeStats = (operationName) =>
+    withPineconeTimeout(operationName, () => index.describeIndexStats());
+
 const pineconeTools = {
     getFeedsDetails: async () => {
         const dummyVector = Array(1536).fill(0);
@@ -37,7 +66,7 @@ const pineconeTools = {
                     : { type: "feed" };
     
                 // Query Pinecone with the filter to exclude processed feedIds
-                const queryResult = await index.query({
+                const queryResult = await pineconeQuery('getFeedsDetails', {
                     vector: dummyVector,
                     filter: filter,
                     topK: batchSize,
@@ -82,7 +111,7 @@ const pineconeTools = {
     getClipById: async (clipId) => {
         try {
             // Use the correct fetch API format
-            const fetchResult = await index.fetch([clipId]);
+            const fetchResult = await pineconeFetch('getClipById', [clipId]);
     
             // Check if we got results
             if (!fetchResult || !fetchResult.records || !fetchResult.records[clipId]) {
@@ -224,13 +253,13 @@ const pineconeTools = {
             
             // SIMPLIFIED APPROACH: Always use standard query (no includeValues)
             // If embeddings are needed, caller will re-embed using the returned text
-            let vectorLimit = Math.min(limit * 3, 20); // Normal behavior for reranking
+            let vectorLimit = Math.min(limit * 3, 30); // Normal behavior for reranking
             printLog(`${debugPrefix} Using vectorLimit: ${vectorLimit}`);
             
             printLog(`${debugPrefix} Step 2: Querying Pinecone (topK: ${vectorLimit}, includeMetadata: true)...`);
             const queryStartTime = Date.now();
             
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery('findSimilarDiscussions', {
                 vector: embedding,
                 filter,
                 topK: vectorLimit,
@@ -334,7 +363,7 @@ const pineconeTools = {
             const months = parseInt(timeframe.match(/\d+/)[0]); // Extract number of months
             thresholdDate.setMonth(thresholdDate.getMonth() - months);
 
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery('findTimelineDiscussions', {
                 vector: embedding,
                 topK: 100, // Fetch more results to group by episode
                 includeMetadata: true,
@@ -367,7 +396,7 @@ const pineconeTools = {
 
     getStats: async () => {
         try {
-            const stats = await index.describeIndexStats();
+            const stats = await pineconeDescribeStats('getStats');
 
             return {
                 paragraphCount: stats.totalVectorCount,
@@ -383,7 +412,7 @@ const pineconeTools = {
     getUniqueMetadataCount: async (metadataField) => {
         try {
             const sampleSize = 10000; // Adjust based on your dataset size
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery(`getUniqueMetadataCount:${metadataField}`, {
                 vector: Array(1536).fill(0), // Assuming 1536-dimensional embeddings
                 topK: sampleSize,
                 includeMetadata: true,
@@ -402,10 +431,10 @@ const pineconeTools = {
 
     validateEmbeddings: async () => {
         try {
-            const stats = await index.describeIndexStats();
+            const stats = await pineconeDescribeStats('validateEmbeddings:describeIndexStats');
             const total = stats.totalVectorCount;
 
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery('validateEmbeddings:sampleQuery', {
                 vector: Array(1536).fill(0), // Dummy vector
                 topK: Math.min(total, 1000), // Limit to a sample size
                 includeMetadata: true,
@@ -432,7 +461,7 @@ const pineconeTools = {
             
             // Query Pinecone with a filter for the specific guid and type "episode"
             const dummyVector = Array(1536).fill(0);
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery('getEpisodeByGuid', {
                 vector: dummyVector,
                 filter: {
                     type: "episode",
@@ -515,7 +544,7 @@ const pineconeTools = {
             
             // Query Pinecone with a filter for type "feed" and the specific feedId
             const dummyVector = Array(1536).fill(0);
-            const queryResult = await index.query({
+            const queryResult = await pineconeQuery('getFeedById:stringId', {
                 vector: dummyVector,
                 filter: {
                     type: "feed",
@@ -532,7 +561,7 @@ const pineconeTools = {
                 // Try with numeric feedId as fallback (in case it's stored as a number)
                 const numericFeedId = parseInt(feedId, 10);
                 if (!isNaN(numericFeedId)) {
-                    const fallbackResult = await index.query({
+                    const fallbackResult = await pineconeQuery('getFeedById:numericIdFallback', {
                         vector: dummyVector,
                         filter: {
                             type: "feed",
@@ -622,7 +651,7 @@ const pineconeTools = {
             const dummyVector = Array(1536).fill(0);
             
             // Query Pinecone for paragraphs that overlap with the time range
-            const result = await index.query({
+            const result = await pineconeQuery('getTextForTimeRange', {
                 vector: dummyVector,
                 filter: {
                     type: "paragraph",
@@ -664,7 +693,7 @@ const pineconeTools = {
     // Fast stats function that returns raw stats from Pinecone
     getQuickStats: async () => {
         try {
-            return await index.describeIndexStats();
+            return await pineconeDescribeStats('getQuickStats');
         } catch (error) {
             console.error('Error in getQuickStats:', error);
             throw error;

@@ -409,6 +409,26 @@ const MODEL_CONFIGS = {
 // Initialize SearxNG with error handling
 let searxng = null;
 
+// Global timeout (in ms) for any direct Pinecone operations in this file
+const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
+
+/**
+ * Wrap a Pinecone operation in a timeout so hung queries surface as real errors.
+ * @param {string} operationName - Human-readable label for logs/errors
+ * @param {() => Promise<any>} fn - Function that issues the Pinecone call
+ */
+const withPineconeTimeout = async (operationName, fn) => {
+  const timeoutMs = PINECONE_TIMEOUT_MS;
+  return Promise.race([
+    fn(),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Pinecone operation "${operationName}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    })
+  ]);
+};
+
 // Buffer class for accumulating content
 class ContentBuffer {
   constructor() {
@@ -2913,7 +2933,10 @@ app.get('/api/episode-with-chapters/:guid', async (req, res) => {
     
     // Step 1: Fetch the episode
     const episodeId = `episode_${guid}`;
-    const episodeFetch = await index.fetch([episodeId]);
+    const episodeFetch = await withPineconeTimeout(
+      'episode-with-chapters:fetch-episode',
+      () => index.fetch([episodeId])
+    );
     
     if (!episodeFetch.records || !episodeFetch.records[episodeId]) {
       return res.status(404).json({ 
@@ -2932,15 +2955,18 @@ app.get('/api/episode-with-chapters/:guid', async (req, res) => {
     
     // Step 2: Query for all chapters with this guid
     const dummyVector = Array(1536).fill(0);
-    const chaptersQuery = await index.query({
-      vector: dummyVector,
-      filter: {
-        type: "chapter",
-        guid: guid
-      },
-      topK: 100, // Get up to 100 chapters (should be more than enough)
-      includeMetadata: true
-    });
+    const chaptersQuery = await withPineconeTimeout(
+      'episode-with-chapters:query-chapters',
+      () => index.query({
+        vector: dummyVector,
+        filter: {
+          type: "chapter",
+          guid: guid
+        },
+        topK: 100, // Get up to 100 chapters (should be more than enough)
+        includeMetadata: true
+      })
+    );
     
     // Format chapters
     const chapters = chaptersQuery.matches.map(match => ({
@@ -3044,7 +3070,10 @@ app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
     });
     const index = pinecone.index(process.env.PINECONE_INDEX);
     
-    const fetchResult = await index.fetch(paragraphIds);
+    const fetchResult = await withPineconeTimeout(
+      'fetch-adjacent-paragraphs:batch-fetch',
+      () => index.fetch(paragraphIds)
+    );
 
     // Process results and maintain order
     const paragraphs = [];
@@ -3136,7 +3165,10 @@ app.get('/api/get-hierarchy', async (req, res) => {
       startingPoint = 'chapter';
 
       // Step 1: Fetch the chapter directly
-      const chapterFetch = await index.fetch([chapterId]);
+      const chapterFetch = await withPineconeTimeout(
+        'get-hierarchy:fetch-chapter',
+        () => index.fetch([chapterId])
+      );
       
       if (!chapterFetch.records || !chapterFetch.records[chapterId]) {
         return res.status(404).json({ 
@@ -3171,7 +3203,10 @@ app.get('/api/get-hierarchy', async (req, res) => {
       startingPoint = 'paragraph';
 
       // Step 1: Fetch the paragraph
-      const paragraphFetch = await index.fetch([paragraphId]);
+      const paragraphFetch = await withPineconeTimeout(
+        'get-hierarchy:fetch-paragraph',
+        () => index.fetch([paragraphId])
+      );
       
       if (!paragraphFetch.records || !paragraphFetch.records[paragraphId]) {
         return res.status(404).json({ 
@@ -3204,17 +3239,20 @@ app.get('/api/get-hierarchy', async (req, res) => {
 
       // Step 2: Query for chapter using timestamp filter
       const dummyVector = Array(1536).fill(0);
-      const chapterQuery = await index.query({
-        vector: dummyVector,
-        filter: {
-          type: "chapter",
-          guid: guid,
-          startTime: { $lte: paragraphStartTime },
-          endTime: { $gte: paragraphEndTime }
-        },
-        topK: 1,
-        includeMetadata: true
-      });
+      const chapterQuery = await withPineconeTimeout(
+        'get-hierarchy:query-chapter-for-paragraph',
+        () => index.query({
+          vector: dummyVector,
+          filter: {
+            type: "chapter",
+            guid: guid,
+            startTime: { $lte: paragraphStartTime },
+            endTime: { $gte: paragraphEndTime }
+          },
+          topK: 1,
+          includeMetadata: true
+        })
+      );
 
       if (chapterQuery.matches && chapterQuery.matches.length > 0) {
         chapter = {
@@ -3231,7 +3269,10 @@ app.get('/api/get-hierarchy', async (req, res) => {
 
     // Step 3: Fetch episode by constructing episode ID
     const episodeId = `episode_${guid}`;
-    const episodeFetch = await index.fetch([episodeId]);
+    const episodeFetch = await withPineconeTimeout(
+      'get-hierarchy:fetch-episode',
+      () => index.fetch([episodeId])
+    );
     
     if (episodeFetch.records && episodeFetch.records[episodeId]) {
       episode = {
@@ -3245,7 +3286,10 @@ app.get('/api/get-hierarchy', async (req, res) => {
 
     // Step 4: Fetch feed by constructing feed ID
     const feedIdStr = `feed_${feedId}`;
-    const feedFetch = await index.fetch([feedIdStr]);
+    const feedFetch = await withPineconeTimeout(
+      'get-hierarchy:fetch-feed',
+      () => index.fetch([feedIdStr])
+    );
     
     if (feedFetch.records && feedFetch.records[feedIdStr]) {
       feed = {
@@ -4385,7 +4429,10 @@ if (DEBUG_MODE) {
       
       try {
         const episodeId = `episode_${guid}`;
-        const episodeFetch = await index.fetch([episodeId]);
+        const episodeFetch = await withPineconeTimeout(
+          'delete-podcast-files:fetch-episode',
+          () => index.fetch([episodeId])
+        );
         
         if (episodeFetch.records && episodeFetch.records[episodeId]) {
           episodeData = episodeFetch.records[episodeId].metadata;
@@ -4454,15 +4501,18 @@ if (DEBUG_MODE) {
         console.log(`${debugPrefix} Paragraph deletion batch ${paragraphBatchCount}`);
         
         // Query for paragraphs with this guid (limit to 50 due to Pinecone limitations)
-        const paragraphQuery = await index.query({
-          vector: dummyVector,
-          filter: {
-            guid: guid,
-            type: { $ne: "chapter" } // Exclude chapters, we'll handle them separately
-          },
-          topK: 50,
-          includeMetadata: true
-        });
+        const paragraphQuery = await withPineconeTimeout(
+          'delete-podcast-files:query-paragraphs',
+          () => index.query({
+            vector: dummyVector,
+            filter: {
+              guid: guid,
+              type: { $ne: "chapter" } // Exclude chapters, we'll handle them separately
+            },
+            topK: 50,
+            includeMetadata: true
+          })
+        );
         
         if (!paragraphQuery.matches || paragraphQuery.matches.length === 0) {
           console.log(`${debugPrefix} No more paragraphs found`);
@@ -4474,7 +4524,10 @@ if (DEBUG_MODE) {
         console.log(`${debugPrefix} Found ${paragraphIds.length} paragraphs to delete`);
         
         // Delete these paragraphs (Pinecone delete can handle arrays)
-        await index.deleteMany(paragraphIds);
+        await withPineconeTimeout(
+          'delete-podcast-files:delete-paragraphs',
+          () => index.deleteMany(paragraphIds)
+        );
         deletionStats.paragraphsDeleted += paragraphIds.length;
         deletionStats.totalDeleted += paragraphIds.length;
         
@@ -4496,15 +4549,18 @@ if (DEBUG_MODE) {
         console.log(`${debugPrefix} Chapter deletion batch ${chapterBatchCount}`);
         
         // Query for chapters with this guid
-        const chapterQuery = await index.query({
-          vector: dummyVector,
-          filter: {
-            type: "chapter",
-            guid: guid
-          },
-          topK: 50,
-          includeMetadata: true
-        });
+        const chapterQuery = await withPineconeTimeout(
+          'delete-podcast-files:query-chapters',
+          () => index.query({
+            vector: dummyVector,
+            filter: {
+              type: "chapter",
+              guid: guid
+            },
+            topK: 50,
+            includeMetadata: true
+          })
+        );
         
         if (!chapterQuery.matches || chapterQuery.matches.length === 0) {
           console.log(`${debugPrefix} No more chapters found`);
@@ -4516,7 +4572,10 @@ if (DEBUG_MODE) {
         console.log(`${debugPrefix} Found ${chapterIds.length} chapters to delete`);
         
         // Delete these chapters
-        await index.deleteMany(chapterIds);
+        await withPineconeTimeout(
+          'delete-podcast-files:delete-chapters',
+          () => index.deleteMany(chapterIds)
+        );
         deletionStats.chaptersDeleted += chapterIds.length;
         deletionStats.totalDeleted += chapterIds.length;
         
@@ -4533,7 +4592,10 @@ if (DEBUG_MODE) {
       const episodeId = `episode_${guid}`;
       
       try {
-        await index.deleteOne(episodeId);
+        await withPineconeTimeout(
+          'delete-podcast-files:delete-episode',
+          () => index.deleteOne(episodeId)
+        );
         deletionStats.episodeDeleted = true;
         deletionStats.totalDeleted += 1;
         console.log(`${debugPrefix} Deleted episode: ${episodeId}`);
