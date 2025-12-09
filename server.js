@@ -71,7 +71,7 @@ db.once("open", () => {
 
 const app = express();
 
-// CORS configuration
+// CORS configuration force deploy :)
 const corsOptions = {
     origin: [
         'http://localhost:3000',
