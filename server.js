@@ -77,7 +77,8 @@ const corsOptions = {
         'http://localhost:3000',
         'http://localhost:3001', 
         'https://pullthatupjamie.ai',
-        'https://www.pullthatupjamie.ai'
+        'https://www.pullthatupjamie.ai',
+        'https://pullthatupjamie-react-eyahlttbu-cascdr-9169e8b8.vercel.app'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
