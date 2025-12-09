@@ -253,7 +253,7 @@ const pineconeTools = {
             
             // SIMPLIFIED APPROACH: Always use standard query (no includeValues)
             // If embeddings are needed, caller will re-embed using the returned text
-            let vectorLimit = Math.min(limit * 3, 25); // Normal behavior for reranking
+            let vectorLimit = Math.min(limit * 3, 20); // Normal behavior for reranking
             printLog(`${debugPrefix} Using vectorLimit: ${vectorLimit}`);
             
             printLog(`${debugPrefix} Step 2: Querying Pinecone (topK: ${vectorLimit}, includeMetadata: true)...`);
