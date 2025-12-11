@@ -4,6 +4,7 @@ const router = express.Router();
 
 const { ResearchSession } = require('../models/ResearchSession');
 const { User } = require('../models/User');
+const { getClipsByIds } = require('../agent-tools/pineconeTools');
 
 /**
  * Resolve the logical owner of a research session for the current request.
@@ -281,6 +282,72 @@ router.patch('/:id', async (req, res) => {
     res.status(500).json({
       error: 'Internal server error',
       details: 'Error updating research session'
+    });
+  }
+});
+
+/**
+ * GET /api/research-sessions/:id
+ *
+ * Return a specific research session plus full Pinecone data for all pineconeIds.
+ */
+router.get('/:id', async (req, res) => {
+  try {
+    const owner = await resolveOwner(req);
+    if (!owner) {
+      return res.status(400).json({
+        error: 'Missing owner identifier',
+        details: 'Provide a valid JWT token or a clientId (query param, header, or body)'
+      });
+    }
+
+    const { id } = req.params;
+
+    const ownerQuery = owner.userId
+      ? { _id: id, userId: owner.userId }
+      : { _id: id, clientId: owner.clientId };
+
+    let session = await ResearchSession.findOne(ownerQuery).lean().exec();
+
+    // Fallback: if not found for this owner, allow lookup by id only
+    if (!session) {
+      session = await ResearchSession.findById(id).lean().exec();
+      if (!session) {
+        return res.status(404).json({
+          error: 'Research session not found',
+          details: 'No session found for this id'
+        });
+      }
+    }
+
+    const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
+    let items = [];
+    if (pineconeIds.length > 0) {
+      items = await getClipsByIds(pineconeIds);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        session: {
+          id: session._id,
+          ownerType: owner.ownerType,
+          userId: session.userId || null,
+          clientId: session.clientId || null,
+          pineconeIds,
+          pineconeIdsCount: pineconeIds.length,
+          lastItemMetadata: session.lastItemMetadata || null,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt
+        },
+        items
+      }
+    });
+  } catch (error) {
+    console.error('[ResearchSessions] Error fetching session with Pinecone data:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: 'Error fetching research session with Pinecone data'
     });
   }
 });

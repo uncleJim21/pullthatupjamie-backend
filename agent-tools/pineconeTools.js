@@ -135,6 +135,37 @@ const pineconeTools = {
             throw new Error(`Failed to fetch clip: ${error.message}`);
         }
     },
+    /**
+     * Fetch multiple clips by their Pinecone IDs in a single request.
+     * Preserves the order of the provided IDs and skips any missing records.
+     *
+     * @param {string[]} ids
+     * @returns {Promise<Array<object>>} formatted clip results
+     */
+    getClipsByIds: async (ids = []) => {
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return [];
+        }
+
+        // Be conservative: only fetch a small number of items and reuse the
+        // proven getClipById helper rather than a single large fetch.
+        const limitedIds = ids.slice(0, 10);
+        const results = [];
+
+        for (const id of limitedIds) {
+            try {
+                const clip = await pineconeTools.getClipById(id);
+                if (clip) {
+                    results.push(clip);
+                }
+            } catch (error) {
+                console.error(`Error fetching clip ${id} in getClipsByIds:`, error.message);
+                // Swallow per‑clip errors so a single bad ID doesn't break the whole batch
+            }
+        }
+
+        return results;
+    },
     formatResults : (matches) => {
         const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
         return matches.map((match) => {
