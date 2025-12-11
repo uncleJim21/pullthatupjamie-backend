@@ -43,6 +43,7 @@ const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
+const researchSessionsRoutes = require('./routes/researchSessions');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
@@ -80,7 +81,7 @@ const corsOptions = {
         'https://www.pullthatupjamie.ai',
         'https://pullthatupjamie-react-kha196lqu-cascdr-9169e8b8.vercel.app'
     ],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS','PATCH'],
     allowedHeaders: [
         'Content-Type', 
         'Authorization',
@@ -2498,6 +2499,7 @@ app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
 app.use('/api/automation-settings', automationSettingsRoutes);
+app.use('/api/research-sessions', researchSessionsRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
