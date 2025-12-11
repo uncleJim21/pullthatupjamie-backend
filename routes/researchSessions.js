@@ -151,13 +151,49 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // Enforce a hard limit of 50 items per research session
+    if (pineconeIds.length > 50) {
+      return res.status(400).json({
+        error: 'Too many items',
+        details: 'A research session can contain at most 50 items'
+      });
+    }
+
+    // Fetch metadata snapshots from Pinecone once at creation time
+    const clips = await getClipsByIds(pineconeIds);
+
+    // Map clips by shareLink for quick lookup
+    const clipById = new Map();
+    clips.forEach(clip => {
+      if (clip && clip.shareLink) {
+        // Strip embedding before storing snapshot
+        const { embedding, ...rest } = clip;
+        clipById.set(clip.shareLink, rest);
+      }
+    });
+
+    const items = pineconeIds.map(id => {
+      const raw = clipById.get(id) || null;
+      return {
+        pineconeId: id,
+        metadata: raw
+      };
+    });
+
+    // Derive lastItemMetadata from the last clip when possible, fall back to request body
+    const lastClip = items.length > 0
+      ? items[items.length - 1].metadata
+      : null;
+
     const session = new ResearchSession({
       userId: owner.userId || undefined,
       clientId: owner.clientId || undefined,
       pineconeIds,
-      lastItemMetadata: typeof lastItemMetadata === 'undefined'
-        ? null
-        : lastItemMetadata
+      items,
+      lastItemMetadata:
+        typeof lastItemMetadata !== 'undefined'
+          ? lastItemMetadata
+          : (lastClip || null)
     });
 
     await session.save();
@@ -172,6 +208,7 @@ router.post('/', async (req, res) => {
         pineconeIds: session.pineconeIds,
         pineconeIdsCount: session.pineconeIds.length,
         lastItemMetadata: session.lastItemMetadata,
+        items: session.items,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt
       }
@@ -250,15 +287,50 @@ router.patch('/:id', async (req, res) => {
 
     // Append new Pinecone IDs if provided (preserve existing order)
     if (Array.isArray(pineconeIds) && pineconeIds.length > 0) {
+      const newTotal = session.pineconeIds.length + pineconeIds.length;
+      if (newTotal > 50) {
+        return res.status(400).json({
+          error: 'Too many items',
+          details: 'A research session can contain at most 50 items'
+        });
+      }
+
       session.pineconeIds = [
         ...session.pineconeIds,
         ...pineconeIds
       ];
+
+      // Fetch metadata snapshots for newly added IDs
+      const clips = await getClipsByIds(pineconeIds);
+      const clipById = new Map();
+      clips.forEach(clip => {
+        if (clip && clip.shareLink) {
+          // Strip embedding before storing snapshot
+          const { embedding, ...rest } = clip;
+          clipById.set(clip.shareLink, rest);
+        }
+      });
+
+      const newItems = pineconeIds.map(id => {
+        const raw = clipById.get(id) || null;
+        return {
+          pineconeId: id,
+          metadata: raw
+        };
+      });
+
+      session.items = [
+        ...(session.items || []),
+        ...newItems
+      ];
     }
 
-    // Update lastItemMetadata if provided
+    // Update lastItemMetadata if provided, otherwise keep it in sync with the last item metadata
     if (typeof lastItemMetadata !== 'undefined') {
       session.lastItemMetadata = lastItemMetadata;
+    } else if (Array.isArray(session.items) && session.items.length > 0) {
+      const last = session.items[session.items.length - 1];
+      session.lastItemMetadata = last?.metadata || session.lastItemMetadata;
     }
 
     await session.save();
@@ -273,6 +345,7 @@ router.patch('/:id', async (req, res) => {
         pineconeIds: session.pineconeIds,
         pineconeIdsCount: session.pineconeIds.length,
         lastItemMetadata: session.lastItemMetadata,
+        items: session.items,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt
       }
@@ -321,9 +394,24 @@ router.get('/:id', async (req, res) => {
     }
 
     const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
+
     let items = [];
-    if (pineconeIds.length > 0) {
-      items = await getClipsByIds(pineconeIds);
+    if (Array.isArray(session.items) && session.items.length > 0) {
+      // Prefer stored metadata snapshots when available, and ensure embeddings are not exposed
+      items = session.items
+        .map(entry => entry?.metadata || null)
+        .filter(Boolean)
+        .map(meta => {
+          const { embedding, ...rest } = meta;
+          return rest;
+        });
+    } else if (pineconeIds.length > 0) {
+      // Fallback for legacy sessions without stored metadata
+      const clips = await getClipsByIds(pineconeIds);
+      items = clips.map(clip => {
+        const { embedding, ...rest } = clip || {};
+        return rest;
+      });
     }
 
     return res.json({

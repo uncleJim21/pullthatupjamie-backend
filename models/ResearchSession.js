@@ -1,5 +1,18 @@
 const mongoose = require('mongoose');
 
+// Subdocument schema for per-item Pinecone metadata snapshots
+const ResearchSessionItemSchema = new mongoose.Schema({
+  pineconeId: {
+    type: String,
+    required: true
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    required: false,
+    default: null
+  }
+}, { _id: false });
+
 const ResearchSessionSchema = new mongoose.Schema({
   // Optional reference to an authenticated user
   userId: {
@@ -23,6 +36,12 @@ const ResearchSessionSchema = new mongoose.Schema({
     default: []
   },
 
+  // Per-item metadata snapshots corresponding to entries in pineconeIds
+  items: {
+    type: [ResearchSessionItemSchema],
+    default: []
+  },
+
   // Metadata snapshot for the most recent item in pineconeIds
   lastItemMetadata: {
     type: mongoose.Schema.Types.Mixed,
@@ -31,6 +50,46 @@ const ResearchSessionSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Helper to strip embeddings from any metadata blobs
+function stripEmbeddingsFromDoc(doc) {
+  if (!doc) return;
+
+  // Strip from items[].metadata.embedding
+  if (Array.isArray(doc.items)) {
+    doc.items.forEach((item) => {
+      if (item && item.metadata && Object.prototype.hasOwnProperty.call(item.metadata, 'embedding')) {
+        delete item.metadata.embedding;
+      }
+    });
+  }
+
+  // Strip from lastItemMetadata.embedding
+  if (doc.lastItemMetadata && Object.prototype.hasOwnProperty.call(doc.lastItemMetadata, 'embedding')) {
+    delete doc.lastItemMetadata.embedding;
+  }
+}
+
+// Ensure embeddings are never persisted to MongoDB
+ResearchSessionSchema.pre('save', function(next) {
+  stripEmbeddingsFromDoc(this);
+  next();
+});
+
+// Ensure embeddings are not exposed when converting to JSON / plain objects
+ResearchSessionSchema.set('toJSON', {
+  transform: function(doc, ret) {
+    stripEmbeddingsFromDoc(ret);
+    return ret;
+  }
+});
+
+ResearchSessionSchema.set('toObject', {
+  transform: function(doc, ret) {
+    stripEmbeddingsFromDoc(ret);
+    return ret;
+  }
 });
 
 // Optional compound indexes for common query patterns

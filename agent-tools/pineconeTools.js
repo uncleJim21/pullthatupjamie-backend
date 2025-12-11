@@ -136,8 +136,10 @@ const pineconeTools = {
         }
     },
     /**
-     * Fetch multiple clips by their Pinecone IDs in a single request.
-     * Preserves the order of the provided IDs and skips any missing records.
+     * Fetch multiple clips by their Pinecone IDs.
+     * - Uses getClipById under the hood for robustness
+     * - Preserves input order (including duplicates)
+     * - Hard-caps at 50 items to bound latency
      *
      * @param {string[]} ids
      * @returns {Promise<Array<object>>} formatted clip results
@@ -147,9 +149,7 @@ const pineconeTools = {
             return [];
         }
 
-        // Be conservative: only fetch a small number of items and reuse the
-        // proven getClipById helper rather than a single large fetch.
-        const limitedIds = ids.slice(0, 10);
+        const limitedIds = ids.slice(0, 50);
         const results = [];
 
         for (const id of limitedIds) {
