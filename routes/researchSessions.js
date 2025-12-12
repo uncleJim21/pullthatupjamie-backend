@@ -151,16 +151,24 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // De-duplicate while preserving order
+    const seen = new Set();
+    const uniquePineconeIds = pineconeIds.filter(id => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+
     // Enforce a hard limit of 50 items per research session
-    if (pineconeIds.length > 50) {
+    if (uniquePineconeIds.length > 50) {
       return res.status(400).json({
         error: 'Too many items',
-        details: 'A research session can contain at most 50 items'
+        details: 'A research session can contain at most 50 unique items'
       });
     }
 
     // Fetch metadata snapshots from Pinecone once at creation time
-    const clips = await getClipsByIds(pineconeIds);
+    const clips = await getClipsByIds(uniquePineconeIds);
 
     // Map clips by shareLink for quick lookup
     const clipById = new Map();
@@ -172,7 +180,7 @@ router.post('/', async (req, res) => {
       }
     });
 
-    const items = pineconeIds.map(id => {
+    const items = uniquePineconeIds.map(id => {
       const raw = clipById.get(id) || null;
       return {
         pineconeId: id,
@@ -188,7 +196,7 @@ router.post('/', async (req, res) => {
     const session = new ResearchSession({
       userId: owner.userId || undefined,
       clientId: owner.clientId || undefined,
-      pineconeIds,
+      pineconeIds: uniquePineconeIds,
       items,
       lastItemMetadata:
         typeof lastItemMetadata !== 'undefined'
@@ -285,44 +293,52 @@ router.patch('/:id', async (req, res) => {
       });
     }
 
-    // Append new Pinecone IDs if provided (preserve existing order)
+    // Append new Pinecone IDs if provided (preserve order, avoid duplicates)
     if (Array.isArray(pineconeIds) && pineconeIds.length > 0) {
-      const newTotal = session.pineconeIds.length + pineconeIds.length;
-      if (newTotal > 50) {
-        return res.status(400).json({
-          error: 'Too many items',
-          details: 'A research session can contain at most 50 items'
-        });
-      }
+      const existingIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
+      const seen = new Set(existingIds);
 
-      session.pineconeIds = [
-        ...session.pineconeIds,
-        ...pineconeIds
-      ];
+      const uniqueNewIds = pineconeIds.filter(id => {
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
 
-      // Fetch metadata snapshots for newly added IDs
-      const clips = await getClipsByIds(pineconeIds);
-      const clipById = new Map();
-      clips.forEach(clip => {
-        if (clip && clip.shareLink) {
-          // Strip embedding before storing snapshot
-          const { embedding, ...rest } = clip;
-          clipById.set(clip.shareLink, rest);
+      if (uniqueNewIds.length > 0) {
+        const newTotal = existingIds.length + uniqueNewIds.length;
+        if (newTotal > 50) {
+          return res.status(400).json({
+            error: 'Too many items',
+            details: 'A research session can contain at most 50 unique items'
+          });
         }
-      });
 
-      const newItems = pineconeIds.map(id => {
-        const raw = clipById.get(id) || null;
-        return {
-          pineconeId: id,
-          metadata: raw
-        };
-      });
+        session.pineconeIds = [...existingIds, ...uniqueNewIds];
 
-      session.items = [
-        ...(session.items || []),
-        ...newItems
-      ];
+        // Fetch metadata snapshots for newly added IDs
+        const clips = await getClipsByIds(uniqueNewIds);
+        const clipById = new Map();
+        clips.forEach(clip => {
+          if (clip && clip.shareLink) {
+            // Strip embedding before storing snapshot
+            const { embedding, ...rest } = clip;
+            clipById.set(clip.shareLink, rest);
+          }
+        });
+
+        const newItems = uniqueNewIds.map(id => {
+          const raw = clipById.get(id) || null;
+          return {
+            pineconeId: id,
+            metadata: raw
+          };
+        });
+
+        session.items = [
+          ...(session.items || []),
+          ...newItems
+        ];
+      }
     }
 
     // Update lastItemMetadata if provided, otherwise keep it in sync with the last item metadata
