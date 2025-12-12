@@ -5,6 +5,11 @@ const router = express.Router();
 const { ResearchSession } = require('../models/ResearchSession');
 const { User } = require('../models/User');
 const { getClipsByIds } = require('../agent-tools/pineconeTools');
+const { OpenAI } = require('openai');
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 /**
  * Resolve the logical owner of a research session for the current request.
@@ -453,6 +458,150 @@ router.get('/:id', async (req, res) => {
       error: 'Internal server error',
       details: 'Error fetching research session with Pinecone data'
     });
+  }
+});
+
+/**
+ * POST /api/research-sessions/:id/analyze
+ *
+ * Analyze a specific research session with an LLM (gpt-4o-mini) and stream back the response.
+ * Optional body: { "instructions": "custom prompt text" }
+ */
+router.post('/:id/analyze', async (req, res) => {
+  try {
+    const owner = await resolveOwner(req);
+    if (!owner) {
+      return res.status(400).json({
+        error: 'Missing owner identifier',
+        details: 'Provide a valid JWT token or a clientId (query param, header, or body)'
+      });
+    }
+
+    const { id } = req.params;
+    const { instructions } = req.body || {};
+
+    const ownerQuery = owner.userId
+      ? { _id: id, userId: owner.userId }
+      : { _id: id, clientId: owner.clientId };
+
+    let session = await ResearchSession.findOne(ownerQuery).lean().exec();
+
+    // Fallback: if not found for this owner, allow lookup by id only
+    if (!session) {
+      session = await ResearchSession.findById(id).lean().exec();
+      if (!session) {
+        return res.status(404).json({
+          error: 'Research session not found',
+          details: 'No session found for this id'
+        });
+      }
+    }
+
+    const items = Array.isArray(session.items) ? session.items : [];
+
+    if (!items.length) {
+      return res.status(400).json({
+        error: 'Empty session',
+        details: 'This research session has no items to analyze'
+      });
+    }
+
+    // Build a concise text context from the session items (cap at 20 items)
+    const MAX_ITEMS = 20;
+    const limitedItems = items.slice(0, MAX_ITEMS);
+
+    const contextLines = limitedItems.map((item, index) => {
+      const meta = item.metadata || {};
+      const quote = meta.quote || meta.summary || meta.headline || '(no quote)';
+      const episode = meta.episode || 'Unknown episode';
+      const creator = meta.creator || 'Unknown creator';
+      const audioUrl = meta.audioUrl || '';
+      const startTime = meta.timeContext?.start_time ?? null;
+      const startSeconds = typeof startTime === 'number' && !Number.isNaN(startTime)
+        ? Math.floor(startTime)
+        : null;
+
+      return [
+        `Item ${index + 1}:`,
+        `Episode: ${episode}`,
+        `Creator: ${creator}`,
+        audioUrl ? `AudioUrl: ${audioUrl}` : 'AudioUrl: (not available)',
+        startSeconds !== null
+          ? `StartTimeSeconds: ${startSeconds}`
+          : 'StartTimeSeconds: (unknown)',
+        `Quote: ${quote}`,
+        ''
+      ].join('\n');
+    });
+
+    const contextText = contextLines.join('\n---\n');
+
+    const baseInstructions = `
+You are an AI assistant analyzing a research session composed of podcast clips.
+
+You will receive:
+- A list of items, each with episode title, creator, a short quote,
+  and when available: an AudioUrl and a StartTimeSeconds value.
+
+Your goals:
+1. Summarize the key themes and ideas across all items.
+2. Call out any patterns, contradictions, or notable perspectives.
+3. Suggest 3–5 follow-up questions or angles for deeper research.
+
+Source citation requirements (IMPORTANT):
+- When you reference a specific item or quote, and BOTH AudioUrl and StartTimeSeconds are available,
+  append an inline source in this exact format on the SAME line:
+  {AudioUrl}#t={StartTimeSeconds}
+  Example: https://example.com/audio.mp3#t=300
+- If either AudioUrl or StartTimeSeconds is missing, you may omit the source.
+
+Output format (IMPORTANT):
+- On the FIRST line, output: TITLE: <concise title, max 8 words, no quotes, no emojis>.
+- On the SECOND line, output a single blank line.
+- Starting from the THIRD line, output your full analysis of the research session
+  following the source citation rules above.
+
+Do NOT output anything before the TITLE line. Be concise but insightful. Assume the reader is technical and curious.
+`.trim();
+
+    const userInstructions = (typeof instructions === 'string' && instructions.trim().length > 0)
+      ? instructions.trim()
+      : 'Use the default analysis goals above.';
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const stream = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      stream: true,
+      messages: [
+        { role: 'system', content: baseInstructions },
+        {
+          role: 'user',
+          content: `Here is the research session context:\n\n${contextText}\n\nUser instructions: ${userInstructions}`
+        }
+      ],
+      temperature: 0.4
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices?.[0]?.delta?.content || '';
+      if (content) {
+        res.write(content);
+      }
+    }
+
+    res.end();
+  } catch (error) {
+    console.error('[ResearchSessions] Error analyzing session with AI:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'Internal server error',
+        details: 'Error analyzing research session with AI'
+      });
+    } else {
+      res.end();
+    }
   }
 });
 
