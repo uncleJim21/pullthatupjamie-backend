@@ -849,6 +849,11 @@ class ClipUtils {
     const debugPrefix = `[FFMPEG-HTTP-STREAM][${lookupHash}]`;
     const startMemory = this.getMemoryUsage();
     const duration = endTime - startTime;
+    // Dual-SS strategy:
+    // - coarseStart: seek a bit earlier for safety
+    // - fineOffset: trim so output starts exactly at requested startTime
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
     
     try {
       console.time(`${debugPrefix} HttpStream`);
@@ -864,12 +869,13 @@ class ClipUtils {
       await new Promise((resolve, reject) => {
         ffmpeg(cdnUrl)
           .inputOptions([
-            '-ss', startTime.toString(), // Accurate seeking - seek to exact timestamp
-            '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+            '-ss', coarseStart.toString()
           ])
-          .duration(duration)
           .outputOptions([
             '-y', // Overwrite output files
+            // Fine-grained trim so clip time 0 == requested startTime
+            '-ss', fineOffset.toFixed(3),
+            '-t', duration.toString(),
             '-c:v', 'libx264', // Video codec
             '-preset', 'veryfast', // Much faster encoding, minimal quality loss
             '-crf', '23', // Good quality
@@ -1207,22 +1213,29 @@ class ClipUtils {
   async _extractSegmentWithFFmpegRange(inputUrl, outputPath, startTime, endTime) {
     const debugPrefix = `[FFMPEG-RANGE][${Date.now()}]`;
     const duration = endTime - startTime;
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
     
     console.log(`${debugPrefix} Range-extracting ${duration}s from ${startTime}s to ${endTime}s`);
     
     return new Promise((resolve, reject) => {
       ffmpeg(inputUrl)
-        .seekInput(startTime)
-        .duration(duration)
         .outputOptions([
           '-y', // Overwrite output files
+          // Fine-grained trim so clip time 0 == requested startTime
+          '-ss', fineOffset.toFixed(3),
+          '-t', duration.toString(),
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
           '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-avoid_negative_ts', 'make_zero', // Handle timestamp issues
           '-reconnect', '1', // Enable reconnection
           '-reconnect_streamed', '1', // Enable reconnection for streams
           '-reconnect_delay_max', '5' // Max reconnection delay
+        ])
+        .inputOptions([
+          '-ss', coarseStart.toString()
         ])
         .toFormat('mp4')
         .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
@@ -1549,22 +1562,26 @@ class ClipUtils {
   async _extractSegmentWithFFmpeg(inputPath, outputPath, startTime, endTime) {
     const debugPrefix = `[FFMPEG-EXTRACT][${Date.now()}]`;
     const duration = endTime - startTime;
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
 
     console.log(`${debugPrefix} Extracting ${duration}s segment from ${startTime}s to ${endTime}s`);
 
     return new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .inputOptions([
-          '-ss', startTime.toString(), // Accurate seeking
-          '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+          '-ss', coarseStart.toString()
         ])
-        .duration(duration)
         .outputOptions([
           '-y', // Overwrite output files
+          // Fine-grained trim so clip time 0 == requested startTime
+          '-ss', fineOffset.toFixed(3),
+          '-t', duration.toString(),
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec  
           '-movflags', '+faststart', // Optimize for streaming
-          '-pix_fmt', 'yuv420p' // Ensure compatibility
+          '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-avoid_negative_ts', 'make_zero' // Handle timestamp issues
         ])
         .toFormat('mp4')
         .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
