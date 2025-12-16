@@ -3,13 +3,65 @@ const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 const { ResearchSession } = require('../models/ResearchSession');
+const { SharedResearchSession } = require('../models/SharedResearchSession');
 const { User } = require('../models/User');
 const { getClipsByIds } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
+const { v4: uuidv4 } = require('uuid');
+const { createCanvas, loadImage } = require('canvas');
+const path = require('path');
+const DigitalOceanSpacesManager = require('../utils/DigitalOceanSpacesManager');
+const fetch = require('node-fetch');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+
+// Validation and sharing configuration
+const MAX_SHARE_NODES = parseInt(process.env.RESEARCH_SESSION_SHARE_MAX_NODES || '100', 10);
+const MAX_NODE_COORDINATE = parseFloat(process.env.RESEARCH_SESSION_SHARE_MAX_COORD || '10000');
+const MIN_NODE_COORDINATE = -MAX_NODE_COORDINATE;
+const COLOR_HEX_REGEX = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+// Image / CDN configuration
+const SHARE_IMAGE_WIDTH = 1200;
+const SHARE_IMAGE_HEIGHT = 630;
+const SHARE_BASE_URL =
+  (process.env.SHARE_BASE_URL && process.env.SHARE_BASE_URL.replace(/\/$/, '')) ||
+  (process.env.FRONTEND_URL && process.env.FRONTEND_URL.replace(/\/$/, '')) ||
+  'http://localhost:3001/share-session';
+
+const SPACES_ENDPOINT = process.env.SPACES_ENDPOINT;
+const SPACES_ACCESS_KEY_ID = process.env.SPACES_ACCESS_KEY_ID;
+const SPACES_SECRET_ACCESS_KEY = process.env.SPACES_SECRET_ACCESS_KEY;
+const SPACES_BUCKET_NAME = process.env.SPACES_BUCKET_NAME;
+
+// Lazily instantiated Spaces manager to avoid work if not used
+let sharedPreviewSpacesManager = null;
+function getSharedPreviewSpacesManager() {
+  if (
+    !SPACES_ENDPOINT ||
+    !SPACES_ACCESS_KEY_ID ||
+    !SPACES_SECRET_ACCESS_KEY ||
+    !SPACES_BUCKET_NAME
+  ) {
+    throw new Error('Missing Spaces configuration for shared research session previews');
+  }
+  if (!sharedPreviewSpacesManager) {
+    sharedPreviewSpacesManager = new DigitalOceanSpacesManager(
+      SPACES_ENDPOINT,
+      SPACES_ACCESS_KEY_ID,
+      SPACES_SECRET_ACCESS_KEY,
+      {
+        maxRetries: 3,
+        baseDelay: 500,
+        maxDelay: 4000,
+        timeout: 20000
+      }
+    );
+  }
+  return sharedPreviewSpacesManager;
+}
 
 /**
  * Resolve the logical owner of a research session for the current request.
@@ -457,6 +509,387 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       error: 'Internal server error',
       details: 'Error fetching research session with Pinecone data'
+    });
+  }
+});
+
+/**
+ * Helper to derive a reasonable default share title from lastItemMetadata.
+ */
+function deriveShareTitleFromLastItem(lastItemMetadata) {
+  const fallback = 'Podcast Research Session';
+  if (!lastItemMetadata || typeof lastItemMetadata !== 'object') {
+    return fallback;
+  }
+
+  const candidate =
+    lastItemMetadata.headline ||
+    lastItemMetadata.title ||
+    lastItemMetadata.episode ||
+    lastItemMetadata.summary;
+
+  if (typeof candidate === 'string' && candidate.trim().length > 0) {
+    return candidate.trim();
+  }
+  return fallback;
+}
+
+/**
+ * Normalize and validate share nodes, enforcing limits and returning
+ * a sanitized array with unique pineconeIds.
+ */
+function sanitizeShareNodes(rawNodes) {
+  if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
+    const err = new Error('nodes must be a non-empty array');
+    err.statusCode = 400;
+    err.details = 'nodes must be a non-empty array of node objects';
+    throw err;
+  }
+
+  if (rawNodes.length > MAX_SHARE_NODES) {
+    const err = new Error('Too many nodes');
+    err.statusCode = 400;
+    err.details = `A shared research session snapshot can contain at most ${MAX_SHARE_NODES} nodes`;
+    throw err;
+  }
+
+  const seen = new Set();
+  const sanitized = [];
+
+  rawNodes.forEach((node, index) => {
+    if (!node || typeof node !== 'object') {
+      const err = new Error(`Invalid node at index ${index}`);
+      err.statusCode = 400;
+      err.details = `Node at index ${index} must be an object`;
+      throw err;
+    }
+
+    const { pineconeId, x, y, z, color } = node;
+
+    if (typeof pineconeId !== 'string' || pineconeId.trim().length === 0) {
+      const err = new Error(`Invalid pineconeId at index ${index}`);
+      err.statusCode = 400;
+      err.details = `Node at index ${index} is missing a valid pineconeId`;
+      throw err;
+    }
+
+    if (seen.has(pineconeId)) {
+      // Skip duplicate pineconeIds while preserving the first occurrence
+      return;
+    }
+    seen.add(pineconeId);
+
+    const coords = { x, y, z };
+    for (const key of ['x', 'y', 'z']) {
+      const value = coords[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        const err = new Error(`Invalid coordinate ${key} for node ${pineconeId}`);
+        err.statusCode = 400;
+        err.details = `Coordinate ${key} for node ${pineconeId} must be a finite number`;
+        throw err;
+      }
+      if (value < MIN_NODE_COORDINATE || value > MAX_NODE_COORDINATE) {
+        const err = new Error(`Coordinate ${key} out of range for node ${pineconeId}`);
+        err.statusCode = 400;
+        err.details = `Coordinate ${key} for node ${pineconeId} must be between ${MIN_NODE_COORDINATE} and ${MAX_NODE_COORDINATE}`;
+        throw err;
+      }
+    }
+
+    if (typeof color !== 'string' || !COLOR_HEX_REGEX.test(color)) {
+      const err = new Error(`Invalid color for node ${pineconeId}`);
+      err.statusCode = 400;
+      err.details = `Color for node ${pineconeId} must be a hex string like "#RRGGBB" or "#RRGGBBAA"`;
+      throw err;
+    }
+
+    sanitized.push({
+      pineconeId,
+      x,
+      y,
+      z,
+      color
+    });
+  });
+
+  if (sanitized.length === 0) {
+    const err = new Error('No unique nodes after de-duplication');
+    err.statusCode = 400;
+    err.details = 'All provided nodes were duplicates; at least one unique node is required';
+    throw err;
+  }
+
+  return sanitized;
+}
+
+async function fetchImageBufferWithTimeout(url, timeoutMs) {
+  if (!url) return null;
+
+  const controller = new fetch.AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: status ${response.status}`);
+    }
+    const buffer = await response.buffer();
+    return buffer;
+  } catch (err) {
+    console.warn('[SharedResearchSession] Error fetching cover art image:', err.message);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetadata, nodes }) {
+  const width = SHARE_IMAGE_WIDTH;
+  const height = SHARE_IMAGE_HEIGHT;
+  const constellationHeight = Math.floor(height * 0.7);
+  const bannerHeight = height - constellationHeight;
+
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#020617'; // slate-950-esque
+  ctx.fillRect(0, 0, width, height);
+
+  // Constellation region
+  const margin = 60;
+  const centerX = width / 2;
+  const centerY = constellationHeight / 2;
+
+  const xs = nodes.map(n => n.x);
+  const ys = nodes.map(n => n.y);
+  const meanX = xs.reduce((a, b) => a + b, 0) / nodes.length;
+  const meanY = ys.reduce((a, b) => a + b, 0) / nodes.length;
+
+  let maxRadius = 1;
+  nodes.forEach(n => {
+    const dx = n.x - meanX;
+    const dy = n.y - meanY;
+    const r = Math.max(Math.abs(dx), Math.abs(dy));
+    if (r > maxRadius) maxRadius = r;
+  });
+
+  const radiusPixels = Math.min(centerX - margin, centerY - margin);
+  const scale = maxRadius > 0 ? radiusPixels / maxRadius : 1;
+
+  // Optional subtle grid / vignette
+  ctx.save();
+  const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radiusPixels + margin);
+  gradient.addColorStop(0, 'rgba(15,23,42,1)');
+  gradient.addColorStop(1, 'rgba(15,23,42,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, constellationHeight);
+  ctx.restore();
+
+  // Draw nodes
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+
+  nodes.forEach(n => {
+    const dx = n.x - meanX;
+    const dy = n.y - meanY;
+    const screenX = centerX + dx * scale;
+    const screenY = centerY - dy * scale;
+
+    ctx.beginPath();
+    ctx.fillStyle = n.color;
+    const baseRadius = 6;
+    const depthFactor = typeof n.z === 'number' ? 1 + (n.z / (2 * MAX_NODE_COORDINATE)) : 1;
+    const radius = Math.max(3, Math.min(10, baseRadius * depthFactor));
+    ctx.arc(screenX, screenY, radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.restore();
+
+  // Banner
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(0, constellationHeight, width, bannerHeight);
+
+  const bannerPadding = 40;
+  const thumbSize = bannerHeight - bannerPadding * 2;
+  const thumbX = bannerPadding;
+  const thumbY = constellationHeight + bannerPadding;
+
+  // Resolve cover art or placeholder
+  const coverArtUrl =
+    (lastItemMetadata && (lastItemMetadata.episodeImage || lastItemMetadata.imageUrl || lastItemMetadata.podcastImage)) ||
+    null;
+
+  const placeholderPath = path.join(__dirname, '..', 'assets', 'watermark.png');
+
+  let coverImage = null;
+  try {
+    const buffer = await fetchImageBufferWithTimeout(coverArtUrl, 3000);
+    if (buffer) {
+      coverImage = await loadImage(buffer);
+    }
+  } catch (e) {
+    console.warn('[SharedResearchSession] Error loading remote cover art, falling back to placeholder:', e.message);
+  }
+
+  if (!coverImage) {
+    try {
+      coverImage = await loadImage(placeholderPath);
+    } catch (e) {
+      console.warn('[SharedResearchSession] Error loading placeholder image:', e.message);
+      coverImage = null;
+    }
+  }
+
+  // Draw thumbnail if we have any image
+  if (coverImage) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(
+      thumbX + thumbSize / 2,
+      thumbY + thumbSize / 2,
+      thumbSize / 2,
+      0,
+      Math.PI * 2
+    );
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(coverImage, thumbX, thumbY, thumbSize, thumbSize);
+    ctx.restore();
+  }
+
+  // Title and subtitle
+  const textX = thumbX + thumbSize + bannerPadding;
+  const textY = thumbY;
+  const maxTextWidth = width - textX - bannerPadding;
+
+  ctx.fillStyle = '#F9FAFB';
+  ctx.font = 'bold 40px sans-serif';
+  ctx.textBaseline = 'top';
+
+  // Simple single-line ellipsis for title
+  let displayTitle = title || 'Podcast Research Session';
+  if (ctx.measureText(displayTitle).width > maxTextWidth) {
+    while (displayTitle.length > 3 && ctx.measureText(displayTitle + '…').width > maxTextWidth) {
+      displayTitle = displayTitle.slice(0, -1);
+    }
+    displayTitle = displayTitle + '…';
+  }
+  ctx.fillText(displayTitle, textX, textY);
+
+  ctx.font = '24px sans-serif';
+  ctx.fillStyle = '#9CA3AF';
+  const subtitle = 'Podcast Mind Map';
+  ctx.fillText(subtitle, textX, textY + 50);
+
+  const buffer = canvas.toBuffer('image/png');
+
+  const spacesManager = getSharedPreviewSpacesManager();
+  const key = `shared-sessions/${shareId}/preview.png`;
+  const url = await spacesManager.uploadFile(SPACES_BUCKET_NAME, key, buffer, 'image/png');
+  return url;
+}
+
+/**
+ * POST /api/research-sessions/:id/share
+ *
+ * Create an immutable, shareable snapshot of a research session and generate a preview image.
+ */
+router.post('/:id/share', async (req, res) => {
+  try {
+    const owner = await resolveOwner(req);
+    if (!owner) {
+      return res.status(400).json({
+        error: 'Missing owner identifier',
+        details: 'Provide a valid JWT token or a clientId (query param, header, or body)'
+      });
+    }
+
+    const { id } = req.params;
+    const { title, nodes, camera, visibility } = req.body || {};
+
+    const ownerQuery = owner.userId
+      ? { _id: id, userId: owner.userId }
+      : { _id: id, clientId: owner.clientId };
+
+    const baseSession = await ResearchSession.findOne(ownerQuery).lean().exec();
+    if (!baseSession) {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id and owner'
+      });
+    }
+
+    let sanitizedNodes;
+    try {
+      sanitizedNodes = sanitizeShareNodes(nodes);
+    } catch (validationError) {
+      console.error('[SharedResearchSession] Node validation error:', validationError.message);
+      return res.status(validationError.statusCode || 400).json({
+        error: 'Invalid snapshot',
+        details: validationError.details || validationError.message
+      });
+    }
+
+    const resolvedTitle =
+      typeof title === 'string' && title.trim().length > 0
+        ? title.trim()
+        : deriveShareTitleFromLastItem(baseSession.lastItemMetadata);
+
+    const resolvedVisibility =
+      visibility === 'public' || visibility === 'unlisted' ? visibility : 'unlisted';
+
+    const shareId = uuidv4().replace(/-/g, '').slice(0, 12);
+    const shareUrl = `${SHARE_BASE_URL}/${shareId}`;
+
+    const sharedDoc = new SharedResearchSession({
+      researchSessionId: baseSession._id,
+      userId: baseSession.userId || null,
+      clientId: baseSession.clientId || null,
+      shareId,
+      shareUrl,
+      title: resolvedTitle,
+      visibility: resolvedVisibility,
+      nodes: sanitizedNodes,
+      camera: camera && typeof camera === 'object' ? camera : undefined,
+      lastItemMetadata: baseSession.lastItemMetadata || null,
+      previewImageUrl: null
+    });
+
+    await sharedDoc.save();
+
+    let previewImageUrl = null;
+    try {
+      previewImageUrl = await generateSharedSessionPreviewImage({
+        shareId,
+        title: resolvedTitle,
+        lastItemMetadata: baseSession.lastItemMetadata || null,
+        nodes: sanitizedNodes
+      });
+      sharedDoc.previewImageUrl = previewImageUrl;
+      await sharedDoc.save();
+    } catch (imageError) {
+      console.error('[SharedResearchSession] Error generating or uploading preview image:', imageError);
+      // We intentionally do not fail due to image issues beyond external assets.
+      // The shared session remains valid; previewImageUrl may be null.
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        shareId,
+        shareUrl,
+        previewImageUrl
+      }
+    });
+  } catch (error) {
+    console.error('[SharedResearchSession] Error sharing research session:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: 'Error creating shared research session'
     });
   }
 });
