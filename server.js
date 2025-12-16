@@ -5,7 +5,7 @@ const axios = require('axios');
 const { OpenAI } = require('openai');
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
-})
+});
 const { SearxNGTool } = require('./agent-tools/searxngTool');
 const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
@@ -61,6 +61,90 @@ const invoicePoolSize = 1;
 
 const processingCache = new Map();
 const resultCache = new Map();
+
+// OpenAI helper: configurable timeout & retries for embeddings
+const OPENAI_EMBEDDING_TIMEOUT_MS = parseInt(process.env.OPENAI_EMBEDDING_TIMEOUT_MS || '20000', 10); // 20s default
+const OPENAI_EMBEDDING_MAX_RETRIES = parseInt(process.env.OPENAI_EMBEDDING_MAX_RETRIES || '2', 10);   // 2 retries default
+
+async function withTimeout(promiseFactory, timeoutMs, requestId, description) {
+  const effectiveTimeout = timeoutMs && Number.isFinite(timeoutMs) ? timeoutMs : OPENAI_EMBEDDING_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const msg = `[${requestId}] ✗ Timeout in withTimeout for ${description} after ${effectiveTimeout}ms`;
+      printLog(msg);
+      const err = new Error(msg);
+      err.code = 'OPENAI_TIMEOUT';
+      reject(err);
+    }, effectiveTimeout);
+
+    Promise.resolve()
+      .then(() => promiseFactory())
+      .then(result => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch(err => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+async function callOpenAIEmbeddingsWithRetry({ input, model = "text-embedding-ada-002", requestId, description }) {
+  const maxRetries = Number.isFinite(OPENAI_EMBEDDING_MAX_RETRIES) ? OPENAI_EMBEDDING_MAX_RETRIES : 2;
+
+  let attempt = 0;
+  // Basic exponential backoff with cap
+  const baseDelayMs = 7500;
+  const maxDelayMs = 7500;
+
+  while (true) {
+    attempt += 1;
+    const attemptTag = `${description} (attempt ${attempt}/${maxRetries + 1})`;
+    try {
+      printLog(`[${requestId}] OpenAI embeddings: starting ${attemptTag}`);
+      const start = Date.now();
+
+      const response = await withTimeout(
+        () => openai.embeddings.create({ model, input }),
+        OPENAI_EMBEDDING_TIMEOUT_MS,
+        requestId,
+        attemptTag
+      );
+
+      const duration = Date.now() - start;
+      printLog(`[${requestId}] OpenAI embeddings: success for ${attemptTag} in ${duration}ms`);
+      return response;
+    } catch (error) {
+      const isTimeout = error && error.code === 'OPENAI_TIMEOUT';
+      const status = error && (error.status || error.code);
+
+      printLog(
+        `[${requestId}] OpenAI embeddings: error on ${attemptTag} - status=${status} message=${error.message}`
+      );
+
+      // Only retry on timeouts or transient HTTP errors (5xx / 429)
+      const transientStatus = status && (status === 429 || (typeof status === 'number' && status >= 500));
+      const shouldRetry = attempt <= maxRetries && (isTimeout || transientStatus);
+
+      if (!shouldRetry) {
+        printLog(`[${requestId}] OpenAI embeddings: not retrying ${attemptTag}`);
+        throw error;
+      }
+
+      const backoff = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt - 1));
+      const jitter = Math.floor(Math.random() * 200);
+      const delayMs = backoff + jitter;
+
+      printLog(
+        `[${requestId}] OpenAI embeddings: retrying ${attemptTag} after ${delayMs}ms (isTimeout=${isTimeout}, transientStatus=${transientStatus})`
+      );
+
+      await new Promise(res => setTimeout(res, delayMs));
+    }
+  }
+}
 
 mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
 
@@ -1429,13 +1513,22 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     // Extract text from all results for batch embedding
     const texts = similarDiscussions.map(result => result.quote || '');
     printLog(`[${requestId}] Extracted ${texts.length} text snippets`);
-    printLog(`[${requestId}] Sample text (first 100 chars): "${texts[0].substring(0, 100)}..."`);
+    if (texts.length > 0) {
+      printLog(
+        `[${requestId}] Sample text (first 100 chars): "${(texts[0] || '').substring(0, 100)}..."`
+      );
+    }
     
     // Batch embed all texts at once (OpenAI supports up to 2048 inputs)
-    printLog(`[${requestId}] Calling OpenAI batch embeddings API...`);
-    const batchEmbeddingResponse = await openai.embeddings.create({
+    printLog(
+      `[${requestId}] Calling OpenAI batch embeddings API with timeout=${OPENAI_EMBEDDING_TIMEOUT_MS}ms and maxRetries=${OPENAI_EMBEDDING_MAX_RETRIES}...`
+    );
+
+    const batchEmbeddingResponse = await callOpenAIEmbeddingsWithRetry({
+      input: texts,
       model: "text-embedding-ada-002",
-      input: texts
+      requestId,
+      description: "3D search batch embeddings"
     });
     
     const embeddings = batchEmbeddingResponse.data.map(item => item.embedding);
