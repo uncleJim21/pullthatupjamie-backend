@@ -1106,7 +1106,19 @@ router.post('/:id/share', async (req, res) => {
       visibility === 'public' || visibility === 'unlisted' ? visibility : 'unlisted';
 
     const shareId = uuidv4().replace(/-/g, '').slice(0, 12);
-    const shareUrl = `${SHARE_BASE_URL}/researchSession/${shareId}`;
+
+    // Prefer the frontend-provided origin so that links always reflect
+    // the actual app URL the user is on (e.g. different domains/envs).
+    // Frontend is expected to send:
+    //   'X-Requested-With': window.location.origin
+    const requestedWithHeader = req.get('X-Requested-With') || req.get('x-requested-with');
+    const normalizedFrontendOrigin =
+      typeof requestedWithHeader === 'string'
+        ? requestedWithHeader.replace(/\/$/, '')
+        : null;
+
+    const baseForShareUrl = normalizedFrontendOrigin || SHARE_BASE_URL;
+    const shareUrl = `${baseForShareUrl}/researchSession/${shareId}`;
 
     // Prefer the metadata from the last shared node, falling back to session-level lastItemMetadata.
     const baseItems = Array.isArray(baseSession.items) ? baseSession.items : [];
