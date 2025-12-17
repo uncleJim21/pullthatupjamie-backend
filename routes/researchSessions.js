@@ -524,23 +524,19 @@ router.patch('/:id', async (req, res) => {
  */
 router.get('/:id', async (req, res) => {
   try {
+    const { id } = req.params;
     const owner = await resolveOwner(req);
-    if (!owner) {
-      return res.status(400).json({
-        error: 'Missing owner identifier',
-        details: 'Provide a valid JWT token or a clientId (query param, header, or body)'
-      });
+
+    let session;
+    if (owner) {
+      const ownerQuery = owner.userId
+        ? { _id: id, userId: owner.userId }
+        : { _id: id, clientId: owner.clientId };
+
+      session = await ResearchSession.findOne(ownerQuery).lean().exec();
     }
 
-    const { id } = req.params;
-
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
-
-    let session = await ResearchSession.findOne(ownerQuery).lean().exec();
-
-    // Fallback: if not found for this owner, allow lookup by id only
+    // Fallback: if no owner or not found for this owner, allow lookup by id only
     if (!session) {
       session = await ResearchSession.findById(id).lean().exec();
       if (!session) {
