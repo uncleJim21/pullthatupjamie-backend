@@ -77,6 +77,77 @@ async function getNebulaBackgroundImage() {
   return cachedNebulaBackgroundImagePromise;
 }
 
+function toTitleCase(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str
+    .split(/\s+/)
+    .map((word) => {
+      if (!word) return word;
+      const lower = word.toLowerCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
+
+async function generateSmartShareTitle(lastItemMetadata, fallbackTitle) {
+  try {
+    if (!lastItemMetadata || typeof lastItemMetadata !== 'object') {
+      return fallbackTitle;
+    }
+
+    const parts = [];
+    if (lastItemMetadata.headline) {
+      parts.push(`Headline: ${lastItemMetadata.headline}`);
+    }
+    if (lastItemMetadata.summary) {
+      parts.push(`Summary: ${lastItemMetadata.summary}`);
+    }
+    if (lastItemMetadata.quote) {
+      parts.push(`Quote: ${lastItemMetadata.quote}`);
+    }
+    if (lastItemMetadata.episode) {
+      parts.push(`Episode: ${lastItemMetadata.episode}`);
+    }
+    if (lastItemMetadata.creator) {
+      parts.push(`Creator: ${lastItemMetadata.creator}`);
+    }
+
+    const context = parts.join('\n');
+    if (!context) {
+      return fallbackTitle;
+    }
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You generate concise, compelling titles for podcast mind maps. ' +
+            'Use natural title casing as you would for an article headline. ' +
+            'Preserve the capitalization of acronyms and abbreviations (e.g., "EV", "AI", "NASA") ' +
+            'and do not change the capitalization of proper nouns or branded names found in the context. ' +
+            'Respond with ONLY the final title text, max 40 characters, no surrounding quotes or emojis.'
+        },
+        {
+          role: 'user',
+          content: `Based on this context, suggest a short title:\n\n${context}\n\nTitle:`
+        }
+      ],
+      max_tokens: 32,
+      temperature: 0.5
+    });
+
+    const raw = response.choices?.[0]?.message?.content || '';
+    const firstLine = raw.split('\n')[0].trim();
+    const cleaned = firstLine.replace(/^["']|["']$/g, '').trim();
+    return cleaned || fallbackTitle;
+  } catch (err) {
+    console.warn('[SharedResearchSession] Failed to generate smart share title:', err.message);
+    return fallbackTitle;
+  }
+}
+
 /**
  * Resolve the logical owner of a research session for the current request.
  * - Prefer authenticated User (via JWT Bearer token)
@@ -666,7 +737,7 @@ async function fetchImageBufferWithTimeout(url, timeoutMs) {
 async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetadata, nodes }) {
   const width = SHARE_IMAGE_WIDTH;
   const height = SHARE_IMAGE_HEIGHT;
-  const constellationHeight = Math.floor(height * 0.7);
+  const constellationHeight = Math.floor(height * 0.65);
   const bannerHeight = height - constellationHeight;
 
   const canvas = createCanvas(width, height);
@@ -703,7 +774,7 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
     ctx.fillRect(0, 0, width, height);
   }
 
-  // Constellation region (overlay vignette to focus attention)
+  // Compute scale for constellation area (slightly zoomed-in to emphasize stars)
   const margin = 60;
   const centerX = width / 2;
   const centerY = constellationHeight / 2;
@@ -722,7 +793,9 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
   });
 
   const radiusPixels = Math.min(centerX - margin, centerY - margin);
-  const scale = maxRadius > 0 ? radiusPixels / maxRadius : 1;
+  let scale = maxRadius > 0 ? radiusPixels / maxRadius : 1;
+  // Zoom in stars by ~50% compared to baseline
+  scale *= 1.5;
 
   // Optional subtle vignette over the constellation region
   ctx.save();
@@ -813,7 +886,8 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
   ctx.fillStyle = '#020617';
   ctx.fillRect(0, constellationHeight, width, bannerHeight);
 
-  const bannerPadding = 40;
+  const bannerPadding = 36;
+  // Make cover art fill the banner height (with padding), without spilling into nebula
   const thumbSize = bannerHeight - bannerPadding * 2;
   const thumbX = bannerPadding;
   const thumbY = constellationHeight + bannerPadding;
@@ -823,7 +897,7 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
     (lastItemMetadata && (lastItemMetadata.episodeImage || lastItemMetadata.imageUrl || lastItemMetadata.podcastImage)) ||
     null;
 
-  const placeholderPath = path.join(__dirname, '..', 'assets', 'watermark.png');
+  const placeholderPath = path.join(__dirname, '..', 'assets', 'artwork-placeholder.png');
 
   let coverImage = null;
   try {
@@ -847,31 +921,109 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
   // Draw thumbnail if we have any image
   if (coverImage) {
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(
-      thumbX + thumbSize / 2,
-      thumbY + thumbSize / 2,
-      thumbSize / 2,
-      0,
-      Math.PI * 2
-    );
-    ctx.closePath();
-    ctx.clip();
+    // Draw rectangular cover (no rounded corners) with subtle border and glow
+    ctx.shadowColor = 'rgba(0,0,0,0.7)';
+    ctx.shadowBlur = 24;
+    ctx.drawImage(coverImage, thumbX, thumbY, thumbSize, thumbSize);
+
+    // Thin border
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(15,23,42,0.9)';
+    ctx.strokeRect(thumbX - 1.5, thumbY - 1.5, thumbSize + 3, thumbSize + 3);
     ctx.drawImage(coverImage, thumbX, thumbY, thumbSize, thumbSize);
     ctx.restore();
   }
 
-  // Title and subtitle
+  // Generate a smart title (GPT-4o-mini) based on lastItemMetadata, falling back to provided title
+  const baseTitle = title || 'Podcast Research Session';
+  const rawSmartTitle = await generateSmartShareTitle(lastItemMetadata, baseTitle);
+  const smartTitle = rawSmartTitle || baseTitle;
+
+  // Text block (title + quote) – perfectly centered vertically relative to cover art
   const textX = thumbX + thumbSize + bannerPadding;
-  const textY = thumbY;
   const maxTextWidth = width - textX - bannerPadding;
 
-  ctx.fillStyle = '#F9FAFB';
-  ctx.font = 'bold 40px sans-serif';
+  const titleFontSize = 40;
+  const quoteFontSize = 18;
+  const titleSubtitleSpacing = 10;
+
   ctx.textBaseline = 'top';
 
-  // Simple single-line ellipsis for title
-  let displayTitle = title || 'Podcast Research Session';
+  // Pre-compute quote lines (0–2) so we can center the entire block
+  const quoteLines = [];
+  const quoteText =
+    (lastItemMetadata && (lastItemMetadata.quote || lastItemMetadata.summary)) || '';
+  if (quoteText) {
+    ctx.font = `${quoteFontSize}px sans-serif`;
+    // Slightly dimmed subtitle/quote for visual hierarchy (~65% opacity gray)
+    ctx.fillStyle = 'rgba(156,163,175,0.65)';
+
+    const words = quoteText.split(/\s+/);
+    let line1 = '';
+    let line2 = '';
+    let currentLine = '';
+    let onSecondLine = false;
+    let overflow = false;
+
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i];
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
+      const width = ctx.measureText(testLine).width;
+
+      if (width <= maxTextWidth) {
+        currentLine = testLine;
+      } else {
+        if (!onSecondLine) {
+          line1 = currentLine;
+          currentLine = word;
+          onSecondLine = true;
+        } else {
+          line2 = currentLine;
+          overflow = true;
+          break;
+        }
+      }
+    }
+
+    if (!line1 && !onSecondLine) {
+      line1 = currentLine;
+    } else if (!line2) {
+      line2 = currentLine;
+    }
+
+    if (overflow && line2) {
+      // Add ellipsis to second line if we overflowed
+      let withEllipsis = `${line2}…`;
+      while (withEllipsis.length > 1 && ctx.measureText(withEllipsis).width > maxTextWidth) {
+        line2 = line2.slice(0, -1);
+        withEllipsis = `${line2}…`;
+      }
+      line2 = withEllipsis;
+    }
+
+    if (line1) quoteLines.push(line1);
+    if (line2) quoteLines.push(line2);
+  }
+
+  // Compute total text block height (title + optional quote lines)
+  const quoteLinesCount = quoteLines.length;
+  let totalTextHeight = titleFontSize;
+  if (quoteLinesCount > 0) {
+    totalTextHeight += titleSubtitleSpacing;
+    totalTextHeight += quoteLinesCount * quoteFontSize;
+    if (quoteLinesCount > 1) {
+      totalTextHeight += 4; // extra spacing between quote lines
+    }
+  }
+
+  const thumbCenterY = thumbY + thumbSize / 2;
+  let textY = thumbCenterY - totalTextHeight / 2;
+
+  // Title
+  ctx.fillStyle = '#F9FAFB';
+  ctx.font = `bold ${titleFontSize}px sans-serif`;
+  let displayTitle = smartTitle;
   if (ctx.measureText(displayTitle).width > maxTextWidth) {
     while (displayTitle.length > 3 && ctx.measureText(displayTitle + '…').width > maxTextWidth) {
       displayTitle = displayTitle.slice(0, -1);
@@ -879,17 +1031,28 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
     displayTitle = displayTitle + '…';
   }
   ctx.fillText(displayTitle, textX, textY);
+  textY += titleFontSize;
 
-  ctx.font = '24px sans-serif';
-  ctx.fillStyle = '#9CA3AF';
-  const subtitle = 'Podcast Mind Map';
-  ctx.fillText(subtitle, textX, textY + 50);
+  // De-emphasized quote under title (two-line clamp)
+  if (quoteLinesCount > 0) {
+    textY += titleSubtitleSpacing;
+    ctx.font = `${quoteFontSize}px sans-serif`;
+    ctx.fillStyle = '#6B7280';
 
-  const buffer = canvas.toBuffer('image/png');
+    if (quoteLines[0]) {
+      ctx.fillText(quoteLines[0], textX, textY);
+      textY += quoteFontSize + 4;
+    }
+    if (quoteLines[1]) {
+      ctx.fillText(quoteLines[1], textX, textY);
+    }
+  }
+
+  const buffer = canvas.toBuffer('image/jpeg', { quality: 0.75 });
 
   const spacesManager = getSharedPreviewSpacesManager();
-  const key = `shared-sessions/${shareId}/preview.png`;
-  const url = await spacesManager.uploadFile(SPACES_BUCKET_NAME, key, buffer, 'image/png');
+  const key = `shared-sessions/${shareId}/preview.jpg`;
+  const url = await spacesManager.uploadFile(SPACES_BUCKET_NAME, key, buffer, 'image/jpeg');
   return url;
 }
 
