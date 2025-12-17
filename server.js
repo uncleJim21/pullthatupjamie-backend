@@ -158,14 +158,16 @@ db.once("open", () => {
 
 const app = express();
 
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+console.log('Allowed origins:', allowedOrigins);
 // CORS configuration force deploy :)
 const corsOptions = {
     origin: [
-        'http://localhost:3000',
-        'http://localhost:3001', 
-        'https://pullthatupjamie.ai',
-        'https://www.pullthatupjamie.ai',
-        'https://pullthatupjamie-react-kha196lqu-cascdr-9169e8b8.vercel.app'
+        allowedOrigins
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS','PATCH'],
     allowedHeaders: [
