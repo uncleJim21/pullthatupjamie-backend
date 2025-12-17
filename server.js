@@ -44,6 +44,7 @@ const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
 const researchSessionsRoutes = require('./routes/researchSessions');
+const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
@@ -2593,6 +2594,7 @@ app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
+app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
