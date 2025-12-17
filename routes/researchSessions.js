@@ -625,13 +625,17 @@ function sanitizeShareNodes(rawNodes) {
 async function fetchImageBufferWithTimeout(url, timeoutMs) {
   if (!url) return null;
 
-  const controller = new fetch.AbortController();
+  // Prefer the global AbortController (Node 18+), fall back to no abort if unavailable
+  const hasAbortController = typeof AbortController !== 'undefined';
+  const controller = hasAbortController ? new AbortController() : null;
   const timeout = setTimeout(() => {
-    controller.abort();
+    if (controller) {
+      controller.abort();
+    }
   }, timeoutMs);
 
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, controller ? { signal: controller.signal } : undefined);
     if (!response.ok) {
       throw new Error(`Failed to fetch image: status ${response.status}`);
     }
@@ -845,6 +849,19 @@ router.post('/:id/share', async (req, res) => {
     const shareId = uuidv4().replace(/-/g, '').slice(0, 12);
     const shareUrl = `${SHARE_BASE_URL}/${shareId}`;
 
+    // Prefer the metadata from the last shared node, falling back to session-level lastItemMetadata.
+    const baseItems = Array.isArray(baseSession.items) ? baseSession.items : [];
+    const lastSharedPineconeId = sanitizedNodes[sanitizedNodes.length - 1]?.pineconeId;
+    const lastItemFromNodes = lastSharedPineconeId
+      ? baseItems.find((it) => it && it.pineconeId === lastSharedPineconeId)
+      : null;
+    const lastItemMetadataFromNode = lastItemFromNodes?.metadata || null;
+
+    const effectiveLastItemMetadata = {
+      ...(baseSession.lastItemMetadata || {}),
+      ...(lastItemMetadataFromNode || {})
+    };
+
     const sharedDoc = new SharedResearchSession({
       researchSessionId: baseSession._id,
       userId: baseSession.userId || null,
@@ -855,7 +872,7 @@ router.post('/:id/share', async (req, res) => {
       visibility: resolvedVisibility,
       nodes: sanitizedNodes,
       camera: camera && typeof camera === 'object' ? camera : undefined,
-      lastItemMetadata: baseSession.lastItemMetadata || null,
+      lastItemMetadata: Object.keys(effectiveLastItemMetadata).length ? effectiveLastItemMetadata : null,
       previewImageUrl: null
     });
 
@@ -866,7 +883,7 @@ router.post('/:id/share', async (req, res) => {
       previewImageUrl = await generateSharedSessionPreviewImage({
         shareId,
         title: resolvedTitle,
-        lastItemMetadata: baseSession.lastItemMetadata || null,
+        lastItemMetadata: Object.keys(effectiveLastItemMetadata).length ? effectiveLastItemMetadata : null,
         nodes: sanitizedNodes
       });
       sharedDoc.previewImageUrl = previewImageUrl;
