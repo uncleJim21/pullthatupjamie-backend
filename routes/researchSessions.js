@@ -573,7 +573,7 @@ router.get('/:id', async (req, res) => {
       data: {
         session: {
           id: session._id,
-          ownerType: owner.ownerType,
+          ownerType: owner ? owner.ownerType : null,
           userId: session.userId || null,
           clientId: session.clientId || null,
           pineconeIds,
