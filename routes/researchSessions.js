@@ -38,6 +38,9 @@ const SPACES_BUCKET_NAME = process.env.SPACES_BUCKET_NAME;
 
 // Lazily instantiated Spaces manager to avoid work if not used
 let sharedPreviewSpacesManager = null;
+let cachedNebulaBackgroundImagePromise = null;
+const NEBULA_BACKGROUND_PATH = path.join(__dirname, '..', 'assets', 'nebula-background.png');
+
 function getSharedPreviewSpacesManager() {
   if (
     !SPACES_ENDPOINT ||
@@ -61,6 +64,17 @@ function getSharedPreviewSpacesManager() {
     );
   }
   return sharedPreviewSpacesManager;
+}
+
+async function getNebulaBackgroundImage() {
+  if (!cachedNebulaBackgroundImagePromise) {
+    cachedNebulaBackgroundImagePromise = loadImage(NEBULA_BACKGROUND_PATH).catch((err) => {
+      console.error('[SharedResearchSession] Failed to load nebula background image:', err.message);
+      cachedNebulaBackgroundImagePromise = null;
+      return null;
+    });
+  }
+  return cachedNebulaBackgroundImagePromise;
 }
 
 /**
@@ -658,11 +672,38 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
 
-  // Background
-  ctx.fillStyle = '#020617'; // slate-950-esque
-  ctx.fillRect(0, 0, width, height);
+  // Background: static nebula image, scaled to cover and cropped if needed
+  const nebulaImage = await getNebulaBackgroundImage();
+  if (nebulaImage) {
+    const imgAspect = nebulaImage.width / nebulaImage.height;
+    const canvasAspect = width / height;
+    let renderWidth;
+    let renderHeight;
+    let offsetX;
+    let offsetY;
 
-  // Constellation region
+    if (imgAspect > canvasAspect) {
+      // Image is wider than canvas: fit height, crop left/right
+      renderHeight = height;
+      renderWidth = renderHeight * imgAspect;
+      offsetX = (width - renderWidth) / 2;
+      offsetY = 0;
+    } else {
+      // Image is taller than canvas: fit width, crop top/bottom
+      renderWidth = width;
+      renderHeight = renderWidth / imgAspect;
+      offsetX = 0;
+      offsetY = (height - renderHeight) / 2;
+    }
+
+    ctx.drawImage(nebulaImage, offsetX, offsetY, renderWidth, renderHeight);
+  } else {
+    // Fallback: solid background if nebula image is missing
+    ctx.fillStyle = '#020617';
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  // Constellation region (overlay vignette to focus attention)
   const margin = 60;
   const centerX = width / 2;
   const centerY = constellationHeight / 2;
@@ -683,34 +724,89 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
   const radiusPixels = Math.min(centerX - margin, centerY - margin);
   const scale = maxRadius > 0 ? radiusPixels / maxRadius : 1;
 
-  // Optional subtle grid / vignette
+  // Optional subtle vignette over the constellation region
   ctx.save();
   const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radiusPixels + margin);
-  gradient.addColorStop(0, 'rgba(15,23,42,1)');
+  gradient.addColorStop(0, 'rgba(15,23,42,0.5)');
   gradient.addColorStop(1, 'rgba(15,23,42,0)');
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, constellationHeight);
   ctx.restore();
 
-  // Draw nodes
-  ctx.save();
-  ctx.globalAlpha = 0.95;
+  // Helper for star-style rendering (core + halos + simple spikes)
+  function hexToRgb(hex) {
+    if (!hex || typeof hex !== 'string') return { r: 255, g: 136, b: 0 };
+    const clean = hex.replace('#', '');
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return {
+      r: Number.isFinite(r) ? r : 255,
+      g: Number.isFinite(g) ? g : 136,
+      b: Number.isFinite(b) ? b : 0
+    };
+  }
 
+  function drawStar(ctx2, x, y, color, depthFactor) {
+    const { r, g, b } = hexToRgb(color);
+
+    const coreRadius = 5 * depthFactor;
+    const halos = [
+      { radius: coreRadius * 2.0, alpha: 0.45 },
+      { radius: coreRadius * 3.0, alpha: 0.30 },
+      { radius: coreRadius * 4.2, alpha: 0.18 },
+      { radius: coreRadius * 5.8, alpha: 0.10 }
+    ];
+
+    // Core
+    ctx2.save();
+    ctx2.beginPath();
+    ctx2.fillStyle = `rgb(${r},${g},${b})`;
+    ctx2.arc(x, y, coreRadius, 0, Math.PI * 2);
+    ctx2.fill();
+
+    // Halos (additive)
+    ctx2.globalCompositeOperation = 'lighter';
+    halos.forEach(h => {
+      const grad = ctx2.createRadialGradient(x, y, 0, x, y, h.radius);
+      grad.addColorStop(0, `rgba(${r},${g},${b},${h.alpha})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx2.fillStyle = grad;
+      ctx2.beginPath();
+      ctx2.arc(x, y, h.radius, 0, Math.PI * 2);
+      ctx2.fill();
+    });
+
+    // Simple diffraction spikes (4 directions)
+    const spikeLength = coreRadius * 4.0;
+    const spikeWidth = coreRadius * 0.45;
+    ctx2.fillStyle = `rgba(${r},${g},${b},0.55)`;
+
+    ctx2.translate(x, y);
+    const directions = [0, Math.PI / 2];
+    directions.forEach(angle => {
+      ctx2.save();
+      ctx2.rotate(angle);
+      ctx2.fillRect(-spikeLength / 2, -spikeWidth / 2, spikeLength, spikeWidth);
+      ctx2.restore();
+    });
+
+    ctx2.restore();
+  }
+
+  // Draw nodes as glowing \"semantic\" stars
+  ctx.save();
   nodes.forEach(n => {
     const dx = n.x - meanX;
     const dy = n.y - meanY;
     const screenX = centerX + dx * scale;
     const screenY = centerY - dy * scale;
-
-    ctx.beginPath();
-    ctx.fillStyle = n.color;
-    const baseRadius = 6;
-    const depthFactor = typeof n.z === 'number' ? 1 + (n.z / (2 * MAX_NODE_COORDINATE)) : 1;
-    const radius = Math.max(3, Math.min(10, baseRadius * depthFactor));
-    ctx.arc(screenX, screenY, radius, 0, Math.PI * 2);
-    ctx.fill();
+    const depthFactor = typeof n.z === 'number'
+      ? 1 + (n.z / (2 * MAX_NODE_COORDINATE))
+      : 1;
+    const clampedDepth = Math.max(0.7, Math.min(1.5, depthFactor));
+    drawStar(ctx, screenX, screenY, n.color, clampedDepth);
   });
-
   ctx.restore();
 
   // Banner
