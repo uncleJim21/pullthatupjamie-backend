@@ -57,6 +57,7 @@ router.get('/:shareId', async (req, res) => {
     return res.json({
       success: true,
       data: {
+        researchSessionId: shared.researchSessionId,
         shareId: shared.shareId,
         shareUrl: shared.shareUrl,
         title: shared.title,
