@@ -45,6 +45,7 @@ const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
 const researchSessionsRoutes = require('./routes/researchSessions');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
+const { ResearchSession } = require('./models/ResearchSession');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
@@ -1807,6 +1808,372 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         requestId
       });
     }
+  }
+});
+
+// Fetch an existing research session as a 3D galaxy view
+// Behaves like /api/search-quotes-3d but takes a researchSessionId instead of a query
+app.post('/api/fetch-research-id', async (req, res) => {
+  const requestId = `FETCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  let { researchSessionId, fastMode = false, extractAxisLabels = false } = req.body || {};
+
+  printLog(`[${requestId}] ========== FETCH RESEARCH SESSION 3D REQUEST RECEIVED ==========`);
+  printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
+
+  if (!researchSessionId || typeof researchSessionId !== 'string') {
+    printLog(`[${requestId}] ERROR: Missing or invalid researchSessionId`);
+    return res.status(400).json({ error: 'researchSessionId is required' });
+  }
+
+  const startTime = Date.now();
+  const timings = {
+    embedding: 0,
+    search: 0,
+    reembedding: 0,
+    umap: 0,
+    axisLabeling: 0,
+    total: 0
+  };
+
+  try {
+    // Load the research session and its stored items
+    printLog(`[${requestId}] Step 1: Loading research session ${researchSessionId}...`);
+    const session = await ResearchSession.findById(researchSessionId).lean().exec();
+    if (!session) {
+      printLog(`[${requestId}] ✗ Research session not found`);
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No research session found for this id'
+      });
+    }
+
+    const items = Array.isArray(session.items)
+      ? session.items.map((it) => it && it.metadata).filter(Boolean)
+      : [];
+
+    if (!items.length) {
+      printLog(`[${requestId}] ✗ Research session has no items`);
+      return res.status(400).json({
+        error: 'Empty research session',
+        details: 'This research session has no items to project'
+      });
+    }
+
+    // Enrich results with episode metadata (same as search-quotes-3d Step 3b)
+    printLog(`[${requestId}] Step 2: Enriching results with episode metadata where missing...`);
+    const similarDiscussions = items.map((m) => ({ ...m }));
+    const episodeCache = {};
+    const guidsToFetch = new Set();
+
+    similarDiscussions.forEach(result => {
+      const guidForResult = result?.additionalFields?.guid;
+      const level = result?.hierarchyLevel;
+
+      if (!guidForResult) return;
+      if (level !== 'chapter' && level !== 'paragraph') return;
+
+      const missingEpisodeTitle = !result.episode || result.episode === 'Unknown episode';
+      const missingEpisodeImage = !result.episodeImage || result.episodeImage === 'Image unavailable';
+      const missingAudioUrl = !result.audioUrl || result.audioUrl === 'URL unavailable';
+
+      if (missingEpisodeTitle || missingEpisodeImage || missingAudioUrl) {
+        guidsToFetch.add(guidForResult);
+      }
+    });
+
+    printLog(
+      `[${requestId}] Episode enrichment: identified ${guidsToFetch.size} GUIDs needing episode data`
+    );
+
+    if (guidsToFetch.size > 0) {
+      const guidList = Array.from(guidsToFetch);
+      const episodePromises = guidList.map(async guid => {
+        try {
+          const episodeData = await getEpisodeByGuid(guid);
+          if (episodeData) {
+            episodeCache[guid] = episodeData;
+          } else {
+            printLog(`[${requestId}] Episode enrichment: no episode found for guid=${guid}`);
+          }
+        } catch (e) {
+          printLog(
+            `[${requestId}] Episode enrichment: error fetching episode for guid=${guid}: ${e.message}`
+          );
+        }
+      });
+
+      await Promise.all(episodePromises);
+      printLog(
+        `[${requestId}] Episode enrichment: fetched metadata for ${
+          Object.keys(episodeCache).length
+        } episodes`
+      );
+
+      similarDiscussions.forEach(result => {
+        const guidForResult = result?.additionalFields?.guid;
+        const level = result?.hierarchyLevel;
+        if (!guidForResult) return;
+        if (level !== 'chapter' && level !== 'paragraph') return;
+
+        const ep = episodeCache[guidForResult];
+        if (!ep) return;
+
+        if (!result.episode || result.episode === 'Unknown episode') {
+          result.episode = ep.title || result.episode;
+        }
+        if (!result.episodeImage || result.episodeImage === 'Image unavailable') {
+          if (ep.episodeImage) result.episodeImage = ep.episodeImage;
+        }
+        if (!result.audioUrl || result.audioUrl === 'URL unavailable') {
+          if (ep.audioUrl) result.audioUrl = ep.audioUrl;
+        }
+        if (!result.creator || result.creator === 'Creator not specified') {
+          if (ep.creator) result.creator = ep.creator;
+        }
+        if (!result.description && ep.description) {
+          result.description = ep.description;
+        }
+      });
+    }
+
+    if (similarDiscussions.length < 1) {
+      printLog(`[${requestId}] ✗ No items after enrichment`);
+      return res.status(400).json({
+        error: 'No items to project',
+        message: 'No valid items found in this research session.',
+        resultCount: similarDiscussions.length
+      });
+    }
+
+    // If less than 4, skip UMAP and return dummy coordinates (same behavior as search-quotes-3d)
+    if (similarDiscussions.length < 4) {
+      printLog(
+        `[${requestId}] ⚠️ Less than 4 items (${similarDiscussions.length}) - skipping UMAP for debugging`
+      );
+      timings.total = Date.now() - startTime;
+      return res.json({
+        query: researchSessionId,
+        results: similarDiscussions.map(r => ({
+          ...r,
+          coordinates3d: { x: 0, y: 0, z: 0 }
+        })),
+        total: similarDiscussions.length,
+        model: "text-embedding-ada-002",
+        metadata: {
+          numResults: similarDiscussions.length,
+          embeddingTimeMs: timings.embedding,
+          searchTimeMs: timings.search,
+          reembeddingTimeMs: timings.reembedding,
+          umapTimeMs: timings.umap,
+          totalTimeMs: timings.total,
+          fastMode,
+          umapConfig: 'skipped',
+          debugMode: true,
+          skippedUMAP: true,
+          approach: 'research-session'
+        },
+        axisLabels: null
+      });
+    }
+
+    // Re-embed quotes and run UMAP, same as search-quotes-3d
+    printLog(`[${requestId}] Step 3: Re-embedding ${similarDiscussions.length} items...`);
+
+    console.time(`[${requestId}] Re-embedding`);
+    const reembedStart = Date.now();
+
+    const texts = similarDiscussions.map(result => result.quote || '');
+    printLog(`[${requestId}] Extracted ${texts.length} text snippets`);
+    if (texts.length > 0) {
+      printLog(
+        `[${requestId}] Sample text (first 100 chars): "${(texts[0] || '').substring(0, 100)}..."`
+      );
+    }
+
+    const batchEmbeddingResponse = await callOpenAIEmbeddingsWithRetry({
+      input: texts,
+      model: "text-embedding-ada-002",
+      requestId,
+      description: "research-session 3D batch embeddings"
+    });
+
+    const embeddings = batchEmbeddingResponse.data.map(item => item.embedding);
+    timings.reembedding = Date.now() - reembedStart;
+    console.timeEnd(`[${requestId}] Re-embedding`);
+
+    printLog(`[${requestId}] ✓ Re-embedded ${embeddings.length} texts in ${timings.reembedding}ms`);
+
+    // UMAP projection
+    printLog(`[${requestId}] Step 4: Starting UMAP projection to 3D...`);
+    printLog(`[${requestId}] UMAP mode: ${fastMode ? 'FAST' : 'STANDARD'}`);
+    console.time(`[${requestId}] UMAP-Projection`);
+    const umapStart = Date.now();
+
+    const UmapProjector = require('./utils/UmapProjector');
+    const projectorConfig = fastMode
+      ? UmapProjector.getFastModeConfig()
+      : {};
+
+    printLog(`[${requestId}] Creating UMAP projector with config:`, projectorConfig);
+    const projector = new UmapProjector(projectorConfig);
+
+    printLog(`[${requestId}] Calling UMAP project() with ${embeddings.length} embeddings...`);
+    const coordinates3d = await projector.project(embeddings);
+
+    timings.umap = Date.now() - umapStart;
+    console.timeEnd(`[${requestId}] UMAP-Projection`);
+    printLog(`[${requestId}] ✓ UMAP projection completed in ${timings.umap}ms`);
+
+    // Attach coordinates
+    printLog(`[${requestId}] Step 5: Attaching 3D coordinates to items...`);
+    const results3d = similarDiscussions.map((result, index) => ({
+      ...result,
+      coordinates3d: coordinates3d[index]
+    }));
+
+    // Optional axis labels
+    let axisLabels = null;
+    if (extractAxisLabels && results3d.length >= 7) {
+      printLog(`[${requestId}] Step 6: Extracting axis labels for semantic space...`);
+      console.time(`[${requestId}] Axis-Labeling`);
+      const labelingStart = Date.now();
+
+      try {
+        const findClosestPoint = (targetX, targetY, targetZ) => {
+          let minDist = Infinity;
+          let closestIndex = 0;
+
+          results3d.forEach((result, index) => {
+            const { x, y, z } = result.coordinates3d;
+            const dist = Math.sqrt(
+              Math.pow(x - targetX, 2) +
+              Math.pow(y - targetY, 2) +
+              Math.pow(z - targetZ, 2)
+            );
+            if (dist < minDist) {
+              minDist = dist;
+              closestIndex = index;
+            }
+          });
+
+          return closestIndex;
+        };
+
+        const cardinalIndices = {
+          center: findClosestPoint(0, 0, 0),
+          xPositive: findClosestPoint(1, 0, 0),
+          xNegative: findClosestPoint(-1, 0, 0),
+          yPositive: findClosestPoint(0, 1, 0),
+          yNegative: findClosestPoint(0, -1, 0),
+          zPositive: findClosestPoint(0, 0, 1),
+          zNegative: findClosestPoint(0, 0, -1)
+        };
+
+        const getTextFromResult = (result) => {
+          let text = '';
+
+          switch(result.hierarchyLevel) {
+            case 'paragraph':
+              text = result.quote || result.text || '';
+              break;
+            case 'chapter':
+              text = result.headline || result.summary || '';
+              break;
+            case 'episode':
+            case 'feed':
+            default:
+              text = result.description || result.summary || result.headline || result.quote || '';
+              break;
+          }
+
+          return text || result.quote || '';
+        };
+
+        const labelPrompts = {
+          center: 'a short phrase describing what these clips have in common',
+          xPositive: 'what semantic theme is strongest at the positive X direction?',
+          xNegative: 'what semantic theme is strongest at the negative X direction?',
+          yPositive: 'what semantic theme is strongest at the positive Y direction?',
+          yNegative: 'what semantic theme is strongest at the negative Y direction?',
+          zPositive: 'what semantic theme is strongest at the positive Z direction?',
+          zNegative: 'what semantic theme is strongest at the negative Z direction?'
+        };
+
+        axisLabels = {};
+
+        for (const [axis, index] of Object.entries(cardinalIndices)) {
+          const result = results3d[index];
+          const text = getTextFromResult(result);
+
+          if (!text) {
+            axisLabels[axis] = null;
+            continue;
+          }
+
+          const labelingResponse = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You are helping label semantic axes in a 3D embedding space of podcast clips. ' +
+                  'Given an example clip, respond with a very short 1-3 word label capturing its main theme. ' +
+                  'Do not add quotes or extra explanation.'
+              },
+              {
+                role: 'user',
+                content: `Example text:\n\n${text}\n\nQuestion: ${labelPrompts[axis]}\n\nAxis label:`
+              }
+            ],
+            max_tokens: 16,
+            temperature: 0.4
+          });
+
+          const rawLabel = labelingResponse.choices?.[0]?.message?.content || '';
+          const firstLine = rawLabel.split('\n')[0].trim();
+          axisLabels[axis] = firstLine.replace(/^["']|["']$/g, '').trim();
+        }
+
+        timings.axisLabeling = Date.now() - labelingStart;
+        console.timeEnd(`[${requestId}] Axis-Labeling`);
+      } catch (e) {
+        printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+        axisLabels = null;
+      }
+    }
+
+    timings.total = Date.now() - startTime;
+
+    return res.json({
+      query: researchSessionId,
+      results: results3d,
+      total: results3d.length,
+      model: "text-embedding-ada-002",
+      metadata: {
+        numResults: results3d.length,
+        embeddingTimeMs: timings.embedding,
+        searchTimeMs: timings.search,
+        reembeddingTimeMs: timings.reembedding,
+        umapTimeMs: timings.umap,
+        axisLabelingTimeMs: timings.axisLabeling,
+        totalTimeMs: timings.total,
+        fastMode,
+        umapConfig: fastMode ? 'fast' : 'standard',
+        limitCapped: false,
+        requestedLimit: results3d.length,
+        effectiveLimit: results3d.length,
+        approach: 'research-session'
+      },
+      axisLabels
+    });
+  } catch (error) {
+    printLog(`[${requestId}] ✗ Error in fetch-research-id: ${error.message}`);
+    timings.total = Date.now() - startTime;
+    console.error('Fetch research session 3D error:', error);
+    return res.status(500).json({
+      error: 'Failed to fetch research session in 3D',
+      details: error.message
+    });
   }
 });
 
