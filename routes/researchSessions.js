@@ -1106,7 +1106,7 @@ router.post('/:id/share', async (req, res) => {
       visibility === 'public' || visibility === 'unlisted' ? visibility : 'unlisted';
 
     const shareId = uuidv4().replace(/-/g, '').slice(0, 12);
-    const shareUrl = `${SHARE_BASE_URL}/${shareId}`;
+    const shareUrl = `${SHARE_BASE_URL}/researchSession/${shareId}`;
 
     // Prefer the metadata from the last shared node, falling back to session-level lastItemMetadata.
     const baseItems = Array.isArray(baseSession.items) ? baseSession.items : [];
