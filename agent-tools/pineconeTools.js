@@ -185,7 +185,7 @@ const pineconeTools = {
         }
 
         const limitedIds = ids.slice(0, 50);
-        const BATCH_SIZE = 20;
+        const BATCH_SIZE = 10;
 
         // Collect results keyed by id so we can re-expand in the original order (including duplicates)
         const byId = new Map();
