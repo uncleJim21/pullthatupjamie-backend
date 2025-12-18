@@ -5,7 +5,7 @@ const router = express.Router();
 const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
 const { User } = require('../models/User');
-const { getClipsByIds } = require('../agent-tools/pineconeTools');
+const { getClipsByIdsBatch } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const { createCanvas, loadImage } = require('canvas');
@@ -310,7 +310,7 @@ router.post('/', async (req, res) => {
     }
 
     // Fetch metadata snapshots from Pinecone once at creation time
-    const clips = await getClipsByIds(uniquePineconeIds);
+    const clips = await getClipsByIdsBatch(uniquePineconeIds);
 
     // Map clips by shareLink for quick lookup
     const clipById = new Map();
@@ -458,7 +458,7 @@ router.patch('/:id', async (req, res) => {
         session.pineconeIds = [...existingIds, ...uniqueNewIds];
 
         // Fetch metadata snapshots for newly added IDs
-        const clips = await getClipsByIds(uniqueNewIds);
+        const clips = await getClipsByIdsBatch(uniqueNewIds);
         const clipById = new Map();
         clips.forEach(clip => {
           if (clip && clip.shareLink) {
@@ -561,7 +561,7 @@ router.get('/:id', async (req, res) => {
         });
     } else if (pineconeIds.length > 0) {
       // Fallback for legacy sessions without stored metadata
-      const clips = await getClipsByIds(pineconeIds);
+      const clips = await getClipsByIdsBatch(pineconeIds);
       items = clips.map(clip => {
         const { embedding, ...rest } = clip || {};
         return rest;

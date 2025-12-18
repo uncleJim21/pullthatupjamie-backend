@@ -136,10 +136,13 @@ const pineconeTools = {
         }
     },
     /**
-     * Fetch multiple clips by their Pinecone IDs.
+     * Fetch multiple clips by their Pinecone IDs (sequential per-clip lookup).
      * - Uses getClipById under the hood for robustness
      * - Preserves input order (including duplicates)
      * - Hard-caps at 50 items to bound latency
+     *
+     * NOTE: For better performance when fetching many clips, prefer
+     *       getClipsByIdsBatch which uses Pinecone's batch fetch API.
      *
      * @param {string[]} ids
      * @returns {Promise<Array<object>>} formatted clip results
@@ -160,11 +163,78 @@ const pineconeTools = {
                 }
             } catch (error) {
                 console.error(`Error fetching clip ${id} in getClipsByIds:`, error.message);
-                // Swallow per‑clip errors so a single bad ID doesn't break the whole batch
+                // Swallow per-clip errors so a single bad ID doesn't break the whole batch
             }
         }
 
         return results;
+    },
+    /**
+     * Fetch multiple clips by their Pinecone IDs using batch fetch.
+     * - Uses Pinecone's batch fetch under the hood
+     * - Batches requests in chunks of 20 IDs to avoid service limits
+     * - Preserves input order (including duplicates)
+     * - Hard-caps at 50 items to bound latency
+     *
+     * @param {string[]} ids
+     * @returns {Promise<Array<object>>} formatted clip results
+     */
+    getClipsByIdsBatch: async (ids = []) => {
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return [];
+        }
+
+        const limitedIds = ids.slice(0, 50);
+        const BATCH_SIZE = 20;
+
+        // Collect results keyed by id so we can re-expand in the original order (including duplicates)
+        const byId = new Map();
+
+        for (let start = 0; start < limitedIds.length; start += BATCH_SIZE) {
+            const batchIds = limitedIds.slice(start, start + BATCH_SIZE);
+
+            try {
+                const fetchResult = await pineconeFetch('getClipsByIdsBatch', batchIds);
+                const records = fetchResult && fetchResult.records ? fetchResult.records : {};
+
+                const matches = Object.keys(records).map((id) => {
+                    const record = records[id] || {};
+                    return {
+                        id,
+                        metadata: record.metadata || {},
+                        // Direct lookup gets a perfect score; callers typically don't rely on this
+                        score: 1,
+                        values: record.values
+                    };
+                });
+
+                const formatted = pineconeTools.formatResults(matches);
+                formatted.forEach((clip) => {
+                    // Store by shareLink (which is the underlying Pinecone ID)
+                    if (clip && clip.shareLink) {
+                        byId.set(clip.shareLink, clip);
+                    }
+                });
+            } catch (error) {
+                console.error(
+                    `Error fetching batch ${start / BATCH_SIZE + 1} in getClipsByIdsBatch:`,
+                    error.message
+                );
+                // Swallow per-batch errors so a single bad batch doesn't break all other batches
+            }
+        }
+
+        // Rebuild the ordered list in the same order as the input (including duplicates),
+        // skipping any IDs that could not be fetched.
+        const orderedResults = [];
+        for (const id of limitedIds) {
+            const clip = byId.get(id);
+            if (clip) {
+                orderedResults.push(clip);
+            }
+        }
+
+        return orderedResults;
     },
     formatResults : (matches) => {
         const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
