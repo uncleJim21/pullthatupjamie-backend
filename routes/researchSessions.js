@@ -275,7 +275,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const { pineconeIds, lastItemMetadata } = req.body || {};
+    const { pineconeIds, lastItemMetadata, coordinatesById } = req.body || {};
 
     if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
       return res.status(400).json({
@@ -324,9 +324,26 @@ router.post('/', async (req, res) => {
 
     const items = uniquePineconeIds.map(id => {
       const raw = clipById.get(id) || null;
+
+      // Optional client-provided coordinates for this item (used by 3D fetch endpoint)
+      const coords =
+        coordinatesById &&
+        typeof coordinatesById === 'object' &&
+        coordinatesById[id];
+
+      const safeCoords =
+        coords && typeof coords === 'object'
+          ? {
+              x: typeof coords.x === 'number' ? coords.x : null,
+              y: typeof coords.y === 'number' ? coords.y : null,
+              z: typeof coords.z === 'number' ? coords.z : null
+            }
+          : null;
+
       return {
         pineconeId: id,
-        metadata: raw
+        metadata: raw,
+        ...(safeCoords && { coordinates3d: safeCoords })
       };
     });
 
@@ -395,7 +412,7 @@ router.patch('/:id', async (req, res) => {
     }
 
     const { id } = req.params;
-    const { pineconeIds, lastItemMetadata } = req.body || {};
+    const { pineconeIds, lastItemMetadata, coordinatesById } = req.body || {};
 
     if (
       (typeof pineconeIds === 'undefined' || pineconeIds === null) &&
@@ -470,9 +487,25 @@ router.patch('/:id', async (req, res) => {
 
         const newItems = uniqueNewIds.map(id => {
           const raw = clipById.get(id) || null;
+
+          const coords =
+            coordinatesById &&
+            typeof coordinatesById === 'object' &&
+            coordinatesById[id];
+
+          const safeCoords =
+            coords && typeof coords === 'object'
+              ? {
+                  x: typeof coords.x === 'number' ? coords.x : null,
+                  y: typeof coords.y === 'number' ? coords.y : null,
+                  z: typeof coords.z === 'number' ? coords.z : null
+                }
+              : null;
+
           return {
             pineconeId: id,
-            metadata: raw
+            metadata: raw,
+            ...(safeCoords && { coordinates3d: safeCoords })
           };
         });
 

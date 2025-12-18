@@ -10,6 +10,13 @@ const ResearchSessionItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     required: false,
     default: null
+  },
+  // Optional 3D coordinates for galaxy view; when not provided,
+  // the 3D fetch endpoint will synthesize small random offsets.
+  coordinates3d: {
+    x: { type: Number, required: false, default: null },
+    y: { type: Number, required: false, default: null },
+    z: { type: Number, required: false, default: null }
   }
 }, { _id: false });
 

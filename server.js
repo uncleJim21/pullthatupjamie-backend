@@ -1849,9 +1849,11 @@ app.post('/api/fetch-research-id', async (req, res) => {
       });
     }
 
-    const items = Array.isArray(session.items)
-      ? session.items.map((it) => it && it.metadata).filter(Boolean)
-      : [];
+    const rawItems = Array.isArray(session.items) ? session.items : [];
+
+    const items = rawItems
+      .map((it) => (it && it.metadata ? it : null))
+      .filter(Boolean);
 
     if (!items.length) {
       printLog(`[${requestId}] ✗ Research session has no items`);
@@ -1863,7 +1865,17 @@ app.post('/api/fetch-research-id', async (req, res) => {
 
     // Enrich results with episode metadata (same as search-quotes-3d Step 3b)
     printLog(`[${requestId}] Step 2: Enriching results with episode metadata where missing...`);
-    const similarDiscussions = items.map((m) => ({ ...m }));
+    const similarDiscussions = items.map((item) => {
+      const base = item.metadata ? { ...item.metadata } : {};
+      const storedCoords = item.coordinates3d || null;
+      if (storedCoords && typeof storedCoords === 'object') {
+        const x = typeof storedCoords.x === 'number' ? storedCoords.x : null;
+        const y = typeof storedCoords.y === 'number' ? storedCoords.y : null;
+        const z = typeof storedCoords.z === 'number' ? storedCoords.z : null;
+        base.coordinates3d = { x, y, z };
+      }
+      return base;
+    });
     const episodeCache = {};
     const guidsToFetch = new Set();
 
@@ -1947,22 +1959,36 @@ app.post('/api/fetch-research-id', async (req, res) => {
       });
     }
 
-    // If less than 4, skip UMAP and return dummy coordinates (same behavior as search-quotes-3d)
+    // Helper to ensure we have non-null coordinates, falling back to small random offsets.
+    const amplitude = 0.2;
+    const randomCoord = () => (Math.random() * 2 * amplitude) - amplitude;
+
+    const ensureCoordinates = (result) => {
+      const existing = result.coordinates3d && typeof result.coordinates3d === 'object'
+        ? result.coordinates3d
+        : {};
+      const x = typeof existing.x === 'number' ? existing.x : randomCoord();
+      const y = typeof existing.y === 'number' ? existing.y : randomCoord();
+      const z = typeof existing.z === 'number' ? existing.z : randomCoord();
+      return { ...result, coordinates3d: { x, y, z } };
+    };
+
+    // If less than 4, skip UMAP and use stored/randomized coordinates from MongoDB.
     if (similarDiscussions.length < 4) {
       printLog(
-        `[${requestId}] ⚠️ Less than 4 items (${similarDiscussions.length}) - skipping UMAP for debugging`
+        `[${requestId}] ⚠️ Less than 4 items (${similarDiscussions.length}) - skipping UMAP and using stored/randomized coordinates`
       );
       timings.total = Date.now() - startTime;
+
+      const resultsWithCoords = similarDiscussions.map(ensureCoordinates);
+
       return res.json({
         query: researchSessionId,
-        results: similarDiscussions.map(r => ({
-          ...r,
-          coordinates3d: { x: 0, y: 0, z: 0 }
-        })),
-        total: similarDiscussions.length,
+        results: resultsWithCoords,
+        total: resultsWithCoords.length,
         model: "text-embedding-ada-002",
         metadata: {
-          numResults: similarDiscussions.length,
+          numResults: resultsWithCoords.length,
           embeddingTimeMs: timings.embedding,
           searchTimeMs: timings.search,
           reembeddingTimeMs: timings.reembedding,
@@ -1972,7 +1998,10 @@ app.post('/api/fetch-research-id', async (req, res) => {
           umapConfig: 'skipped',
           debugMode: true,
           skippedUMAP: true,
-          approach: 'research-session'
+          approach: 'research-session',
+          coordinateHint:
+            'Some points use randomized coordinates in [-0.2, 0.2]. ' +
+            'To control layout, include a coordinatesById map with x,y,z per pineconeId when creating or updating this research session.'
         },
         axisLabels: null
       });
