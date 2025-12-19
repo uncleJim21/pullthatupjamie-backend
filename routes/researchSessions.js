@@ -419,7 +419,7 @@ router.patch('/:id', async (req, res) => {
     }
 
     const { id } = req.params;
-    const { pineconeIds, lastItemMetadata, coordinatesById } = req.body || {};
+    const { pineconeIds, lastItemMetadata, coordinatesById, expectedVersion } = req.body || {};
 
     if (
       (typeof pineconeIds === 'undefined' || pineconeIds === null) &&
@@ -451,8 +451,20 @@ router.patch('/:id', async (req, res) => {
       ? { _id: id, userId: owner.userId }
       : { _id: id, clientId: owner.clientId };
 
+    if (typeof expectedVersion === 'number') {
+      ownerQuery.__v = expectedVersion;
+    }
+
     const session = await ResearchSession.findOne(ownerQuery);
     if (!session) {
+      if (typeof expectedVersion === 'number') {
+        return res.status(409).json({
+          error: 'Conflict',
+          details: 'Session was modified by another client',
+          code: 'VERSION_MISMATCH'
+        });
+      }
+
       return res.status(404).json({
         error: 'Research session not found',
         details: 'No session found for this id and owner'
