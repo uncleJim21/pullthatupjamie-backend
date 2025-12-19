@@ -227,6 +227,7 @@ router.get('/', async (req, res) => {
       id: session._id,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
+      title: session.title || null,
       pineconeIdsCount: Array.isArray(session.pineconeIds)
         ? session.pineconeIds.length
         : 0,
@@ -352,15 +353,21 @@ router.post('/', async (req, res) => {
       ? items[items.length - 1].metadata
       : null;
 
+    const effectiveLastItemMetadata =
+      typeof lastItemMetadata !== 'undefined'
+        ? lastItemMetadata
+        : (lastClip || null);
+
+    const defaultTitle = deriveShareTitleFromLastItem(effectiveLastItemMetadata);
+    const sessionTitle = await generateSmartShareTitle(effectiveLastItemMetadata, defaultTitle);
+
     const session = new ResearchSession({
       userId: owner.userId || undefined,
       clientId: owner.clientId || undefined,
       pineconeIds: uniquePineconeIds,
       items,
-      lastItemMetadata:
-        typeof lastItemMetadata !== 'undefined'
-          ? lastItemMetadata
-          : (lastClip || null)
+      title: sessionTitle,
+      lastItemMetadata: effectiveLastItemMetadata
     });
 
     await session.save();
@@ -609,6 +616,7 @@ router.get('/:id', async (req, res) => {
           ownerType: owner ? owner.ownerType : null,
           userId: session.userId || null,
           clientId: session.clientId || null,
+          title: session.title || null,
           pineconeIds,
           pineconeIdsCount: pineconeIds.length,
           lastItemMetadata: session.lastItemMetadata || null,

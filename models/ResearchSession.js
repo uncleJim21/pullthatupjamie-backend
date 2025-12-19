@@ -35,7 +35,11 @@ const ResearchSessionSchema = new mongoose.Schema({
     required: false,
     index: true
   },
-
+  title: {
+    type: String,
+    required: false,
+    index: false
+  },
   // Ordered list of Pinecone vector IDs associated with this research session
   pineconeIds: {
     type: [String],

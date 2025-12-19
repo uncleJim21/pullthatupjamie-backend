@@ -43,12 +43,30 @@ const SharedResearchSessionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-
+  brandImage: {
+    type: String,
+    required: false,
+    default: null
+  },
+  brandColors: [
+    {
+      primary:{
+        type: String,
+        required: false,
+        default: null
+      },
+      secondary:{
+        type: String,
+        required: false,
+        default: null
+    }
+  }
+  ],
   // Visibility: public or unlisted
   visibility: {
     type: String,
     enum: ['public', 'unlisted'],
-    default: 'unlisted',
+    default: 'public',
     index: true
   },
 
