@@ -49,21 +49,37 @@ const initializeEntitlement = async (identifier, identifierType, entitlementType
   const now = new Date();
   const nextResetDate = new Date(now);
   nextResetDate.setDate(nextResetDate.getDate() + config.periodLengthDays);
-  
-  const entitlement = new Entitlement({
-    identifier,
-    identifierType,
-    entitlementType,
-    usedCount: 0,
-    maxUsage: config.maxUsage,
-    periodStart: now,
-    periodLengthDays: config.periodLengthDays,
-    nextResetDate,
-    lastUsed: now,
-    status: 'active'
-  });
-  
-  return await entitlement.save();
+
+  // Use an atomic upsert so that:
+  // - If no entitlement exists, it is created with the correct values
+  // - If an entitlement exists but the period has expired, it is reset in-place
+  // This avoids duplicate-key errors from the unique index.
+  const entitlement = await Entitlement.findOneAndUpdate(
+    {
+      identifier,
+      identifierType,
+      entitlementType
+    },
+    {
+      identifier,
+      identifierType,
+      entitlementType,
+      usedCount: 0,
+      maxUsage: config.maxUsage,
+      periodStart: now,
+      periodLengthDays: config.periodLengthDays,
+      nextResetDate,
+      lastUsed: now,
+      status: 'active'
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
+
+  return entitlement;
 };
 
 /**
