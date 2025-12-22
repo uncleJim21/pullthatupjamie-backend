@@ -61,6 +61,8 @@ router.get('/:shareId', async (req, res) => {
         shareId: shared.shareId,
         shareUrl: shared.shareUrl,
         title: shared.title,
+        brandImage: shared.brandImage || null,
+        brandColors: Array.isArray(shared.brandColors) ? shared.brandColors : [],
         description,
         previewImageUrl: shared.previewImageUrl || null,
         visibility: shared.visibility,
