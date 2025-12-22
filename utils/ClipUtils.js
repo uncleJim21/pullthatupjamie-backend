@@ -456,17 +456,34 @@ class ClipUtils {
             console.log(`[DEBUG] No subtitles provided for clip ${lookupHash}`);
         }
 
+        // Determine clip time range with the same precedence used in ClipQueueManager:
+        // 1) Explicit user timestamps
+        // 2) Time context on the clip (from Pinecone metadata)
+        // 3) Fallback to a 0–30s window
+        const fallbackStart = 0;
+        const fallbackEnd = 30;
+
+        const clipStartTime = (
+          timestamps?.[0] ??
+          clipData.timeContext?.start_time ??
+          fallbackStart
+        );
+
+        const clipEndTime = (
+          timestamps?.[1] ??
+          clipData.timeContext?.end_time ??
+          fallbackEnd
+        );
+
         const audioPath = await this.extractAudioClip(
           clipData.audioUrl,
-          timestamps?.[0] ?? clipData.timeContext?.start_time ?? 0,
-          timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30) // fallback to 30 sec clip
+          clipStartTime,
+          clipEndTime
         );
         
         console.log(`[DEBUG] Audio extraction complete for ${lookupHash}, path: ${audioPath}`);
         
         // Calculate clip duration for verification
-        const clipStartTime = timestamps?.[0] ?? clipData.timeContext?.start_time ?? 0;
-        const clipEndTime = timestamps?.[1] ?? clipData.timeContext?.end_time ?? (clipData.timeContext?.start_time + 30);
         const clipDuration = clipEndTime - clipStartTime;
         
         console.log(`[DEBUG] Clip duration: ${clipDuration}s (${clipStartTime} to ${clipEndTime})`);

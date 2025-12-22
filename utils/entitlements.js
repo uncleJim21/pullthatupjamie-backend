@@ -113,17 +113,9 @@ const checkEntitlementEligibility = async (identifier, identifierType, entitleme
     };
   } catch (error) {
     console.error('Error checking entitlement eligibility:', error);
-    return {
-      eligible: false,
-      error: 'Internal server error',
-      remainingUsage: 0,
-      maxUsage: 0,
-      usedCount: 0,
-      periodStart: null,
-      nextResetDate: null,
-      daysUntilReset: 0,
-      status: 'expired'
-    };
+    // Let callers surface this as a proper 5xx instead of
+    // returning a misleading 0/0 entitlement state.
+    throw error;
   }
 };
 

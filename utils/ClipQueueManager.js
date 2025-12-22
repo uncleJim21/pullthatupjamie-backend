@@ -212,17 +212,33 @@ class ClipQueueManager extends EventEmitter {
             // Stage 1: Extract basic parameters and validate
             processingStage = 'parameter-extraction';
             let clipText = job.clipData.quote || "";
+
+            // Core identity for this clip
             const guid = job.clipData.additionalFields?.guid;
-            const timeStart = job.timestamps ? job.timestamps[0] : job.clipData.timeContext?.start_time;
-            const timeEnd = job.timestamps ? job.timestamps[1] : job.clipData.timeContext?.end_time;
-            
+
+            // Time selection precedence:
+            // 1) Explicit user timestamps (job.timestamps)
+            // 2) Time context on the clip (derived from Pinecone metadata)
+            // 3) Fallback to a default 0–30s window
+            let timeStart = job.timestamps && job.timestamps.length > 0
+                ? job.timestamps[0]
+                : job.clipData.timeContext?.start_time;
+
+            let timeEnd = job.timestamps && job.timestamps.length > 1
+                ? job.timestamps[1]
+                : job.clipData.timeContext?.end_time;
+
+            if (timeStart === undefined || timeStart === null ||
+                timeEnd === undefined || timeEnd === null) {
+                console.warn(`${logPrefix} [${processingStage}] Missing or incomplete time parameters (start=${timeStart}, end=${timeEnd}); defaulting to 0–30s window for processing`);
+                timeStart = 0;
+                timeEnd = 30;
+            }
+
             console.log(`${logPrefix} [${processingStage}] Extracted params - GUID: ${guid}, Time: ${timeStart}-${timeEnd}`);
             
             if (!guid) {
                 throw new Error(`Missing podcast GUID in clip data`);
-            }
-            if (timeStart === undefined || timeEnd === undefined) {
-                throw new Error(`Missing time parameters: start=${timeStart}, end=${timeEnd}`);
             }
             
             // Stage 2: Fetch accurate text from Pinecone
