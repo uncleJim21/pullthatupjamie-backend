@@ -27,7 +27,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
             maxRetries: options.maxRetries || 3,
             baseDelay: options.baseDelay || 1000,
             maxDelay: options.maxDelay || 10000,
-            timeout: options.timeout || 30000
+            timeout: options.timeout || 90000
         };
     
         // Create initial client
