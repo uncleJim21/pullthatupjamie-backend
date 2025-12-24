@@ -577,21 +577,54 @@ class ClipUtils {
   }
 
   /**
-   * Validates that a CDN URL belongs to our storage buckets
+   * Validates that a CDN URL belongs to our storage buckets or well-known podcast hosting services
    * @param {string} cdnUrl - The CDN URL to validate
-   * @returns {boolean} - True if URL is from our CDN
+   * @returns {boolean} - True if URL is from our CDN or trusted podcast hosting service
    */
   validateOurCdnUrl(cdnUrl) {
     if (!cdnUrl || typeof cdnUrl !== 'string') {
       return false;
     }
 
+    // Our own CDN buckets
     const allowedDomains = [
       process.env.SPACES_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
       process.env.SPACES_CLIP_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
     ].filter(Boolean); // Remove any undefined values
 
-    return allowedDomains.some(domain => cdnUrl.includes(domain));
+    // Well-known podcast hosting services that support video
+    const trustedPodcastHosts = [
+      'feeds.fountain.fm',           // Fountain
+      'media.transistor.fm',         // Transistor
+      'www.buzzsprout.com',          // Buzzsprout
+      'traffic.libsyn.com',          // Libsyn
+      'mcdn.podbean.com',            // Podbean
+      'anchor.fm',                   // Anchor/Spotify
+      's3.castbox.fm',               // Castbox
+      'media.rss.com',               // RSS.com
+      'media.castos.com',            // Castos
+      'player.captivate.fm',         // Captivate
+      'cdn.simplecast.com',          // Simplecast
+      'media.blubrry.com',           // Blubrry
+      'api.spreaker.com',            // Spreaker
+      'media.zencast.fm',            // Zencast
+      'media.redcircle.com',         // RedCircle
+      'cdn.podigee.com',             // Podigee
+      'media.fireside.fm',           // Fireside
+      'static.adorilabs.com',        // Adori
+      'content.production.cdn.art19.com', // Art19
+      'dts.podtrac.com',             // Podtrac
+      'chrt.fm',                     // Chartable
+      'claritaspod.com',             // Claritas
+      'pdst.fm',                     // Podscribe
+      'feeds.megaphone.fm',          // Megaphone
+      'traffic.omny.fm',             // Omny Studio
+      'dovetail.prxu.org',           // Dovetail/PRX
+    ];
+
+    const allAllowedDomains = [...allowedDomains, ...trustedPodcastHosts];
+
+    return allAllowedDomains.some(domain => cdnUrl.includes(domain));
   }
 
   /**
@@ -615,28 +648,34 @@ class ClipUtils {
       const contentType = response.headers['content-type'] || '';
       const contentLength = parseInt(response.headers['content-length'] || '0');
       
-      // Check if it's a video or audio file
+      // Check if it's a video, audio, or streaming format
       const isVideo = contentType.startsWith('video/');
       const isAudio = contentType.startsWith('audio/');
+      const isHLS = contentType === 'application/vnd.apple.mpegurl' || contentType === 'application/x-mpegURL';
+      const isDASH = contentType === 'application/dash+xml';
+      const isStreaming = isHLS || isDASH;
       
-      if (!isVideo && !isAudio) {
+      if (!isVideo && !isAudio && !isStreaming) {
         throw new Error(`Unsupported file type: ${contentType}`);
       }
 
-      // Check file size (2GB limit)
+      // Check file size (2GB limit) - skip for streaming formats (they don't have a fixed size)
       const maxSize = 2 * 1024 * 1024 * 1024; // 2GB
-      if (contentLength > maxSize) {
+      if (!isStreaming && contentLength > maxSize) {
         throw new Error(`File too large: ${contentLength} bytes (max: ${maxSize})`);
       }
 
-      console.log(`${debugPrefix} File validation successful: ${contentType}, ${contentLength} bytes`);
+      console.log(`${debugPrefix} File validation successful: ${contentType}, ${contentLength} bytes${isStreaming ? ' (streaming format)' : ''}`);
       
       return {
         exists: true,
         contentType,
         contentLength,
         isVideo,
-        isAudio
+        isAudio,
+        isStreaming,
+        isHLS,
+        isDASH
       };
     } catch (error) {
       console.error(`${debugPrefix} File validation failed: ${error.message}`);
@@ -695,9 +734,27 @@ class ClipUtils {
       }
 
       // Extract parent filename for tracking
+      // DETERMINISTIC ALGORITHM - Frontend can replicate this
       const urlParts = cdnUrl.split('/');
       const parentFileName = urlParts[urlParts.length - 1];
-      const parentFileBase = parentFileName.replace(/\.[^/.]+$/, ""); // Remove extension
+      let parentFileBase = parentFileName.replace(/\.[^/.]+$/, ""); // Remove extension
+      
+      // For external URLs (not our CDN), create a deterministic hash identifier
+      // Algorithm: MD5 hash of URL (without query params), prefixed with 'ext-'
+      const allowedDomains = [
+        process.env.SPACES_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
+        process.env.SPACES_CLIP_BUCKET_NAME + '.' + process.env.SPACES_ENDPOINT,
+      ].filter(Boolean);
+      
+      const isOurCdn = allowedDomains.some(domain => cdnUrl.includes(domain));
+      
+      if (!isOurCdn) {
+        // DETERMINISTIC: Hash the full URL without query params
+        const crypto = require('crypto');
+        const urlWithoutQuery = cdnUrl.split('?')[0];
+        parentFileBase = 'ext-' + crypto.createHash('md5').update(urlWithoutQuery).digest('hex').substring(0, 16);
+        console.log(`${debugPrefix} Generated deterministic ID for external URL: ${parentFileBase} from ${urlWithoutQuery}`);
+      }
       
       // Create database entry
       await WorkProductV2.create({
@@ -739,7 +796,9 @@ class ClipUtils {
       return { 
         status: 'processing', 
         lookupHash, 
-        pollUrl: `/api/edit-status/${lookupHash}` 
+        pollUrl: `/api/edit-status/${lookupHash}`,
+        parentFileBase, // Include this so client knows how to query for children
+        parentFileName
       };
 
     } catch (error) {
@@ -763,7 +822,19 @@ class ClipUtils {
     const duration = endTime - startTime;
     const fileSize = fileMetadata.contentLength;
     
-    console.log(`${debugPrefix} File size: ${Math.round(fileSize / 1024 / 1024)}MB, Duration: ${duration}s`);
+    console.log(`${debugPrefix} File size: ${Math.round(fileSize / 1024 / 1024)}MB, Duration: ${duration}s, Type: ${fileMetadata.contentType}`);
+    
+    // For HLS streams (m3u8), always use FFmpeg HTTP streaming (no download needed)
+    // FFmpeg has native HLS support and will handle the playlist + segments automatically
+    if (fileMetadata.isHLS || fileMetadata.isStreaming) {
+      console.log(`${debugPrefix} Detected HLS/streaming format - using FFmpeg direct streaming`);
+      try {
+        return await this._extractWithFFmpegHttpStream(cdnUrl, startTime, endTime, lookupHash);
+      } catch (streamError) {
+        console.error(`${debugPrefix} FFmpeg streaming failed for HLS: ${streamError.message}`);
+        throw new Error(`HLS stream processing failed: ${streamError.message}`);
+      }
+    }
     
     // For MP4 files, use FFmpeg's HTTP streaming with seek - much more efficient
     // This avoids downloading the full file while maintaining compatibility
@@ -795,6 +866,11 @@ class ClipUtils {
     const debugPrefix = `[FFMPEG-HTTP-STREAM][${lookupHash}]`;
     const startMemory = this.getMemoryUsage();
     const duration = endTime - startTime;
+    // Dual-SS strategy:
+    // - coarseStart: seek a bit earlier for safety
+    // - fineOffset: trim so output starts exactly at requested startTime
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
     
     try {
       console.time(`${debugPrefix} HttpStream`);
@@ -803,22 +879,24 @@ class ClipUtils {
       const outputPath = path.join(os.tmpdir(), `edit-stream-${Date.now()}.mp4`);
       this.registerTempFile(outputPath);
       
-      // Use FFmpeg to extract directly from HTTP URL
+      // Use FFmpeg to extract directly from HTTP URL or HLS stream
       // FFmpeg will seek to the position and only download what's needed
+      // For HLS, FFmpeg will automatically handle the playlist and download segments
       // Optimized settings for consistent performance across different hardware
       await new Promise((resolve, reject) => {
         ffmpeg(cdnUrl)
           .inputOptions([
-            '-ss', startTime.toString(), // Accurate seeking - seek to exact timestamp
-            '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+            '-ss', coarseStart.toString()
           ])
-          .duration(duration)
           .outputOptions([
             '-y', // Overwrite output files
+            // Fine-grained trim so clip time 0 == requested startTime
+            '-ss', fineOffset.toFixed(3),
+            '-t', duration.toString(),
             '-c:v', 'libx264', // Video codec
             '-preset', 'veryfast', // Much faster encoding, minimal quality loss
             '-crf', '23', // Good quality
-            '-c:a', // Copy audio stream (no re-encoding needed)
+            '-c:a', 'aac', // Audio codec (can't copy from HLS, needs re-encoding)
             '-movflags', '+faststart', // Optimize for streaming
             '-pix_fmt', 'yuv420p', // Ensure compatibility
             '-avoid_negative_ts', 'make_zero', // Handle timestamp issues
@@ -1152,22 +1230,29 @@ class ClipUtils {
   async _extractSegmentWithFFmpegRange(inputUrl, outputPath, startTime, endTime) {
     const debugPrefix = `[FFMPEG-RANGE][${Date.now()}]`;
     const duration = endTime - startTime;
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
     
     console.log(`${debugPrefix} Range-extracting ${duration}s from ${startTime}s to ${endTime}s`);
     
     return new Promise((resolve, reject) => {
       ffmpeg(inputUrl)
-        .seekInput(startTime)
-        .duration(duration)
         .outputOptions([
           '-y', // Overwrite output files
+          // Fine-grained trim so clip time 0 == requested startTime
+          '-ss', fineOffset.toFixed(3),
+          '-t', duration.toString(),
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
           '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-avoid_negative_ts', 'make_zero', // Handle timestamp issues
           '-reconnect', '1', // Enable reconnection
           '-reconnect_streamed', '1', // Enable reconnection for streams
           '-reconnect_delay_max', '5' // Max reconnection delay
+        ])
+        .inputOptions([
+          '-ss', coarseStart.toString()
         ])
         .toFormat('mp4')
         .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
@@ -1494,22 +1579,26 @@ class ClipUtils {
   async _extractSegmentWithFFmpeg(inputPath, outputPath, startTime, endTime) {
     const debugPrefix = `[FFMPEG-EXTRACT][${Date.now()}]`;
     const duration = endTime - startTime;
+    const coarseStart = Math.max(0, Math.floor(startTime) - 2);
+    const fineOffset = startTime - coarseStart;
 
     console.log(`${debugPrefix} Extracting ${duration}s segment from ${startTime}s to ${endTime}s`);
 
     return new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .inputOptions([
-          '-ss', startTime.toString(), // Accurate seeking
-          '-accurate_seek' // Enable accurate seeking to avoid keyframe issues
+          '-ss', coarseStart.toString()
         ])
-        .duration(duration)
         .outputOptions([
           '-y', // Overwrite output files
+          // Fine-grained trim so clip time 0 == requested startTime
+          '-ss', fineOffset.toFixed(3),
+          '-t', duration.toString(),
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec  
           '-movflags', '+faststart', // Optimize for streaming
-          '-pix_fmt', 'yuv420p' // Ensure compatibility
+          '-pix_fmt', 'yuv420p', // Ensure compatibility
+          '-avoid_negative_ts', 'make_zero' // Handle timestamp issues
         ])
         .toFormat('mp4')
         .on('start', command => console.log(`${debugPrefix} FFmpeg started: ${command}`))
