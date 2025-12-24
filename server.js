@@ -479,8 +479,12 @@ app.post('/api/validate-privs', async (req, res) => {
       const proPod = await getProPodcastByAdminEmail(decoded.email);
       console.log(`found proPod:${JSON.stringify(proPod,null,2)}`)
       let privs = {}
-      if(proPod && proPod.feedId){
-        privs = {feedId:proPod.feedId,access:"admin"}
+      if (proPod && proPod.feedId) {
+        privs = {
+          feedId: proPod.feedId,
+          feedUrl: proPod.feedUrl,
+          access: "admin"
+        }
       }
       return res.json({ privs});
   } catch (error) {
