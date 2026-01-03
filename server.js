@@ -3671,9 +3671,22 @@ app.get('/api/fetch-adjacent-paragraphs', async (req, res) => {
 });
 
 // Get hierarchy endpoint - fetches paragraph/chapter, episode, and feed
+// OPTIMIZED: Uses MongoDB for fast metadata lookups instead of Pinecone
 app.get('/api/get-hierarchy', async (req, res) => {
+  const requestId = `HIERARCHY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const timings = {
+    total: 0,
+    mongoLookup: 0,
+    mongoChapterQuery: 0,
+    formatting: 0
+  };
+  const startTime = Date.now();
+  
   try {
     const { paragraphId, chapterId } = req.query;
+    
+    printLog(`[${requestId}] ========== GET HIERARCHY REQUEST ==========`);
+    printLog(`[${requestId}] paragraphId: ${paragraphId}, chapterId: ${chapterId}`);
     
     // Validate: must provide exactly one of paragraphId or chapterId
     if (!paragraphId && !chapterId) {
@@ -3693,13 +3706,8 @@ app.get('/api/get-hierarchy', async (req, res) => {
       });
     }
 
-    // Initialize Pinecone
-    const { Pinecone } = require('@pinecone-database/pinecone');
-    const pinecone = new Pinecone({
-      apiKey: process.env.PINECONE_API_KEY,
-    });
-    const index = pinecone.index(process.env.PINECONE_INDEX);
-
+    const JamieVectorMetadata = require('./models/JamieVectorMetadata');
+    
     let paragraph = null;
     let chapter = null;
     let episode = null;
@@ -3710,27 +3718,35 @@ app.get('/api/get-hierarchy', async (req, res) => {
 
     if (chapterId) {
       // CHAPTER MODE: Start from chapter, go UP only
-      console.log(`Fetching hierarchy for chapter: ${chapterId}`);
+      printLog(`[${requestId}] Mode: CHAPTER - starting from ${chapterId}`);
       startingPoint = 'chapter';
 
-      // Step 1: Fetch the chapter directly
-      const chapterFetch = await withPineconeTimeout(
-        'get-hierarchy:fetch-chapter',
-        () => index.fetch([chapterId])
-      );
+      // Step 1: Fetch the chapter from MongoDB
+      printLog(`[${requestId}] Step 1: Fetching chapter from MongoDB...`);
+      const mongoStart = Date.now();
       
-      if (!chapterFetch.records || !chapterFetch.records[chapterId]) {
+      const chapterDoc = await JamieVectorMetadata.findOne({ 
+        pineconeId: chapterId 
+      })
+      .select('pineconeId metadataRaw')
+      .lean();
+      
+      timings.mongoLookup += Date.now() - mongoStart;
+      
+      if (!chapterDoc || !chapterDoc.metadataRaw) {
+        printLog(`[${requestId}] ✗ Chapter not found in MongoDB`);
         return res.status(404).json({ 
           error: 'Chapter not found',
           chapterId 
         });
       }
 
-      const chapterData = chapterFetch.records[chapterId];
       chapter = {
         id: chapterId,
-        metadata: chapterData.metadata
+        metadata: chapterDoc.metadataRaw
       };
+      
+      printLog(`[${requestId}] ✓ Chapter found in ${Date.now() - mongoStart}ms`);
 
       // Extract guid and feedId from chapter
       guid = chapter.metadata.guid;
@@ -3744,31 +3760,39 @@ app.get('/api/get-hierarchy', async (req, res) => {
         });
       }
 
-      console.log(`Chapter guid: ${guid}, feedId: ${feedId}`);
+      printLog(`[${requestId}] Chapter guid: ${guid}, feedId: ${feedId}`);
 
     } else {
       // PARAGRAPH MODE: Start from paragraph, go UP
-      console.log(`Fetching hierarchy for paragraph: ${paragraphId}`);
+      printLog(`[${requestId}] Mode: PARAGRAPH - starting from ${paragraphId}`);
       startingPoint = 'paragraph';
 
-      // Step 1: Fetch the paragraph
-      const paragraphFetch = await withPineconeTimeout(
-        'get-hierarchy:fetch-paragraph',
-        () => index.fetch([paragraphId])
-      );
+      // Step 1: Fetch the paragraph from MongoDB
+      printLog(`[${requestId}] Step 1: Fetching paragraph from MongoDB...`);
+      const mongoStart = Date.now();
       
-      if (!paragraphFetch.records || !paragraphFetch.records[paragraphId]) {
+      const paragraphDoc = await JamieVectorMetadata.findOne({ 
+        pineconeId: paragraphId 
+      })
+      .select('pineconeId metadataRaw')
+      .lean();
+      
+      timings.mongoLookup += Date.now() - mongoStart;
+      
+      if (!paragraphDoc || !paragraphDoc.metadataRaw) {
+        printLog(`[${requestId}] ✗ Paragraph not found in MongoDB`);
         return res.status(404).json({ 
           error: 'Paragraph not found',
           paragraphId 
         });
       }
 
-      const paragraphData = paragraphFetch.records[paragraphId];
       paragraph = {
         id: paragraphId,
-        metadata: paragraphData.metadata
+        metadata: paragraphDoc.metadataRaw
       };
+      
+      printLog(`[${requestId}] ✓ Paragraph found in ${Date.now() - mongoStart}ms`);
 
       // Extract guid and feedId from paragraph
       guid = paragraph.metadata.guid;
@@ -3784,79 +3808,89 @@ app.get('/api/get-hierarchy', async (req, res) => {
         });
       }
 
-      console.log(`Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
+      printLog(`[${requestId}] Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
 
-      // Step 2: Query for chapter using timestamp filter
-      const dummyVector = Array(1536).fill(0);
-      const chapterQuery = await withPineconeTimeout(
-        'get-hierarchy:query-chapter-for-paragraph',
-        () => index.query({
-          vector: dummyVector,
-          filter: {
-            type: "chapter",
-            guid: guid,
-            startTime: { $lte: paragraphStartTime },
-            endTime: { $gte: paragraphEndTime }
-          },
-          topK: 1,
-          includeMetadata: true
-        })
-      );
+      // Step 2: Query MongoDB for chapter using timestamp filter
+      printLog(`[${requestId}] Step 2: Querying MongoDB for containing chapter...`);
+      const chapterQueryStart = Date.now();
+      
+      const chapterDoc = await JamieVectorMetadata.findOne({
+        type: 'chapter',
+        guid: guid,
+        start_time: { $lte: paragraphStartTime },
+        end_time: { $gte: paragraphEndTime }
+      })
+      .select('pineconeId metadataRaw')
+      .lean();
+      
+      timings.mongoChapterQuery = Date.now() - chapterQueryStart;
 
-      if (chapterQuery.matches && chapterQuery.matches.length > 0) {
+      if (chapterDoc && chapterDoc.metadataRaw) {
         chapter = {
-          id: chapterQuery.matches[0].id,
-          metadata: chapterQuery.matches[0].metadata
+          id: chapterDoc.pineconeId,
+          metadata: chapterDoc.metadataRaw
         };
-        console.log(`Found chapter: ${chapter.id}`);
+        printLog(`[${requestId}] ✓ Found chapter: ${chapter.id} in ${timings.mongoChapterQuery}ms`);
       } else {
-        console.log('No chapter found for this paragraph');
+        printLog(`[${requestId}] No chapter found for this paragraph`);
       }
     }
 
-    // COMMON: Fetch episode and feed (going UP)
-
-    // Step 3: Fetch episode by constructing episode ID
-    const episodeId = `episode_${guid}`;
-    const episodeFetch = await withPineconeTimeout(
-      'get-hierarchy:fetch-episode',
-      () => index.fetch([episodeId])
-    );
+    // COMMON: Fetch episode and feed (going UP) - PARALLEL MongoDB queries
+    printLog(`[${requestId}] Step 3: Fetching episode and feed from MongoDB (parallel)...`);
+    const episodeFeedStart = Date.now();
     
-    if (episodeFetch.records && episodeFetch.records[episodeId]) {
+    const episodeId = `episode_${guid}`;
+    const feedIdStr = `feed_${feedId}`;
+    
+    const [episodeDoc, feedDoc] = await Promise.all([
+      JamieVectorMetadata.findOne({ pineconeId: episodeId })
+        .select('pineconeId metadataRaw')
+        .lean(),
+      JamieVectorMetadata.findOne({ pineconeId: feedIdStr })
+        .select('pineconeId metadataRaw')
+        .lean()
+    ]);
+    
+    timings.mongoLookup += Date.now() - episodeFeedStart;
+    printLog(`[${requestId}] ✓ Episode and feed queries completed in ${Date.now() - episodeFeedStart}ms`);
+    
+    if (episodeDoc && episodeDoc.metadataRaw) {
       episode = {
         id: episodeId,
-        metadata: episodeFetch.records[episodeId].metadata
+        metadata: episodeDoc.metadataRaw
       };
-      console.log(`Found episode: ${episodeId}`);
+      printLog(`[${requestId}] ✓ Found episode: ${episodeId}`);
     } else {
-      console.log('No episode found');
+      printLog(`[${requestId}] Episode not found in MongoDB`);
     }
-
-    // Step 4: Fetch feed by constructing feed ID
-    const feedIdStr = `feed_${feedId}`;
-    const feedFetch = await withPineconeTimeout(
-      'get-hierarchy:fetch-feed',
-      () => index.fetch([feedIdStr])
-    );
     
-    if (feedFetch.records && feedFetch.records[feedIdStr]) {
+    if (feedDoc && feedDoc.metadataRaw) {
       feed = {
         id: feedIdStr,
-        metadata: feedFetch.records[feedIdStr].metadata
+        metadata: feedDoc.metadataRaw
       };
-      console.log(`Found feed: ${feedIdStr}`);
+      printLog(`[${requestId}] ✓ Found feed: ${feedIdStr}`);
     } else {
-      console.log('No feed found');
+      printLog(`[${requestId}] Feed not found in MongoDB`);
     }
 
     // Build hierarchical path string
+    printLog(`[${requestId}] Step 4: Building hierarchy path...`);
+    const formatStart = Date.now();
+    
     let path = '';
     if (feed) path += feed.metadata.title || 'Unknown Feed';
     if (episode) path += ` > ${episode.metadata.title || 'Unknown Episode'}`;
     if (chapter) path += ` > Chapter ${chapter.metadata.chapterNumber || '?'}: ${chapter.metadata.headline || 'Untitled'}`;
+    
+    timings.formatting = Date.now() - formatStart;
+    timings.total = Date.now() - startTime;
 
-    // Return complete hierarchy
+    printLog(`[${requestId}] ========== HIERARCHY COMPLETE ==========`);
+    printLog(`[${requestId}] Timings: Total=${timings.total}ms, MongoLookup=${timings.mongoLookup}ms, MongoChapterQuery=${timings.mongoChapterQuery}ms, Formatting=${timings.formatting}ms`);
+
+    // Return complete hierarchy with timing info
     res.json({
       ...(paragraphId && { paragraphId }),
       ...(chapterId && { chapterId }),
@@ -3867,10 +3901,13 @@ app.get('/api/get-hierarchy', async (req, res) => {
         episode,
         feed
       },
-      path: path || 'Unknown'
+      path: path || 'Unknown',
+      timings  // Include timing breakdown for comparison
     });
 
   } catch (error) {
+    timings.total = Date.now() - startTime;
+    printLog(`[${requestId}] ✗ Error after ${timings.total}ms:`, error.message);
     console.error('Error fetching hierarchy:', error);
     res.status(500).json({ 
       error: 'Failed to fetch hierarchy',
