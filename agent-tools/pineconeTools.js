@@ -298,7 +298,8 @@ const pineconeTools = {
         minDate = null, // Optional minimum date filter (ISO string or timestamp)
         maxDate = null, // Optional maximum date filter (ISO string or timestamp)
         episodeName = null, // Optional episode name EXACT MATCH filter (must match metadata.episode exactly)
-        includeValues = false // Optional: include embedding vectors in response (NOT USED - will re-embed instead)
+        includeValues = false, // Optional: include embedding vectors in response (NOT USED - will re-embed instead)
+        includeMetadata = true // NEW: When false, returns only IDs and scores (caller will fetch metadata from MongoDB)
     }) => {
         const debugPrefix = '[PINECONE-SEARCH]';
         const { printLog } = require('../constants');
@@ -312,7 +313,8 @@ const pineconeTools = {
             minDate,
             maxDate,
             episodeName,
-            includeValues: includeValues ? 'REQUESTED (will re-embed instead)' : 'false'
+            includeValues: includeValues ? 'REQUESTED (will re-embed instead)' : 'false',
+            includeMetadata
         });
         
         try {
@@ -357,14 +359,14 @@ const pineconeTools = {
             let vectorLimit = Math.min(limit * 3, 20); // Normal behavior for reranking
             printLog(`${debugPrefix} Using vectorLimit: ${vectorLimit}`);
             
-            printLog(`${debugPrefix} Step 2: Querying Pinecone (topK: ${vectorLimit}, includeMetadata: true)...`);
+            printLog(`${debugPrefix} Step 2: Querying Pinecone (topK: ${vectorLimit}, includeMetadata: ${includeMetadata})...`);
             const queryStartTime = Date.now();
             
             const queryResult = await pineconeQuery('findSimilarDiscussions', {
                 vector: embedding,
                 filter,
                 topK: vectorLimit,
-                includeMetadata: true,
+                includeMetadata: includeMetadata,
                 includeValues: false, // Never request values from Pinecone
             });
             
@@ -381,7 +383,28 @@ const pineconeTools = {
             const matches = queryResult.matches;
             printLog(`${debugPrefix} Step 3: Processing ${matches.length} matches...`);
             
-            // Log first match for debugging
+            // If includeMetadata is false, return minimal results (ID and score only)
+            // Caller will fetch metadata from MongoDB
+            if (!includeMetadata) {
+                printLog(`${debugPrefix} includeMetadata=false - returning minimal results for MongoDB lookup`);
+                const minimalResults = matches.map(match => ({
+                    id: match.id,
+                    score: match.score
+                }));
+                
+                // If no query, just slice and return
+                if (!query.trim()) {
+                    printLog(`${debugPrefix} No text query - returning ${Math.min(matches.length, limit)} minimal results`);
+                    return minimalResults.slice(0, limit);
+                }
+                
+                // For hybrid search without metadata, we can't rerank
+                // Just return the top vector results
+                printLog(`${debugPrefix} Text query provided but no metadata - returning top ${limit} vector results for MongoDB lookup`);
+                return minimalResults.slice(0, limit);
+            }
+            
+            // Log first match for debugging (only if we have metadata)
             if (matches.length > 0) {
                 printLog(`${debugPrefix} Sample match:`, {
                     id: matches[0].id,

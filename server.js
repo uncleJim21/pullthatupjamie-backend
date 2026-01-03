@@ -1250,56 +1250,109 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 app.post('/api/search-quotes', async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
-  printLog(`/api/search-quotes req:`,req)
+  const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  printLog(`[${requestId}] /api/search-quotes request received`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}`);
 
   try {
+    // Step 1: Generate query embedding
+    printLog(`[${requestId}] Step 1: Generating query embedding...`);
     const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-ada-002",
       input: query
     });
     
     const embedding = embeddingResponse.data[0].embedding;
+    printLog(`[${requestId}] ✓ Query embedding generated`);
 
-    // Search for similar discussions using the embedding
-    const similarDiscussions = await findSimilarDiscussions({
+    // Step 2: Search Pinecone WITHOUT metadata (MongoDB will provide it)
+    printLog(`[${requestId}] Step 2: Searching Pinecone (without metadata)...`);
+    const minimalResults = await findSimilarDiscussions({
       embedding,
       feedIds,
       limit,
       query,
       minDate,
       maxDate,
-      episodeName
+      episodeName,
+      includeMetadata: false  // NEW: Don't fetch metadata from Pinecone
     });
-
-    // Format and return the results
-    printLog(`---------------------------`)
-    printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
-    printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
-    const results = similarDiscussions.map(discussion => ({
-      shareUrl: discussion.shareUrl,
-      shareLink:discussion.shareLink,
-      quote: discussion.quote,
-      episode: discussion.episode,
-      creator: discussion.creator,
-      audioUrl: discussion.audioUrl,
-      episodeImage: discussion.episodeImage,
-      listenLink: discussion.listenLink,
-      date: discussion.date,
-      similarity: {
-          combined: discussion.similarity.combined,
-          vector: discussion.similarity.vector
-      },
-      timeContext: discussion.timeContext
-  }));
+    
+    printLog(`[${requestId}] ✓ Pinecone returned ${minimalResults.length} results`);
+    
+    // Step 3: Extract Pinecone IDs and fetch metadata from MongoDB
+    printLog(`[${requestId}] Step 3: Fetching metadata from MongoDB...`);
+    const pineconeIds = minimalResults.map(r => r.id);
+    
+    const JamieVectorMetadata = require('./models/JamieVectorMetadata');
+    const metadataDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: pineconeIds }
+    })
+    .select('pineconeId metadataRaw')
+    .lean();
+    
+    printLog(`[${requestId}] ✓ Found ${metadataDocs.length} metadata docs in MongoDB`);
+    
+    // Step 4: Create lookup map and merge with Pinecone scores
+    const metadataMap = new Map();
+    metadataDocs.forEach(doc => {
+      metadataMap.set(doc.pineconeId, doc.metadataRaw);
+    });
+    
+    // Step 5: Format results by combining Pinecone scores with MongoDB metadata
+    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+    const results = minimalResults
+      .map(minimalResult => {
+        const metadata = metadataMap.get(minimalResult.id);
+        if (!metadata) {
+          // If metadata not found in MongoDB, skip this result
+          printLog(`[${requestId}] ⚠️ No metadata found for ${minimalResult.id}`);
+          return null;
+        }
+        
+        const hierarchyLevel = metadata.type || 'paragraph';
+        
+        // For chapters, prefer the chapter headline/title as the primary text
+        const quote =
+          hierarchyLevel === 'chapter'
+            ? (metadata.headline || metadata.summary || metadata.text || "Quote unavailable")
+            : (metadata.text || metadata.summary || metadata.headline || "Quote unavailable");
+        
+        return {
+          shareUrl: `${baseUrl}/share?clip=${minimalResult.id}`,
+          shareLink: minimalResult.id,
+          quote,
+          episode: metadata.episode || metadata.title || "Unknown episode",
+          creator: metadata.creator || "Creator not specified",
+          audioUrl: metadata.audioUrl || "URL unavailable",
+          episodeImage: metadata.episodeImage || "Image unavailable",
+          listenLink: metadata.listenLink || "",
+          date: metadata.publishedDate || "Date not provided",
+          similarity: {
+            combined: parseFloat(minimalResult.score.toFixed(4)),
+            vector: parseFloat(minimalResult.score.toFixed(4))
+          },
+          timeContext: {
+            start_time: metadata.start_time || null,
+            end_time: metadata.end_time || null
+          }
+        };
+      })
+      .filter(Boolean); // Remove null entries
+    
+    printLog(`[${requestId}] ✓ Formatted ${results.length} results`);
+    printLog(`[${requestId}] /api/search-quotes complete`);
 
     res.json({
       query,
       results,
       total: results.length,
-      model: "text-embedding-ada-002" // Include model info for reference
+      model: "text-embedding-ada-002"
     });
 
   } catch (error) {
+    printLog(`[${requestId}] ✗ Error:`, error.message);
     console.error('Search quotes error:', error);
     res.status(500).json({ 
       error: 'Failed to search quotes',
