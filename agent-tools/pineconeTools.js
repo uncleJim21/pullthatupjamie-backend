@@ -110,30 +110,43 @@ const pineconeTools = {
         return allFeeds;
     },
     getClipById: async (clipId) => {
+        const debugPrefix = '[MONGO-CLIP-BY-ID]';
+        const { printLog } = require('../constants');
+        printLog(`${debugPrefix} Fetching clip from MongoDB for clipId: ${clipId}`);
+        
         try {
-            // Use the correct fetch API format
-            const fetchResult = await pineconeFetch('getClipById', [clipId]);
-    
-            // Check if we got results
-            if (!fetchResult || !fetchResult.records || !fetchResult.records[clipId]) {
-                console.log('No results found for clipId:', clipId);
+            if (!clipId) {
+                throw new Error('Clip ID is required');
+            }
+            
+            // Query MongoDB for the clip by pineconeId
+            const clipDoc = await JamieVectorMetadata.findOne({
+                pineconeId: clipId
+            }).select('pineconeId metadataRaw').lean();
+            
+            if (!clipDoc) {
+                printLog(`${debugPrefix} No clip found in MongoDB for clipId: ${clipId}`);
                 return null;
             }
-    
-            // Format the single result using the existing formatter
+            
+            const metadata = clipDoc.metadataRaw;
+            printLog(`${debugPrefix} Found clip in MongoDB: ${metadata.type || 'unknown type'}`);
+            
+            // Format using the existing formatter
             const match = {
                 id: clipId,
-                metadata: fetchResult.records[clipId].metadata,
+                metadata: metadata,
                 score: 1, // Direct lookup gets perfect score
-                values: fetchResult.records[clipId].values
+                values: null // MongoDB doesn't have vectors yet
             };
-    
+            
             const formattedResults = pineconeTools.formatResults([match]);
             return formattedResults[0];
-    
+            
         } catch (error) {
+            printLog(`${debugPrefix} Error in getClipById: ${error.message}`);
             console.error('Error in getClipById:', error);
-            throw new Error(`Failed to fetch clip: ${error.message}`);
+            throw new Error(`Failed to fetch clip from MongoDB: ${error.message}`);
         }
     },
     /**
@@ -776,47 +789,52 @@ const pineconeTools = {
      * @returns {string} - Combined text from all paragraphs in the time range
      */
     getTextForTimeRange: async (guid, startTime, endTime) => {
-        console.log(`Finding text for guid: ${guid}, time range: ${startTime}-${endTime}`);
+        const debugPrefix = '[MONGO-TEXT-FOR-TIMERANGE]';
+        const { printLog } = require('../constants');
+        printLog(`${debugPrefix} Finding text for guid: ${guid}, time range: ${startTime}-${endTime}`);
         
         try {
-            // Create a dummy vector for querying
-            const dummyVector = Array(1536).fill(0);
+            // Query MongoDB for paragraphs that overlap with the time range
+            // Note: start_time and end_time are top-level fields in the schema
+            const paragraphs = await JamieVectorMetadata.find({
+                type: 'paragraph',
+                guid: guid,
+                $or: [
+                    // Paragraph starts within our range
+                    { start_time: { $gte: startTime, $lte: endTime } },
+                    // Paragraph ends within our range
+                    { end_time: { $gte: startTime, $lte: endTime } },
+                    // Paragraph completely contains our range
+                    { 
+                        $and: [
+                            { start_time: { $lte: startTime } }, 
+                            { end_time: { $gte: endTime } }
+                        ] 
+                    }
+                ]
+            })
+            .select('metadataRaw start_time end_time')
+            .sort({ start_time: 1 })
+            .limit(50)
+            .lean();
             
-            // Query Pinecone for paragraphs that overlap with the time range
-            const result = await pineconeQuery('getTextForTimeRange', {
-                vector: dummyVector,
-                filter: {
-                    type: "paragraph",
-                    guid: guid,
-                    $or: [
-                        // Paragraph starts within our range
-                        { start_time: { $gte: startTime, $lte: endTime } },
-                        // Paragraph ends within our range
-                        { end_time: { $gte: startTime, $lte: endTime } },
-                        // Paragraph completely contains our range
-                        { $and: [{ start_time: { $lte: startTime } }, { end_time: { $gte: endTime } }] }
-                    ]
-                },
-                includeMetadata: true,
-                topK: 50 // Adjust as needed
-            });
-            
-            if (!result.matches || result.matches.length === 0) {
-                console.warn(`No paragraphs found for guid ${guid} in time range ${startTime}-${endTime}`);
+            if (!paragraphs || paragraphs.length === 0) {
+                printLog(`${debugPrefix} No paragraphs found for guid ${guid} in time range ${startTime}-${endTime}`);
                 return null;
             }
             
-            // Sort paragraphs by start time
-            const sortedParagraphs = result.matches
-                .sort((a, b) => a.metadata.start_time - b.metadata.start_time);
+            printLog(`${debugPrefix} Found ${paragraphs.length} paragraphs in time range`);
             
-            // Combine text from all paragraphs
-            const combinedText = sortedParagraphs
-                .map(p => p.metadata.text)
+            // Combine text from all paragraphs (already sorted by MongoDB)
+            const combinedText = paragraphs
+                .map(p => p.metadataRaw?.text || '')
+                .filter(text => text.length > 0)
                 .join(' ');
             
+            printLog(`${debugPrefix} Combined text length: ${combinedText.length} chars`);
             return combinedText;
         } catch (error) {
+            printLog(`${debugPrefix} Error getting text for time range: ${error.message}`);
             console.error(`Error getting text for time range:`, error);
             return null;
         }
