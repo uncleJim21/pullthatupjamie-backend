@@ -5,6 +5,7 @@ const { Pinecone } = require('@pinecone-database/pinecone');
 const natural = require('natural');
 const tokenizer = new natural.WordTokenizer();
 const TfIdf = natural.TfIdf;
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = process.env.PINECONE_INDEX;
@@ -665,56 +666,56 @@ const pineconeTools = {
     },
 
     getFeedById: async (feedId) => {
+        const debugPrefix = '[MONGO-FEED-BY-ID]';
+        const { printLog } = require('../constants');
+        printLog(`${debugPrefix} Fetching feed from MongoDB for feedId: ${feedId}`);
+        
         try {
             if (!feedId) {
                 throw new Error('Feed ID is required to fetch feed data');
             }
             
-            // Convert feedId to string for comparison with feed objects
+            // Convert feedId to both string and number for flexible matching
             const feedIdStr = String(feedId);
+            const feedIdNum = parseInt(feedId, 10);
             
-            // Query Pinecone with a filter for type "feed" and the specific feedId
-            const dummyVector = Array(1536).fill(0);
-            const queryResult = await pineconeQuery('getFeedById:stringId', {
-                vector: dummyVector,
-                filter: {
-                    type: "feed",
-                    feedId: feedIdStr
-                },
-                topK: 1,
-                includeMetadata: true,
-            });
+            // Query MongoDB for feed with flexible feedId matching
+            const feedDoc = await JamieVectorMetadata.findOne({
+                type: 'feed',
+                $or: [
+                    { feedId: feedIdStr },
+                    { feedId: feedIdNum }
+                ]
+            }).select('pineconeId metadataRaw').lean();
             
-            // Check if we got results
-            if (!queryResult || !queryResult.matches || queryResult.matches.length === 0) {
-                console.log('No feed found for feedId:', feedId);
-                
-                // Try with numeric feedId as fallback (in case it's stored as a number)
-                const numericFeedId = parseInt(feedId, 10);
-                if (!isNaN(numericFeedId)) {
-                    const fallbackResult = await pineconeQuery('getFeedById:numericIdFallback', {
-                        vector: dummyVector,
-                        filter: {
-                            type: "feed",
-                            feedId: numericFeedId
-                        },
-                        topK: 1,
-                        includeMetadata: true,
-                    });
-                    
-                    if (fallbackResult && fallbackResult.matches && fallbackResult.matches.length > 0) {
-                        return formatFeedData(fallbackResult.matches[0]);
-                    }
-                }
-                
+            if (!feedDoc) {
+                printLog(`${debugPrefix} No feed found in MongoDB for feedId: ${feedId}`);
                 return null;
             }
             
-            // Format and return the feed metadata
-            return formatFeedData(queryResult.matches[0]);
+            const metadata = feedDoc.metadataRaw;
+            printLog(`${debugPrefix} Found feed in MongoDB: ${metadata.title || 'Unknown Title'}`);
+            
+            // Format and return using the same structure as Pinecone version
+            return {
+                id: feedDoc.pineconeId,
+                feedId: metadata.feedId || feedId,
+                title: metadata.title || "Unknown Title",
+                description: metadata.description || "",
+                author: metadata.author || metadata.creator || "Unknown Author",
+                imageUrl: metadata.imageUrl || metadata.image || null,
+                language: metadata.language || "en",
+                explicit: metadata.explicit || false,
+                episodeCount: metadata.episodeCount || 0,
+                feedUrl: metadata.feedUrl || null,
+                podcastGuid: metadata.podcastGuid || null,
+                lastUpdateTime: metadata.lastUpdateTime || null,
+                additionalMetadata: metadata
+            };
         } catch (error) {
+            printLog(`${debugPrefix} Error in getFeedById: ${error.message}`);
             console.error('Error in getFeedById:', error);
-            throw new Error(`Failed to fetch feed data: ${error.message}`);
+            throw new Error(`Failed to fetch feed data from MongoDB: ${error.message}`);
         }
     },
     
