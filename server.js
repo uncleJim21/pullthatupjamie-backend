@@ -3,11 +3,12 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { OpenAI } = require('openai');
+const { Pinecone } = require('@pinecone-database/pinecone');
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats, formatResults} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -52,6 +53,7 @@ const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const { User } = require('./models/User');
 const { Entitlement } = require('./models/Entitlement');
+const JamieVectorMetadata = require('./models/JamieVectorMetadata');
 const { updateEntitlementConfig } = require('./utils/entitlements');
 const { checkAdminMode } = require('./middleware/authMiddleware');
 const { serviceHmac } = require('./middleware/hmac');
@@ -1410,20 +1412,22 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     printLog(`[${requestId}] ✓ Embedding generated successfully in ${timings.embedding}ms`);
     printLog(`[${requestId}] Embedding dimensions: ${embedding.length}`);
 
-    // Step 2: Search Pinecone (WITHOUT embeddings - will re-embed on server)
+    // Step 2: Search Pinecone (WITHOUT values - Pinecone doesn't support efficient values+metadata fetch)
     printLog(`[${requestId}] Step 2: Starting Pinecone search (WITHOUT includeValues)...`);
+    printLog(`[${requestId}] Note: Pinecone has system limitations fetching values efficiently at scale`);
     printLog(`[${requestId}] Pinecone query params:`, {
       limit: effectiveLimit,
       feedIds,
       minDate,
       maxDate,
       episodeName,
-      includeValues: false // We'll re-embed the text instead
+      includeValues: false, // Pinecone limitation: can't efficiently fetch values at scale
+      includeMetadata: false // Metadata comes from MongoDB
     });
     console.time(`[${requestId}] Pinecone-Search`);
     const searchStart = Date.now();
     
-    const similarDiscussions = await findSimilarDiscussions({
+    const pineconeMatches = await findSimilarDiscussions({
       embedding,
       feedIds,
       limit: effectiveLimit,
@@ -1431,29 +1435,96 @@ app.post('/api/search-quotes-3d', async (req, res) => {
       minDate,
       maxDate,
       episodeName,
-      includeValues: false // Don't request embeddings from Pinecone
+      includeValues: false, // Pinecone limitation
+      includeMetadata: false // Use MongoDB instead
     });
     
     timings.search = Date.now() - searchStart;
     console.timeEnd(`[${requestId}] Pinecone-Search`);
     printLog(`[${requestId}] ✓ Pinecone search completed in ${timings.search}ms`);
-    printLog(`[${requestId}] Found ${similarDiscussions.length} results`);
+    printLog(`[${requestId}] Found ${pineconeMatches.length} results`);
 
     // Step 3: Check minimum results requirement
     printLog(`[${requestId}] Step 3: Validating result count (need ≥4 for UMAP)...`);
-    // TEMPORARY: Allow less than 4 for debugging
-    if (similarDiscussions.length < 1) {
-      printLog(`[${requestId}] ✗ NO RESULTS: ${similarDiscussions.length}`);
+    if (pineconeMatches.length < 1) {
+      printLog(`[${requestId}] ✗ NO RESULTS: ${pineconeMatches.length}`);
       return res.status(400).json({ 
         error: 'No results found',
         message: `No results found for query.`,
-        resultCount: similarDiscussions.length
+        resultCount: pineconeMatches.length
       });
     }
-    printLog(`[${requestId}] ✓ Result count validation passed: ${similarDiscussions.length} results`);
+    printLog(`[${requestId}] ✓ Result count validation passed: ${pineconeMatches.length} results`);
     
-    // Step 3b: Enrich chapter/paragraph results with episode metadata
-    printLog(`[${requestId}] Step 3b: Enriching results with episode metadata where missing...`);
+    // Step 3b: Fetch metadata from MongoDB (fast lookup by pineconeId index)
+    printLog(`[${requestId}] Step 3b: Fetching metadata from MongoDB...`);
+    const mongoStart = Date.now();
+    
+    const pineconeIds = pineconeMatches.map(m => m.id);
+    const pineconeScores = new Map(pineconeMatches.map(m => [m.id, m.score]));
+    
+    const mongoDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: pineconeIds }
+    }).select('pineconeId metadataRaw').lean();
+    
+    timings.mongoLookup = Date.now() - mongoStart;
+    printLog(`[${requestId}] ✓ MongoDB fetch completed in ${timings.mongoLookup}ms, found ${mongoDocs.length} documents`);
+    
+    // Map MongoDB docs by pineconeId
+    const mongoMetadataMap = new Map(mongoDocs.map(doc => [doc.pineconeId, doc.metadataRaw]));
+    
+    // Merge Pinecone results with MongoDB metadata
+    const mergedResults = pineconeMatches.map(pineconeMatch => {
+      const metadata = mongoMetadataMap.get(pineconeMatch.id);
+      if (!metadata) {
+        printLog(`[${requestId}] ⚠️ No MongoDB metadata found for Pinecone ID: ${pineconeMatch.id}`);
+        return null;
+      }
+      return {
+        id: pineconeMatch.id,
+        score: pineconeMatch.score,
+        metadata: metadata
+      };
+    }).filter(Boolean);
+    
+    // Format results (this adds hierarchyLevel and other display fields)
+    const similarDiscussions = formatResults(mergedResults);
+    printLog(`[${requestId}] ✓ Merged Pinecone + MongoDB data: ${similarDiscussions.length} results`);
+    
+    // Step 3c: Re-embed texts for UMAP (Pinecone fetch() tested but slower than re-embedding)
+    printLog(`[${requestId}] Step 3c: Re-embedding texts for UMAP projection...`);
+    const reembedStart = Date.now();
+    
+    // Extract texts from results
+    const texts = similarDiscussions.map(result => result.quote || result.summary || result.description || '');
+    printLog(`[${requestId}] Extracted ${texts.length} text snippets`);
+    if (texts.length > 0) {
+      printLog(
+        `[${requestId}] Sample text (first 100 chars): "${(texts[0] || '').substring(0, 100)}..."`
+      );
+    }
+    
+    // Batch embed all texts
+    printLog(
+      `[${requestId}] Calling OpenAI batch embeddings API with timeout=${OPENAI_EMBEDDING_TIMEOUT_MS}ms and maxRetries=${OPENAI_EMBEDDING_MAX_RETRIES}...`
+    );
+    
+    const batchEmbeddingResponse = await callOpenAIEmbeddingsWithRetry({
+      input: texts,
+      model: "text-embedding-ada-002",
+      requestId,
+      description: "3D search batch embeddings"
+    });
+    
+    const embeddings = batchEmbeddingResponse.data.map(item => item.embedding);
+    timings.reembedding = Date.now() - reembedStart;
+    
+    printLog(`[${requestId}] ✓ Re-embedded ${embeddings.length} texts in ${timings.reembedding}ms`);
+    printLog(`[${requestId}] Embedding dimensions: ${embeddings[0]?.length || 0}`);
+    printLog(`[${requestId}] Cost estimate: ~$${(texts.join(' ').length / 1000 * 0.0001).toFixed(4)}`);
+    
+    // Step 3d: Enrich chapter/paragraph results with episode metadata
+    printLog(`[${requestId}] Step 3d: Enriching results with episode metadata where missing...`);
     const episodeCache = {};
     const guidsToFetch = new Set();
 
@@ -1534,14 +1605,14 @@ app.post('/api/search-quotes-3d', async (req, res) => {
       });
     }
     
-    // TEMPORARY: If less than 4, skip UMAP and just return results
+    // Step 4: Skip UMAP if less than 4 results
     if (similarDiscussions.length < 4) {
-      printLog(`[${requestId}] ⚠️ Less than 4 results (${similarDiscussions.length}) - skipping UMAP for debugging`);
+      printLog(`[${requestId}] ⚠️ Less than 4 results (${similarDiscussions.length}) - skipping UMAP`);
       timings.total = Date.now() - startTime;
       return res.json({
         query,
         results: similarDiscussions.map(r => {
-          const { embedding, ...rest } = r;
+          const { embedding, values, ...rest } = r;
           return { ...rest, coordinates3d: { x: 0, y: 0, z: 0 } }; // Dummy coords
         }),
         total: similarDiscussions.length,
@@ -1550,51 +1621,18 @@ app.post('/api/search-quotes-3d', async (req, res) => {
           numResults: similarDiscussions.length,
           embeddingTimeMs: timings.embedding,
           searchTimeMs: timings.search,
+          mongoLookupTimeMs: timings.mongoLookup,
+          reembeddingTimeMs: timings.reembedding,
           umapTimeMs: 0,
           totalTimeMs: timings.total,
           fastMode: false,
           umapConfig: 'skipped',
           debugMode: true,
-          skippedUMAP: true
+          skippedUMAP: true,
+          approach: 'mongodb-optimized'
         }
       });
     }
-
-    // Step 4: Extract embeddings from results
-    printLog(`[${requestId}] Step 4: Re-generating embeddings for ${similarDiscussions.length} results...`);
-    printLog(`[${requestId}] NOTE: Using server-side re-embedding (Pinecone includeValues doesn't work)`);
-    
-    console.time(`[${requestId}] Re-embedding`);
-    const reembedStart = Date.now();
-    
-    // Extract text from all results for batch embedding
-    const texts = similarDiscussions.map(result => result.quote || '');
-    printLog(`[${requestId}] Extracted ${texts.length} text snippets`);
-    if (texts.length > 0) {
-      printLog(
-        `[${requestId}] Sample text (first 100 chars): "${(texts[0] || '').substring(0, 100)}..."`
-      );
-    }
-    
-    // Batch embed all texts at once (OpenAI supports up to 2048 inputs)
-    printLog(
-      `[${requestId}] Calling OpenAI batch embeddings API with timeout=${OPENAI_EMBEDDING_TIMEOUT_MS}ms and maxRetries=${OPENAI_EMBEDDING_MAX_RETRIES}...`
-    );
-
-    const batchEmbeddingResponse = await callOpenAIEmbeddingsWithRetry({
-      input: texts,
-      model: "text-embedding-ada-002",
-      requestId,
-      description: "3D search batch embeddings"
-    });
-    
-    const embeddings = batchEmbeddingResponse.data.map(item => item.embedding);
-    timings.reembedding = Date.now() - reembedStart;
-    console.timeEnd(`[${requestId}] Re-embedding`);
-    
-    printLog(`[${requestId}] ✓ Re-embedded ${embeddings.length} texts in ${timings.reembedding}ms`);
-    printLog(`[${requestId}] Embedding dimensions: ${embeddings[0].length}`);
-    printLog(`[${requestId}] Cost estimate: ~$${(texts.join(' ').length / 1000 * 0.0001).toFixed(4)}`);
 
     // Step 5: Project to 3D using UMAP
     printLog(`[${requestId}] Step 5: Starting UMAP projection to 3D...`);
@@ -1622,8 +1660,8 @@ app.post('/api/search-quotes-3d', async (req, res) => {
     // Step 6: Attach 3D coordinates to results
     printLog(`[${requestId}] Step 6: Attaching 3D coordinates to results...`);
     const results3d = similarDiscussions.map((result, index) => {
-      // Remove embedding from response (too large, not needed by client)
-      const { embedding, ...resultWithoutEmbedding } = result;
+      // Remove embedding/values from response (too large, not needed by client)
+      const { embedding, values, ...resultWithoutEmbedding } = result;
       
       return {
         ...resultWithoutEmbedding,
@@ -1791,6 +1829,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
     printLog(`[${requestId}] Performance breakdown:`);
     printLog(`[${requestId}]   - Query Embedding: ${timings.embedding}ms`);
     printLog(`[${requestId}]   - Pinecone Search: ${timings.search}ms`);
+    printLog(`[${requestId}]   - MongoDB Lookup: ${timings.mongoLookup}ms`);
     printLog(`[${requestId}]   - Re-embedding: ${timings.reembedding}ms`);
     printLog(`[${requestId}]   - UMAP Projection: ${timings.umap}ms`);
     if (extractAxisLabels) printLog(`[${requestId}]   - Axis Labeling: ${timings.axisLabeling}ms`);
@@ -1807,6 +1846,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         numResults: results3d.length,
         embeddingTimeMs: timings.embedding,
         searchTimeMs: timings.search,
+        mongoLookupTimeMs: timings.mongoLookup,
         reembeddingTimeMs: timings.reembedding,
         umapTimeMs: timings.umap,
         axisLabelingTimeMs: timings.axisLabeling,
@@ -1816,7 +1856,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         limitCapped: limit !== effectiveLimit,
         requestedLimit: limit,
         effectiveLimit: effectiveLimit,
-        approach: 'server-side-reembedding'
+        approach: 'mongodb-optimized-metadata'
       }
     };
     
@@ -4772,6 +4812,34 @@ app.get('/api/debug/raw-transcript-content/:guid', async (req, res) => {
 
 // Add a debug endpoint to trigger the ingestor manually (only in debug mode)
 if (DEBUG_MODE) {
+  // Debug endpoint to compare Pinecone vs MongoDB getEpisodeByGuid (DEPRECATED - keeping for reference)
+  app.get('/api/debug/compare-episode/:guid', async (req, res) => {
+    try {
+      const { guid } = req.params;
+      console.log(`[DEBUG] Testing MongoDB getEpisodeByGuid for GUID: ${guid}`);
+      
+      const startMongo = Date.now();
+      const mongoResult = await getEpisodeByGuid(guid);
+      const mongoTime = Date.now() - startMongo;
+      
+      res.json({
+        success: true,
+        guid,
+        timings: {
+          mongo: mongoTime
+        },
+        result: mongoResult,
+        note: 'Now using MongoDB version exclusively. Pinecone version has been removed.'
+      });
+    } catch (error) {
+      console.error('Error fetching episode:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+  
   app.post('/api/debug/trigger-ingestor', async (req, res) => {
     try {
       const jobId = `manual-job-${Date.now()}`;

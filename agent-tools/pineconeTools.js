@@ -367,7 +367,7 @@ const pineconeTools = {
                 filter,
                 topK: vectorLimit,
                 includeMetadata: includeMetadata,
-                includeValues: false, // Never request values from Pinecone
+                includeValues: includeValues, // Pass through the caller's preference
             });
             
             const queryTime = Date.now() - queryStartTime;
@@ -383,13 +383,14 @@ const pineconeTools = {
             const matches = queryResult.matches;
             printLog(`${debugPrefix} Step 3: Processing ${matches.length} matches...`);
             
-            // If includeMetadata is false, return minimal results (ID and score only)
+            // If includeMetadata is false, return minimal results (ID, score, and optionally values)
             // Caller will fetch metadata from MongoDB
             if (!includeMetadata) {
                 printLog(`${debugPrefix} includeMetadata=false - returning minimal results for MongoDB lookup`);
                 const minimalResults = matches.map(match => ({
                     id: match.id,
-                    score: match.score
+                    score: match.score,
+                    ...(includeValues && match.values && { values: match.values }) // Include values if requested
                 }));
                 
                 // If no query, just slice and return
@@ -577,52 +578,58 @@ const pineconeTools = {
         }
     },
 
+    /**
+     * Fetches episode metadata from MongoDB by GUID
+     * @param {string} guid - Episode GUID
+     * @returns {Object|null} Episode metadata or null if not found
+     */
     getEpisodeByGuid: async (guid) => {
         try {
             if (!guid) {
                 throw new Error('GUID is required to fetch episode data');
             }
             
-            // Query Pinecone with a filter for the specific guid and type "episode"
-            const dummyVector = Array(1536).fill(0);
-            const queryResult = await pineconeQuery('getEpisodeByGuid', {
-                vector: dummyVector,
-                filter: {
-                    type: "episode",
-                    guid: guid
-                },
-                topK: 1,
-                includeMetadata: true,
-            });
+            // Dynamically require to avoid circular dependency issues
+            const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+            
+            // Query MongoDB for episode with this guid
+            const episodeDoc = await JamieVectorMetadata.findOne({
+                type: 'episode',
+                guid: guid
+            })
+            .select('pineconeId metadataRaw')
+            .lean();
             
             // Check if we got results
-            if (!queryResult || !queryResult.matches || queryResult.matches.length === 0) {
+            if (!episodeDoc || !episodeDoc.metadataRaw) {
                 console.log('No episode found for guid:', guid);
                 return null;
             }
             
+            const metadata = episodeDoc.metadataRaw;
+            
             // Return the episode metadata
             return {
-                id: queryResult.matches[0].id,
+                id: episodeDoc.pineconeId,
                 guid: guid,
-                title: queryResult.matches[0].metadata.title || queryResult.matches[0].metadata.episode || "Unknown Title",
-                description: queryResult.matches[0].metadata.description || "",
-                publishedDate: queryResult.matches[0].metadata.publishedDate || queryResult.matches[0].metadata.published_date || null,
-                creator: queryResult.matches[0].metadata.creator || "Unknown Creator",
-                feedId: queryResult.matches[0].metadata.feedId || null,
-                audioUrl: queryResult.matches[0].metadata.audioUrl || null,
-                episodeImage: queryResult.matches[0].metadata.episodeImage 
-                              || queryResult.matches[0].metadata.image 
-                              || queryResult.matches[0].metadata.imageUrl 
+                title: metadata.title || metadata.episode || "Unknown Title",
+                description: metadata.description || "",
+                publishedDate: metadata.publishedDate || metadata.published_date || null,
+                creator: metadata.creator || "Unknown Creator",
+                feedId: metadata.feedId || null,
+                audioUrl: metadata.audioUrl || null,
+                episodeImage: metadata.episodeImage 
+                              || metadata.image 
+                              || metadata.imageUrl 
                               || null,
-                duration: queryResult.matches[0].metadata.duration || null,
-                listenLink: queryResult.matches[0].metadata.listenLink || null,
+                duration: metadata.duration || null,
+                listenLink: metadata.listenLink || null,
                 // Include any other relevant metadata fields
-                additionalMetadata: queryResult.matches[0].metadata
+                additionalMetadata: metadata
             };
         } catch (error) {
             console.error('Error in getEpisodeByGuid:', error);
-            throw new Error(`Failed to fetch episode data: ${error.message}`);
+            throw new Error(`Failed to fetch episode data from MongoDB: ${error.message}`);
         }
     },
     
