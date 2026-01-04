@@ -49,8 +49,11 @@ const initializeEntitlement = async (identifier, identifierType, entitlementType
   const now = new Date();
   const nextResetDate = new Date(now);
   nextResetDate.setDate(nextResetDate.getDate() + config.periodLengthDays);
-  
-  // Use findOneAndUpdate with upsert to avoid duplicate key errors
+
+  // Use an atomic upsert so that:
+  // - If no entitlement exists, it is created with the correct values
+  // - If an entitlement exists but the period has expired, it is reset in-place
+  // This avoids duplicate-key errors from the unique index.
   const entitlement = await Entitlement.findOneAndUpdate(
     {
       identifier,
@@ -58,6 +61,9 @@ const initializeEntitlement = async (identifier, identifierType, entitlementType
       entitlementType
     },
     {
+      identifier,
+      identifierType,
+      entitlementType,
       usedCount: 0,
       maxUsage: config.maxUsage,
       periodStart: now,
@@ -72,7 +78,7 @@ const initializeEntitlement = async (identifier, identifierType, entitlementType
       setDefaultsOnInsert: true
     }
   );
-  
+
   return entitlement;
 };
 
@@ -90,12 +96,8 @@ const checkEntitlementEligibility = async (identifier, identifierType, entitleme
       entitlementType
     });
     
-    // If no entitlement exists, initialize new entitlement
-    if (!entitlement) {
-      entitlement = await initializeEntitlement(identifier, identifierType, entitlementType);
-    }
-    // If period has expired, reset the entitlement
-    else if (isPeriodExpired(entitlement.periodStart, entitlement.periodLengthDays)) {
+    // If no entitlement exists or period has expired, initialize new entitlement
+    if (!entitlement || isPeriodExpired(entitlement.periodStart, entitlement.periodLengthDays)) {
       entitlement = await initializeEntitlement(identifier, identifierType, entitlementType);
     }
     
@@ -111,17 +113,9 @@ const checkEntitlementEligibility = async (identifier, identifierType, entitleme
     };
   } catch (error) {
     console.error('Error checking entitlement eligibility:', error);
-    return {
-      eligible: false,
-      error: 'Internal server error',
-      remainingUsage: 0,
-      maxUsage: 0,
-      usedCount: 0,
-      periodStart: null,
-      nextResetDate: null,
-      daysUntilReset: 0,
-      status: 'expired'
-    };
+    // Let callers surface this as a proper 5xx instead of
+    // returning a misleading 0/0 entitlement state.
+    throw error;
   }
 };
 
