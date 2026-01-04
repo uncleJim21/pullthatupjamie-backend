@@ -554,19 +554,21 @@ class ContentBuffer {
 
 app.get('/api/get-available-feeds', async (req, res) => {
   try {
-      console.log('Fetching available feeds from cache');
-      const results = await feedCacheManager.getFeeds();
+      console.log('Fetching available feeds directly from Pinecone');
+      const startTime = Date.now();
       
-      // Ensure we have results before sending response
-      if (!Array.isArray(results)) {
-          throw new Error('Invalid feed data format');
-      }
-
+      // Call getFeedsDetails directly (no cache)
+      // Note: getFeedsDetails returns an array directly
+      const results = await getFeedsDetails();
+      
+      const duration = Date.now() - startTime;
+      console.log(`Fetched ${results.length} feeds in ${duration}ms`);
+      
       // Send response with results
       res.json({ 
           results, 
           count: results.length,
-          cacheTime: feedCacheManager.lastUpdateTime
+          fetchTimeMs: duration
       });
   } catch (error) {
       console.error('Error fetching available feeds:', error);

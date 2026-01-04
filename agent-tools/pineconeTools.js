@@ -53,61 +53,39 @@ const pineconeDescribeStats = (operationName) =>
 
 const pineconeTools = {
     getFeedsDetails: async () => {
-        const dummyVector = Array(1536).fill(0);
-        let allFeeds = [];
-        let processedFeedIds = new Set();  // Track processed feedIds
-        const batchSize = 30;  // Number of feeds per query batch
-        let hasMoreFeeds = true;
-    
-        while (hasMoreFeeds) {
-            try {
-                // Create a filter to exclude already processed feedIds
-                const filter = processedFeedIds.size > 0 
-                    ? { type: "feed", feedId: { $nin: [...processedFeedIds] } } 
-                    : { type: "feed" };
-    
-                // Query Pinecone with the filter to exclude processed feedIds
-                const queryResult = await pineconeQuery('getFeedsDetails', {
-                    vector: dummyVector,
-                    filter: filter,
-                    topK: batchSize,
-                    includeMetadata: true,
-                });
-    
-                // Log the query result for debugging
-                console.log(`Query Batch Result:`, JSON.stringify(queryResult, null, 2));
-    
-                if (!queryResult.matches || queryResult.matches.length === 0) {
-                    console.warn('No more matches found for the query.');
-                    break;  // Exit the loop if no more results are returned
-                }
-    
-                // Add the new feeds to the result list
-                allFeeds = [
-                    ...allFeeds,
-                    ...queryResult.matches.map(match => ({
-                        feedImage: match.metadata.imageUrl || "no image",
-                        title: match.metadata.title || "Unknown Title",
-                        description: match.metadata.description || "",
-                        feedId: match.metadata.feedId || ""
-                    }))
-                ];
-    
-                // Add the new feedIds to the processed set
-                queryResult.matches.forEach(match => processedFeedIds.add(match.metadata.feedId));
-    
-                // If fewer than batchSize results were returned, stop the loop
-                if (queryResult.matches.length < batchSize) {
-                    hasMoreFeeds = false;
-                }
-    
-            } catch (error) {
-                console.error("Error fetching feeds details:", error);
-                break;  // Exit loop on error
-            }
+        const debugPrefix = '[MONGO-GET-FEEDS-DETAILS]';
+        const { printLog } = require('../constants');
+        printLog(`${debugPrefix} Fetching all feeds from MongoDB...`);
+        
+        try {
+            // Fetch all feed documents from MongoDB
+            const feedDocs = await JamieVectorMetadata.find({
+                type: 'feed'
+            })
+            .select('feedId metadataRaw')
+            .lean();
+            
+            printLog(`${debugPrefix} Found ${feedDocs.length} feeds in MongoDB`);
+            
+            // Format to match the baseline schema: array of { feedImage, title, description, feedId }
+            const results = feedDocs.map(doc => {
+                const metadata = doc.metadataRaw || {};
+                return {
+                    feedImage: metadata.imageUrl || "no image",
+                    title: metadata.title || "Unknown Title",
+                    description: metadata.description || "",
+                    feedId: String(metadata.feedId || doc.feedId || "")
+                };
+            });
+            
+            printLog(`${debugPrefix} Returning ${results.length} feeds`);
+            return results;
+            
+        } catch (error) {
+            printLog(`${debugPrefix} Error: ${error.message}`);
+            console.error("Error fetching feeds from MongoDB:", error);
+            return [];
         }
-    
-        return allFeeds;
     },
     getClipById: async (clipId) => {
         const debugPrefix = '[MONGO-CLIP-BY-ID]';
