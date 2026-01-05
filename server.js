@@ -1142,9 +1142,12 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 });
 
 app.post('/api/search-quotes', async (req, res) => {
-  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null } = req.body;
-  limit = Math.floor((process.env.MAX_PODCAST_SEARCH_RESULTS ? process.env.MAX_PODCAST_SEARCH_RESULTS : 50, limit))
-  printLog(`/api/search-quotes req:`,req)
+  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
+  limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
+  const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  printLog(`[${requestId}] /api/search-quotes request received`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUID: ${guid || 'none'}`);
 
   try {
     const embeddingResponse = await openai.embeddings.create({
@@ -1154,10 +1157,11 @@ app.post('/api/search-quotes', async (req, res) => {
     
     const embedding = embeddingResponse.data[0].embedding;
 
-    // Search for similar discussions using the embedding
+    // Search for similar discussions using the embedding (old Pinecone paradigm)
     const similarDiscussions = await findSimilarDiscussions({
       embedding,
       feedIds,
+      guid,  // NEW: Optional GUID filter for specific episode
       limit,
       query,
       minDate,
@@ -1165,13 +1169,10 @@ app.post('/api/search-quotes', async (req, res) => {
       episodeName
     });
 
-    // Format and return the results
-    printLog(`---------------------------`)
-    printLog(`results:${JSON.stringify(similarDiscussions,null,2)}`)
-    printLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~`)
+    // Format and return the results (using old paradigm - results already formatted)
     const results = similarDiscussions.map(discussion => ({
       shareUrl: discussion.shareUrl,
-      shareLink:discussion.shareLink,
+      shareLink: discussion.shareLink,
       quote: discussion.quote,
       episode: discussion.episode,
       creator: discussion.creator,
@@ -1184,13 +1185,13 @@ app.post('/api/search-quotes', async (req, res) => {
           vector: discussion.similarity.vector
       },
       timeContext: discussion.timeContext
-  }));
+    }));
 
     res.json({
       query,
       results,
       total: results.length,
-      model: "text-embedding-ada-002" // Include model info for reference
+      model: "text-embedding-ada-002"
     });
 
   } catch (error) {
