@@ -844,27 +844,10 @@ const pineconeTools = {
         const emptyResult = { before: [], current: null, after: [] };
 
         try {
-            printLog('[adjacent] start', { paragraphId, windowSize });
+            printLog('[adjacent-mongo] start', { paragraphId, windowSize });
 
             if (!paragraphId || typeof paragraphId !== 'string') {
-                printLog('[adjacent] invalid paragraphId', paragraphId);
-                return emptyResult;
-            }
-
-            // Parse ID: expect "..._p{sequence}"
-            const sepIndex = paragraphId.lastIndexOf('_p');
-            if (sepIndex === -1) {
-                printLog('[adjacent] invalid id format (no _p)', paragraphId);
-                return emptyResult;
-            }
-
-            // Base ID prefix used for constructing neighbour IDs
-            const baseId = paragraphId.slice(0, sepIndex);
-            const seqStr = paragraphId.slice(sepIndex + 2);
-            const centerSeq = parseInt(seqStr, 10);
-
-            if (Number.isNaN(centerSeq)) {
-                printLog('[adjacent] failed to parse sequence from id', { paragraphId, seqStr });
+                printLog('[adjacent-mongo] invalid paragraphId', paragraphId);
                 return emptyResult;
             }
 
@@ -872,126 +855,97 @@ const pineconeTools = {
             if (!Number.isFinite(win) || win <= 0) {
                 win = 5;
             }
-            // Enforce an upper bound on window size so the request remains cheap
-            const MAX_WINDOW_SIZE = 9; // ensures 2*win+1 <= 19, under topK cap of 20
+            // Enforce an upper bound on window size
+            const MAX_WINDOW_SIZE = 20;
             if (win > MAX_WINDOW_SIZE) {
                 win = MAX_WINDOW_SIZE;
             }
 
-            printLog('[adjacent] parsed inputs', { baseId, centerSeq, win });
+            // 1) Find the central paragraph by pineconeId
+            const centralDoc = await JamieVectorMetadata.findOne({
+                pineconeId: paragraphId,
+                type: 'paragraph'
+            }).lean();
 
-            // Helper to enforce an upper bound on Pinecone latency so the
-            // endpoint never hangs indefinitely (caller can treat emptyResult
-            // as a failure).
-            const withTimeout = (promise, ms) => {
-                return Promise.race([
-                    promise,
-                    new Promise((_, reject) =>
-                        setTimeout(() => reject(new Error(`getAdjacentParagraphs timeout after ${ms}ms`)), ms)
-                    )
-                ]);
-            };
-
-            // 1) Fetch the central paragraph by ID
-            const centerFetch = await withTimeout(index.fetch([paragraphId]), 4000);
-
-            const centerRecord = centerFetch && centerFetch.records
-                ? centerFetch.records[paragraphId]
-                : null;
-
-            if (!centerRecord || !centerRecord.metadata) {
-                printLog('[adjacent] central paragraph not found via fetch', { paragraphId });
+            if (!centralDoc) {
+                printLog('[adjacent-mongo] central paragraph not found', { paragraphId });
                 return emptyResult;
             }
 
-            const current = {
-                id: paragraphId,
-                ...centerRecord.metadata
-            };
+            printLog('[adjacent-mongo] found central paragraph', { 
+                paragraphId, 
+                guid: centralDoc.guid,
+                start_time: centralDoc.start_time 
+            });
 
-            const currentSeq = centerSeq;
-            printLog('[adjacent] found central paragraph', { currentId: current.id, currentSeq });
+            // 2) Find all paragraphs in the same episode, ordered by start_time
+            const allParagraphs = await JamieVectorMetadata.find({
+                type: 'paragraph',
+                guid: centralDoc.guid
+            })
+            .sort({ start_time: 1 }) // Order by time, not ID sequence
+            .lean();
 
-            // 2) Build neighbour IDs within the requested window, clamping at 0
-            const neighbourIds = [];
-            for (let offset = -win; offset <= win; offset++) {
-                if (offset === 0) continue; // skip central
-                const seq = centerSeq + offset;
-                if (seq < 0) continue;     // no negative sequences
-                neighbourIds.push(`${baseId}_p${seq}`);
+            printLog('[adjacent-mongo] found total paragraphs', { 
+                count: allParagraphs.length,
+                guid: centralDoc.guid 
+            });
+
+            // 3) Find the central paragraph's position in the time-ordered array
+            const centralIndex = allParagraphs.findIndex(p => p.pineconeId === paragraphId);
+            
+            if (centralIndex === -1) {
+                printLog('[adjacent-mongo] central paragraph not found in episode paragraphs', { paragraphId });
+                return emptyResult;
             }
 
-            if (neighbourIds.length === 0) {
-                printLog('[adjacent] no neighbour IDs to fetch', { paragraphId, win });
-                return { before: [], current, after: [] };
-            }
+            printLog('[adjacent-mongo] central paragraph position', { 
+                centralIndex, 
+                totalParagraphs: allParagraphs.length 
+            });
 
-            printLog('[adjacent] neighbour ids', neighbourIds);
-
-            // Fetch neighbours individually so we don't depend on multi-ID fetch behaviour.
-            // Do this in parallel but with per-call timeouts to keep overall latency bounded.
-            const neighbourResults = await Promise.all(
-                neighbourIds.map(async (id) => {
-                    try {
-                        const fetchResult = await withTimeout(index.fetch([id]), 2500);
-                        const record = fetchResult && fetchResult.records ? fetchResult.records[id] : null;
-                        return { id, record };
-                    } catch (err) {
-                        printLog('[adjacent] neighbour fetch timeout or error', { id, error: err.message || String(err) });
-                        return { id, record: null };
-                    }
-                })
+            // 4) Extract before/after based on windowSize
+            const before = allParagraphs.slice(
+                Math.max(0, centralIndex - win), 
+                centralIndex
+            );
+            const after = allParagraphs.slice(
+                centralIndex + 1, 
+                Math.min(allParagraphs.length, centralIndex + 1 + win)
             );
 
-            // Helper to get sequence number from ID
-            const getSeqFromId = (id) => {
-                const idx = id.lastIndexOf('_p');
-                if (idx === -1) return null;
-                const s = parseInt(id.slice(idx + 2), 10);
-                return Number.isNaN(s) ? null : s;
+            // 5) Format results to match expected structure (using pineconeId as 'id')
+            const formatParagraphResult = (doc) => ({
+                id: doc.pineconeId,
+                end_time: doc.end_time,
+                feedId: parseInt(doc.feedId, 10), // Ensure feedId is a number for schema compatibility
+                guid: doc.guid,
+                publishedDate: doc.publishedDate,
+                publishedMonth: doc.publishedMonth,
+                publishedTimestamp: doc.publishedTimestamp,
+                publishedYear: doc.publishedYear,
+                start_time: doc.start_time,
+                type: doc.type
+            });
+
+            const result = {
+                before: before.map(formatParagraphResult),
+                current: formatParagraphResult(centralDoc),
+                after: after.map(formatParagraphResult)
             };
 
-            const before = [];
-            const after = [];
-
-            neighbourResults.forEach(({ id, record }) => {
-                if (!record || !record.metadata) return;
-
-                const seq = getSeqFromId(id);
-                if (seq == null) return;
-
-                const paragraphObj = {
-                    id,
-                    ...record.metadata
-                };
-
-                if (seq < currentSeq) {
-                    before.push(paragraphObj);
-                } else if (seq > currentSeq) {
-                    after.push(paragraphObj);
-                }
+            printLog('[adjacent-mongo] result window', {
+                beforeCount: result.before.length,
+                afterCount: result.after.length,
+                beforeIds: result.before.map(p => p.id),
+                currentId: result.current.id,
+                afterIds: result.after.map(p => p.id)
             });
 
-            printLog('[adjacent] fetched neighbours', {
-                fetchedIds: neighbourResults.filter(r => r.record).map(r => r.id),
-                beforeSeqs: before.map(p => getSeqFromId(p.id)),
-                afterSeqs: after.map(p => getSeqFromId(p.id))
-            });
-
-            // Sort neighbours by sequence for deterministic ordering
-            before.sort((a, b) => getSeqFromId(a.id) - getSeqFromId(b.id));
-            after.sort((a, b) => getSeqFromId(a.id) - getSeqFromId(b.id));
-
-            printLog('[adjacent] result window', {
-                beforeIds: before.map(p => p.id),
-                currentId: current.id,
-                afterIds: after.map(p => p.id)
-            });
-
-            return { before, current, after };
+            return result;
         } catch (error) {
-            console.error('Error in getAdjacentParagraphs:', error);
-            printLog('[adjacent] error', error.message || error);
+            console.error('Error in getAdjacentParagraphs (MongoDB):', error);
+            printLog('[adjacent-mongo] error', error.message || error);
             return emptyResult;
         }
     },
