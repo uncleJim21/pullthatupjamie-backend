@@ -1257,12 +1257,12 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 });
 
 app.post('/api/search-quotes', async (req, res) => {
-  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null } = req.body;
+  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
   printLog(`[${requestId}] /api/search-quotes request received`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUID: ${guid || 'none'}`);
 
   try {
     // Step 1: Generate query embedding
@@ -1280,6 +1280,7 @@ app.post('/api/search-quotes', async (req, res) => {
     const minimalResults = await findSimilarDiscussions({
       embedding,
       feedIds,
+      guid,  // NEW: Optional GUID filter for specific episode
       limit,
       query,
       minDate,
