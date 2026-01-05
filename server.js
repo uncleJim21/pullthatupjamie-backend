@@ -8,7 +8,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats, formatResults} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats, getAdjacentParagraphs,formatResults} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -2573,6 +2573,31 @@ app.get('/api/paragraph-with-feed/:paragraphId', async (req, res) => {
       error: 'Failed to fetch paragraph with feed data',
       details: error.message,
       paragraphId: req.params.paragraphId
+    });
+  }
+});
+
+// Get adjacent paragraphs around a central paragraph ID for context expansion
+// Example: GET /api/adjacent-paragraphs/episode123_p5?windowSize=5
+app.get('/api/adjacent-paragraphs/:paragraphId', async (req, res) => {
+  try {
+    const { paragraphId } = req.params;
+    let { windowSize } = req.query;
+
+    let parsedWindowSize = parseInt(windowSize, 10);
+    if (!Number.isFinite(parsedWindowSize) || parsedWindowSize <= 0) {
+      parsedWindowSize = 5;
+    }
+
+    const result = await getAdjacentParagraphs(paragraphId, parsedWindowSize);
+    return res.json(result);
+  } catch (error) {
+    console.error('Error fetching adjacent paragraphs:', error);
+    return res.status(500).json({
+      before: [],
+      current: null,
+      after: [],
+      error: 'Failed to fetch adjacent paragraphs'
     });
   }
 });

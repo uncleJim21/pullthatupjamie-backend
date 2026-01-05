@@ -6,6 +6,7 @@ const natural = require('natural');
 const tokenizer = new natural.WordTokenizer();
 const TfIdf = natural.TfIdf;
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const { printLog } = require('../constants.js');
 
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = process.env.PINECONE_INDEX;
@@ -815,6 +816,183 @@ const pineconeTools = {
             printLog(`${debugPrefix} Error getting text for time range: ${error.message}`);
             console.error(`Error getting text for time range:`, error);
             return null;
+        }
+    },
+
+    /**
+     * Gets adjacent paragraphs around a central paragraph ID using direct
+     * ID-based fetches from Pinecone (no similarity query), then slicing
+     * around the center sequence.
+     *
+     * Paragraph IDs are expected in the format: {base}_p{sequenceNumber}
+     * Example: episode123_p5 with windowSize=2 will look for:
+     *   before: episode123_p3, episode123_p4
+     *   current: episode123_p5
+     *   after:  episode123_p6, episode123_p7
+     *
+     * Returns structure:
+     * {
+     *   before: [ { id, ...metadata }, ... ],
+     *   current: { id, ...metadata } | null,
+     *   after: [ { id, ...metadata }, ... ]
+     * }
+     *
+     * On invalid ID, missing central paragraph, or error:
+     *   { before: [], current: null, after: [] }
+     */
+    getAdjacentParagraphs: async (paragraphId, windowSize = 5) => {
+        const emptyResult = { before: [], current: null, after: [] };
+
+        try {
+            printLog('[adjacent] start', { paragraphId, windowSize });
+
+            if (!paragraphId || typeof paragraphId !== 'string') {
+                printLog('[adjacent] invalid paragraphId', paragraphId);
+                return emptyResult;
+            }
+
+            // Parse ID: expect "..._p{sequence}"
+            const sepIndex = paragraphId.lastIndexOf('_p');
+            if (sepIndex === -1) {
+                printLog('[adjacent] invalid id format (no _p)', paragraphId);
+                return emptyResult;
+            }
+
+            // Base ID prefix used for constructing neighbour IDs
+            const baseId = paragraphId.slice(0, sepIndex);
+            const seqStr = paragraphId.slice(sepIndex + 2);
+            const centerSeq = parseInt(seqStr, 10);
+
+            if (Number.isNaN(centerSeq)) {
+                printLog('[adjacent] failed to parse sequence from id', { paragraphId, seqStr });
+                return emptyResult;
+            }
+
+            let win = parseInt(windowSize, 10);
+            if (!Number.isFinite(win) || win <= 0) {
+                win = 5;
+            }
+            // Enforce an upper bound on window size so the request remains cheap
+            const MAX_WINDOW_SIZE = 9; // ensures 2*win+1 <= 19, under topK cap of 20
+            if (win > MAX_WINDOW_SIZE) {
+                win = MAX_WINDOW_SIZE;
+            }
+
+            printLog('[adjacent] parsed inputs', { baseId, centerSeq, win });
+
+            // Helper to enforce an upper bound on Pinecone latency so the
+            // endpoint never hangs indefinitely (caller can treat emptyResult
+            // as a failure).
+            const withTimeout = (promise, ms) => {
+                return Promise.race([
+                    promise,
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error(`getAdjacentParagraphs timeout after ${ms}ms`)), ms)
+                    )
+                ]);
+            };
+
+            // 1) Fetch the central paragraph by ID
+            const centerFetch = await withTimeout(index.fetch([paragraphId]), 4000);
+
+            const centerRecord = centerFetch && centerFetch.records
+                ? centerFetch.records[paragraphId]
+                : null;
+
+            if (!centerRecord || !centerRecord.metadata) {
+                printLog('[adjacent] central paragraph not found via fetch', { paragraphId });
+                return emptyResult;
+            }
+
+            const current = {
+                id: paragraphId,
+                ...centerRecord.metadata
+            };
+
+            const currentSeq = centerSeq;
+            printLog('[adjacent] found central paragraph', { currentId: current.id, currentSeq });
+
+            // 2) Build neighbour IDs within the requested window, clamping at 0
+            const neighbourIds = [];
+            for (let offset = -win; offset <= win; offset++) {
+                if (offset === 0) continue; // skip central
+                const seq = centerSeq + offset;
+                if (seq < 0) continue;     // no negative sequences
+                neighbourIds.push(`${baseId}_p${seq}`);
+            }
+
+            if (neighbourIds.length === 0) {
+                printLog('[adjacent] no neighbour IDs to fetch', { paragraphId, win });
+                return { before: [], current, after: [] };
+            }
+
+            printLog('[adjacent] neighbour ids', neighbourIds);
+
+            // Fetch neighbours individually so we don't depend on multi-ID fetch behaviour.
+            // Do this in parallel but with per-call timeouts to keep overall latency bounded.
+            const neighbourResults = await Promise.all(
+                neighbourIds.map(async (id) => {
+                    try {
+                        const fetchResult = await withTimeout(index.fetch([id]), 2500);
+                        const record = fetchResult && fetchResult.records ? fetchResult.records[id] : null;
+                        return { id, record };
+                    } catch (err) {
+                        printLog('[adjacent] neighbour fetch timeout or error', { id, error: err.message || String(err) });
+                        return { id, record: null };
+                    }
+                })
+            );
+
+            // Helper to get sequence number from ID
+            const getSeqFromId = (id) => {
+                const idx = id.lastIndexOf('_p');
+                if (idx === -1) return null;
+                const s = parseInt(id.slice(idx + 2), 10);
+                return Number.isNaN(s) ? null : s;
+            };
+
+            const before = [];
+            const after = [];
+
+            neighbourResults.forEach(({ id, record }) => {
+                if (!record || !record.metadata) return;
+
+                const seq = getSeqFromId(id);
+                if (seq == null) return;
+
+                const paragraphObj = {
+                    id,
+                    ...record.metadata
+                };
+
+                if (seq < currentSeq) {
+                    before.push(paragraphObj);
+                } else if (seq > currentSeq) {
+                    after.push(paragraphObj);
+                }
+            });
+
+            printLog('[adjacent] fetched neighbours', {
+                fetchedIds: neighbourResults.filter(r => r.record).map(r => r.id),
+                beforeSeqs: before.map(p => getSeqFromId(p.id)),
+                afterSeqs: after.map(p => getSeqFromId(p.id))
+            });
+
+            // Sort neighbours by sequence for deterministic ordering
+            before.sort((a, b) => getSeqFromId(a.id) - getSeqFromId(b.id));
+            after.sort((a, b) => getSeqFromId(a.id) - getSeqFromId(b.id));
+
+            printLog('[adjacent] result window', {
+                beforeIds: before.map(p => p.id),
+                currentId: current.id,
+                afterIds: after.map(p => p.id)
+            });
+
+            return { before, current, after };
+        } catch (error) {
+            console.error('Error in getAdjacentParagraphs:', error);
+            printLog('[adjacent] error', error.message || error);
+            return emptyResult;
         }
     },
 
