@@ -6,6 +6,9 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 
+// Feature flags
+const jamieExplorePostRoutesEnabled = false; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
+
 // Pinecone timeout helper
 const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
 const withPineconeTimeout = async (operationName, fn) => {
@@ -86,6 +89,10 @@ async function callOpenAIEmbeddingsWithRetry({ input, model = "text-embedding-ad
   printLog(`[${requestId}] ✗ All retry attempts exhausted for ${description}`);
   throw lastError;
 }
+
+// ========== POST ROUTES (conditionally enabled) ==========
+if (jamieExplorePostRoutesEnabled) {
+  printLog('[JAMIE-EXPLORE-ROUTES] POST routes ENABLED (search-quotes-3d, fetch-research-id)');
 
 router.post('/search-quotes-3d', async (req, res) => {
   const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1021,6 +1028,12 @@ router.post('/fetch-research-id', async (req, res) => {
     });
   }
 });
+
+} else {
+  printLog('[JAMIE-EXPLORE-ROUTES] POST routes DISABLED (search-quotes-3d, fetch-research-id)');
+}
+
+// ========== GET ROUTES (always enabled) ==========
 
 router.get('/episode-with-chapters/:guid', async (req, res) => {
   try {
