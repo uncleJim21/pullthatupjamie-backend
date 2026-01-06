@@ -1297,7 +1297,8 @@ app.post('/api/search-quotes', async (req, res) => {
     
     const JamieVectorMetadata = require('./models/JamieVectorMetadata');
     const metadataDocs = await JamieVectorMetadata.find({
-      pineconeId: { $in: pineconeIds }
+      pineconeId: { $in: pineconeIds },
+      type: 'paragraph'
     })
     .select('pineconeId metadataRaw')
     .lean();

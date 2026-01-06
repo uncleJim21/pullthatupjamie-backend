@@ -315,9 +315,11 @@ const pineconeTools = {
             const intFeedIds = feedIds.map(feedId => parseInt(feedId, 10)).filter(id => !isNaN(id));
             printLog(`${debugPrefix} Parsed ${intFeedIds.length} feed IDs:`, intFeedIds);
             
-            // Build Pinecone filter with all metadata constraints
+            // Build Pinecone filter with all metadata constraints.
+            // We now restrict strictly to paragraph-level vectors so chapters,
+            // episodes, and feeds are excluded at the vector search layer.
             const filter = {
-                type: { $ne: "feed" }, // Exclude feed-level results, allow episode/chapter/paragraph
+                type: 'paragraph',
                 ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
                 ...(guid && { guid }),  // Add guid filter when provided
             };

@@ -1,6 +1,7 @@
 // FeedCacheManager.js
 const { getFeedsDetails } = require('../agent-tools/pineconeTools');
 const DigitalOceanSpacesManager = require('../utils/DigitalOceanSpacesManager');
+const { printLog } = require('../constants');
 const fetch = require('node-fetch');
 
 class FeedCacheManager {
@@ -66,7 +67,7 @@ class FeedCacheManager {
 
     async processFeeds(response) {
         if (!response?.matches || !Array.isArray(response.matches)) {
-            console.error('Invalid response format:', response);
+            //printLog('Invalid response format:', response);
             return response;
         }
 
