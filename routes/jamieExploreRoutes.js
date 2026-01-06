@@ -6,6 +6,20 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 
+// Pinecone timeout helper
+const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
+const withPineconeTimeout = async (operationName, fn) => {
+  const timeoutMs = PINECONE_TIMEOUT_MS;
+  return Promise.race([
+    fn(),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Pinecone operation "${operationName}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    })
+  ]);
+};
+
 // OpenAI client initialization
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY

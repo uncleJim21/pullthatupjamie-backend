@@ -2156,7 +2156,7 @@ app.use('/api/nostr', nostrRoutes);
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
-// app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
+app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
