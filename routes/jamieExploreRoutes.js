@@ -7,7 +7,7 @@ const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 
 // Feature flags
-const jamieExplorePostRoutesEnabled = false; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
+const jamieExplorePostRoutesEnabled = true; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
 
 // Pinecone timeout helper
 const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
@@ -638,7 +638,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
 
 router.post('/fetch-research-id', async (req, res) => {
   const requestId = `FETCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { researchSessionId, fastMode = false, extractAxisLabels = false } = req.body || {};
+  let { researchSessionId, fastMode = false, extractAxisLabels = false, forceRecompute = false } = req.body || {};
 
   printLog(`[${requestId}] ========== FETCH RESEARCH SESSION 3D REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -777,6 +777,163 @@ router.post('/fetch-research-id', async (req, res) => {
         error: 'No items to project',
         message: 'No valid items found in this research session.',
         resultCount: similarDiscussions.length
+      });
+    }
+
+    // Fast path: if ALL items already have stored coordinates, reuse them and skip re-embedding + UMAP
+    // unless the caller explicitly requests recomputation.
+    const hasAllStoredCoordinates = similarDiscussions.every((r) => {
+      const c = r && r.coordinates3d;
+      return (
+        c &&
+        typeof c === 'object' &&
+        typeof c.x === 'number' &&
+        typeof c.y === 'number' &&
+        typeof c.z === 'number'
+      );
+    });
+
+    if (hasAllStoredCoordinates && !forceRecompute) {
+      printLog(
+        `[${requestId}] ✓ Using stored coordinates for all ${similarDiscussions.length} items (skipping OpenAI re-embedding + UMAP)`
+      );
+
+      const results3d = similarDiscussions;
+
+      // Optional axis labels (can still run using stored coords)
+      let axisLabels = null;
+      if (extractAxisLabels && results3d.length >= 7) {
+        printLog(`[${requestId}] Axis labels requested; generating from stored coordinates...`);
+        console.time(`[${requestId}] Axis-Labeling`);
+        const labelingStart = Date.now();
+
+        try {
+          const findClosestPoint = (targetX, targetY, targetZ) => {
+            let minDist = Infinity;
+            let closestIndex = 0;
+
+            results3d.forEach((result, index) => {
+              const { x, y, z } = result.coordinates3d;
+              const dist = Math.sqrt(
+                Math.pow(x - targetX, 2) +
+                Math.pow(y - targetY, 2) +
+                Math.pow(z - targetZ, 2)
+              );
+              if (dist < minDist) {
+                minDist = dist;
+                closestIndex = index;
+              }
+            });
+
+            return closestIndex;
+          };
+
+          const cardinalIndices = {
+            center: findClosestPoint(0, 0, 0),
+            xPositive: findClosestPoint(1, 0, 0),
+            xNegative: findClosestPoint(-1, 0, 0),
+            yPositive: findClosestPoint(0, 1, 0),
+            yNegative: findClosestPoint(0, -1, 0),
+            zPositive: findClosestPoint(0, 0, 1),
+            zNegative: findClosestPoint(0, 0, -1)
+          };
+
+          const getTextFromResult = (result) => {
+            let text = '';
+
+            switch(result.hierarchyLevel) {
+              case 'paragraph':
+                text = result.quote || result.text || '';
+                break;
+              case 'chapter':
+                text = result.headline || result.summary || '';
+                break;
+              case 'episode':
+              case 'feed':
+              default:
+                text = result.description || result.summary || result.headline || result.quote || '';
+                break;
+            }
+
+            return text || result.quote || '';
+          };
+
+          const labelPrompts = {
+            center: 'a short phrase describing what these clips have in common',
+            xPositive: 'what semantic theme is strongest at the positive X direction?',
+            xNegative: 'what semantic theme is strongest at the negative X direction?',
+            yPositive: 'what semantic theme is strongest at the positive Y direction?',
+            yNegative: 'what semantic theme is strongest at the negative Y direction?',
+            zPositive: 'what semantic theme is strongest at the positive Z direction?',
+            zNegative: 'what semantic theme is strongest at the negative Z direction?'
+          };
+
+          axisLabels = {};
+
+          for (const [axis, index] of Object.entries(cardinalIndices)) {
+            const result = results3d[index];
+            const text = getTextFromResult(result);
+
+            if (!text) {
+              axisLabels[axis] = null;
+              continue;
+            }
+
+            const labelingResponse = await openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'You are helping label semantic axes in a 3D embedding space of podcast clips. ' +
+                    'Given an example clip, respond with a very short 1-3 word label capturing its main theme. ' +
+                    'Do not add quotes or extra explanation.'
+                },
+                {
+                  role: 'user',
+                  content: `Example text:\n\n${text}\n\nQuestion: ${labelPrompts[axis]}\n\nAxis label:`
+                }
+              ],
+              max_tokens: 16,
+              temperature: 0.4
+            });
+
+            const rawLabel = labelingResponse.choices?.[0]?.message?.content || '';
+            const firstLine = rawLabel.split('\n')[0].trim();
+            axisLabels[axis] = firstLine.replace(/^["']|["']$/g, '').trim();
+          }
+
+          timings.axisLabeling = Date.now() - labelingStart;
+          console.timeEnd(`[${requestId}] Axis-Labeling`);
+        } catch (e) {
+          printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+          axisLabels = null;
+        }
+      }
+
+      timings.total = Date.now() - startTime;
+
+      return res.json({
+        query: researchSessionId,
+        results: results3d,
+        total: results3d.length,
+        model: "text-embedding-ada-002",
+        metadata: {
+          numResults: results3d.length,
+          embeddingTimeMs: timings.embedding,
+          searchTimeMs: timings.search,
+          reembeddingTimeMs: 0,
+          umapTimeMs: 0,
+          axisLabelingTimeMs: timings.axisLabeling,
+          totalTimeMs: timings.total,
+          fastMode,
+          umapConfig: 'skipped',
+          skippedUMAP: true,
+          reusedStoredCoordinates: true,
+          forceRecompute: false,
+          approach: 'research-session'
+        },
+        axisLabels
       });
     }
 
