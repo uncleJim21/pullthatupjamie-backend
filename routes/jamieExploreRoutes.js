@@ -1039,65 +1039,65 @@ router.get('/episode-with-chapters/:guid', async (req, res) => {
   try {
     const { guid } = req.params;
     console.log(`Fetching episode with chapters for GUID: ${guid}`);
-    
-    // Initialize Pinecone
-    const { Pinecone } = require('@pinecone-database/pinecone');
-    const pinecone = new Pinecone({
-      apiKey: process.env.PINECONE_API_KEY,
-    });
-    const index = pinecone.index(process.env.PINECONE_INDEX);
-    
-    // Step 1: Fetch the episode
+
+    // Mongo-only: use JamieVectorMetadata as the metadata mirror.
     const episodeId = `episode_${guid}`;
-    const episodeFetch = await withPineconeTimeout(
-      'episode-with-chapters:fetch-episode',
-      () => index.fetch([episodeId])
-    );
-    
-    if (!episodeFetch.records || !episodeFetch.records[episodeId]) {
+
+    // Step 1: Fetch the episode from MongoDB
+    const episodeDoc = await JamieVectorMetadata.findOne({ pineconeId: episodeId })
+      .select('pineconeId metadataRaw')
+      .lean();
+
+    if (!episodeDoc || !episodeDoc.metadataRaw) {
       return res.status(404).json({ 
         error: 'Episode not found',
         guid 
       });
     }
-    
+
     const episode = {
       id: episodeId,
       guid: guid,
-      metadata: episodeFetch.records[episodeId].metadata
+      metadata: episodeDoc.metadataRaw
     };
     
     console.log(`Found episode: ${episode.metadata.title || 'Unknown Title'}`);
-    
-    // Step 2: Query for all chapters with this guid
-    const dummyVector = Array(1536).fill(0);
-    const chaptersQuery = await withPineconeTimeout(
-      'episode-with-chapters:query-chapters',
-      () => index.query({
-        vector: dummyVector,
-        filter: {
-          type: "chapter",
-          guid: guid
-        },
-        topK: 100, // Get up to 100 chapters (should be more than enough)
-        includeMetadata: true
-      })
-    );
-    
-    // Format chapters
-    const chapters = chaptersQuery.matches.map(match => ({
-      id: match.id,
-      metadata: match.metadata,
-      chapterNumber: match.metadata.chapterNumber,
-      headline: match.metadata.headline,
-      startTime: match.metadata.startTime,
-      endTime: match.metadata.endTime
-    }));
+
+    // Step 2: Fetch chapters for this episode from MongoDB
+    // Note: we sort and shape the response to match the existing API shape.
+    const chapterDocs = await JamieVectorMetadata.find({
+      type: 'chapter',
+      guid: guid
+    })
+      .select('pineconeId metadataRaw start_time end_time')
+      .lean();
+
+    const chapters = chapterDocs.map((doc) => {
+      const md = doc.metadataRaw || {};
+      const chapterNumber =
+        md.chapterNumber ??
+        md.chapter_number ??
+        md.chapter ??
+        null;
+      const startTime = md.startTime ?? md.start_time ?? doc.start_time ?? null;
+      const endTime = md.endTime ?? md.end_time ?? doc.end_time ?? null;
+
+      return {
+        id: doc.pineconeId,
+        metadata: md,
+        chapterNumber,
+        headline: md.headline ?? md.summary ?? null,
+        startTime,
+        endTime
+      };
+    });
     
     // Sort chapters by chapter number or start time
     chapters.sort((a, b) => {
-      if (a.chapterNumber !== undefined && b.chapterNumber !== undefined) {
-        return a.chapterNumber - b.chapterNumber;
+      const aNum = typeof a.chapterNumber === 'number' ? a.chapterNumber : parseInt(a.chapterNumber, 10);
+      const bNum = typeof b.chapterNumber === 'number' ? b.chapterNumber : parseInt(b.chapterNumber, 10);
+      if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+        return aNum - bNum;
       }
       return (a.startTime || 0) - (b.startTime || 0);
     });

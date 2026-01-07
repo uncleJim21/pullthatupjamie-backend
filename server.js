@@ -3,12 +3,11 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { OpenAI } = require('openai');
-const { Pinecone } = require('@pinecone-database/pinecone');
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 const { SearxNGTool } = require('./agent-tools/searxngTool');
-const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getQuickStats, getAdjacentParagraphs,formatResults} = require('./agent-tools/pineconeTools.js')
+const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getAdjacentParagraphs,formatResults} = require('./agent-tools/pineconeTools.js')
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -2104,9 +2103,9 @@ app.get('/health', (req, res) => {
 // Basic endpoint to get Pinecone index stats
 app.get('/api/get-clip-count', async (req, res) => {
   try {
-    const stats = await getQuickStats();
-    const clipCount = stats.totalRecordCount;
-    res.json({clipCount});
+    // Mongo-only: count mirrored vector metadata docs (this mirrors Pinecone record count).
+    const clipCount = await JamieVectorMetadata.estimatedDocumentCount();
+    res.json({ clipCount });
   } catch (error) {
     console.error('Error fetching index stats:', error);
     res.status(500).json({ error: error.message });
