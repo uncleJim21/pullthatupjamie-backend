@@ -7,7 +7,7 @@ const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 
 // Feature flags
-const jamieExplorePostRoutesEnabled = true; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
+const jamieExplorePostRoutesEnabled = false; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
 
 // Pinecone timeout helper
 const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
