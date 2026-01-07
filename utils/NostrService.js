@@ -8,11 +8,27 @@ const { nip19 } = require('nostr-tools');
  */
 class NostrService {
     constructor() {
-        // Define relay pool for Nostr - Most reliable relays only
+        // Define relay pool for Nostr
+        // NOTE: This is the default list used when callers do not explicitly specify relays.
         this.DEFAULT_RELAYS = [
+            // Common high-traffic relays
             "wss://relay.primal.net",
-            "wss://relay.damus.io", 
-            "wss://nos.lol"
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+
+            // Unioned from observed event metadata (normalized, deduped)
+            "wss://eden.nostr.land",
+            "wss://atlas.nostr.land",
+            "wss://cyberspace.nostr1.com",
+            "wss://nostr.lopp.social",
+            "wss://nostr.czas.plus",
+            "wss://premium.primal.net",
+            "wss://relay.artio.inf.unibe.ch",
+            "wss://relay-rpi.edufeed.org",
+            "wss://relay.nosto.re",
+            "wss://nostr.oxtr.dev",
+            "wss://njump.me",
+            "wss://espelho.girino.org"
         ];
 
         // Bech32 encoding constants
@@ -681,7 +697,7 @@ class NostrService {
                         success: false,
                         profile: null,
                         error: result.reason?.message || 'Unknown error',
-                        relay: relays[index]
+                        relay: searchRelays[index]
                     };
                 }
             });

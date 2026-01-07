@@ -9,6 +9,22 @@ const DEFAULT_RELAYS = [
     "wss://relay.primal.net",
     "wss://relay.damus.io", 
     "wss://nos.lol",
+
+    // Expanded defaults (normalized, deduped) for broader publishing reach
+    "wss://eden.nostr.land",
+    "wss://atlas.nostr.land",
+    "wss://cyberspace.nostr1.com",
+    "wss://nostr.lopp.social",
+    "wss://nostr.czas.plus",
+    "wss://premium.primal.net",
+    "wss://relay.artio.inf.unibe.ch",
+    "wss://relay-rpi.edufeed.org",
+    "wss://relay.nosto.re",
+    "wss://nostr.oxtr.dev",
+    "wss://njump.me",
+    "wss://espelho.girino.org",
+
+    // Keep these legacy defaults too (still common in the ecosystem)
     "wss://relay.mostr.pub",
     "wss://nostr.land",
     "wss://purplerelay.com",
