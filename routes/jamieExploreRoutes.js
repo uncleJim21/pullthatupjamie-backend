@@ -96,7 +96,17 @@ if (jamieExplorePostRoutesEnabled) {
 
 router.post('/search-quotes-3d', async (req, res) => {
   const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { query, feedIds=[], limit = 100, minDate = null, maxDate = null, episodeName = null, fastMode = false, extractAxisLabels = false } = req.body;
+  let {
+    query,
+    feedIds = [],
+    guid = null, // Optional: filter to a specific episode GUID (same as /api/search-quotes)
+    limit = 100,
+    minDate = null,
+    maxDate = null,
+    episodeName = null,
+    fastMode = false,
+    extractAxisLabels = false
+  } = req.body;
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -118,7 +128,9 @@ router.post('/search-quotes-3d', async (req, res) => {
   };
 
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST ==========`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}`);
+  printLog(
+    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUID: ${guid || 'none'}`
+  );
 
   if (!query) {
     printLog(`[${requestId}] ERROR: Missing query parameter`);
@@ -148,6 +160,7 @@ router.post('/search-quotes-3d', async (req, res) => {
     printLog(`[${requestId}] Pinecone query params:`, {
       limit: effectiveLimit,
       feedIds,
+      guid,
       minDate,
       maxDate,
       episodeName,
@@ -160,6 +173,7 @@ router.post('/search-quotes-3d', async (req, res) => {
     const pineconeMatches = await findSimilarDiscussions({
       embedding,
       feedIds,
+      guid, // Optional GUID filter (same behavior as /api/search-quotes)
       limit: effectiveLimit,
       query,
       minDate,
