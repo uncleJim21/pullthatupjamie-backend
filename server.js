@@ -46,6 +46,7 @@ const nostrRoutes = require('./routes/nostrRoutes');
 const researchSessionsRoutes = require('./routes/researchSessions');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const jamieExploreRoutes = require('./routes/jamieExploreRoutes');
+const createVideoEditRoutes = require('./routes/videoEditRoutes');
 const { ResearchSession } = require('./models/ResearchSession');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
@@ -432,6 +433,14 @@ const verifyPodcastAdminMiddleware = async (req, res, next) => {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
+
+// Mount video-edit and upload-related routes (uses clipUtils, clipSpacesManager, and verifyPodcastAdminMiddleware)
+const videoEditRoutes = createVideoEditRoutes({
+  clipUtils,
+  verifyPodcastAdminMiddleware,
+  clipSpacesManager
+});
+app.use(videoEditRoutes);
 
 // Model configurations
 const MODEL_CONFIGS = {
@@ -1031,180 +1040,7 @@ app.get('/api/render-clip/:lookupHash', async (req, res) => {
   }
 });
 
-///Video Editing Endpoints
-
-app.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
-  const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
-  console.log(`${debugPrefix} ==== /api/edit-video ENDPOINT CALLED ====`);
-  const { cdnUrl, startTime, endTime, useSubtitles = false, subtitles = null } = req.body;
-
-  console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
-  
-  // Validate required parameters
-  if (!cdnUrl) {
-      console.error(`${debugPrefix} Missing required parameter: cdnUrl`);
-      return res.status(400).json({ error: 'cdnUrl is required' });
-  }
-
-  if (startTime === undefined || endTime === undefined) {
-      console.error(`${debugPrefix} Missing required parameters: startTime and endTime`);
-      return res.status(400).json({ error: 'startTime and endTime are required' });
-  }
-
-  if (typeof startTime !== 'number' || typeof endTime !== 'number') {
-      console.error(`${debugPrefix} Invalid parameter types: startTime and endTime must be numbers`);
-      return res.status(400).json({ error: 'startTime and endTime must be numbers' });
-  }
-
-  try {
-      console.log(`${debugPrefix} Processing edit request for: ${cdnUrl}`);
-      console.log(`${debugPrefix} Time range: ${startTime}s to ${endTime}s (${endTime - startTime}s duration)`);
-      
-      const result = await clipUtils.processEditRequest(cdnUrl, startTime, endTime, useSubtitles, req.podcastAdmin?.feedId, subtitles);
-      
-      console.log(`${debugPrefix} Edit request processed successfully: ${JSON.stringify(result)}`);
-      return res.status(202).json(result);
-
-  } catch (error) {
-      console.error(`${debugPrefix} Error in edit-video endpoint: ${error.message}`);
-      console.error(`${debugPrefix} Stack trace: ${error.stack}`);
-      return res.status(500).json({ 
-          error: 'Failed to process edit request',
-          details: error.message 
-      });
-  }
-});
-
-// Status check endpoint for video edits
-app.get('/api/edit-status/:lookupHash', async (req, res) => {
-  const { lookupHash } = req.params;
-  const debugPrefix = `[EDIT-STATUS][${lookupHash}]`;
-
-  try {
-      console.log(`${debugPrefix} Checking status for edit: ${lookupHash}`);
-      
-      const edit = await WorkProductV2.findOne({ lookupHash });
-
-      if (!edit) {
-          console.log(`${debugPrefix} Edit not found`);
-          return res.status(404).json({ status: 'not_found' });
-      }
-
-      if (edit.status === 'completed' && edit.cdnFileId) {
-          console.log(`${debugPrefix} Edit completed: ${edit.cdnFileId}`);
-          return res.json({
-              status: 'completed',
-              url: edit.cdnFileId,
-              lookupHash
-          });
-      }
-
-      if (edit.status === 'failed') {
-          console.log(`${debugPrefix} Edit failed: ${edit.error}`);
-          return res.json({
-              status: 'failed',
-              error: edit.error,
-              lookupHash
-          });
-      }
-
-      console.log(`${debugPrefix} Edit still processing, status: ${edit.status}`);
-      return res.json({
-          status: edit.status || 'processing',
-          lookupHash
-      });
-
-  } catch (error) {
-      console.error(`${debugPrefix} Error checking edit status: ${error.message}`);
-      return res.status(500).json({ 
-          error: 'Failed to check edit status',
-          details: error.message 
-      });
-  }
-});
-
-// Get all child edits of a parent video file
-app.get('/api/edit-children/:parentFileName', verifyPodcastAdminMiddleware, async (req, res) => {
-  const { parentFileName } = req.params;
-  const debugPrefix = `[EDIT-CHILDREN][${parentFileName}]`;
-
-  try {
-    console.log(`${debugPrefix} Getting children for parent: ${parentFileName}`);
-    
-    // Remove extension from parent filename for base matching
-    const parentFileBase = parentFileName.replace(/\.[^/.]+$/, "");
-    
-    // Try cache first
-    const cachedData = await global.editChildrenCache.getChildren(parentFileBase);
-    
-    if (cachedData) {
-      console.log(`${debugPrefix} Returning cached data with ${cachedData.childCount} children`);
-      return res.json({
-        parentFileName,
-        parentFileBase,
-        childCount: cachedData.childCount,
-        children: cachedData.children,
-        cached: true,
-        lastUpdated: cachedData.lastUpdated
-      });
-    }
-
-    // Cache miss - fetch fresh data
-    console.log(`${debugPrefix} Cache miss - fetching fresh data from database`);
-    
-    // Find all edits for this parent file
-    const childEdits = await WorkProductV2.find({
-      type: 'video-edit',
-      'result.parentFileBase': parentFileBase
-    });
-
-    console.log(`${debugPrefix} Found ${childEdits.length} child edits`);
-
-    // Format the response
-    const formattedEdits = childEdits.map(edit => ({
-      lookupHash: edit.lookupHash,
-      status: edit.status,
-      url: edit.cdnFileId,
-      editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
-      duration: edit.result.editDuration,
-      createdAt: edit.createdAt,
-      originalUrl: edit.result.originalUrl
-    }));
-
-    // Sort by createdAt (most recent first), with null values at the end
-    formattedEdits.sort((a, b) => {
-      // If both have createdAt, sort by most recent first
-      if (a.createdAt && b.createdAt) {
-        return new Date(b.createdAt) - new Date(a.createdAt);
-      }
-      // If only a has createdAt, a comes first
-      if (a.createdAt && !b.createdAt) {
-        return -1;
-      }
-      // If only b has createdAt, b comes first
-      if (!a.createdAt && b.createdAt) {
-        return 1;
-      }
-      // If neither has createdAt, maintain original order
-      return 0;
-    });
-
-    return res.json({
-      parentFileName,
-      parentFileBase,
-      childCount: formattedEdits.length,
-      children: formattedEdits,
-      cached: false
-    });
-
-  } catch (error) {
-    console.error(`${debugPrefix} Error getting child edits: ${error.message}`);
-    return res.status(500).json({ 
-      error: 'Failed to get child edits',
-      details: error.message 
-    });
-  }
-});
+// (video edit, generate-presigned-url, and list-uploads routes are now defined in routes/videoEditRoutes.js)
 
 ///Podcast Search
 
@@ -1778,111 +1614,7 @@ app.post('/api/feedback', async (req, res) => {
   }
 });
 
-// Helper function for sanitizing file names
-function sanitizeFileName(fileName) {
-  // First, strip any path information by extracting just the file name
-  const fileNameOnly = fileName.split('/').pop().split('\\').pop();
-  
-  // Remove path traversal characters and potentially harmful characters
-  const sanitized = fileNameOnly
-    .replace(/\.\.\//g, '') // Remove path traversal
-    .replace(/[/\\]/g, '_') // Replace slashes with underscores
-    .replace(/[^a-zA-Z0-9._-]/g, '_') // Replace other special characters
-    .trim();
-  
-  // Ensure the file name isn't empty after sanitization
-  return sanitized || 'unnamed_file';
-}
-
-app.post("/api/generate-presigned-url", verifyPodcastAdminMiddleware, async (req, res) => {
-  const { fileName, fileType, acl = 'public-read', cacheControl = false } = req.body;
-
-  if (!fileName || !fileType) {
-    return res.status(400).json({ error: "File name and type are required" });
-  }
-
-  // Validate allowed file types
-  const allowedFileTypes = [
-    // Audio formats
-    'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm', 
-    'audio/aac', 'audio/flac', 'audio/x-ms-wma', 'audio/vnd.wav', 'audio/basic',
-    'audio/x-aiff', 'audio/x-m4a', 'audio/x-matroska', 'audio/xm', 'audio/midi',
-    // Image formats
-    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
-    'image/svg+xml', 'image/x-icon',
-    // Video formats
-    'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 
-    'video/x-flv', 'video/x-matroska', 'video/3gpp', 'video/3gpp2', 'video/x-m4v',
-    'video/mpeg', 'video/avi', 'video/mov', 'video/x-ms-wmv', 'video/x-ms-asf',
-    // Documents
-    'application/pdf'
-  ];
-
-  if (!allowedFileTypes.includes(fileType)) {
-    return res.status(400).json({ 
-      error: "File type not allowed",
-      allowedTypes: allowedFileTypes
-    });
-  }
-
-  try {
-    // Check if clipSpacesManager is initialized
-    if (!clipSpacesManager) {
-      return res.status(503).json({ error: "Clip storage service not available" });
-    }
-    
-    // Get the clip bucket name from environment variable - same as used in ClipUtils
-    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
-    if (!bucketName) {
-      return res.status(503).json({ error: "Clip bucket not configured" });
-    }
-    
-    // Use feedId from verified podcast admin
-    const { feedId } = req.podcastAdmin;
-    
-    // Generate a safe path using the feedId and a timestamp to ensure uniqueness
-    const timestamp = new Date().getTime();
-    
-    // Use the same path structure that works for ClipUtils
-    const key = `jamie-pro/${feedId}/uploads/${timestamp}-${sanitizeFileName(fileName)}`;
-    const expiresIn = 3600; // URL validity in seconds (1 hour)
-    
-    // Set max file size based on file type (100MB for audio/video, 10MB for images, 5MB for docs)
-    let maxSizeBytes = 100 * 1024 * 1024; // Default to 100MB
-    
-    if (fileType.startsWith('image/')) {
-      maxSizeBytes = 10 * 1024 * 1024; // 10MB for images
-    } else if (fileType === 'application/pdf') {
-      maxSizeBytes = 5 * 1024 * 1024; // 5MB for PDFs
-    }
-
-    // Generate pre-signed URL using the clip-specific spaces manager
-    const uploadUrl = await clipSpacesManager.generatePresignedUploadUrl(
-      bucketName, 
-      key, 
-      fileType, 
-      expiresIn,
-      maxSizeBytes,
-      acl,
-      cacheControl
-    );
-
-    console.log(`Generated pre-signed URL for ${bucketName}/${key}${cacheControl ? ' with Cache-Control' : ''}`);
-
-    res.json({ 
-      uploadUrl, 
-      key,
-      feedId,
-      publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${key}`,
-      maxSizeBytes,
-      maxSizeMB: Math.round(maxSizeBytes / (1024 * 1024)),
-      cacheControl: cacheControl || false
-    });
-  } catch (error) {
-    console.error("Error generating pre-signed URL:", error);
-    res.status(500).json({ error: "Could not generate pre-signed URL" });
-  }
-});
+// (generate-presigned-url route is now defined in routes/videoEditRoutes.js)
 
 app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
   try {
