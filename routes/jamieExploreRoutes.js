@@ -698,10 +698,40 @@ router.post('/fetch-research-id', async (req, res) => {
       });
     }
 
-    // Enrich results with episode metadata (same as search-quotes-3d Step 3b)
-    printLog(`[${requestId}] Step 2: Enriching results with episode metadata where missing...`);
+    // Step 2: Hydrate item metadata from MongoDB (source of truth) using pineconeIds.
+    // Keep response schema consistent by using the existing formatResults(...) helper.
+    printLog(`[${requestId}] Step 2: Hydrating item metadata from MongoDB by pineconeId...`);
+    const mongoHydrateStart = Date.now();
+
+    const pineconeIdsForSession = items
+      .map((it) => it && it.pineconeId)
+      .filter((id) => typeof id === 'string' && id.length > 0);
+
+    const mongoDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: pineconeIdsForSession }
+    }).select('pineconeId metadataRaw').lean();
+
+    const hydratedFormatted = formatResults(
+      (mongoDocs || []).map((doc) => ({
+        id: doc.pineconeId,
+        score: 1,
+        metadata: doc.metadataRaw || {}
+      }))
+    );
+
+    const hydratedById = new Map(hydratedFormatted.map((r) => [r.shareLink, r]));
+
+    printLog(
+      `[${requestId}] ✓ MongoDB hydration completed in ${Date.now() - mongoHydrateStart}ms (${mongoDocs.length} docs)`
+    );
+
+    // Prefer Mongo-hydrated metadata (better quote/creator/etc), but fall back to stored snapshots
+    // so the endpoint remains resilient even if Mongo is missing some IDs.
     const similarDiscussions = items.map((item) => {
-      const base = item.metadata ? { ...item.metadata } : {};
+      const stored = item.metadata ? { ...item.metadata } : {};
+      const hydrated = hydratedById.get(item.pineconeId) || null;
+      const base = hydrated ? { ...hydrated } : stored;
+
       const storedCoords = item.coordinates3d || null;
       if (storedCoords && typeof storedCoords === 'object') {
         const x = typeof storedCoords.x === 'number' ? storedCoords.x : null;
@@ -709,8 +739,12 @@ router.post('/fetch-research-id', async (req, res) => {
         const z = typeof storedCoords.z === 'number' ? storedCoords.z : null;
         base.coordinates3d = { x, y, z };
       }
+
       return base;
     });
+
+    // Step 3: Enrich results with episode metadata where missing (same as search-quotes-3d Step 3d)
+    printLog(`[${requestId}] Step 3: Enriching results with episode metadata where missing...`);
     const episodeCache = {};
     const guidsToFetch = new Set();
 
