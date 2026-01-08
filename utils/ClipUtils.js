@@ -1673,7 +1673,7 @@ class ClipUtils {
           // Use ASS-style opaque box behind text with slight transparency to mimic rounded subtitle background
           // Increase horizontal margins for a wider pill look (MarginL/MarginR)
           // Outline controls the thickness of the box around the text; bumping 2 -> 3 gives ~50% more padding between text and box edge
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=${fontSize},Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=3,Shadow=0,MarginV=30,MarginL=30,MarginR=30,Alignment=2'`, // White text, semi-opaque black box, centered at bottom
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=${fontSize},Bold=1,FontName=Roboto,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=3,Shadow=0,MarginV=30,MarginL=30,MarginR=30,Alignment=2'`, // White text, semi-opaque black box, centered at bottom
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
