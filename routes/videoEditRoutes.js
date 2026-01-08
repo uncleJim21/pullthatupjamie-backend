@@ -24,7 +24,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
   router.post('/api/edit-video', verifyPodcastAdminMiddleware, async (req, res) => {
     const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
     console.log(`${debugPrefix} ==== /api/edit-video ENDPOINT CALLED ====`);
-    const { cdnUrl, startTime, endTime, useSubtitles = false, subtitles = null } = req.body;
+    const { cdnUrl, startTime, endTime, useSubtitles = false, subtitles = null, chunk_size } = req.body;
 
     console.log(`${debugPrefix} Request body: ${JSON.stringify(req.body)}`);
     
@@ -45,6 +45,9 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
     }
 
     try {
+        // Normalize chunk size: default 1, max 5, min 1
+        const requestedChunkSize = parseInt(chunk_size, 10);
+        const chunkSize = Math.min(Math.max(Number.isFinite(requestedChunkSize) ? requestedChunkSize : 1, 1), 5);
         console.log(`${debugPrefix} Processing edit request for: ${cdnUrl}`);
         console.log(`${debugPrefix} Time range: ${startTime}s to ${endTime}s (${endTime - startTime}s duration)`);
         
@@ -54,7 +57,8 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
           endTime,
           useSubtitles,
           req.podcastAdmin?.feedId,
-          subtitles
+          subtitles,
+          chunkSize
         );
         
         console.log(`${debugPrefix} Edit request processed successfully: ${JSON.stringify(result)}`);
