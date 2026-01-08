@@ -27,9 +27,10 @@ class SubtitleUtils {
    * @param {string} guid - Podcast GUID for auto-generation (optional)
    * @param {number} startTime - Start time in seconds
    * @param {number} endTime - End time in seconds
+   * @param {number} chunkSize - Number of words per subtitle chunk (1-5). Defaults to 1 for edit-video.
    * @returns {Array} Array of subtitle objects with {text, start, end, confidence}
    */
-  static async processSubtitlesForVideoEdit(clientSubtitles = null, guid = null, startTime, endTime) {
+  static async processSubtitlesForVideoEdit(clientSubtitles = null, guid = null, startTime, endTime, chunkSize = 1) {
     const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
     console.log(`${debugPrefix} Processing subtitles for video edit`);
     
@@ -40,7 +41,7 @@ class SubtitleUtils {
       // Validate client subtitles format
       if (!SubtitleUtils.validateSubtitles(clientSubtitles)) {
         console.error(`${debugPrefix} Invalid client subtitle format, falling back to auto-generation`);
-        return await SubtitleUtils.generateSubtitlesFromTranscript(guid, startTime, endTime);
+        return await SubtitleUtils.generateSubtitlesFromTranscript(guid, startTime, endTime, { chunkSize });
       }
       
       // DEDUPLICATION: Remove duplicate subtitles based on start time and text
@@ -54,9 +55,11 @@ class SubtitleUtils {
       
       let processedSubtitles = deduplicatedSubtitles;
       
-      if (needsGrouping) {
-        console.log(`${debugPrefix} Client provided individual words, grouping into chunks of 5`);
-        processedSubtitles = SubtitleUtils.groupWordsIntoChunks(deduplicatedSubtitles, 5);
+      // Default behavior: one word at a time (chunkSize === 1).
+      // If client requests a larger chunk size (up to 5), group only when all subs are single words.
+      if (needsGrouping && chunkSize > 1) {
+        console.log(`${debugPrefix} Client provided individual words, grouping into chunks of ${chunkSize}`);
+        processedSubtitles = SubtitleUtils.groupWordsIntoChunks(deduplicatedSubtitles, chunkSize);
       }
       
       // Adjust timestamps to be relative to video start if needed
@@ -69,7 +72,7 @@ class SubtitleUtils {
     // Priority 2: Auto-generate from transcript if GUID is available
     if (guid) {
       console.log(`${debugPrefix} Auto-generating subtitles from transcript for GUID: ${guid}`);
-      return await SubtitleUtils.generateSubtitlesFromTranscript(guid, startTime, endTime);
+      return await SubtitleUtils.generateSubtitlesFromTranscript(guid, startTime, endTime, { chunkSize });
     }
     
     // No subtitles available
@@ -111,11 +114,13 @@ class SubtitleUtils {
    * @param {string} guid - Podcast GUID to fetch transcript for
    * @param {number} startTime - Start time in seconds
    * @param {number} endTime - End time in seconds
+   * @param {Object} options - Additional options (e.g. { chunkSize: 1 } for single-word subtitles)
    * @returns {Array} Array of subtitle objects with {text, start, end, confidence}
    */
-  static async generateSubtitlesFromTranscript(guid, startTime, endTime) {
+  static async generateSubtitlesFromTranscript(guid, startTime, endTime, options = {}) {
     const debugPrefix = `[SUBTITLE-UTILS][${Date.now()}]`;
     console.log(`${debugPrefix} Generating word-level subtitles for GUID: ${guid}, range: ${startTime}s-${endTime}s`);
+    const { chunkSize = 5 } = options;
     
     if (!guid) {
       console.error(`${debugPrefix} Missing GUID parameter`);
@@ -141,8 +146,8 @@ class SubtitleUtils {
         return [];
       }
       
-      // Group words into chunks of 5 (same as make-clip VideoGenerator logic)
-      const groupedSubtitles = SubtitleUtils.groupWordsIntoChunks(wordSubtitles, 5);
+      // Group words into chunks (default 5, or 1 for single-word mode)
+      const groupedSubtitles = SubtitleUtils.groupWordsIntoChunks(wordSubtitles, chunkSize);
       
       console.log(`${debugPrefix} Generated ${wordSubtitles.length} word-level subtitles, grouped into ${groupedSubtitles.length} chunks`);
       return groupedSubtitles;
@@ -267,7 +272,9 @@ class SubtitleUtils {
         // Add subtitle entry
         srtContent += `${index + 1}\n`;
         srtContent += `${startTime} --> ${endTime}\n`;
-        srtContent += `${subtitle.text}\n\n`;
+        // Pad with spaces to increase visual padding between text glyphs and box edge
+        const paddedText = ` ${subtitle.text.trim()} `;
+        srtContent += `${paddedText}\n\n`;
       });
       
       // Write SRT file

@@ -695,7 +695,7 @@ class ClipUtils {
    * @param {Array} clientSubtitles - Optional client-provided subtitles
    * @returns {Object} - Status and lookup hash
    */
-  async processEditRequest(cdnUrl, startTime, endTime, useSubtitles = false, feedId = 'unknown', clientSubtitles = null) {
+  async processEditRequest(cdnUrl, startTime, endTime, useSubtitles = false, feedId = 'unknown', clientSubtitles = null, chunkSize = 1) {
     const debugPrefix = `[EDIT-VIDEO][${Date.now()}]`;
     console.log(`${debugPrefix} Processing edit request: ${cdnUrl}, ${startTime}s-${endTime}s`);
 
@@ -716,6 +716,10 @@ class ClipUtils {
 
       // Validate CDN file exists
       await this.validateCdnFile(cdnUrl);
+
+      // Normalize chunk size for subtitle grouping (default 1, max 5)
+      const requestedChunkSize = parseInt(chunkSize, 10);
+      const effectiveChunkSize = Math.min(Math.max(Number.isFinite(requestedChunkSize) ? requestedChunkSize : 1, 1), 5);
 
       // Generate deterministic hash
       const lookupHash = calculateEditHash(cdnUrl, startTime, endTime, useSubtitles);
@@ -784,7 +788,16 @@ class ClipUtils {
       console.log(`${debugPrefix} Database entry created for ${lookupHash}`);
 
       // Start background processing
-      this._backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles, feedId, clientSubtitles).catch(err => {
+      this._backgroundProcessEdit(
+        cdnUrl,
+        startTime,
+        endTime,
+        lookupHash,
+        useSubtitles,
+        feedId,
+        clientSubtitles,
+        effectiveChunkSize
+      ).catch(err => {
         console.error(`${debugPrefix} Background processing failed:`, err);
         // Update database with error status
         WorkProductV2.findOneAndUpdate(
@@ -1283,8 +1296,9 @@ class ClipUtils {
    * @param {boolean} useSubtitles - Whether to include subtitles
    * @param {string} feedId - Feed ID for organizing uploads
    * @param {Array} clientSubtitles - Optional client-provided subtitles
+   * @param {number} chunkSize - Desired subtitle chunk size (1-5)
    */
-  async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown', clientSubtitles = null) {
+  async _backgroundProcessEdit(cdnUrl, startTime, endTime, lookupHash, useSubtitles = false, feedId = 'unknown', clientSubtitles = null, chunkSize = 1) {
     const debugPrefix = `[EDIT-VIDEO-BG][${lookupHash}]`;
     console.log(`${debugPrefix} Starting Phase 2 background processing`);
 
@@ -1334,8 +1348,8 @@ class ClipUtils {
           const guid = SubtitleUtils.extractGuidFromCdnUrl(cdnUrl);
           
           // Step 2: Process subtitles using new flexible method
-          console.log(`${debugPrefix} Processing subtitles (client provided: ${!!clientSubtitles}, GUID available: ${!!guid})`);
-          const subtitles = await SubtitleUtils.processSubtitlesForVideoEdit(clientSubtitles, guid, startTime, endTime);
+          console.log(`${debugPrefix} Processing subtitles (client provided: ${!!clientSubtitles}, GUID available: ${!!guid}, chunkSize: ${chunkSize})`);
+          const subtitles = await SubtitleUtils.processSubtitlesForVideoEdit(clientSubtitles, guid, startTime, endTime, chunkSize);
           
           if (subtitles && subtitles.length > 0) {
             console.log(`${debugPrefix} Generated ${subtitles.length} subtitles`);
@@ -1638,7 +1652,10 @@ class ClipUtils {
       ffmpeg(inputPath)
         .outputOptions([
           '-y', // Overwrite output files
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H00303030,Outline=0.5,Shadow=0,MarginV=30,Alignment=2'`, // Large Impact font, white text, subtle dark gray outline, centered at bottom
+          // Use ASS-style opaque box behind text with slight transparency to mimic rounded subtitle background
+          // Increase horizontal margins for a wider pill look (MarginL/MarginR)
+          // Outline controls the thickness of the box around the text; bumping 2 -> 3 gives ~50% more padding between text and box edge
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=3,Shadow=0,MarginV=30,MarginL=30,MarginR=30,Alignment=2'`, // White text, semi-opaque black box, centered at bottom
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
