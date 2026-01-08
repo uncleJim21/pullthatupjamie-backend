@@ -1358,9 +1358,10 @@ class ClipUtils {
             const srtPath = path.join(os.tmpdir(), `${lookupHash}-subtitles.srt`);
             await SubtitleUtils.createSRTFile(subtitles, srtPath);
             
-            // Step 4: Use FFmpeg to burn subtitles into video
+            // Step 4: Use FFmpeg to burn subtitles into video with font size based on chunk size
             const videoWithSubtitlesPath = path.join(os.tmpdir(), `${lookupHash}-with-subtitles.mp4`);
-            await this._extractSegmentWithSubtitles(outputPath, videoWithSubtitlesPath, srtPath);
+            const fontSize = this._getFontSizeForChunkSize(chunkSize);
+            await this._extractSegmentWithSubtitles(outputPath, videoWithSubtitlesPath, srtPath, fontSize);
             
             // Step 5: Update final video path and cleanup original
             finalVideoPath = videoWithSubtitlesPath;
@@ -1634,6 +1635,22 @@ class ClipUtils {
   }
 
   /**
+   * Map subtitle chunk size (1-5) to an appropriate font size.
+   * Larger chunk sizes get slightly smaller fonts so lines with more words still fit.
+   */
+  _getFontSizeForChunkSize(chunkSize) {
+    switch (chunkSize) {
+      case 1: return 34;
+      case 2: return 31;
+      case 3: return 28;
+      case 4: return 25;
+      case 5: 
+      default:
+        return 22;
+    }
+  }
+
+  /**
    * Burn subtitles into a video using FFmpeg's subtitle filter
    * 
    * DESIGN NOTE: This method uses FFmpeg's subtitle filter for performance.
@@ -1643,8 +1660,9 @@ class ClipUtils {
    * @param {string} inputPath - Path to source video file
    * @param {string} outputPath - Path for output video with subtitles
    * @param {string} srtPath - Path to SRT subtitle file
+   * @param {number} fontSize - Font size to use for subtitles
    */
-  async _extractSegmentWithSubtitles(inputPath, outputPath, srtPath) {
+  async _extractSegmentWithSubtitles(inputPath, outputPath, srtPath, fontSize = 24) {
     const debugPrefix = `[FFMPEG-SUBTITLES][${Date.now()}]`;
     console.log(`${debugPrefix} Burning subtitles into video`);
 
@@ -1655,7 +1673,7 @@ class ClipUtils {
           // Use ASS-style opaque box behind text with slight transparency to mimic rounded subtitle background
           // Increase horizontal margins for a wider pill look (MarginL/MarginR)
           // Outline controls the thickness of the box around the text; bumping 2 -> 3 gives ~50% more padding between text and box edge
-          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=3,Shadow=0,MarginV=30,MarginL=30,MarginR=30,Alignment=2'`, // White text, semi-opaque black box, centered at bottom
+          '-vf', `subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=${fontSize},Bold=1,FontName=Impact,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=3,Shadow=0,MarginV=30,MarginL=30,MarginR=30,Alignment=2'`, // White text, semi-opaque black box, centered at bottom
           '-c:v', 'libx264', // Video codec
           '-c:a', 'aac', // Audio codec
           '-movflags', '+faststart', // Optimize for streaming
