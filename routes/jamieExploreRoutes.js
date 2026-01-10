@@ -652,8 +652,12 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
 
 router.post('/fetch-research-id', async (req, res) => {
   const requestId = `FETCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { researchSessionId, fastMode = false, extractAxisLabels = false, forceRecompute = false } = req.body || {};
-
+  let {
+    researchSessionId,
+    fastMode = false,
+    extractAxisLabels = false,
+    forceRecompute = false
+  } = req.body || {};
   printLog(`[${requestId}] ========== FETCH RESEARCH SESSION 3D REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
 
@@ -683,6 +687,13 @@ router.post('/fetch-research-id', async (req, res) => {
         details: 'No research session found for this id'
       });
     }
+
+    // Optional cached axis labels. If present and extractAxisLabels=true, reuse them
+    // to avoid OpenAI calls on subsequent requests.
+    const cachedAxisLabels =
+      session && session.axisLabels && typeof session.axisLabels === 'object'
+        ? session.axisLabels
+        : null;
 
     const rawItems = Array.isArray(session.items) ? session.items : [];
 
@@ -849,13 +860,16 @@ router.post('/fetch-research-id', async (req, res) => {
       const results3d = similarDiscussions;
 
       // Optional axis labels (can still run using stored coords)
-      let axisLabels = null;
+      let axisLabels = extractAxisLabels ? cachedAxisLabels : null;
       if (extractAxisLabels && results3d.length >= 7) {
-        printLog(`[${requestId}] Axis labels requested; generating from stored coordinates...`);
-        console.time(`[${requestId}] Axis-Labeling`);
-        const labelingStart = Date.now();
+        if (axisLabels) {
+          printLog(`[${requestId}] ✓ Using cached axis labels from ResearchSession`);
+        } else {
+          printLog(`[${requestId}] Axis labels requested; generating from stored coordinates...`);
+          console.time(`[${requestId}] Axis-Labeling`);
+          const labelingStart = Date.now();
 
-        try {
+          try {
           const findClosestPoint = (targetX, targetY, targetZ) => {
             let minDist = Infinity;
             let closestIndex = 0;
@@ -953,9 +967,22 @@ router.post('/fetch-research-id', async (req, res) => {
 
           timings.axisLabeling = Date.now() - labelingStart;
           console.timeEnd(`[${requestId}] Axis-Labeling`);
-        } catch (e) {
-          printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
-          axisLabels = null;
+
+          // Best-effort persist for future requests (do not block response on failure).
+          try {
+            await ResearchSession.findByIdAndUpdate(
+              researchSessionId,
+              { $set: { axisLabels } },
+              { new: false }
+            ).exec();
+            printLog(`[${requestId}] ✓ Persisted axis labels to ResearchSession`);
+          } catch (persistErr) {
+            printLog(`[${requestId}] ⚠️ Failed to persist axis labels: ${persistErr.message}`);
+          }
+          } catch (e) {
+            printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+            axisLabels = null;
+          }
         }
       }
 
@@ -1089,13 +1116,16 @@ router.post('/fetch-research-id', async (req, res) => {
     }));
 
     // Optional axis labels
-    let axisLabels = null;
+    let axisLabels = extractAxisLabels ? cachedAxisLabels : null;
     if (extractAxisLabels && results3d.length >= 7) {
-      printLog(`[${requestId}] Step 6: Extracting axis labels for semantic space...`);
-      console.time(`[${requestId}] Axis-Labeling`);
-      const labelingStart = Date.now();
+      if (axisLabels) {
+        printLog(`[${requestId}] ✓ Using cached axis labels from ResearchSession`);
+      } else {
+        printLog(`[${requestId}] Step 6: Extracting axis labels for semantic space...`);
+        console.time(`[${requestId}] Axis-Labeling`);
+        const labelingStart = Date.now();
 
-      try {
+        try {
         const findClosestPoint = (targetX, targetY, targetZ) => {
           let minDist = Infinity;
           let closestIndex = 0;
@@ -1193,9 +1223,22 @@ router.post('/fetch-research-id', async (req, res) => {
 
         timings.axisLabeling = Date.now() - labelingStart;
         console.timeEnd(`[${requestId}] Axis-Labeling`);
-      } catch (e) {
-        printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
-        axisLabels = null;
+
+        // Best-effort persist for future requests (do not block response on failure).
+        try {
+          await ResearchSession.findByIdAndUpdate(
+            researchSessionId,
+            { $set: { axisLabels } },
+            { new: false }
+          ).exec();
+          printLog(`[${requestId}] ✓ Persisted axis labels to ResearchSession`);
+        } catch (persistErr) {
+          printLog(`[${requestId}] ⚠️ Failed to persist axis labels: ${persistErr.message}`);
+        }
+        } catch (e) {
+          printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+          axisLabels = null;
+        }
       }
     }
 
