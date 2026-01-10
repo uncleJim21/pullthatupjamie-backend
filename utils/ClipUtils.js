@@ -781,7 +781,8 @@ class ClipUtils {
 
       // Invalidate cache for this parent file
       if (global.editChildrenCache) {
-        global.editChildrenCache.invalidate(parentFileBase);
+        // Namespace invalidation by feedId to avoid cross-feed cache collisions.
+        global.editChildrenCache.invalidate(parentFileBase, feedId);
         console.log(`${debugPrefix} Invalidated cache for parentFileBase: ${parentFileBase}`);
       }
 
