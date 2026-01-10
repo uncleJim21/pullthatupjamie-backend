@@ -31,6 +31,20 @@ const WorkProductV2Schema = new mongoose.Schema({
   timestamps: true // Add createdAt and updatedAt fields
 });
 
+// Indexes to accelerate video-edit "children" lookups.
+//
+// Backward compatible notes:
+// - Older docs may not have `result.feedId`. We keep a parentFileBase+createdAt index
+//   to support legacy lookups, but the primary fast path should use feedId scoping.
+WorkProductV2Schema.index(
+  { type: 1, 'result.feedId': 1, 'result.parentFileBase': 1, createdAt: -1 },
+  { name: 'wp2_videoedit_feed_parent_createdAt' }
+);
+WorkProductV2Schema.index(
+  { type: 1, 'result.parentFileBase': 1, createdAt: -1 },
+  { name: 'wp2_videoedit_parent_createdAt' }
+);
+
 /**
  * Generate a **deterministic** lookup hash based on clipId and timestamps.
  * Ensures that the same input always results in the same hash.

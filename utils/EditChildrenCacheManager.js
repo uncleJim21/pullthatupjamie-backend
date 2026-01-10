@@ -7,38 +7,50 @@ const { printLog } = require('../constants');
  */
 class EditChildrenCacheManager {
     constructor() {
-        this.cache = new Map(); // parentFileBase -> { data, timestamp, expiresAt }
+        this.cache = new Map(); // cacheKey -> { data, timestamp, expiresAt }
         this.cacheExpiry = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-        this.isUpdating = false;
-        this.updateInProgress = new Set(); // Track which parent files are being updated
+        this.refreshPromises = new Map(); // cacheKey -> Promise<Object>
+    }
+
+    _cacheKey(parentFileBase, feedId = null) {
+        // Namespacing by feedId prevents collisions across podcasts, while remaining
+        // backward-compatible (null feedId falls back to a global namespace).
+        const ns = feedId ? String(feedId) : 'global';
+        return `${ns}::${parentFileBase}`;
     }
 
     /**
      * Get cached children data or fetch fresh if expired/missing
      * @param {string} parentFileBase - The parent file base name (without extension)
+     * @param {string|number|null} feedId - Optional feedId to namespace cache and scope DB lookup
+     * @param {Object} options
+     * @param {boolean} options.triggerRefresh - Whether to trigger background refresh on miss/expiry
      * @returns {Object|null} - Cached children data or null if not found
      */
-    async getChildren(parentFileBase) {
-        const cached = this.cache.get(parentFileBase);
+    async getChildren(parentFileBase, feedId = null, { triggerRefresh = true } = {}) {
+        const cacheKey = this._cacheKey(parentFileBase, feedId);
+        const cached = this.cache.get(cacheKey);
         const now = Date.now();
 
         // Return cached data if it exists and hasn't expired
         if (cached && cached.expiresAt > now) {
-            printLog(`📦 [EDIT-CHILDREN-CACHE] Cache hit for parentFileBase: ${parentFileBase} (${Math.round((cached.expiresAt - now) / 1000 / 60)}min remaining)`);
+            printLog(`📦 [EDIT-CHILDREN-CACHE] Cache hit for key: ${cacheKey} (${Math.round((cached.expiresAt - now) / 1000 / 60)}min remaining)`);
             return cached.data;
         }
 
-        // If cache is expired or missing, trigger background refresh
-        if (cached) {
-            printLog(`⏰ [EDIT-CHILDREN-CACHE] Cache expired for parentFileBase: ${parentFileBase}, triggering background refresh`);
-        } else {
-            printLog(`❌ [EDIT-CHILDREN-CACHE] No cache found for parentFileBase: ${parentFileBase}, triggering background refresh`);
-        }
+        if (triggerRefresh) {
+            // If cache is expired or missing, trigger background refresh
+            if (cached) {
+                printLog(`⏰ [EDIT-CHILDREN-CACHE] Cache expired for key: ${cacheKey}, triggering background refresh`);
+            } else {
+                printLog(`❌ [EDIT-CHILDREN-CACHE] No cache found for key: ${cacheKey}, triggering background refresh`);
+            }
 
-        // Trigger background refresh (non-blocking)
-        this.refreshChildren(parentFileBase).catch(err => {
-            printLog(`❌ [EDIT-CHILDREN-CACHE] Background refresh failed for parentFileBase: ${parentFileBase}: ${err.message}`);
-        });
+            // Trigger background refresh (non-blocking)
+            this.refreshChildren(parentFileBase, feedId).catch(err => {
+                printLog(`❌ [EDIT-CHILDREN-CACHE] Background refresh failed for key: ${cacheKey}: ${err.message}`);
+            });
+        }
 
         // Return cached data even if expired (stale-while-revalidate pattern)
         return cached ? cached.data : null;
@@ -47,106 +59,151 @@ class EditChildrenCacheManager {
     /**
      * Refresh children data for a specific parent file
      * @param {string} parentFileBase - The parent file base name
+     * @param {string|number|null} feedId - Optional feedId for scoping + cache namespacing
      * @returns {Promise<Object|null>} - Fresh children data
      */
-    async refreshChildren(parentFileBase) {
-        // Prevent duplicate refresh operations
-        if (this.updateInProgress.has(parentFileBase)) {
-            printLog(`🔄 [EDIT-CHILDREN-CACHE] Refresh already in progress for parentFileBase: ${parentFileBase}`);
-            return null;
+    async refreshChildren(parentFileBase, feedId = null) {
+        const cacheKey = this._cacheKey(parentFileBase, feedId);
+
+        // De-dupe concurrent refreshes: everyone awaits the same promise.
+        const existing = this.refreshPromises.get(cacheKey);
+        if (existing) {
+            printLog(`🔄 [EDIT-CHILDREN-CACHE] Refresh already in progress for key: ${cacheKey}`);
+            return await existing;
         }
 
-        this.updateInProgress.add(parentFileBase);
+        const promise = (async () => {
+            try {
+                printLog(`🔄 [EDIT-CHILDREN-CACHE] Refreshing children data for key: ${cacheKey}`);
+                const startTime = Date.now();
 
-        try {
-            printLog(`🔄 [EDIT-CHILDREN-CACHE] Refreshing children data for parentFileBase: ${parentFileBase}`);
-            const startTime = Date.now();
+                let childEdits = [];
 
-            // Find all edits for this parent file
-            const childEdits = await WorkProductV2.find({
-                type: 'video-edit',
-                'result.parentFileBase': parentFileBase
-            });
+                if (feedId != null) {
+                    // Fast path: scoped query (newer docs)
+                    const t1 = Date.now();
+                    const scoped = await WorkProductV2.find({
+                        type: 'video-edit',
+                        'result.feedId': feedId,
+                        'result.parentFileBase': parentFileBase
+                    }).sort({ createdAt: -1 });
+                    printLog(`⏱️  [EDIT-CHILDREN-CACHE] scoped query done key=${cacheKey} count=${scoped.length} (+${Date.now() - t1}ms)`);
 
-            printLog(`📊 [EDIT-CHILDREN-CACHE] Found ${childEdits.length} child edits for parentFileBase: ${parentFileBase}`);
+                    // Backward-compatible fallback: legacy docs without result.feedId
+                    const t2 = Date.now();
+                    const legacy = await WorkProductV2.find({
+                        type: 'video-edit',
+                        'result.feedId': { $exists: false },
+                        'result.parentFileBase': parentFileBase
+                    }).sort({ createdAt: -1 });
+                    printLog(`⏱️  [EDIT-CHILDREN-CACHE] legacy query done key=${cacheKey} count=${legacy.length} (+${Date.now() - t2}ms)`);
 
-            // Format the response
-            const formattedEdits = childEdits.map(edit => ({
-                lookupHash: edit.lookupHash,
-                status: edit.status,
-                url: edit.cdnFileId,
-                editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
-                duration: edit.result.editDuration,
-                createdAt: edit.createdAt,
-                originalUrl: edit.result.originalUrl
-            }));
-
-            // Sort by createdAt (most recent first), with null values at the end
-            formattedEdits.sort((a, b) => {
-                // If both have createdAt, sort by most recent first
-                if (a.createdAt && b.createdAt) {
-                    return new Date(b.createdAt) - new Date(a.createdAt);
+                    childEdits = scoped.concat(legacy);
+                } else {
+                    // Backward-compatible: old signature (no feed scoping)
+                    const t = Date.now();
+                    childEdits = await WorkProductV2.find({
+                        type: 'video-edit',
+                        'result.parentFileBase': parentFileBase
+                    }).sort({ createdAt: -1 });
+                    printLog(`⏱️  [EDIT-CHILDREN-CACHE] unscoped query done key=${cacheKey} count=${childEdits.length} (+${Date.now() - t}ms)`);
                 }
-                // If only a has createdAt, a comes first
-                if (a.createdAt && !b.createdAt) {
-                    return -1;
-                }
-                // If only b has createdAt, b comes first
-                if (!a.createdAt && b.createdAt) {
-                    return 1;
-                }
-                // If neither has createdAt, maintain original order (or sort by _id)
-                return 0;
-            });
 
-            const childrenData = {
-                parentFileBase,
-                childCount: formattedEdits.length,
-                children: formattedEdits,
-                lastUpdated: new Date()
-            };
+                printLog(`📊 [EDIT-CHILDREN-CACHE] Found ${childEdits.length} child edits for key: ${cacheKey}`);
 
-            // Update cache
-            this.cache.set(parentFileBase, {
-                data: childrenData,
-                timestamp: Date.now(),
-                expiresAt: Date.now() + this.cacheExpiry
-            });
+                // Format the response
+                const formattedEdits = childEdits.map(edit => ({
+                    lookupHash: edit.lookupHash,
+                    status: edit.status,
+                    url: edit.cdnFileId,
+                    editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
+                    duration: edit.result.editDuration,
+                    createdAt: edit.createdAt,
+                    originalUrl: edit.result.originalUrl
+                }));
 
-            const duration = Date.now() - startTime;
-            printLog(`✅ [EDIT-CHILDREN-CACHE] Successfully refreshed children data for parentFileBase: ${parentFileBase} in ${duration}ms`);
+                const childrenData = {
+                    parentFileBase,
+                    feedId: feedId != null ? String(feedId) : undefined,
+                    childCount: formattedEdits.length,
+                    children: formattedEdits,
+                    lastUpdated: new Date()
+                };
 
-            return childrenData;
+                // Update cache
+                this.cache.set(cacheKey, {
+                    data: childrenData,
+                    timestamp: Date.now(),
+                    expiresAt: Date.now() + this.cacheExpiry
+                });
 
-        } catch (error) {
-            printLog(`❌ [EDIT-CHILDREN-CACHE] Error refreshing children data for parentFileBase: ${parentFileBase}: ${error.message}`);
-            throw error;
-        } finally {
-            this.updateInProgress.delete(parentFileBase);
-        }
+                const duration = Date.now() - startTime;
+                printLog(`✅ [EDIT-CHILDREN-CACHE] Successfully refreshed children data for key: ${cacheKey} in ${duration}ms`);
+
+                return childrenData;
+            } catch (error) {
+                printLog(`❌ [EDIT-CHILDREN-CACHE] Error refreshing children data for key: ${cacheKey}: ${error.message}`);
+                throw error;
+            } finally {
+                this.refreshPromises.delete(cacheKey);
+            }
+        })();
+
+        this.refreshPromises.set(cacheKey, promise);
+        return await promise;
     }
 
     /**
      * Invalidate cache for a specific parent file
      * @param {string} parentFileBase - The parent file base name
+     * @param {string|number|null} feedId - Optional feedId to invalidate just one namespace
      */
-    invalidate(parentFileBase) {
-        if (this.cache.has(parentFileBase)) {
-            this.cache.delete(parentFileBase);
-            printLog(`🗑️ [EDIT-CHILDREN-CACHE] Invalidated cache for parentFileBase: ${parentFileBase}`);
+    invalidate(parentFileBase, feedId = null) {
+        if (feedId != null) {
+            const cacheKey = this._cacheKey(parentFileBase, feedId);
+            if (this.cache.has(cacheKey)) {
+                this.cache.delete(cacheKey);
+                printLog(`🗑️ [EDIT-CHILDREN-CACHE] Invalidated cache for key: ${cacheKey}`);
+            }
+            return;
+        }
+
+        // Backward-compatible: invalidate across all namespaces for this parentFileBase.
+        const suffix = `::${parentFileBase}`;
+        let invalidated = 0;
+        for (const key of this.cache.keys()) {
+            if (key.endsWith(suffix)) {
+                this.cache.delete(key);
+                invalidated++;
+            }
+        }
+        if (invalidated > 0) {
+            printLog(`🗑️ [EDIT-CHILDREN-CACHE] Invalidated ${invalidated} cache entries for parentFileBase: ${parentFileBase}`);
         }
     }
 
     /**
      * Invalidate cache for multiple parent files (useful when new edits are created)
      * @param {Array<string>} parentFileBases - Array of parent file base names
+     * @param {string|number|null} feedId - Optional feedId to invalidate just one namespace
      */
-    invalidateMultiple(parentFileBases) {
+    invalidateMultiple(parentFileBases, feedId = null) {
         let invalidated = 0;
         parentFileBases.forEach(parentFileBase => {
-            if (this.cache.has(parentFileBase)) {
-                this.cache.delete(parentFileBase);
-                invalidated++;
+            if (feedId != null) {
+                const cacheKey = this._cacheKey(parentFileBase, feedId);
+                if (this.cache.has(cacheKey)) {
+                    this.cache.delete(cacheKey);
+                    invalidated++;
+                }
+            } else {
+                const suffix = `::${parentFileBase}`;
+                for (const key of this.cache.keys()) {
+                    if (key.endsWith(suffix)) {
+                        this.cache.delete(key);
+                        invalidated++;
+                    }
+                }
             }
         });
         printLog(`🗑️ [EDIT-CHILDREN-CACHE] Invalidated ${invalidated} cache entries`);
@@ -158,7 +215,7 @@ class EditChildrenCacheManager {
     clear() {
         const size = this.cache.size;
         this.cache.clear();
-        this.updateInProgress.clear();
+        this.refreshPromises.clear();
         printLog(`🗑️ [EDIT-CHILDREN-CACHE] Cleared all ${size} cache entries`);
     }
 
@@ -170,7 +227,7 @@ class EditChildrenCacheManager {
         const now = Date.now();
         let expired = 0;
         let totalAge = 0;
-        let pendingRefreshes = this.updateInProgress.size;
+        let pendingRefreshes = this.refreshPromises.size;
 
         for (const [key, cached] of this.cache) {
             const age = now - cached.timestamp;
