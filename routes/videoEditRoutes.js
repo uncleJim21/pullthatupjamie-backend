@@ -2,6 +2,7 @@ const express = require('express');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { sanitizeFileName, validateUploadFileName } = require('../utils/videoEditHelpers');
+const { printLog } = require('../constants');
 
 /**
  * Factory to create routes related to video editing and clip storage.
@@ -128,16 +129,27 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
     const debugPrefix = `[EDIT-CHILDREN][${parentFileName}]`;
 
     try {
+      const t0 = Date.now();
+      printLog(`⏱️  ${debugPrefix} start`);
       console.log(`${debugPrefix} Getting children for parent: ${parentFileName}`);
       
       // Remove extension from parent filename for base matching
       const parentFileBase = parentFileName.replace(/\.[^/.]+$/, "");
+      printLog(`⏱️  ${debugPrefix} parentFileBase=${parentFileBase} (+${Date.now() - t0}ms)`);
+
+      const feedId = req.podcastAdmin?.feedId;
+      printLog(`⏱️  ${debugPrefix} feedId=${feedId} (+${Date.now() - t0}ms)`);
       
       // Try cache first
-      const cachedData = await global.editChildrenCache.getChildren(parentFileBase);
+      const tCache = Date.now();
+      // Important: don't auto-trigger a background refresh here, because this endpoint
+      // will explicitly await refresh on miss (avoids double Mongo queries on cold cache).
+      const cachedData = await global.editChildrenCache.getChildren(parentFileBase, feedId, { triggerRefresh: false });
+      printLog(`⏱️  ${debugPrefix} cacheLookup done (+${Date.now() - tCache}ms, total +${Date.now() - t0}ms)`);
       
       if (cachedData) {
         console.log(`${debugPrefix} Returning cached data with ${cachedData.childCount} children`);
+        printLog(`⏱️  ${debugPrefix} respond cached=true childCount=${cachedData.childCount} (total +${Date.now() - t0}ms)`);
         return res.json({
           parentFileName,
           parentFileBase,
@@ -148,52 +160,20 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
         });
       }
 
-      // Cache miss - fetch fresh data
-      console.log(`${debugPrefix} Cache miss - fetching fresh data from database`);
-      
-      // Find all edits for this parent file
-      const childEdits = await WorkProductV2.find({
-        type: 'video-edit',
-        'result.parentFileBase': parentFileBase
-      });
+      // Cache miss - fetch fresh data (single path: await cache refresh to avoid double DB hits)
+      printLog(`⏱️  ${debugPrefix} cache miss -> refreshChildren (total +${Date.now() - t0}ms)`);
+      const tRefresh = Date.now();
+      const fresh = await global.editChildrenCache.refreshChildren(parentFileBase, feedId);
+      printLog(`⏱️  ${debugPrefix} refreshChildren done (+${Date.now() - tRefresh}ms, total +${Date.now() - t0}ms)`);
 
-      console.log(`${debugPrefix} Found ${childEdits.length} child edits`);
-
-      // Format the response
-      const formattedEdits = childEdits.map(edit => ({
-        lookupHash: edit.lookupHash,
-        status: edit.status,
-        url: edit.cdnFileId,
-        editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
-        duration: edit.result.editDuration,
-        createdAt: edit.createdAt,
-        originalUrl: edit.result.originalUrl
-      }));
-
-      // Sort by createdAt (most recent first), with null values at the end
-      formattedEdits.sort((a, b) => {
-        // If both have createdAt, sort by most recent first
-        if (a.createdAt && b.createdAt) {
-          return new Date(b.createdAt) - new Date(a.createdAt);
-        }
-        // If only a has createdAt, a comes first
-        if (a.createdAt && !b.createdAt) {
-          return -1;
-        }
-        // If only b has createdAt, b comes first
-        if (!a.createdAt && b.createdAt) {
-          return 1;
-        }
-        // If neither has createdAt, maintain original order
-        return 0;
-      });
-
+      printLog(`⏱️  ${debugPrefix} respond cached=false childCount=${fresh.childCount} (total +${Date.now() - t0}ms)`);
       return res.json({
         parentFileName,
         parentFileBase,
-        childCount: formattedEdits.length,
-        children: formattedEdits,
-        cached: false
+        childCount: fresh.childCount,
+        children: fresh.children,
+        cached: false,
+        lastUpdated: fresh.lastUpdated
       });
 
     } catch (error) {
@@ -310,6 +290,8 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
   // List uploads for the authenticated podcast admin, with optional child edit relationships
   router.get('/api/list-uploads', verifyPodcastAdminMiddleware, async (req, res) => {
     try {
+      const t0 = Date.now();
+      printLog(`⏱️  [LIST-UPLOADS] start`);
       // Check if clipSpacesManager is initialized
       if (!clipSpacesManager) {
         return res.status(503).json({ error: "Clip storage service not available" });
@@ -331,6 +313,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       const pageSize = 50; // Fixed page size of 50 items
       const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
       const includeChildren = req.query.includeChildren === 'true'; // Default to false for performance
+      printLog(`⏱️  [LIST-UPLOADS] params feedId=${feedId} page=${page} includeChildren=${includeChildren} (+${Date.now() - t0}ms)`);
       
       if (page < 1) {
         return res.status(400).json({ error: "Page number must be 1 or greater" });
@@ -338,6 +321,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       
       // Create a new S3 client for this operation
       const client = clipSpacesManager.createClient();
+      printLog(`⏱️  [LIST-UPLOADS] s3Client created (+${Date.now() - t0}ms)`);
       
       // Fetch ALL objects from S3 (we'll paginate after sorting)
       let continuationToken = null;
@@ -350,6 +334,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       let batchCount = 0;
       while (hasMoreItems) {
         batchCount++;
+        const tBatch = Date.now();
         const listParams = {
           Bucket: bucketName,
           Prefix: prefix,
@@ -362,10 +347,12 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
         }
         
         console.log(`S3 Batch ${batchCount}: Fetching with prefix: ${prefix}`);
+        printLog(`⏱️  [LIST-UPLOADS] s3 batch=${batchCount} send start continuation=${Boolean(continuationToken)}`);
         
         // Execute the command
         const command = new ListObjectsV2Command(listParams);
         const response = await client.send(command);
+        printLog(`⏱️  [LIST-UPLOADS] s3 batch=${batchCount} send done items=${response.Contents?.length || 0} truncated=${Boolean(response.IsTruncated)} (+${Date.now() - tBatch}ms, total +${Date.now() - t0}ms)`);
         
         console.log(`S3 Batch ${batchCount}: Got ${response.Contents?.length || 0} items, IsTruncated: ${response.IsTruncated}`);
         
@@ -387,8 +374,10 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       }
       
       console.log(`S3 Fetch Complete: ${batchCount} batches, ${allContents.length} total items, ${directoryCount} directories`);
+      printLog(`⏱️  [LIST-UPLOADS] s3 fetch complete batches=${batchCount} totalItems=${allContents.length} dirs=${directoryCount} (total +${Date.now() - t0}ms)`);
       
       // Process the results to make them more user-friendly
+      const tProcess = Date.now();
       const uploads = allContents
         .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
         .filter(item => !item.Key.includes('-children/')) // Filter out child edit files from main list
@@ -414,15 +403,18 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
           if (timeDiff !== 0) return timeDiff;
           return a.key.localeCompare(b.key); // Secondary sort for consistency
         });
+      printLog(`⏱️  [LIST-UPLOADS] process+sort done uploads=${uploads.length} (+${Date.now() - tProcess}ms, total +${Date.now() - t0}ms)`);
       
       console.log(`Total files found: ${uploads.length}`);
       console.log(`First 3 files (most recent):`, uploads.slice(0, 3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
       console.log(`Last 3 files (oldest):`, uploads.slice(-3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
 
       // Apply server-side pagination to sorted results
+      const tPaginate = Date.now();
       const startIndex = (page - 1) * pageSize;
       const endIndex = startIndex + pageSize;
       const paginatedUploads = uploads.slice(startIndex, endIndex);
+      printLog(`⏱️  [LIST-UPLOADS] paginate done paginated=${paginatedUploads.length} (+${Date.now() - tPaginate}ms, total +${Date.now() - t0}ms)`);
       
       // Calculate pagination metadata
       const totalFileCount = uploads.length; // Total files after filtering
@@ -434,16 +426,33 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       // Add child relationship data if requested
       if (includeChildren) {
         console.log(`Adding child relationship data for ${paginatedUploads.length} uploads`);
+        const tChildren = Date.now();
         
         try {
           // Get all file bases for batch query (only for paginated results)
           const fileBases = paginatedUploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
           
-          // Single database query to get all child edits at once
-          const allChildEdits = await WorkProductV2.find({
+          // DB queries:
+          // - Scoped (fast path): includes result.feedId for modern docs
+          // - Legacy fallback: includes docs missing result.feedId (backward compatible)
+          const tScoped = Date.now();
+          const scopedEdits = await WorkProductV2.find({
             type: 'video-edit',
+            'result.feedId': feedId,
             'result.parentFileBase': { $in: fileBases }
           }).sort({ createdAt: -1 });
+          printLog(`⏱️  [LIST-UPLOADS] includeChildren dbFind scoped done edits=${scopedEdits.length} (+${Date.now() - tScoped}ms, total +${Date.now() - t0}ms)`);
+
+          const tLegacy = Date.now();
+          const legacyEdits = await WorkProductV2.find({
+            type: 'video-edit',
+            'result.feedId': { $exists: false },
+            'result.parentFileBase': { $in: fileBases }
+          }).sort({ createdAt: -1 });
+          printLog(`⏱️  [LIST-UPLOADS] includeChildren dbFind legacy done edits=${legacyEdits.length} (+${Date.now() - tLegacy}ms, total +${Date.now() - t0}ms)`);
+
+          const allChildEdits = scopedEdits.concat(legacyEdits);
+          printLog(`⏱️  [LIST-UPLOADS] includeChildren dbFind combined edits=${allChildEdits.length} (+${Date.now() - tChildren}ms, total +${Date.now() - t0}ms)`);
           
           console.log(`Found ${allChildEdits.length} total child edits`);
           
@@ -477,6 +486,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
           
         } catch (error) {
           console.error(`Failed to get children data: ${error.message}`);
+          printLog(`⏱️  [LIST-UPLOADS] includeChildren failed err=${error.message} (total +${Date.now() - t0}ms)`);
           // Set empty children for all uploads on error
           paginatedUploads.forEach(upload => {
             upload.children = [];
@@ -487,6 +497,7 @@ function createVideoEditRoutes({ clipUtils, verifyPodcastAdminMiddleware, clipSp
       }
       
       // Return the list of uploads with pagination metadata
+      printLog(`⏱️  [LIST-UPLOADS] respond (total +${Date.now() - t0}ms)`);
       res.json({
         uploads: paginatedUploads,
         pagination: {
