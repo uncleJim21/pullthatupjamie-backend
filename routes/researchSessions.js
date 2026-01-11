@@ -5,6 +5,7 @@ const router = express.Router();
 const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
 const { User } = require('../models/User');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { getClipsByIdsBatch } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
 const { v4: uuidv4 } = require('uuid');
@@ -1276,33 +1277,85 @@ router.post('/:id/analyze', async (req, res) => {
       });
     }
 
-    // Build a concise text context from the session items (cap at 20 items)
+    // Hydrate item metadata from MongoDB (JamieVectorMetadata) using pineconeIds.
+    // We treat MongoDB as source-of-truth (Pinecone is for semantic reads only).
+    const orderedIds = Array.isArray(session.pineconeIds) && session.pineconeIds.length
+      ? session.pineconeIds
+      : items
+          .map((it) => it && it.pineconeId)
+          .filter((val) => typeof val === 'string' && val.length > 0);
+
+    const uniqueIds = Array.from(new Set(orderedIds));
+
+    const mongoDocs = uniqueIds.length
+      ? await JamieVectorMetadata.find({ pineconeId: { $in: uniqueIds } })
+          .select('pineconeId metadataRaw start_time end_time')
+          .lean()
+      : [];
+
+    const mongoById = new Map((mongoDocs || []).map((doc) => [doc.pineconeId, doc]));
+
+    // Build a concise text context from the hydrated session items (cap at 20 items).
+    // We skip entries without usable content to avoid low-signal prompts.
     const MAX_ITEMS = 20;
-    const limitedItems = items.slice(0, MAX_ITEMS);
+    const limitedItems = [];
+    for (const pid of orderedIds) {
+      if (limitedItems.length >= MAX_ITEMS) break;
+      const doc = mongoById.get(pid);
+      if (!doc || !doc.metadataRaw) continue;
+      limitedItems.push({ pineconeId: pid, doc });
+    }
 
-    const contextLines = limitedItems.map((item, index) => {
-      const meta = item.metadata || {};
-      const quote = meta.quote || meta.summary || meta.headline || '(no quote)';
-      const episode = meta.episode || 'Unknown episode';
-      const creator = meta.creator || 'Unknown creator';
-      const audioUrl = meta.audioUrl || '';
-      const startTime = meta.timeContext?.start_time ?? null;
-      const startSeconds = typeof startTime === 'number' && !Number.isNaN(startTime)
-        ? Math.floor(startTime)
-        : null;
+    if (!limitedItems.length) {
+      return res.status(400).json({
+        error: 'Missing metadata',
+        details: 'None of the session items could be hydrated from MongoDB (JamieVectorMetadata)'
+      });
+    }
 
-      return [
-        `Item ${index + 1}:`,
-        `Episode: ${episode}`,
-        `Creator: ${creator}`,
-        audioUrl ? `AudioUrl: ${audioUrl}` : 'AudioUrl: (not available)',
-        startSeconds !== null
-          ? `StartTimeSeconds: ${startSeconds}`
-          : 'StartTimeSeconds: (unknown)',
-        `Quote: ${quote}`,
-        ''
-      ].join('\n');
-    });
+    const contextLines = limitedItems
+      .map((entry) => entry && entry.doc && entry.doc.metadataRaw ? entry : null)
+      .filter(Boolean)
+      .map((entry, index) => {
+        const meta = entry.doc.metadataRaw || {};
+
+        // Prefer actual paragraph text when present; fall back to quote/summary/headline.
+        const quote =
+          meta.text ||
+          meta.quote ||
+          meta.summary ||
+          meta.headline ||
+          '(no quote)';
+
+        const episode = meta.episode || meta.title || 'Unknown episode';
+        const creator = meta.creator || 'Unknown creator';
+        const audioUrl = meta.audioUrl || '';
+
+        // Prefer explicit start_time/end_time stored in Mongo mirror.
+        const startTime =
+          (typeof entry.doc.start_time === 'number' ? entry.doc.start_time : null) ??
+          (typeof meta.start_time === 'number' ? meta.start_time : null) ??
+          (meta.timeContext && typeof meta.timeContext.start_time === 'number' ? meta.timeContext.start_time : null) ??
+          null;
+
+        const startSeconds =
+          typeof startTime === 'number' && !Number.isNaN(startTime)
+            ? Math.floor(startTime)
+            : null;
+
+        return [
+          `Item ${index + 1}:`,
+          `PineconeId: ${entry.pineconeId}`,
+          `Episode: ${episode}`,
+          `Creator: ${creator}`,
+          audioUrl ? `AudioUrl: ${audioUrl}` : 'AudioUrl: (not available)',
+          startSeconds !== null
+            ? `StartTimeSeconds: ${startSeconds}`
+            : 'StartTimeSeconds: (unknown)',
+          `Quote: ${quote}`,
+          ''
+        ].join('\n');
+      });
 
     const contextText = contextLines.join('\n---\n');
 
