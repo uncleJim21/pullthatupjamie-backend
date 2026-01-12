@@ -1479,7 +1479,7 @@ router.post('/:id/analyze', async (req, res) => {
     const contextText = contextLines.join('\n---\n');
 
     const baseInstructions = `
-You are an AI assistant analyzing a research session composed of podcast clips.
+You are an AI assistant analyzing a research session composed of podcast clips. Keep it modestly succinct and to the point.
 
 You will receive:
 - A list of items, each with episode title, creator, a short quote,
@@ -1488,7 +1488,6 @@ You will receive:
 Your goals:
 1. Summarize the key themes and ideas across all items.
 2. Call out any patterns, contradictions, or notable perspectives.
-3. Suggest 3–5 follow-up questions or angles for deeper research.
 
 Source citation requirements (IMPORTANT):
 - When you reference a specific item or quote, append a machine-readable "card" marker at the END of the SAME line
