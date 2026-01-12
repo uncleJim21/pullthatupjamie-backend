@@ -695,28 +695,44 @@ router.post('/fetch-research-id', async (req, res) => {
         ? session.axisLabels
         : null;
 
+    const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
     const rawItems = Array.isArray(session.items) ? session.items : [];
 
-    const items = rawItems
-      .map((it) => (it && it.metadata ? it : null))
-      .filter(Boolean);
-
-    if (!items.length) {
-      printLog(`[${requestId}] ✗ Research session has no items`);
+    if (!pineconeIds.length) {
+      printLog(`[${requestId}] ✗ Research session has no pineconeIds`);
       return res.status(400).json({
         error: 'Empty research session',
-        details: 'This research session has no items to project'
+        details: 'This research session has no pineconeIds to project'
       });
     }
+
+    // Build quick lookup maps from stored session items (metadata may be null).
+    const storedMetaById = new Map();
+    const storedCoordsById = new Map();
+    rawItems.forEach((it) => {
+      if (!it || typeof it !== 'object') return;
+      const pid = it.pineconeId;
+      if (typeof pid !== 'string' || pid.length === 0) return;
+      if (it.metadata && typeof it.metadata === 'object') {
+        storedMetaById.set(pid, it.metadata);
+      }
+      const c = it.coordinates3d;
+      if (c && typeof c === 'object') {
+        const x = typeof c.x === 'number' ? c.x : null;
+        const y = typeof c.y === 'number' ? c.y : null;
+        const z = typeof c.z === 'number' ? c.z : null;
+        if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') {
+          storedCoordsById.set(pid, { x, y, z });
+        }
+      }
+    });
 
     // Step 2: Hydrate item metadata from MongoDB (source of truth) using pineconeIds.
     // Keep response schema consistent by using the existing formatResults(...) helper.
     printLog(`[${requestId}] Step 2: Hydrating item metadata from MongoDB by pineconeId...`);
     const mongoHydrateStart = Date.now();
 
-    const pineconeIdsForSession = items
-      .map((it) => it && it.pineconeId)
-      .filter((id) => typeof id === 'string' && id.length > 0);
+    const pineconeIdsForSession = pineconeIds.filter((id) => typeof id === 'string' && id.length > 0);
 
     const mongoDocs = await JamieVectorMetadata.find({
       pineconeId: { $in: pineconeIdsForSession }
@@ -736,23 +752,67 @@ router.post('/fetch-research-id', async (req, res) => {
       `[${requestId}] ✓ MongoDB hydration completed in ${Date.now() - mongoHydrateStart}ms (${mongoDocs.length} docs)`
     );
 
-    // Prefer Mongo-hydrated metadata (better quote/creator/etc), but fall back to stored snapshots
-    // so the endpoint remains resilient even if Mongo is missing some IDs.
-    const similarDiscussions = items.map((item) => {
-      const stored = item.metadata ? { ...item.metadata } : {};
-      const hydrated = hydratedById.get(item.pineconeId) || null;
-      const base = hydrated ? { ...hydrated } : stored;
+    // Prefer Mongo-hydrated metadata (better quote/creator/etc), but fall back to stored snapshots,
+    // and ALWAYS preserve the session's ordering via session.pineconeIds (including duplicates).
+    const similarDiscussions = pineconeIds
+      .map((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return null;
+        const hydrated = hydratedById.get(pid) || null;
+        const storedMeta = storedMetaById.get(pid) || null;
+        const base = hydrated ? { ...hydrated } : (storedMeta ? { ...storedMeta } : null);
+        if (!base) return null;
 
-      const storedCoords = item.coordinates3d || null;
-      if (storedCoords && typeof storedCoords === 'object') {
-        const x = typeof storedCoords.x === 'number' ? storedCoords.x : null;
-        const y = typeof storedCoords.y === 'number' ? storedCoords.y : null;
-        const z = typeof storedCoords.z === 'number' ? storedCoords.z : null;
-        base.coordinates3d = { x, y, z };
+        const coords = storedCoordsById.get(pid) || null;
+        if (coords) {
+          base.coordinates3d = coords;
+        }
+
+        return base;
+      })
+      .filter(Boolean);
+
+    // Best-effort backfill: persist hydrated metadata into the ResearchSession items array
+    // for any items that currently have null metadata, so future reads don't need hydration.
+    try {
+      if (hydratedFormatted.length > 0) {
+        const hydratedMetaById = new Map(
+          hydratedFormatted.map((r) => [r.shareLink, r])
+        );
+
+        const existingIds = new Set(rawItems.map((it) => it && it.pineconeId).filter(Boolean));
+        let changed = false;
+        const nextItems = rawItems.map((it) => {
+          if (!it || typeof it !== 'object') return it;
+          if (!it.pineconeId || typeof it.pineconeId !== 'string') return it;
+          if (it.metadata) return it;
+          const hydrated = hydratedMetaById.get(it.pineconeId);
+          if (!hydrated) return it;
+          changed = true;
+          return { ...it, metadata: hydrated };
+        });
+
+        // Ensure there is at least an item entry for each pineconeId (helpful for legacy sessions)
+        pineconeIds.forEach((pid) => {
+          if (typeof pid !== 'string' || pid.length === 0) return;
+          if (existingIds.has(pid)) return;
+          const hydrated = hydratedMetaById.get(pid);
+          if (!hydrated) return;
+          changed = true;
+          nextItems.push({ pineconeId: pid, metadata: hydrated, coordinates3d: { x: null, y: null, z: null } });
+        });
+
+        if (changed) {
+          await ResearchSession.findByIdAndUpdate(
+            researchSessionId,
+            { $set: { items: nextItems } },
+            { new: false }
+          ).exec();
+          printLog(`[${requestId}] ✓ Backfilled hydrated metadata into ResearchSession.items`);
+        }
       }
-
-      return base;
-    });
+    } catch (backfillErr) {
+      printLog(`[${requestId}] ⚠️ Backfill of hydrated metadata failed: ${backfillErr.message}`);
+    }
 
     // Step 3: Enrich results with episode metadata where missing (same as search-quotes-3d Step 3d)
     printLog(`[${requestId}] Step 3: Enriching results with episode metadata where missing...`);
