@@ -6,7 +6,7 @@ const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
 const { User } = require('../models/User');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
-const { getClipsByIdsBatch } = require('../agent-tools/pineconeTools');
+const { getClipsByIdsBatch, formatResults } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const { createCanvas, loadImage } = require('canvas');
@@ -603,22 +603,116 @@ router.get('/:id', async (req, res) => {
     const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
 
     let items = [];
-    if (Array.isArray(session.items) && session.items.length > 0) {
-      // Prefer stored metadata snapshots when available, and ensure embeddings are not exposed
+    if (pineconeIds.length > 0) {
+      // Prefer stored metadata snapshots when available, but do NOT drop entries with null metadata.
+      // Instead, hydrate missing metadata from MongoDB (JamieVectorMetadata) so the response aligns
+      // with pineconeIds (and preserves order/duplicates).
+
+      const orderedIds = pineconeIds;
+
+      // Build lookup map of stored snapshots by pineconeId
+      const storedById = new Map();
+      if (Array.isArray(session.items) && session.items.length > 0) {
+        session.items.forEach((entry) => {
+          if (!entry || typeof entry !== 'object') return;
+          const pid = entry.pineconeId;
+          const meta = entry.metadata;
+          if (typeof pid === 'string' && pid.length > 0 && meta && typeof meta === 'object') {
+            const { embedding, ...rest } = meta;
+            storedById.set(pid, rest);
+          }
+        });
+      }
+
+      // Determine which IDs still need hydration
+      const missingIds = [];
+      orderedIds.forEach((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return;
+        if (!storedById.has(pid)) missingIds.push(pid);
+      });
+
+      // Hydrate missing items from MongoDB mirror first (fast + local).
+      const mongoById = new Map();
+      if (missingIds.length > 0) {
+        const uniqueMissing = Array.from(new Set(missingIds));
+        const mongoDocs = await JamieVectorMetadata.find({
+          pineconeId: { $in: uniqueMissing }
+        })
+          .select('pineconeId metadataRaw')
+          .lean();
+
+        const formatted = formatResults(
+          (mongoDocs || []).map((doc) => ({
+            id: doc.pineconeId,
+            score: 1,
+            metadata: doc.metadataRaw || {}
+          }))
+        );
+
+        formatted.forEach((clip) => {
+          if (clip && clip.shareLink) {
+            const { embedding, ...rest } = clip;
+            mongoById.set(clip.shareLink, rest);
+          }
+        });
+      }
+
+      // Optional final fallback: Pinecone batch fetch for anything still missing from both snapshots + Mongo.
+      // (This keeps behavior similar to legacy sessions, but should rarely be needed if Mongo is complete.)
+      const pineconeById = new Map();
+      const stillMissing = [];
+      orderedIds.forEach((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return;
+        if (storedById.has(pid)) return;
+        if (mongoById.has(pid)) return;
+        stillMissing.push(pid);
+      });
+
+      if (stillMissing.length > 0) {
+        const clips = await getClipsByIdsBatch(stillMissing);
+        (clips || []).forEach((clip) => {
+          if (clip && clip.shareLink) {
+            const { embedding, ...rest } = clip;
+            pineconeById.set(clip.shareLink, rest);
+          }
+        });
+      }
+
+      // Rebuild in the same order as pineconeIds (including duplicates)
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+      items = orderedIds
+        .map((pid) => {
+          if (typeof pid !== 'string' || pid.length === 0) return null;
+          return storedById.get(pid) || mongoById.get(pid) || pineconeById.get(pid) || {
+            shareLink: pid,
+            shareUrl: `${baseUrl}/share?clip=${pid}`,
+            listenLink: '',
+            quote: 'Quote unavailable',
+            summary: null,
+            headline: null,
+            description: null,
+            episode: 'Unknown episode',
+            creator: 'Creator not specified',
+            audioUrl: 'URL unavailable',
+            episodeImage: 'Image unavailable',
+            date: 'Date not provided',
+            published: null,
+            similarity: { combined: 1, vector: 1 },
+            timeContext: { start_time: null, end_time: null },
+            additionalFields: {},
+            hierarchyLevel: 'paragraph'
+          };
+        })
+        .filter(Boolean);
+    } else if (Array.isArray(session.items) && session.items.length > 0) {
+      // Legacy fallback: no pineconeIds array; return any stored snapshots we have.
       items = session.items
-        .map(entry => entry?.metadata || null)
+        .map((entry) => entry?.metadata || null)
         .filter(Boolean)
-        .map(meta => {
+        .map((meta) => {
           const { embedding, ...rest } = meta;
           return rest;
         });
-    } else if (pineconeIds.length > 0) {
-      // Fallback for legacy sessions without stored metadata
-      const clips = await getClipsByIdsBatch(pineconeIds);
-      items = clips.map(clip => {
-        const { embedding, ...rest } = clip || {};
-        return rest;
-      });
     }
 
     return res.json({
