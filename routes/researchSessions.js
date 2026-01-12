@@ -1329,7 +1329,30 @@ router.post('/:id/analyze', async (req, res) => {
 
         const episode = meta.episode || meta.title || 'Unknown episode';
         const creator = meta.creator || 'Unknown creator';
-        const audioUrl = meta.audioUrl || '';
+
+        // Source material for citations (3-part): pineconeId, episode image, episode/chapter title.
+        const episodeImage =
+          meta.episodeImage ||
+          meta.imageUrl ||
+          meta.podcastImage ||
+          meta.image ||
+          '';
+
+        const episodeOrChapterTitle =
+          meta.headline ||
+          meta.chapterTitle ||
+          meta.chapter ||
+          meta.episode ||
+          meta.title ||
+          'Unknown title';
+
+        // Pre-build a canonical, single-line JSON payload the model can copy exactly
+        // when emitting "cards" for the frontend.
+        const cardJson = JSON.stringify({
+          pineconeId: entry.pineconeId,
+          episodeImage: episodeImage ? episodeImage : null,
+          title: episodeOrChapterTitle
+        });
 
         // Prefer explicit start_time/end_time stored in Mongo mirror.
         const startTime =
@@ -1348,7 +1371,9 @@ router.post('/:id/analyze', async (req, res) => {
           `PineconeId: ${entry.pineconeId}`,
           `Episode: ${episode}`,
           `Creator: ${creator}`,
-          audioUrl ? `AudioUrl: ${audioUrl}` : 'AudioUrl: (not available)',
+          episodeImage ? `EpisodeImage: ${episodeImage}` : 'EpisodeImage: (not available)',
+          `EpisodeOrChapterTitle: ${episodeOrChapterTitle}`,
+          `CardJSON: ${cardJson}`,
           startSeconds !== null
             ? `StartTimeSeconds: ${startSeconds}`
             : 'StartTimeSeconds: (unknown)',
@@ -1372,11 +1397,21 @@ Your goals:
 3. Suggest 3–5 follow-up questions or angles for deeper research.
 
 Source citation requirements (IMPORTANT):
-- When you reference a specific item or quote, and BOTH AudioUrl and StartTimeSeconds are available,
-  append an inline source in this exact format on the SAME line:
-  {AudioUrl}#t={StartTimeSeconds}
-  Example: https://example.com/audio.mp3#t=300
-- If either AudioUrl or StartTimeSeconds is missing, you may omit the source.
+- When you reference a specific item or quote, append a machine-readable "card" marker at the END of the SAME line
+  using this exact format:
+  CARD_JSON: <valid JSON>
+- The JSON MUST be valid and MUST include these keys:
+  - pineconeId (string)
+  - episodeImage (string or null)
+  - title (string)  // episode/chapter title
+- IMPORTANT: Each item in the context includes a line "CardJSON: {...}".
+  For citations, COPY that JSON EXACTLY (do not modify any characters).
+- The "CARD_JSON: ..." must be the final content on the line (no trailing punctuation).
+- Do NOT wrap CARD_JSON in parentheses or brackets. Bad: "(CARD_JSON: {...})". Good: "CARD_JSON: {...}"
+- Do NOT include the literal prefix "Quote:" or parentheticals like "(Quote: ...)" in your output.
+  If you want to include a direct quote, include it naturally in the sentence (with quotes) and then append CARD_JSON.
+- Example:
+  ...some sentence about an item... CARD_JSON: {"pineconeId":"9a1bc097..._p43","episodeImage":"https://.../image.jpg","title":"Bitcoin Revealed What School Never Wanted Us to Understand"}
 
 Output format (IMPORTANT):
 - On the FIRST line, output: TITLE: <concise title, max 8 words, no quotes, no emojis>.
