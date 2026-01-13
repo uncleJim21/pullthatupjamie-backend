@@ -50,7 +50,7 @@ Your goals:
 1. Identify and summarize key themes and ideas that are relevant to the research session.
 2. Include quick blurbs from the most salient items that support (1) above. Do not include more than 3 or so.
 3. Call out any patterns, contradictions, or notable perspectives.
-4. Enumerate and use clear lines of demarcation where possible.
+4. Enumerate and use clear lines of demarcation when the analysis covers multiple topics or themes.
 
 Source citation requirements (IMPORTANT):
 - Each item in the context includes a line "CiteToken: ⟦CITE:<index>⟧".
@@ -64,8 +64,14 @@ Source citation requirements (IMPORTANT):
 Output format (IMPORTANT):
 - On the FIRST line, output: TITLE: <concise title, max 8 words, no quotes, no emojis>.
 - On the SECOND line, output a single blank line.
-- Starting from the THIRD line, output your full analysis of the research session
-  following the source citation rules above.
+- Starting from the THIRD line, you MUST use the following structure (no deviations):
+  1) THEMES: Output a numbered list (1., 2., 3., ...) of the main themes.
+     - You MUST include at least 2 numbered items when multiple themes exist; otherwise include at least 1.
+     - Each numbered item should be a short paragraph (1–3 sentences).
+     - Use clear line breaks between numbered items (blank line between items).
+  2) CONCLUSION: Output a final line starting with "CONCLUSION:" that states the definitive conclusion in 1 sentence.
+
+  Follow the source citation rules above: whenever you reference a specific item/quote on a line, that SAME line must end with the exact CiteToken.
 
 Do NOT output anything before the TITLE line. Be concise but insightful. Assume the reader is technical and curious.
 `.trim();
