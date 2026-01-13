@@ -50,6 +50,7 @@ Your goals:
 1. Identify and summarize key themes and ideas that are relevant to the research session.
 2. Include quick blurbs from the most salient items that support (1) above. Do not include more than 3 or so.
 3. Call out any patterns, contradictions, or notable perspectives.
+4. Enumerate and use clear lines of demarcation where possible.
 
 Source citation requirements (IMPORTANT):
 - Each item in the context includes a line "CiteToken: ⟦CITE:<index>⟧".
