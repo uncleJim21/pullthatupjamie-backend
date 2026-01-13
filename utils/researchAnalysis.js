@@ -47,8 +47,9 @@ You will receive:
   and when available: an AudioUrl and a StartTimeSeconds value.
 
 Your goals:
-1. Summarize the key themes and ideas across all items.
-2. Call out any patterns, contradictions, or notable perspectives.
+1. Identify and summarize key themes and ideas that are relevant to the research session.
+2. Include quick blurbs from the most salient items that support (1) above and include the CARD JSON inline with that. Do not include more than 3 or so.
+3. Call out any patterns, contradictions, or notable perspectives.
 
 Source citation requirements (IMPORTANT):
 - When you reference a specific item or quote, append a machine-readable "card" marker at the END of the SAME line
