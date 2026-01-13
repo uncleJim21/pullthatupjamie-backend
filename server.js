@@ -44,6 +44,7 @@ const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
 const researchSessionsRoutes = require('./routes/researchSessions');
+const researchAnalyzeRoutes = require('./routes/researchAnalyzeRoutes');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const jamieExploreRoutes = require('./routes/jamieExploreRoutes');
 const createVideoEditRoutes = require('./routes/videoEditRoutes');
@@ -1887,6 +1888,7 @@ app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
+app.use('/api/research', researchAnalyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 

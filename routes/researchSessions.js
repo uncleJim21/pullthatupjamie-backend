@@ -1,10 +1,8 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
-const { User } = require('../models/User');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { getClipsByIdsBatch, formatResults } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
@@ -13,6 +11,8 @@ const { createCanvas, loadImage } = require('canvas');
 const path = require('path');
 const DigitalOceanSpacesManager = require('../utils/DigitalOceanSpacesManager');
 const fetch = require('node-fetch');
+const { resolveOwner } = require('../utils/resolveOwner');
+const { streamResearchAnalysis } = require('../utils/researchAnalysis');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -149,51 +149,7 @@ async function generateSmartShareTitle(lastItemMetadata, fallbackTitle) {
   }
 }
 
-/**
- * Resolve the logical owner of a research session for the current request.
- * - Prefer authenticated User (via JWT Bearer token)
- * - Fallback to anonymous clientId (from query, header, or body)
- *
- * Returns:
- *   { userId, clientId, ownerType } or null if no owner can be resolved
- */
-async function resolveOwner(req) {
-  let userId = null;
-
-  // Try to resolve authenticated user from JWT (if provided)
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      const email = decoded?.email;
-      if (email) {
-        const user = await User.findOne({ email }).select('_id');
-        if (user) {
-          userId = user._id;
-        }
-      }
-    } catch (err) {
-      console.warn('[ResearchSessions] Failed to verify JWT, treating as anonymous:', err.message);
-    }
-  }
-
-  // Accept clientId for anonymous usage
-  const clientId =
-    (req.query && req.query.clientId) ||
-    req.headers['x-client-id'] ||
-    (req.body && req.body.clientId) ||
-    null;
-
-  if (userId) {
-    return { userId, clientId: null, ownerType: 'user' };
-  }
-  if (clientId) {
-    return { userId: null, clientId, ownerType: 'client' };
-  }
-
-  return null;
-}
+// resolveOwner imported from utils/resolveOwner so multiple endpoints can share it.
 
 /**
  * GET /api/research-sessions
@@ -1371,178 +1327,17 @@ router.post('/:id/analyze', async (req, res) => {
       });
     }
 
-    // Hydrate item metadata from MongoDB (JamieVectorMetadata) using pineconeIds.
-    // We treat MongoDB as source-of-truth (Pinecone is for semantic reads only).
     const orderedIds = Array.isArray(session.pineconeIds) && session.pineconeIds.length
       ? session.pineconeIds
       : items
           .map((it) => it && it.pineconeId)
           .filter((val) => typeof val === 'string' && val.length > 0);
-
-    const uniqueIds = Array.from(new Set(orderedIds));
-
-    const mongoDocs = uniqueIds.length
-      ? await JamieVectorMetadata.find({ pineconeId: { $in: uniqueIds } })
-          .select('pineconeId metadataRaw start_time end_time')
-          .lean()
-      : [];
-
-    const mongoById = new Map((mongoDocs || []).map((doc) => [doc.pineconeId, doc]));
-
-    // Build a concise text context from the hydrated session items (cap at 20 items).
-    // We skip entries without usable content to avoid low-signal prompts.
-    const MAX_ITEMS = 20;
-    const limitedItems = [];
-    for (const pid of orderedIds) {
-      if (limitedItems.length >= MAX_ITEMS) break;
-      const doc = mongoById.get(pid);
-      if (!doc || !doc.metadataRaw) continue;
-      limitedItems.push({ pineconeId: pid, doc });
-    }
-
-    if (!limitedItems.length) {
-      return res.status(400).json({
-        error: 'Missing metadata',
-        details: 'None of the session items could be hydrated from MongoDB (JamieVectorMetadata)'
-      });
-    }
-
-    const contextLines = limitedItems
-      .map((entry) => entry && entry.doc && entry.doc.metadataRaw ? entry : null)
-      .filter(Boolean)
-      .map((entry, index) => {
-        const meta = entry.doc.metadataRaw || {};
-
-        // Prefer actual paragraph text when present; fall back to quote/summary/headline.
-        const quote =
-          meta.text ||
-          meta.quote ||
-          meta.summary ||
-          meta.headline ||
-          '(no quote)';
-
-        const episode = meta.episode || meta.title || 'Unknown episode';
-        const creator = meta.creator || 'Unknown creator';
-
-        // Source material for citations (3-part): pineconeId, episode image, episode/chapter title.
-        const episodeImage =
-          meta.episodeImage ||
-          meta.imageUrl ||
-          meta.podcastImage ||
-          meta.image ||
-          '';
-
-        const episodeOrChapterTitle =
-          meta.headline ||
-          meta.chapterTitle ||
-          meta.chapter ||
-          meta.episode ||
-          meta.title ||
-          'Unknown title';
-
-        // Pre-build a canonical, single-line JSON payload the model can copy exactly
-        // when emitting "cards" for the frontend.
-        const cardJson = JSON.stringify({
-          pineconeId: entry.pineconeId,
-          episodeImage: episodeImage ? episodeImage : null,
-          title: episodeOrChapterTitle
-        });
-
-        // Prefer explicit start_time/end_time stored in Mongo mirror.
-        const startTime =
-          (typeof entry.doc.start_time === 'number' ? entry.doc.start_time : null) ??
-          (typeof meta.start_time === 'number' ? meta.start_time : null) ??
-          (meta.timeContext && typeof meta.timeContext.start_time === 'number' ? meta.timeContext.start_time : null) ??
-          null;
-
-        const startSeconds =
-          typeof startTime === 'number' && !Number.isNaN(startTime)
-            ? Math.floor(startTime)
-            : null;
-
-        return [
-          `Item ${index + 1}:`,
-          `PineconeId: ${entry.pineconeId}`,
-          `Episode: ${episode}`,
-          `Creator: ${creator}`,
-          episodeImage ? `EpisodeImage: ${episodeImage}` : 'EpisodeImage: (not available)',
-          `EpisodeOrChapterTitle: ${episodeOrChapterTitle}`,
-          `CardJSON: ${cardJson}`,
-          startSeconds !== null
-            ? `StartTimeSeconds: ${startSeconds}`
-            : 'StartTimeSeconds: (unknown)',
-          `Quote: ${quote}`,
-          ''
-        ].join('\n');
-      });
-
-    const contextText = contextLines.join('\n---\n');
-
-    const baseInstructions = `
-You are an AI assistant analyzing a research session composed of podcast clips. Keep it modestly succinct and to the point.
-
-You will receive:
-- A list of items, each with episode title, creator, a short quote,
-  and when available: an AudioUrl and a StartTimeSeconds value.
-
-Your goals:
-1. Summarize the key themes and ideas across all items.
-2. Call out any patterns, contradictions, or notable perspectives.
-
-Source citation requirements (IMPORTANT):
-- When you reference a specific item or quote, append a machine-readable "card" marker at the END of the SAME line
-  using this exact format:
-  CARD_JSON: <valid JSON>
-- The JSON MUST be valid and MUST include these keys:
-  - pineconeId (string)
-  - episodeImage (string or null)
-  - title (string)  // episode/chapter title
-- IMPORTANT: Each item in the context includes a line "CardJSON: {...}".
-  For citations, COPY that JSON EXACTLY (do not modify any characters).
-- The "CARD_JSON: ..." must be the final content on the line (no trailing punctuation).
-- Do NOT wrap CARD_JSON in parentheses or brackets. Bad: "(CARD_JSON: {...})". Good: "CARD_JSON: {...}"
-- Do NOT include the literal prefix "Quote:" or parentheticals like "(Quote: ...)" in your output.
-  If you want to include a direct quote, include it naturally in the sentence (with quotes) and then append CARD_JSON.
-- Example:
-  ...some sentence about an item... CARD_JSON: {"pineconeId":"9a1bc097..._p43","episodeImage":"https://.../image.jpg","title":"Bitcoin Revealed What School Never Wanted Us to Understand"}
-
-Output format (IMPORTANT):
-- On the FIRST line, output: TITLE: <concise title, max 8 words, no quotes, no emojis>.
-- On the SECOND line, output a single blank line.
-- Starting from the THIRD line, output your full analysis of the research session
-  following the source citation rules above.
-
-Do NOT output anything before the TITLE line. Be concise but insightful. Assume the reader is technical and curious.
-`.trim();
-
-    const userInstructions = (typeof instructions === 'string' && instructions.trim().length > 0)
-      ? instructions.trim()
-      : 'Use the default analysis goals above.';
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-
-    const stream = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      stream: true,
-      messages: [
-        { role: 'system', content: baseInstructions },
-        {
-          role: 'user',
-          content: `Here is the research session context:\n\n${contextText}\n\nUser instructions: ${userInstructions}`
-        }
-      ],
-      temperature: 0.4
+    await streamResearchAnalysis({
+      openai,
+      res,
+      orderedPineconeIds: orderedIds,
+      instructions
     });
-
-    for await (const chunk of stream) {
-      const content = chunk.choices?.[0]?.delta?.content || '';
-      if (content) {
-        res.write(content);
-      }
-    }
-
-    res.end();
   } catch (error) {
     console.error('[ResearchSessions] Error analyzing session with AI:', error);
     if (!res.headersSent) {
