@@ -62,7 +62,7 @@ const { serviceHmac } = require('./middleware/hmac');
 const GarbageCollector = require('./utils/GarbageCollector');
 
 
-const mongoURI = process.env.MONGO_URI;
+const mongoURI = process.env.DEBUG_MODE ? process.env.MONGO_DEBUG_URI : process.env.MONGO_URI;
 const invoicePoolSize = 1;
 
 const processingCache = new Map();
