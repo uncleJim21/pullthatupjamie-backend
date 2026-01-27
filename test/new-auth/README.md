@@ -4,50 +4,60 @@ Test scripts for the provider-agnostic authentication and entitlement system.
 
 ## Prerequisites
 
-1. **Auth server** running on port 6161 (`cascdr-backend`)
+1. **Auth server** running on port 6111 (`cascdr-backend`)
 2. **Backend server** running on port 4132 (`pullthatupjamie-backend`)
 3. Both servers connected to the debug MongoDB
 
 ## Test Scripts
 
-### 1. Signup Flow (`test-signup-flow.sh`)
+### 1. Signup Flow (`test-signup-flow.js`)
 
 Tests the new `/auth/signup` endpoint with email provider.
 
 ```bash
 # With auto-generated email
-./test-signup-flow.sh
+node test/new-auth/test-signup-flow.js
 
 # With specific email
-./test-signup-flow.sh mytest@example.com
+node test/new-auth/test-signup-flow.js mytest@example.com
 ```
 
-### 2. Signin Flow (`test-signin-flow.sh`)
+### 2. Signin Flow (`test-signin-flow.js`)
 
 Tests the new `/auth/signin` endpoint.
 
 ```bash
-# With existing user
-./test-signin-flow.sh jim.carucci+wim@protonmail.com yourpassword
+# With default user
+node test/new-auth/test-signin-flow.js
 
-# After running signup flow
-./test-signin-flow.sh test+1234567890@example.com testpass123
+# With specific credentials
+node test/new-auth/test-signin-flow.js jim.carucci+wim@protonmail.com yourpassword
 ```
 
-### 3. Entitlement Tests (`test-entitlements.sh`)
+### 3. Quota Burn-down Tests (`test-quota-burndown.js`)
 
-Tests identity resolution and entitlement middleware.
+Tests that quota limits are enforced correctly for each tier via debug endpoints.
 
 ```bash
-# First, get a token from signin
-./test-signin-flow.sh user@example.com password
+# Requires DEBUG_MODE=true
+DEBUG_MODE=true node test/new-auth/test-quota-burndown.js
+```
 
-# Copy the token and run entitlement tests
-./test-entitlements.sh <token>
+### 4. Real Endpoint Tests (`test-real-endpoints.js`)
 
-# Or set as environment variable
-export TEST_TOKEN="eyJhbG..."
-./test-entitlements.sh
+Tests actual metered endpoints (not debug endpoints) to verify quota enforcement.
+
+```bash
+# Requires DEBUG_MODE=true and server running
+DEBUG_MODE=true node test/new-auth/test-real-endpoints.js
+```
+
+### 5. Seed Test Database (`seed_test_db.js`)
+
+Copies recent documents from production MongoDB to debug MongoDB for testing.
+
+```bash
+node test/new-auth/seed_test_db.js
 ```
 
 ## Debug Endpoints
@@ -66,6 +76,7 @@ The backend exposes these test endpoints (DEBUG_MODE only):
 - `search3D` - 3D visualization search
 - `makeClip` - Video clip creation
 - `jamieAssist` - AI analysis
+- `researchAnalyze` - Research session analysis
 - `onDemandRun` - Podcast processing
 
 ## Example: Full Test Flow
@@ -73,22 +84,24 @@ The backend exposes these test endpoints (DEBUG_MODE only):
 ```bash
 # 1. Start servers (in separate terminals)
 # Terminal 1 - Auth server:
-cd ~/cascdr-backend && npm start
+cd ~/cascdr-backend && PORT=6111 npm start
 
-# Terminal 2 - Backend:
-cd ~/pullthatupjamie-backend && npm start
+# Terminal 2 - Backend (debug mode):
+cd ~/pullthatupjamie-backend && DEBUG_MODE=true node server.js
 
 # 2. Run signup
-./test-signup-flow.sh test@example.com
+node test/new-auth/test-signup-flow.js test@example.com
 
 # 3. Copy the token from output
 
-# 4. Test entitlements
-./test-entitlements.sh <token>
+# 4. Run signin with existing user
+node test/new-auth/test-signin-flow.js test@example.com testpass123
 
-# 5. Or use curl directly
-curl http://localhost:4132/api/debug/test-identity \
-  -H "Authorization: Bearer <token>"
+# 5. Run quota tests
+DEBUG_MODE=true node test/new-auth/test-quota-burndown.js
+
+# 6. Run real endpoint tests
+DEBUG_MODE=true node test/new-auth/test-real-endpoints.js
 ```
 
 ## JWT Structure
@@ -115,9 +128,20 @@ curl http://localhost:4132/api/debug/test-identity \
 
 ## Tiers & Quotas
 
-| Tier | searchQuotes | search3D | makeClip | jamieAssist |
-|------|-------------|----------|----------|-------------|
-| anonymous | 100/week | 20/week | 5/week | 10/week |
-| registered | 100/month | 20/month | 10/month | 20/month |
-| subscriber | 500/month | 100/month | 50/month | 100/month |
-| admin | unlimited | unlimited | unlimited | unlimited |
+### Production Limits
+
+| Tier | searchQuotes | search3D | makeClip | jamieAssist | researchAnalyze | onDemandRun |
+|------|-------------|----------|----------|-------------|-----------------|-------------|
+| anonymous | 100/week | 20/week | 5/week | 10/week | 5/week | 0 |
+| registered | 100/month | 20/month | 10/month | 20/month | 10/month | 1/month |
+| subscriber | 500/month | 100/month | 50/month | 100/month | 50/month | 5/month |
+| admin | unlimited | unlimited | unlimited | unlimited | unlimited | unlimited |
+
+### Debug Limits (DEBUG_MODE=true)
+
+| Tier | searchQuotes | search3D | makeClip | jamieAssist | researchAnalyze | onDemandRun |
+|------|-------------|----------|----------|-------------|-----------------|-------------|
+| anonymous | 3/day | 3/day | 2/day | 2/day | 2/day | 0 |
+| registered | 3/day | 3/day | 2/day | 3/day | 3/day | 1/day |
+| subscriber | 5/day | 5/day | 3/day | 5/day | 5/day | 2/day |
+| admin | unlimited | unlimited | unlimited | unlimited | unlimited | unlimited |
