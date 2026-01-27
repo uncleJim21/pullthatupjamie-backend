@@ -7,85 +7,84 @@ const { checkEntitlementEligibility, consumeEntitlement } = require('../utils/en
 const jwt = require('jsonwebtoken');
 const { User } = require('../models/User');
 const { Entitlement } = require('../models/Entitlement');
+const { resolveIdentity } = require('../utils/identityResolver');
+const { getQuotaConfig, ALL_ENTITLEMENT_TYPES, TIERS, createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 
 /**
  * GET /api/on-demand/checkEligibility
- * Check eligibility for on-demand runs (supports both IP and JWT auth)
+ * Check eligibility for ALL entitlement types (uses new identity resolver)
+ * 
+ * Returns quotas for: searchQuotes, search3D, makeClip, jamieAssist, researchAnalyze, onDemandRun
  */
 router.get('/checkEligibility', async (req, res) => {
     try {
-        // Extract user email from JWT token if provided
-        let userEmail = null;
-        const authHeader = req.headers.authorization;
+        // Use new identity resolver
+        const identity = await resolveIdentity(req);
+        const { tier, identifier, identifierType, email, user } = identity;
         
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            const jwt = require('jsonwebtoken');
-            try {
-                const token = authHeader.substring(7);
-                const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-                userEmail = decoded.email;
-            } catch (jwtError) {
-                console.error('JWT verification failed:', jwtError.message);
-            }
-        }
-
-        // If we have a user email, check JWT-based eligibility
-        if (userEmail) {
-            const eligibility = await checkEntitlementEligibility(userEmail, 'jwt', 'onDemandRun');
+        // Fetch all existing entitlements for this user in one query
+        const existingEntitlements = await Entitlement.find({
+            identifier,
+            identifierType
+        }).lean();
+        
+        // Create a map for quick lookup
+        const entitlementMap = new Map(
+            existingEntitlements.map(e => [e.entitlementType, e])
+        );
+        
+        // Build eligibility for each type
+        const entitlements = {};
+        
+        for (const entitlementType of ALL_ENTITLEMENT_TYPES) {
+            const config = getQuotaConfig(entitlementType, tier);
+            const existing = entitlementMap.get(entitlementType);
             
-            return res.json({
-                success: true,
-                userEmail: userEmail,
-                eligibility: {
-                    eligible: eligibility.eligible,
-                    remainingRuns: eligibility.remainingUsage,
-                    totalLimit: eligibility.maxUsage,
-                    usedThisPeriod: eligibility.usedCount,
-                    periodStart: eligibility.periodStart,
-                    nextResetDate: eligibility.nextResetDate,
-                    daysUntilReset: eligibility.daysUntilReset
-                },
-                message: eligibility.eligible 
-                    ? `You have ${eligibility.remainingUsage} on-demand runs remaining this period.`
-                    : `You have reached your limit of ${eligibility.maxUsage} on-demand runs. Next reset: ${eligibility.nextResetDate?.toLocaleDateString()}`
-            });
+            // Check if period expired
+            const isExpired = existing ? isPeriodExpired(existing.periodStart, existing.periodLengthDays) : true;
+            
+            // Calculate values
+            let used = 0;
+            let max = config.maxUsage;
+            let periodStart = new Date();
+            let nextResetDate = new Date();
+            nextResetDate.setDate(nextResetDate.getDate() + config.periodLengthDays);
+            
+            if (existing && !isExpired) {
+                used = existing.usedCount;
+                max = Math.max(existing.maxUsage, config.maxUsage); // Use higher if tier upgraded
+                periodStart = existing.periodStart;
+                nextResetDate = existing.nextResetDate;
+            }
+            
+            const isUnlimited = max === -1;
+            const remaining = isUnlimited ? Infinity : Math.max(0, max - used);
+            const eligible = isUnlimited || remaining > 0;
+            
+            entitlements[entitlementType] = {
+                eligible,
+                used,
+                max: isUnlimited ? 'unlimited' : max,
+                remaining: isUnlimited ? 'unlimited' : remaining,
+                isUnlimited,
+                periodLengthDays: config.periodLengthDays,
+                periodStart,
+                nextResetDate,
+                daysUntilReset: Math.max(0, Math.ceil((nextResetDate - new Date()) / (1000 * 60 * 60 * 24)))
+            };
         }
-
-        // If no user email, check IP-based eligibility
-        const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
-                         req.headers['x-real-ip'] || 
-                         req.ip ||
-                         req.connection.remoteAddress;
-
-        if (!clientIp) {
-            return res.status(400).json({
-                success: false,
-                error: 'Could not determine client IP address',
-                details: 'IP address is required for eligibility check'
-            });
-        }
-
-        const ipEligibility = await checkEntitlementEligibility(clientIp, 'ip', 'onDemandRun');
         
         return res.json({
             success: true,
-            clientIp: clientIp,
-            eligibility: {
-                eligible: ipEligibility.eligible,
-                remainingRuns: ipEligibility.remainingUsage,
-                totalLimit: ipEligibility.maxUsage,
-                usedThisPeriod: ipEligibility.usedCount,
-                periodStart: ipEligibility.periodStart,
-                nextResetDate: ipEligibility.nextResetDate,
-                daysUntilReset: ipEligibility.daysUntilReset
-            },
-            message: ipEligibility.eligible 
-                ? `You have ${ipEligibility.remainingUsage} on-demand runs remaining this period.`
-                : `You have reached your limit of ${ipEligibility.maxUsage} on-demand runs. Next reset: ${ipEligibility.nextResetDate?.toLocaleDateString()}`
+            tier,
+            identifier: email || identifier, // Show email if available, else identifier
+            identifierType,
+            hasUser: !!user,
+            entitlements
         });
 
     } catch (error) {
-        console.error('Error checking on-demand eligibility:', error);
+        console.error('Error checking eligibility:', error);
         res.status(500).json({
             success: false,
             error: 'Internal server error',
@@ -95,48 +94,28 @@ router.get('/checkEligibility', async (req, res) => {
 });
 
 /**
+ * Helper: Check if period has expired
+ */
+function isPeriodExpired(periodStart, periodLengthDays) {
+    if (!periodStart) return true;
+    
+    const now = new Date();
+    const periodEnd = new Date(periodStart);
+    periodEnd.setDate(periodEnd.getDate() + periodLengthDays);
+    
+    return now >= periodEnd;
+}
+
+/**
  * POST /api/on-demand/submitOnDemandRun
  * Submit an on-demand run request
+ * 
+ * Uses new entitlement middleware for authentication and quota management
  */
-router.post('/submitOnDemandRun', async (req, res) => {
+router.post('/submitOnDemandRun', createEntitlementMiddleware('onDemandRun'), async (req, res) => {
     try {
-        // Extract user email from JWT token if provided
-        let userEmail = null;
-        let authType = 'ip';
-        const authHeader = req.headers.authorization;
-        
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            const jwt = require('jsonwebtoken');
-            try {
-                const token = authHeader.substring(7);
-                const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-                userEmail = decoded.email;
-                authType = 'user';
-            } catch (jwtError) {
-                console.error('JWT verification failed:', jwtError.message);
-            }
-        }
-
-        // If no user email, use IP-based auth
-        if (!userEmail) {
-            const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 
-                             req.headers['x-real-ip'] || 
-                             req.ip ||
-                             req.connection.remoteAddress;
-            
-            if (!clientIp) {
-                return res.status(400).json({
-                    error: 'Could not determine client IP address',
-                    details: 'IP address is required for authentication'
-                });
-            }
-            
-            req.clientIp = clientIp;
-        } else {
-            req.userEmail = userEmail;
-        }
-        
-        req.authType = authType;
+        // Identity and entitlement already resolved by middleware
+        const { identity, entitlement } = req;
 
         const { message, parameters, episodes } = req.body;
 
@@ -173,22 +152,7 @@ router.post('/submitOnDemandRun', async (req, res) => {
             }
         }
 
-        // Consume user entitlement based on auth type
-        let entitlementResult;
-        if (req.authType === 'user') {
-            entitlementResult = await consumeEntitlement(req.userEmail, 'jwt', 'onDemandRun');
-        } else {
-            entitlementResult = await consumeEntitlement(req.clientIp, 'ip', 'onDemandRun');
-        }
-        
-        if (!entitlementResult.success) {
-            return res.status(403).json({
-                error: 'Failed to consume entitlement',
-                details: entitlementResult.error,
-                remainingRuns: entitlementResult.remainingUsage,
-                nextResetDate: entitlementResult.nextResetDate
-            });
-        }
+        // Entitlement already consumed by middleware
 
         // Generate a random lookupHash using crypto
         const lookupHash = crypto.randomBytes(12).toString('hex');
@@ -207,10 +171,13 @@ router.post('/submitOnDemandRun', async (req, res) => {
             })),
             startedAt: new Date().toISOString(),
             completedAt: null,
-            userEmail: req.authType === 'user' ? req.userEmail : null,
-            clientIp: req.authType === 'ip' ? req.clientIp : null,
-            authType: req.authType,
-            entitlementConsumed: true
+            userEmail: identity.email || null,
+            clientIp: identity.identifierType === 'ip' ? identity.identifier : null,
+            authType: identity.identifierType === 'ip' ? 'ip' : 'user',
+            entitlementConsumed: true,
+            tier: identity.tier,
+            quotaUsed: entitlement.used,
+            quotaRemaining: entitlement.remaining
         };
 
         // Calculate unique feeds count

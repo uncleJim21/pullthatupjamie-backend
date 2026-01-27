@@ -8,14 +8,16 @@
 const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
 
+const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
+
 /**
- * Quota configurations per tier per entitlement type
+ * PRODUCTION Quota configurations per tier per entitlement type
  * 
  * Structure: { [entitlementType]: { [tier]: { maxUsage, periodLengthDays } } }
  * 
  * Use -1 for unlimited
  */
-const QUOTA_CONFIG = {
+const QUOTA_CONFIG_PRODUCTION = {
   // Search quotes (basic search)
   searchQuotes: {
     [TIERS.anonymous]: { maxUsage: 100, periodLengthDays: 7 },    // 100/week
@@ -54,8 +56,80 @@ const QUOTA_CONFIG = {
     [TIERS.registered]: { maxUsage: 5, periodLengthDays: 30 },    // 5/month
     [TIERS.subscriber]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
+  },
+  
+  // Research Analyze (AI analysis of research sessions)
+  researchAnalyze: {
+    [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
+    [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
+    [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
   }
 };
+
+/**
+ * DEBUG Quota configurations - LOW LIMITS for testing
+ * 
+ * All limits are set to 3 (except admin which stays unlimited)
+ * Period is 1 day for quick reset testing
+ */
+const QUOTA_CONFIG_DEBUG = {
+  searchQuotes: {
+    [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  search3D: {
+    [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  makeClip: {
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  jamieAssist: {
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  onDemandRun: {
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  researchAnalyze: {
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  }
+};
+
+// Select config based on DEBUG_MODE
+const QUOTA_CONFIG = DEBUG_MODE ? QUOTA_CONFIG_DEBUG : QUOTA_CONFIG_PRODUCTION;
+
+if (DEBUG_MODE) {
+  console.log('[ENTITLEMENT] ⚠️  DEBUG_MODE enabled - using LOW LIMITS for testing');
+}
+
+/**
+ * All entitlement types that should be checked in bulk eligibility
+ */
+const ALL_ENTITLEMENT_TYPES = [
+  'searchQuotes',
+  'search3D', 
+  'makeClip',
+  'jamieAssist',
+  'researchAnalyze',
+  'onDemandRun'
+];
 
 /**
  * Get quota config for a specific entitlement type and tier
@@ -129,6 +203,57 @@ async function getOrCreateEntitlement(identifier, identifierType, entitlementTyp
   );
   
   return entitlement;
+}
+
+/**
+ * DEBUG_MODE Mock Responses
+ * 
+ * When DEBUG_MODE=true, these entitlement types return mock data instead of
+ * calling expensive external services (Pinecone, OpenAI embeddings, etc.)
+ * 
+ * ⚠️  SAFETY: Only runs when DEBUG_MODE=true (checked at runtime)
+ */
+const DEBUG_MOCK_TYPES = ['search3D', 'searchQuotes'];
+
+function generateDebugMockResponse(entitlementType, query) {
+  const mockResults = [];
+  const numResults = entitlementType === 'search3D' ? 10 : 5;
+  
+  for (let i = 0; i < numResults; i++) {
+    const result = {
+      id: `mock-${i}`,
+      pineconeId: `mock-pinecone-${i}`,
+      score: 0.95 - (i * 0.05),
+      text: `Mock result ${i + 1} for query "${query}". DEBUG_MODE mock response.`,
+      episode: `Mock Episode ${i + 1}`,
+      feedId: '123456',
+      feedTitle: 'Mock Podcast Feed',
+      publishedDate: new Date().toISOString(),
+      startTime: i * 60,
+      endTime: (i + 1) * 60
+    };
+    
+    // Add 3D coordinates for search3D
+    if (entitlementType === 'search3D') {
+      result.coordinates = {
+        x: Math.random() * 2 - 1,
+        y: Math.random() * 2 - 1,
+        z: Math.random() * 2 - 1
+      };
+    }
+    
+    mockResults.push(result);
+  }
+  
+  return {
+    success: true,
+    _debug: true,
+    _debugMessage: 'DEBUG_MODE: Mock response - external services not called',
+    query,
+    results: mockResults,
+    resultCount: mockResults.length,
+    timings: { embedding: 50, search: 100, total: 150 }
+  };
 }
 
 /**
@@ -208,6 +333,19 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       res.setHeader('X-Quota-Remaining', isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount));
       res.setHeader('X-Quota-Reset', entitlement.nextResetDate.toISOString());
       
+      // ═══════════════════════════════════════════════════════════════════════
+      // DEBUG_MODE: Return mock response for expensive operations
+      // ⚠️  SAFETY: Triple-checked - only runs when DEBUG_MODE=true at runtime
+      // ═══════════════════════════════════════════════════════════════════════
+      if (DEBUG_MODE && 
+          process.env.DEBUG_MODE === 'true' && 
+          DEBUG_MOCK_TYPES.includes(entitlementType) &&
+          req.method === 'POST') {
+        const query = req.body?.query || 'test query';
+        console.log(`[ENTITLEMENT] ⚠️  DEBUG_MODE: Returning mock response for ${entitlementType}`);
+        return res.json(generateDebugMockResponse(entitlementType, query));
+      }
+      
       next();
       
     } catch (error) {
@@ -259,12 +397,78 @@ async function requireAuth(req, res, next) {
   next();
 }
 
+/**
+ * Check eligibility for ALL entitlement types at once
+ * 
+ * @param {string} identifier - User ID or IP address
+ * @param {string} identifierType - 'mongoUserId' or 'ip'
+ * @param {string} tier - User tier for quota lookup
+ * @returns {Promise<Object>} - Map of entitlementType -> eligibility info
+ */
+async function checkAllEligibility(identifier, identifierType, tier) {
+  const results = {};
+  
+  // Fetch all existing entitlements for this user in one query
+  const existingEntitlements = await Entitlement.find({
+    identifier,
+    identifierType
+  }).lean();
+  
+  // Create a map for quick lookup
+  const entitlementMap = new Map(
+    existingEntitlements.map(e => [e.entitlementType, e])
+  );
+  
+  // Check each entitlement type
+  for (const entitlementType of ALL_ENTITLEMENT_TYPES) {
+    const config = getQuotaConfig(entitlementType, tier);
+    const existing = entitlementMap.get(entitlementType);
+    
+    // Check if period expired
+    const isExpired = existing ? isPeriodExpired(existing.periodStart, existing.periodLengthDays) : true;
+    
+    // Calculate values
+    let used = 0;
+    let max = config.maxUsage;
+    let periodStart = new Date();
+    let nextResetDate = new Date();
+    nextResetDate.setDate(nextResetDate.getDate() + config.periodLengthDays);
+    
+    if (existing && !isExpired) {
+      used = existing.usedCount;
+      max = Math.max(existing.maxUsage, config.maxUsage); // Use higher if tier upgraded
+      periodStart = existing.periodStart;
+      nextResetDate = existing.nextResetDate;
+    }
+    
+    const isUnlimited = max === -1;
+    const remaining = isUnlimited ? Infinity : Math.max(0, max - used);
+    const eligible = isUnlimited || remaining > 0;
+    
+    results[entitlementType] = {
+      used,
+      max: isUnlimited ? 'unlimited' : max,
+      remaining: isUnlimited ? 'unlimited' : remaining,
+      eligible,
+      isUnlimited,
+      periodLengthDays: config.periodLengthDays,
+      periodStart,
+      nextResetDate,
+      daysUntilReset: Math.max(0, Math.ceil((nextResetDate - new Date()) / (1000 * 60 * 60 * 24)))
+    };
+  }
+  
+  return results;
+}
+
 module.exports = {
   createEntitlementMiddleware,
   identityMiddleware,
   requireAuth,
   getQuotaConfig,
   getOrCreateEntitlement,
+  checkAllEligibility,
   QUOTA_CONFIG,
+  ALL_ENTITLEMENT_TYPES,
   TIERS
 };

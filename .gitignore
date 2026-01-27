@@ -9,3 +9,4 @@ utils/temp.wav
 *.txt
 /sessions
 scripts/seedPodcastFeeds.js
+/dev-helper-scripts

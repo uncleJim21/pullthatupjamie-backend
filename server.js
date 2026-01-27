@@ -47,6 +47,7 @@ const researchSessionsRoutes = require('./routes/researchSessions');
 const researchAnalyzeRoutes = require('./routes/researchAnalyzeRoutes');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const jamieExploreRoutes = require('./routes/jamieExploreRoutes');
+const { createEntitlementMiddleware } = require('./utils/entitlementMiddleware');
 const createVideoEditRoutes = require('./routes/videoEditRoutes');
 const { ResearchSession } = require('./models/ResearchSession');
 const cookieParser = require('cookie-parser'); // Add this line
@@ -738,7 +739,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/make-clip', createEntitlementMiddleware('makeClip'), async (req, res) => {
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -1092,7 +1093,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   }
 });
 
-app.post('/api/search-quotes', async (req, res) => {
+app.post('/api/search-quotes', createEntitlementMiddleware('searchQuotes'), async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1208,7 +1209,7 @@ app.post('/api/search-quotes', async (req, res) => {
   }
 });
 
-app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/stream-search', async (req, res) => {
   const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
   
@@ -2537,7 +2538,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 
 // Promotional tweet generation endpoint with jamie-assist name (refactored to service)
 const { streamJamieAssist } = require('./utils/JamieAssistService');
-app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware('jamieAssist'), async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;

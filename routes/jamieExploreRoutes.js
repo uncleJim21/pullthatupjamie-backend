@@ -6,6 +6,7 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 const { multiSearchCache } = require('../utils/MultiSearchCacheManager.js');
+const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 
 // Feature flags
 const jamieExplorePostRoutesEnabled = true; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
@@ -95,7 +96,7 @@ async function callOpenAIEmbeddingsWithRetry({ input, model = "text-embedding-ad
 if (jamieExplorePostRoutesEnabled) {
   printLog('[JAMIE-EXPLORE-ROUTES] POST routes ENABLED (search-quotes-3d, fetch-research-id)');
 
-router.post('/search-quotes-3d', async (req, res) => {
+router.post('/search-quotes-3d', createEntitlementMiddleware('search3D'), async (req, res) => {
   const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   let {
     query,
@@ -689,7 +690,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
   }
 });
 
-router.post('/search-quotes-3d/expand', async (req, res) => {
+router.post('/search-quotes-3d/expand', createEntitlementMiddleware('search3D'), async (req, res) => {
   const requestId = `EXPAND-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const {
     sessionId,

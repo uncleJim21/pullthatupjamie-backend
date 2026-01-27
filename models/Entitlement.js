@@ -25,7 +25,8 @@ const entitlementSchema = new mongoose.Schema({
       'searchQuotes',     // Basic quote search
       'search3D',         // 3D search (embeddings + UMAP)
       'makeClip',         // Video clip creation
-      'jamieAssist',      // AI analysis
+      'jamieAssist',      // Promotional content generation
+      'researchAnalyze',  // Research session AI analysis
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement
