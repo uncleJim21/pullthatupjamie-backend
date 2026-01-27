@@ -7,6 +7,7 @@
 
 const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
@@ -208,51 +209,83 @@ async function getOrCreateEntitlement(identifier, identifierType, entitlementTyp
 /**
  * DEBUG_MODE Mock Responses
  * 
- * When DEBUG_MODE=true, these entitlement types return mock data instead of
- * calling expensive external services (Pinecone, OpenAI embeddings, etc.)
+ * When DEBUG_MODE=true, these entitlement types return mock data from
+ * jamieVectorMetadata instead of calling expensive external services.
  * 
  * ⚠️  SAFETY: Only runs when DEBUG_MODE=true (checked at runtime)
  */
 const DEBUG_MOCK_TYPES = ['search3D', 'searchQuotes'];
 
-function generateDebugMockResponse(entitlementType, query) {
-  const mockResults = [];
-  const numResults = entitlementType === 'search3D' ? 10 : 5;
+async function generateDebugMockResponse(entitlementType, query) {
+  const numResults = entitlementType === 'search3D' ? 20 : 10;
   
-  for (let i = 0; i < numResults; i++) {
-    const result = {
-      id: `mock-${i}`,
-      pineconeId: `mock-pinecone-${i}`,
-      score: 0.95 - (i * 0.05),
-      text: `Mock result ${i + 1} for query "${query}". DEBUG_MODE mock response.`,
-      episode: `Mock Episode ${i + 1}`,
-      feedId: '123456',
-      feedTitle: 'Mock Podcast Feed',
-      publishedDate: new Date().toISOString(),
-      startTime: i * 60,
-      endTime: (i + 1) * 60
-    };
-    
-    // Add 3D coordinates for search3D
-    if (entitlementType === 'search3D') {
-      result.coordinates = {
-        x: Math.random() * 2 - 1,
-        y: Math.random() * 2 - 1,
-        z: Math.random() * 2 - 1
-      };
+  // Pull real paragraph documents from jamieVectorMetadata
+  const realDocs = await JamieVectorMetadata.find({ type: 'paragraph' })
+    .limit(numResults)
+    .lean();
+  
+  const results = realDocs.map((doc, i) => ({
+    shareLink: doc.pineconeId,
+    shareUrl: `https://pullthatupjamie.ai/share?clip=${doc.pineconeId}`,
+    listenLink: doc.listenLink || '',
+    quote: doc.text || doc.metadataRaw?.text || 'Mock quote text',
+    summary: null,
+    headline: null,
+    description: null,
+    episode: doc.episode || doc.metadataRaw?.episode || 'Mock Episode',
+    creator: doc.creator || doc.metadataRaw?.creator || 'Mock Creator',
+    audioUrl: doc.audioUrl || doc.metadataRaw?.audioUrl || '',
+    episodeImage: doc.episodeImage || doc.metadataRaw?.episodeImage || '',
+    date: doc.publishedDate || 'Date not provided',
+    published: doc.publishedDate || null,
+    similarity: {
+      combined: 0.95 - (i * 0.02),
+      vector: 0.95 - (i * 0.02)
+    },
+    timeContext: {
+      start_time: doc.start_time || doc.metadataRaw?.start_time || 0,
+      end_time: doc.end_time || doc.metadataRaw?.end_time || 60
+    },
+    additionalFields: {
+      feedId: doc.feedId || doc.metadataRaw?.feedId,
+      guid: doc.guid || doc.metadataRaw?.guid,
+      sequence: doc.metadataRaw?.sequence || i,
+      num_words: doc.metadataRaw?.num_words || 10
+    },
+    hierarchyLevel: 'paragraph',
+    coordinates3d: {
+      x: Math.random() * 2 - 1,
+      y: Math.random() * 2 - 1,
+      z: Math.random() * 2 - 1
     }
-    
-    mockResults.push(result);
-  }
+  }));
   
   return {
-    success: true,
-    _debug: true,
-    _debugMessage: 'DEBUG_MODE: Mock response - external services not called',
     query,
-    results: mockResults,
-    resultCount: mockResults.length,
-    timings: { embedding: 50, search: 100, total: 150 }
+    results,
+    total: results.length,
+    model: 'text-embedding-ada-002',
+    metadata: {
+      numResults: results.length,
+      embeddingTimeMs: 50,
+      searchTimeMs: 100,
+      mongoLookupTimeMs: 50,
+      totalTimeMs: 200,
+      fastMode: true,
+      umapConfig: 'debug-mock',
+      approach: 'debug-mock-from-jamieVectorMetadata'
+    },
+    axisLabels: {
+      center: 'Debug Mock',
+      xPositive: 'Topic A',
+      xNegative: 'Topic B',
+      yPositive: 'Topic C',
+      yNegative: 'Topic D',
+      zPositive: 'Topic E',
+      zNegative: 'Topic F'
+    },
+    _debug: true,
+    _debugMessage: 'DEBUG_MODE: Real docs from jamieVectorMetadata, no Pinecone/OpenAI calls'
   };
 }
 
@@ -343,7 +376,8 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
           req.method === 'POST') {
         const query = req.body?.query || 'test query';
         console.log(`[ENTITLEMENT] ⚠️  DEBUG_MODE: Returning mock response for ${entitlementType}`);
-        return res.json(generateDebugMockResponse(entitlementType, query));
+        const mockResponse = await generateDebugMockResponse(entitlementType, query);
+        return res.json(mockResponse);
       }
       
       next();
