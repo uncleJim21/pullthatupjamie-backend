@@ -19,6 +19,18 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SAFETY CHECK: Require DEBUG_MODE=true to run tests
+// ═══════════════════════════════════════════════════════════════════════════════
+if (process.env.DEBUG_MODE !== 'true') {
+  console.error('\x1b[31m╔════════════════════════════════════════════════════════════════╗\x1b[0m');
+  console.error('\x1b[31m║  ERROR: DEBUG_MODE must be set to "true" to run this script    ║\x1b[0m');
+  console.error('\x1b[31m║                                                                ║\x1b[0m');
+  console.error('\x1b[31m║  Usage: DEBUG_MODE=true node test/new-auth/test-quota-burndown.js  ║\x1b[0m');
+  console.error('\x1b[31m╚════════════════════════════════════════════════════════════════╝\x1b[0m');
+  process.exit(1);
+}
+
 const BASE_URL = process.env.BASE_URL || 'http://localhost:4132';
 
 // Test user JWTs
