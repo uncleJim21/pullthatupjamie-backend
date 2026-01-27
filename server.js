@@ -3656,6 +3656,136 @@ if (DEBUG_MODE) {
       });
     }
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NEW AUTH SYSTEM TEST ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Test endpoint: Identity resolution
+  app.get('/api/debug/test-identity', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const identity = await resolveIdentity(req);
+      
+      res.json({
+        success: true,
+        identity: {
+          tier: identity.tier,
+          identifier: identity.identifier,
+          identifierType: identity.identifierType,
+          provider: identity.provider,
+          email: identity.email,
+          hasUser: !!identity.user,
+          userId: identity.user?._id?.toString() || null,
+          subscriptionType: identity.user?.subscriptionType || null
+        }
+      });
+    } catch (error) {
+      console.error('Error in test-identity:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Test endpoint: Entitlement check (doesn't consume)
+  app.get('/api/debug/test-entitlement/:type', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const { getOrCreateEntitlement, getQuotaConfig } = require('./utils/entitlementMiddleware');
+      
+      const entitlementType = req.params.type;
+      const identity = await resolveIdentity(req);
+      
+      // Get quota config for this tier
+      const quotaConfig = getQuotaConfig(entitlementType, identity.tier);
+      
+      // Get or create entitlement (but don't consume)
+      const entitlement = await getOrCreateEntitlement(
+        identity.identifier,
+        identity.identifierType,
+        entitlementType,
+        identity.tier
+      );
+      
+      const isUnlimited = entitlement.maxUsage === -1;
+      
+      res.json({
+        success: true,
+        entitlementType,
+        identity: {
+          tier: identity.tier,
+          identifier: identity.identifier,
+          identifierType: identity.identifierType
+        },
+        quota: {
+          used: entitlement.usedCount,
+          max: isUnlimited ? 'unlimited' : entitlement.maxUsage,
+          remaining: isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount),
+          isUnlimited,
+          periodLengthDays: entitlement.periodLengthDays,
+          nextResetDate: entitlement.nextResetDate,
+          isEligible: isUnlimited || entitlement.usedCount < entitlement.maxUsage
+        },
+        tierConfig: quotaConfig
+      });
+    } catch (error) {
+      console.error('Error in test-entitlement:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Test endpoint: Consume entitlement (actually decrements quota)
+  app.post('/api/debug/test-consume/:type', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const { getOrCreateEntitlement } = require('./utils/entitlementMiddleware');
+      
+      const entitlementType = req.params.type;
+      const identity = await resolveIdentity(req);
+      
+      const entitlement = await getOrCreateEntitlement(
+        identity.identifier,
+        identity.identifierType,
+        entitlementType,
+        identity.tier
+      );
+      
+      const isUnlimited = entitlement.maxUsage === -1;
+      
+      // Check if eligible
+      if (!isUnlimited && entitlement.usedCount >= entitlement.maxUsage) {
+        return res.status(429).json({
+          success: false,
+          error: 'Quota exceeded',
+          used: entitlement.usedCount,
+          max: entitlement.maxUsage,
+          nextResetDate: entitlement.nextResetDate
+        });
+      }
+      
+      // Consume
+      if (!isUnlimited) {
+        entitlement.usedCount += 1;
+        entitlement.lastUsed = new Date();
+        await entitlement.save();
+      }
+      
+      res.json({
+        success: true,
+        consumed: !isUnlimited,
+        entitlementType,
+        quota: {
+          used: entitlement.usedCount,
+          max: isUnlimited ? 'unlimited' : entitlement.maxUsage,
+          remaining: isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount)
+        }
+      });
+    } catch (error) {
+      console.error('Error in test-consume:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  console.log('🔐 New auth test endpoints enabled: /api/debug/test-identity, /api/debug/test-entitlement/:type, /api/debug/test-consume/:type');
 }
 
 
