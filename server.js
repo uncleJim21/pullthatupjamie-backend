@@ -14,8 +14,9 @@ const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-uti
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
 const { initializeInvoiceDB } = require('./utils/invoice-db');
-const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
-const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
+// REMOVED: Legacy SQLite auth systems (replaced by MongoDB entitlements)
+// const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
+// const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const Scheduler = require('./utils/Scheduler');
 const callIngestor = require('./utils/callIngestor');
@@ -346,58 +347,9 @@ const clipQueueManager = new ClipQueueManager({
 // Initialize the scheduler if enabled
 const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
 
-//Validates user meets one of three requirements:
-//1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
-//2. The user has a valid subscription through CASCDR's square payment gateway
-//3. The user is eligible for free usage based on their IP address
-const jamieAuthMiddleware = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const route = req.path;
-
-  console.log('[INFO] Checking Jamie authentication...');
-
-  if (authHeader) {
-      if (!authHeader.startsWith('Basic ')) {//checks for BOLT11 (1 above)
-          const [preimage, paymentHash] = authHeader.split(':');
-          if (!preimage || !paymentHash) {
-              return res.status(401).json({
-                  error: 'Authentication required: missing preimage or payment hash',
-              });
-          }
-
-          // Validate the preimage
-          const isValid = await getIsInvoicePaid(preimage, paymentHash);
-          if (!isValid) {
-              return res.status(401).json({
-                  error: 'Invalid payment credentials',
-              });
-          }
-
-          // Store validated credentials
-          req.auth = { preimage, paymentHash };
-          console.log('[INFO] Valid lightning payment credentials provided.');
-          return next();
-      }
-
-      // Try subscription auth with square
-      await squareRequestMiddleware(req, res, () => {//Checks if user has valid sub based on email provided in header
-          // Only proceed to free middleware if Square auth didn't set isValidSquareAuth
-          if (!req.auth?.isValidSquareAuth) {
-              console.log('[INFO] Square auth failed, trying free tier');
-              return freeRequestMiddleware(req, res, next);// If not check if the user requests from an IP eligible
-          }
-      });
-      
-      // If we got valid Square auth, we're done
-      if (req.auth?.isValidSquareAuth) {
-          return next();
-      }
-  } else {
-      // No auth header, fallback to free request middleware
-      console.log('[INFO] No authentication provided. Falling back to free eligibility.');
-      return freeRequestMiddleware(req, res, next);
-  }
-};
+// REMOVED: jamieAuthMiddleware - replaced by createEntitlementMiddleware
+// Legacy auth checked: BOLT11 payments, Square subscriptions, IP-based free tier
+// New system uses MongoDB entitlements with JWT authentication
 
 // Middleware to verify podcast admin privileges
 const verifyPodcastAdminMiddleware = async (req, res, next) => {
@@ -1496,8 +1448,8 @@ app.post('/api/stream-search', async (req, res) => {
   }
  });
 
-//check if the user is eligible for free usage based on IP address
-app.get('/api/check-free-eligibility', checkFreeEligibility);
+// REMOVED: /api/check-free-eligibility - replaced by /api/on-demand/checkEligibility
+// which returns eligibility for ALL entitlement types, not just IP-based free tier
 
 
 
@@ -1526,49 +1478,9 @@ app.get('/invoice-pool', async (req, res) => {
   }
 });
 
-//Syncs remote auth server with this server for future request validation
-app.post('/register-sub', async (req, res) => {
-  try {
-      const { email, token } = req.body;
-      
-      if (!email || !token) {
-          return res.status(400).json({ error: 'Email and token are required' });
-      }
-
-      // First validate with auth server using axios
-      const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
-          headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-          }
-      });
-
-      const authData = authResponse.data;
-
-      if (!authData.subscriptionValid) {
-          return res.status(403).json({ error: 'Subscription not active' });
-      }
-
-      // If validated, register/update user in jamie-users db
-      await upsertJamieUser(email, 'active');
-
-      console.log(`[INFO] Registered subscription for validated email: ${email}`);
-      res.status(201).json({ 
-          message: 'Subscription registered successfully',
-          email 
-      });
-  } catch (error) {
-      console.error('[ERROR] Failed to register subscription:', error);
-      if (error.response) {
-          // Error response from auth server
-          return res.status(error.response.status).json({ 
-              error: 'Auth server validation failed',
-              details: error.response.data
-          });
-      }
-      res.status(500).json({ error: 'Failed to register subscription' });
-  }
-});
+// REMOVED: /register-sub - no longer needed
+// Auth server now writes directly to MongoDB users collection
+// Subscription status is read from User.subscriptionType at request time
 
 
 //collects data from user submitted feedback form
@@ -2057,8 +1969,7 @@ app.listen(PORT, async () => {
     
     // Initialize databases
     await initializeInvoiceDB();
-    await initializeRequestsDB();
-    await initializeJamieUserDB();
+    // REMOVED: initializeRequestsDB(), initializeJamieUserDB() - legacy SQLite systems
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
     
