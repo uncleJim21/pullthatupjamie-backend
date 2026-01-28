@@ -3,7 +3,7 @@
  * 
  * This file is the single source of truth for the User model.
  * It should be kept in sync between:
- *   - pullthatupjamie-backend (this repo)
+ *   - pullthatupjamie-backend (app server)
  *   - cascdr-backend (auth server)
  * 
  * When modifying this schema, update BOTH repositories.
@@ -75,16 +75,25 @@ const UserSchema = new mongoose.Schema({
   // ─────────────────────────────────────────
   // IDENTITY (Auth Server manages these)
   // ─────────────────────────────────────────
+  
+  /**
+   * User's email address.
+   * NOT required - Nostr/Lightning users may not have email.
+   * 
+   * INDEX: Defined separately below with sparse: true to allow
+   * multiple documents without this field (for Nostr users, etc.)
+   */
   email: {
-    type: String,
-    sparse: true,  // Allows null/undefined while still being unique
-    unique: true,
-    index: true
-    // NOT required - Nostr/Lightning users may not have email
+    type: String
   },
+  
+  /**
+   * Hashed password (bcrypt).
+   * NOT required - OAuth users don't have passwords.
+   * Only used for 'email' provider.
+   */
   password: {
     type: String
-    // NOT required - OAuth users don't have passwords
   },
   
   /**
@@ -96,6 +105,9 @@ const UserSchema = new mongoose.Schema({
    * 
    * For OAuth users:
    *   authProvider: { provider: 'google', providerId: '<google_user_id>' }
+   * 
+   * For Nostr users:
+   *   authProvider: { provider: 'nostr', providerId: '<npub>' }
    */
   authProvider: {
     type: AuthProviderSchema,
@@ -160,7 +172,31 @@ const UserSchema = new mongoose.Schema({
 // INDEXES
 // ============================================
 
-// Lookup by auth provider (for OAuth signin)
+/**
+ * Email index: unique but SPARSE.
+ * 
+ * IMPORTANT: Must be defined here as .index(), NOT inline on the field.
+ * Inline sparse+unique doesn't reliably create a sparse index in Mongoose.
+ * 
+ * sparse: true means documents WITHOUT the email field are NOT indexed,
+ * allowing multiple Nostr/OAuth users who don't have email addresses.
+ * 
+ * NOTE: If you have an existing non-sparse email index, you must drop it:
+ *   db.users.dropIndex("email_1")
+ * Then restart the server to recreate with sparse: true.
+ */
+UserSchema.index(
+  { email: 1 },
+  { unique: true, sparse: true }
+);
+
+/**
+ * Auth provider lookup index.
+ * Used for OAuth/Nostr signin to find existing user by provider+providerId.
+ * 
+ * partialFilterExpression ensures we only index documents that have authProvider,
+ * allowing legacy users without authProvider to exist.
+ */
 UserSchema.index(
   { 'authProvider.provider': 1, 'authProvider.providerId': 1 },
   { 
@@ -177,6 +213,8 @@ UserSchema.index(
 /**
  * Determine user tier based on subscription status.
  * Used by entitlement system.
+ * 
+ * @returns {'subscriber' | 'registered' | 'anonymous'}
  */
 UserSchema.virtual('tier').get(function() {
   if (this.subscriptionType === 'jamie-pro') {
@@ -199,6 +237,8 @@ UserSchema.virtual('tier').get(function() {
 /**
  * Check if user is a podcast admin.
  * Note: This requires checking ProPodcast collection separately.
+ * 
+ * @returns {boolean}
  */
 UserSchema.virtual('isPodcastAdmin').get(function() {
   // This is a placeholder - actual check requires ProPodcast lookup
