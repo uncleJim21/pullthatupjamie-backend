@@ -15,7 +15,7 @@ const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entit
  * GET /api/on-demand/checkEligibility
  * Check eligibility for ALL entitlement types (uses new identity resolver)
  * 
- * Returns quotas for: search-quotes, search-quotes-3d, make-clip, jamie-assist, analyze, submitOnDemandRun
+ * Returns quotas for: search-quotes, search-quotes-3d, make-clip, jamie-assist, ai-analyze, submit-on-demand-run
  */
 router.get('/checkEligibility', async (req, res) => {
     try {
@@ -427,7 +427,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                 let entitlement = await Entitlement.findOne({
                     identifier: email,
                     identifierType: 'jwt',
-                    entitlementType: 'submitOnDemandRun'
+                    entitlementType: 'submit-on-demand-run'
                 });
 
                 if (entitlement) {
@@ -458,7 +458,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                     entitlement = new Entitlement({
                         identifier: email,
                         identifierType: 'jwt',
-                        entitlementType: 'submitOnDemandRun',
+                        entitlementType: 'submit-on-demand-run',
                         usedCount: 0,
                         maxUsage: 8,
                         periodStart: now,

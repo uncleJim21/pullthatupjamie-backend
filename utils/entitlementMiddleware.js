@@ -61,7 +61,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // Research Analyze (AI analysis of research sessions)
-  [ENTITLEMENT_TYPES.ANALYZE]: {
+  [ENTITLEMENT_TYPES.AI_ANALYZE]: {
     [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
@@ -106,7 +106,7 @@ const QUOTA_CONFIG_DEBUG = {
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  [ENTITLEMENT_TYPES.ANALYZE]: {
+  [ENTITLEMENT_TYPES.AI_ANALYZE]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },

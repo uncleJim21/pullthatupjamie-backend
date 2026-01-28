@@ -22,7 +22,7 @@ const openai = new OpenAI({
  *   "pineconeIds": ["id1_p123", "id2_p45"]
  * }
  */
-router.post('/analyze', createEntitlementMiddleware(ENTITLEMENT_TYPES.ANALYZE), async (req, res) => {
+router.post('/analyze', createEntitlementMiddleware(ENTITLEMENT_TYPES.AI_ANALYZE), async (req, res) => {
   try {
     const owner = await resolveOwner(req);
     if (!owner) {

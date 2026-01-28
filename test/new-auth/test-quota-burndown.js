@@ -58,7 +58,7 @@ const DEBUG_LIMITS = {
   [ET.SEARCH_QUOTES_3D]:    { anonymous: 3, registered: 3, subscriber: 5, admin: -1 },
   [ET.MAKE_CLIP]:           { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
   [ET.JAMIE_ASSIST]:        { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
-  [ET.ANALYZE]:             { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
+  [ET.AI_ANALYZE]:          { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
   [ET.SUBMIT_ON_DEMAND_RUN]:{ anonymous: 2, registered: 3, subscriber: 5, admin: -1 }
 };
 

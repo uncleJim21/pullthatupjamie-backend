@@ -21,12 +21,12 @@ const entitlementSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: [
-      'submitOnDemandRun',      // Podcast on-demand processing
+      'submit-on-demand-run',   // Podcast on-demand processing
       'search-quotes',     // Basic quote search
       'search-quotes-3d',         // 3D search (embeddings + UMAP)
       'make-clip',         // Video clip creation
       'jamie-assist',      // Promotional content generation
-      'analyze',  // Research session AI analysis
+      'ai-analyze',  // Research session AI analysis
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement

@@ -1,16 +1,15 @@
 /**
  * Entitlement Type Constants
  * 
- * These MUST match the last path segment of the endpoint they protect.
- * This ensures frontend can easily map entitlement checks to API calls.
+ * All entitlement types use kebab-case for consistency.
  * 
  * Endpoint → Entitlement Type:
  *   /api/search-quotes              → search-quotes
  *   /api/search-quotes-3d           → search-quotes-3d
  *   /api/make-clip                  → make-clip
  *   /api/jamie-assist/:hash         → jamie-assist
- *   /api/research/analyze           → analyze
- *   /api/on-demand/submitOnDemandRun → submitOnDemandRun
+ *   /api/research/analyze           → ai-analyze
+ *   /api/on-demand/submitOnDemandRun → submit-on-demand-run
  */
 
 const ENTITLEMENT_TYPES = {
@@ -18,8 +17,8 @@ const ENTITLEMENT_TYPES = {
   SEARCH_QUOTES_3D: 'search-quotes-3d',
   MAKE_CLIP: 'make-clip',
   JAMIE_ASSIST: 'jamie-assist',
-  ANALYZE: 'analyze',
-  SUBMIT_ON_DEMAND_RUN: 'submitOnDemandRun'
+  AI_ANALYZE: 'ai-analyze',
+  SUBMIT_ON_DEMAND_RUN: 'submit-on-demand-run'
 };
 
 // Array of all types for iteration
