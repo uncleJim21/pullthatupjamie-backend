@@ -354,46 +354,21 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
  */
 router.post('/update-ondemand-quota', async (req, res) => {
     try {
-        // 0. Extract and verify JWT token
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        // Use identity resolver to get user (supports email, Nostr, etc.)
+        const identity = await resolveIdentity(req);
+        
+        if (!identity.user) {
             return res.status(401).json({
                 error: 'Authentication required',
-                details: 'Bearer token required'
+                details: 'Valid Bearer token required'
             });
         }
-
-        const token = authHeader.split(' ')[1];
-        let decoded;
         
-        try {
-            decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-        } catch (jwtError) {
-            return res.status(401).json({
-                error: 'Invalid token',
-                details: 'Token verification failed'
-            });
-        }
-
-        const email = decoded.email;
-        if (!email) {
-            return res.status(401).json({
-                error: 'Invalid token',
-                details: 'Token missing email claim'
-            });
-        }
+        const user = identity.user;
+        const token = req.headers.authorization?.split(' ')[1];
 
         // 1. Delay 2.5 seconds to ensure other processes complete
         await new Promise(resolve => setTimeout(resolve, 2500));
-
-        // 2. Check User.js by looking up email
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(404).json({
-                error: 'User not found',
-                details: 'No user found with the provided email'
-            });
-        }
 
         // 3. Verify whether the user has jamie-pro subscription
         let hasJamiePro = false;
@@ -423,10 +398,13 @@ router.post('/update-ondemand-quota', async (req, res) => {
         // 4. If they have jamie-pro, update entitlement to 8 on-demand runs per month
         if (hasJamiePro) {
             try {
+                // Use MongoDB user ID as identifier (consistent with new auth system)
+                const userId = user._id.toString();
+                
                 // Find or create entitlement for this user
                 let entitlement = await Entitlement.findOne({
-                    identifier: email,
-                    identifierType: 'jwt',
+                    identifier: userId,
+                    identifierType: 'mongoUserId',
                     entitlementType: 'submit-on-demand-run'
                 });
 
@@ -456,8 +434,8 @@ router.post('/update-ondemand-quota', async (req, res) => {
                     nextResetDate.setDate(nextResetDate.getDate() + 30); // 30 days from now
                     
                     entitlement = new Entitlement({
-                        identifier: email,
-                        identifierType: 'jwt',
+                        identifier: userId,
+                        identifierType: 'mongoUserId',
                         entitlementType: 'submit-on-demand-run',
                         usedCount: 0,
                         maxUsage: 8,
@@ -473,7 +451,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                 return res.json({
                     success: true,
                     message: 'On-demand quota updated for jamie-pro user',
-                    userEmail: email,
+                    userEmail: identity.email || user.email || null,
                     entitlement: {
                         maxUsage: entitlement.maxUsage,
                         usedCount: entitlement.usedCount,
