@@ -5,6 +5,7 @@ const { OpenAI } = require('openai');
 const { resolveOwner } = require('../utils/resolveOwner');
 const { normalizePineconeIds, streamResearchAnalysis } = require('../utils/researchAnalysis');
 const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -21,7 +22,7 @@ const openai = new OpenAI({
  *   "pineconeIds": ["id1_p123", "id2_p45"]
  * }
  */
-router.post('/analyze', createEntitlementMiddleware('researchAnalyze'), async (req, res) => {
+router.post('/analyze', createEntitlementMiddleware(ENTITLEMENT_TYPES.ANALYZE), async (req, res) => {
   try {
     const owner = await resolveOwner(req);
     if (!owner) {

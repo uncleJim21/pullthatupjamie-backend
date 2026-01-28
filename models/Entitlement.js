@@ -16,17 +16,17 @@ const entitlementSchema = new mongoose.Schema({
     index: true
   },
   
-  // Type of entitlement (onDemandRun, premiumFeature, etc.)
+  // Type of entitlement (submitOnDemandRun, premiumFeature, etc.)
   entitlementType: {
     type: String,
     required: true,
     enum: [
-      'onDemandRun',      // Podcast on-demand processing
-      'searchQuotes',     // Basic quote search
-      'search3D',         // 3D search (embeddings + UMAP)
-      'makeClip',         // Video clip creation
-      'jamieAssist',      // Promotional content generation
-      'researchAnalyze',  // Research session AI analysis
+      'submitOnDemandRun',      // Podcast on-demand processing
+      'search-quotes',     // Basic quote search
+      'search-quotes-3d',         // 3D search (embeddings + UMAP)
+      'make-clip',         // Video clip creation
+      'jamie-assist',      // Promotional content generation
+      'analyze',  // Research session AI analysis
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement

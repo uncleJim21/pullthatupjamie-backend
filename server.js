@@ -45,10 +45,11 @@ const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
 const researchSessionsRoutes = require('./routes/researchSessions');
-const researchAnalyzeRoutes = require('./routes/researchAnalyzeRoutes');
+const analyzeRoutes = require('./routes/researchAnalyzeRoutes');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const jamieExploreRoutes = require('./routes/jamieExploreRoutes');
 const { createEntitlementMiddleware } = require('./utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES } = require('./constants/entitlementTypes');
 const createVideoEditRoutes = require('./routes/videoEditRoutes');
 const { ResearchSession } = require('./models/ResearchSession');
 const cookieParser = require('cookie-parser'); // Add this line
@@ -691,7 +692,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', createEntitlementMiddleware('makeClip'), async (req, res) => {
+app.post('/api/make-clip', createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -1045,7 +1046,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   }
 });
 
-app.post('/api/search-quotes', createEntitlementMiddleware('searchQuotes'), async (req, res) => {
+app.post('/api/search-quotes', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1801,7 +1802,7 @@ app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
-app.use('/api/research', researchAnalyzeRoutes);
+app.use('/api/research', analyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
@@ -2449,7 +2450,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 
 // Promotional tweet generation endpoint with jamie-assist name (refactored to service)
 const { streamJamieAssist } = require('./utils/JamieAssistService');
-app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware('jamieAssist'), async (req, res) => {
+app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;
@@ -3226,7 +3227,7 @@ if (DEBUG_MODE) {
     }
   });
 
-  // Debug endpoint: show DB connection info and current user's jamieAssistDefaults
+  // Debug endpoint: show DB connection info and current user's jamie-assistDefaults
   app.get('/api/debug/db-info', async (req, res) => {
     try {
       const conn = mongoose.connection;
@@ -3262,7 +3263,7 @@ if (DEBUG_MODE) {
     }
   });
 
-  // Debug endpoint: list all user docs matching token email and their jamieAssistDefaults
+  // Debug endpoint: list all user docs matching token email and their jamie-assistDefaults
   app.get('/api/debug/user-docs', async (req, res) => {
     try {
       const authHeader = req.headers.authorization || '';

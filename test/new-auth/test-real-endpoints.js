@@ -18,6 +18,7 @@
 
 require('dotenv').config();
 const mongoose = require('mongoose');
+const { ALL_ENTITLEMENT_TYPES } = require('../../constants/entitlementTypes');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SAFETY CHECK: Require DEBUG_MODE=true to run tests
@@ -231,8 +232,7 @@ async function testCheckEligibility() {
   log('green', `  ✓ Tier: ${tier}`);
   
   // Check all entitlement types are present
-  const expectedTypes = ['searchQuotes', 'search3D', 'makeClip', 'jamieAssist', 'researchAnalyze', 'onDemandRun'];
-  const missingTypes = expectedTypes.filter(t => !entitlements[t]);
+  const missingTypes = ALL_ENTITLEMENT_TYPES.filter(t => !entitlements[t]);
   
   if (missingTypes.length > 0) {
     log('red', `  ✗ Missing entitlement types: ${missingTypes.join(', ')}`);
@@ -240,7 +240,7 @@ async function testCheckEligibility() {
   }
   
   log('green', '  ✓ All entitlement types present:');
-  for (const type of expectedTypes) {
+  for (const type of ALL_ENTITLEMENT_TYPES) {
     const ent = entitlements[type];
     console.log(`      ${type}: ${ent.used}/${ent.max} (remaining: ${ent.remaining})`);
   }
@@ -260,7 +260,7 @@ async function main() {
   console.log('');
   log('yellow', `⚠️  Make sure DEBUG_MODE=true and server is running on ${BASE_URL}`);
   log('yellow', '⚠️  Tests actual endpoints with real queries (anonymous tier)');
-  log('yellow', '⚠️  Anonymous debug limits: searchQuotes=3, search3D=3');
+  log('yellow', '⚠️  Anonymous debug limits: search-quotes=3, search-quotes-3d=3');
   console.log('');
   
   try {
@@ -292,11 +292,11 @@ async function main() {
     
     // Reset and test search-quotes-3d
     await cleanupAnonymousEntitlements();
-    results.search3D = await testSearch3D();
+    results['search-quotes-3d'] = await testSearch3D();
     
     // Reset and test search-quotes
     await cleanupAnonymousEntitlements();
-    results.searchQuotes = await testSearchQuotes();
+    results['search-quotes'] = await testSearchQuotes();
     
     // Summary
     log('blue', '\n═══════════════════════════════════════════════════════════════════════════════');

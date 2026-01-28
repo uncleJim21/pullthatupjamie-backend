@@ -8,13 +8,14 @@ const jwt = require('jsonwebtoken');
 const { User } = require('../models/User');
 const { Entitlement } = require('../models/Entitlement');
 const { resolveIdentity } = require('../utils/identityResolver');
-const { getQuotaConfig, ALL_ENTITLEMENT_TYPES, TIERS, createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
+const { getQuotaConfig, TIERS, createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 /**
  * GET /api/on-demand/checkEligibility
  * Check eligibility for ALL entitlement types (uses new identity resolver)
  * 
- * Returns quotas for: searchQuotes, search3D, makeClip, jamieAssist, researchAnalyze, onDemandRun
+ * Returns quotas for: search-quotes, search-quotes-3d, make-clip, jamie-assist, analyze, submitOnDemandRun
  */
 router.get('/checkEligibility', async (req, res) => {
     try {
@@ -112,7 +113,7 @@ function isPeriodExpired(periodStart, periodLengthDays) {
  * 
  * Uses new entitlement middleware for authentication and quota management
  */
-router.post('/submitOnDemandRun', createEntitlementMiddleware('onDemandRun'), async (req, res) => {
+router.post('/submitOnDemandRun', createEntitlementMiddleware(ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN), async (req, res) => {
     try {
         // Identity and entitlement already resolved by middleware
         const { identity, entitlement } = req;
@@ -426,7 +427,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                 let entitlement = await Entitlement.findOne({
                     identifier: email,
                     identifierType: 'jwt',
-                    entitlementType: 'onDemandRun'
+                    entitlementType: 'submitOnDemandRun'
                 });
 
                 if (entitlement) {
@@ -457,7 +458,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                     entitlement = new Entitlement({
                         identifier: email,
                         identifierType: 'jwt',
-                        entitlementType: 'onDemandRun',
+                        entitlementType: 'submitOnDemandRun',
                         usedCount: 0,
                         maxUsage: 8,
                         periodStart: now,

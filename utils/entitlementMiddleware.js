@@ -8,6 +8,7 @@
 const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
@@ -20,7 +21,7 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
  */
 const QUOTA_CONFIG_PRODUCTION = {
   // Search quotes (basic search)
-  searchQuotes: {
+  [ENTITLEMENT_TYPES.SEARCH_QUOTES]: {
     [TIERS.anonymous]: { maxUsage: 100, periodLengthDays: 7 },    // 100/week
     [TIERS.registered]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.subscriber]: { maxUsage: 500, periodLengthDays: 30 },  // 500/month
@@ -28,7 +29,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // 3D search (expensive: embeddings + UMAP)
-  search3D: {
+  [ENTITLEMENT_TYPES.SEARCH_QUOTES_3D]: {
     [TIERS.anonymous]: { maxUsage: 20, periodLengthDays: 7 },     // 20/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
@@ -36,7 +37,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // Make clip (video processing)
-  makeClip: {
+  [ENTITLEMENT_TYPES.MAKE_CLIP]: {
     [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },      // 5/week
     [TIERS.registered]: { maxUsage: 10, periodLengthDays: 30 },   // 10/month
     [TIERS.subscriber]: { maxUsage: 50, periodLengthDays: 30 },   // 50/month
@@ -44,7 +45,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // Jamie Assist (AI analysis)
-  jamieAssist: {
+  [ENTITLEMENT_TYPES.JAMIE_ASSIST]: {
     [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
@@ -52,7 +53,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // On-demand run (podcast processing)
-  onDemandRun: {
+  [ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },      // 2/week
     [TIERS.registered]: { maxUsage: 5, periodLengthDays: 30 },    // 5/month
     [TIERS.subscriber]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
@@ -60,7 +61,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   },
   
   // Research Analyze (AI analysis of research sessions)
-  researchAnalyze: {
+  [ENTITLEMENT_TYPES.ANALYZE]: {
     [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
@@ -75,37 +76,37 @@ const QUOTA_CONFIG_PRODUCTION = {
  * Period is 1 day for quick reset testing
  */
 const QUOTA_CONFIG_DEBUG = {
-  searchQuotes: {
+  [ENTITLEMENT_TYPES.SEARCH_QUOTES]: {
     [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  search3D: {
+  [ENTITLEMENT_TYPES.SEARCH_QUOTES_3D]: {
     [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  makeClip: {
+  [ENTITLEMENT_TYPES.MAKE_CLIP]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  jamieAssist: {
+  [ENTITLEMENT_TYPES.JAMIE_ASSIST]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  onDemandRun: {
+  [ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
   },
-  researchAnalyze: {
+  [ENTITLEMENT_TYPES.ANALYZE]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
@@ -120,17 +121,7 @@ if (DEBUG_MODE) {
   console.log('[ENTITLEMENT] ⚠️  DEBUG_MODE enabled - using LOW LIMITS for testing');
 }
 
-/**
- * All entitlement types that should be checked in bulk eligibility
- */
-const ALL_ENTITLEMENT_TYPES = [
-  'searchQuotes',
-  'search3D', 
-  'makeClip',
-  'jamieAssist',
-  'researchAnalyze',
-  'onDemandRun'
-];
+// ALL_ENTITLEMENT_TYPES is now imported from constants/entitlementTypes.js
 
 /**
  * Get quota config for a specific entitlement type and tier
@@ -214,10 +205,10 @@ async function getOrCreateEntitlement(identifier, identifierType, entitlementTyp
  * 
  * ⚠️  SAFETY: Only runs when DEBUG_MODE=true (checked at runtime)
  */
-const DEBUG_MOCK_TYPES = ['search3D', 'searchQuotes'];
+const DEBUG_MOCK_TYPES = [ENTITLEMENT_TYPES.SEARCH_QUOTES_3D, ENTITLEMENT_TYPES.SEARCH_QUOTES];
 
 async function generateDebugMockResponse(entitlementType, query) {
-  const numResults = entitlementType === 'search3D' ? 20 : 10;
+  const numResults = entitlementType === ENTITLEMENT_TYPES.SEARCH_QUOTES_3D ? 20 : 10;
   
   // Pull real paragraph documents from jamieVectorMetadata
   const realDocs = await JamieVectorMetadata.find({ type: 'paragraph' })

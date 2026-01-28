@@ -18,6 +18,7 @@
 
 require('dotenv').config();
 const mongoose = require('mongoose');
+const { ENTITLEMENT_TYPES: ET, ALL_ENTITLEMENT_TYPES } = require('../../constants/entitlementTypes');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SAFETY CHECK: Require DEBUG_MODE=true to run tests
@@ -49,24 +50,16 @@ const TEST_USERS = {
   }
 };
 
-// All entitlement types to test
-const ENTITLEMENT_TYPES = [
-  'searchQuotes',
-  'search3D',
-  'makeClip',
-  'jamieAssist',
-  'researchAnalyze',
-  'onDemandRun'
-];
+// All entitlement types to test (imported from constants)
 
 // Debug mode limits (from entitlementMiddleware.js QUOTA_CONFIG_DEBUG)
 const DEBUG_LIMITS = {
-  searchQuotes:     { anonymous: 3, registered: 3, subscriber: 5, admin: -1 },
-  search3D:         { anonymous: 3, registered: 3, subscriber: 5, admin: -1 },
-  makeClip:         { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
-  jamieAssist:      { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
-  researchAnalyze:  { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
-  onDemandRun:      { anonymous: 2, registered: 3, subscriber: 5, admin: -1 }
+  [ET.SEARCH_QUOTES]:       { anonymous: 3, registered: 3, subscriber: 5, admin: -1 },
+  [ET.SEARCH_QUOTES_3D]:    { anonymous: 3, registered: 3, subscriber: 5, admin: -1 },
+  [ET.MAKE_CLIP]:           { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
+  [ET.JAMIE_ASSIST]:        { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
+  [ET.ANALYZE]:             { anonymous: 2, registered: 3, subscriber: 5, admin: -1 },
+  [ET.SUBMIT_ON_DEMAND_RUN]:{ anonymous: 2, registered: 3, subscriber: 5, admin: -1 }
 };
 
 // Colors for console output
@@ -208,7 +201,7 @@ async function testTierAllEntitlements(tierName, jwt) {
   
   const results = {};
   
-  for (const entType of ENTITLEMENT_TYPES) {
+  for (const entType of ALL_ENTITLEMENT_TYPES) {
     results[entType] = await testEntitlementType(tierName, jwt, entType);
   }
   

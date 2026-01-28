@@ -42,7 +42,7 @@ async function migratePermissionsToEntitlements() {
         const existingEntitlement = await Entitlement.findOne({
           identifier: user.email,
           identifierType: 'jwt',
-          entitlementType: 'onDemandRun'
+          entitlementType: 'on-demand-run'
         });
 
         if (existingEntitlement) {
@@ -67,7 +67,7 @@ async function migratePermissionsToEntitlements() {
         const entitlement = new Entitlement({
           identifier: user.email,
           identifierType: 'jwt',
-          entitlementType: 'onDemandRun',
+          entitlementType: 'on-demand-run',
           usedCount: permissions.usageThisPeriod || 0,
           maxUsage: parseInt(process.env.ON_DEMAND_USAGE_LIMIT) || 10,
           periodStart: periodStart,
