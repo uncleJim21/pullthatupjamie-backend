@@ -1572,4 +1572,259 @@ router.post('/users/lookup', validatePrivs, async (req, res) => {
     }
 });
 
+// ============================================
+// DEBUG-ONLY ENDPOINTS
+// These endpoints only mount when DEBUG_MODE=true
+// ============================================
+
+if (process.env.DEBUG_MODE === 'true') {
+  const { User } = require('../models/shared/UserSchema');
+  
+  /**
+   * Decrypt a token that was encrypted with AES-256-CBC
+   * Uses JAMIE_TO_AUTH_SERVER_HMAC_SECRET as the key
+   */
+  function decryptToken(encrypted) {
+    if (!encrypted || !encrypted.includes(':')) {
+      // Not encrypted, return as-is
+      return encrypted;
+    }
+    
+    const SECRET = process.env.JAMIE_TO_AUTH_SERVER_HMAC_SECRET;
+    if (!SECRET) {
+      throw new Error('JAMIE_TO_AUTH_SERVER_HMAC_SECRET not configured');
+    }
+    
+    const [ivHex, encryptedText] = encrypted.split(':');
+    const key = crypto.createHash('sha256').update(SECRET).digest();
+    const iv = Buffer.from(ivHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  }
+  
+  /**
+   * POST /api/twitter/debug/tweet
+   * 
+   * DEBUG ONLY - Test tweeting with user's sign-in credentials
+   * 
+   * This endpoint lets you test whether Twitter tokens stored during
+   * the new auth flow (User.twitterTokens) can successfully post tweets.
+   * 
+   * Headers:
+   *   Authorization: Bearer <jwt from new auth system>
+   * 
+   * Body:
+   *   { "text": "Your tweet text here" }
+   * 
+   * Example:
+   *   curl -X POST http://localhost:4132/api/twitter/debug/tweet \
+   *     -H "Authorization: Bearer <your-jwt>" \
+   *     -H "Content-Type: application/json" \
+   *     -d '{"text": "Testing tweet from debug endpoint!"}'
+   */
+  router.post('/debug/tweet', async (req, res) => {
+    console.log('🔧 DEBUG /api/twitter/debug/tweet called');
+    
+    try {
+      // 1. Extract and verify JWT
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith('Bearer ')) {
+        return res.status(401).json({
+          error: 'Missing Authorization header',
+          message: 'Provide: Authorization: Bearer <jwt>'
+        });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      let decoded;
+      
+      try {
+        decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
+      } catch (jwtError) {
+        return res.status(401).json({
+          error: 'Invalid JWT',
+          message: jwtError.message
+        });
+      }
+      
+      console.log('   JWT decoded:', {
+        sub: decoded.sub,
+        provider: decoded.provider,
+        email: decoded.email
+      });
+      
+      // 2. Find user by JWT payload
+      let user;
+      
+      if (decoded.email) {
+        user = await User.findOne({ email: decoded.email });
+      } else if (decoded.provider && decoded.sub) {
+        user = await User.findOne({
+          'authProvider.provider': decoded.provider,
+          'authProvider.providerId': decoded.sub
+        });
+      }
+      
+      if (!user) {
+        return res.status(404).json({
+          error: 'User not found',
+          message: 'No user found for this JWT'
+        });
+      }
+      
+      console.log('   User found:', user._id);
+      
+      // 3. Check for Twitter tokens
+      if (!user.twitterTokens?.accessToken) {
+        return res.status(400).json({
+          error: 'No Twitter tokens',
+          message: 'User does not have Twitter tokens stored. Did they sign in via Twitter?',
+          hasTwitterTokens: !!user.twitterTokens,
+          twitterTokensKeys: user.twitterTokens ? Object.keys(user.twitterTokens.toObject()) : []
+        });
+      }
+      
+      // 4. Decrypt the tokens (they're encrypted at rest)
+      let accessToken, refreshToken;
+      try {
+        accessToken = decryptToken(user.twitterTokens.accessToken);
+        refreshToken = user.twitterTokens.refreshToken ? decryptToken(user.twitterTokens.refreshToken) : null;
+        console.log('   Tokens decrypted successfully');
+      } catch (decryptError) {
+        console.error('   Token decryption failed:', decryptError.message);
+        return res.status(500).json({
+          error: 'Token decryption failed',
+          message: 'Could not decrypt stored tokens. Check JAMIE_TO_AUTH_SERVER_HMAC_SECRET.',
+          details: decryptError.message
+        });
+      }
+      
+      console.log('   Twitter tokens found:', {
+        hasAccessToken: !!accessToken,
+        hasRefreshToken: !!refreshToken,
+        twitterUsername: user.twitterTokens.twitterUsername,
+        expiresAt: user.twitterTokens.expiresAt
+      });
+      
+      // 5. Check if token is expired
+      if (user.twitterTokens.expiresAt && new Date() > user.twitterTokens.expiresAt) {
+        // Try to refresh the token
+        console.log('   Token expired, attempting refresh...');
+        
+        if (!refreshToken) {
+          return res.status(401).json({
+            error: 'Token expired',
+            message: 'Access token expired and no refresh token available. User needs to re-authenticate.',
+            expiresAt: user.twitterTokens.expiresAt
+          });
+        }
+        
+        try {
+          const refreshClient = new TwitterApi({
+            clientId: process.env.TWITTER_CLIENT_ID,
+            clientSecret: process.env.TWITTER_CLIENT_SECRET,
+          });
+          
+          const { accessToken: newAccessToken, refreshToken: newRefreshToken, expiresIn } = await refreshClient.refreshOAuth2Token(
+            refreshToken
+          );
+          
+          // Use the new tokens
+          accessToken = newAccessToken;
+          refreshToken = newRefreshToken || refreshToken;
+          
+          // Note: We're NOT re-encrypting and saving here since this is a debug endpoint
+          // In production, you'd want to encrypt and save the new tokens
+          console.log('   Token refreshed successfully (not persisted in debug mode)');
+        } catch (refreshError) {
+          console.error('   Token refresh failed:', refreshError.message);
+          return res.status(401).json({
+            error: 'Token refresh failed',
+            message: 'Could not refresh expired token. User needs to re-authenticate.',
+            details: refreshError.message
+          });
+        }
+      }
+      
+      // 6. Get tweet text
+      const { text } = req.body;
+      if (!text) {
+        return res.status(400).json({
+          error: 'Missing text',
+          message: 'Provide tweet text in request body: { "text": "..." }'
+        });
+      }
+      
+      if (text.length > 280) {
+        return res.status(400).json({
+          error: 'Tweet too long',
+          message: `Tweet is ${text.length} characters. Maximum is 280.`
+        });
+      }
+      
+      // 7. Post the tweet
+      console.log('   Posting tweet:', text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+      
+      const twitterClient = new TwitterApi(accessToken);
+      
+      // Verify we can access the user's account
+      const me = await twitterClient.v2.me();
+      console.log('   Authenticated as:', me.data.username);
+      
+      // Post the tweet
+      const tweet = await twitterClient.v2.tweet({ text });
+      
+      console.log('   ✅ Tweet posted successfully:', tweet.data.id);
+      
+      return res.json({
+        success: true,
+        message: 'Tweet posted successfully!',
+        tweet: {
+          id: tweet.data.id,
+          text: tweet.data.text
+        },
+        postedAs: {
+          username: me.data.username,
+          id: me.data.id
+        },
+        debug: {
+          userId: user._id,
+          provider: user.authProvider?.provider,
+          twitterUsername: user.twitterTokens.twitterUsername
+        }
+      });
+      
+    } catch (error) {
+      console.error('🚨 DEBUG tweet error:', error);
+      
+      // Handle specific Twitter API errors
+      if (error.code === 401 || error.data?.status === 401) {
+        return res.status(401).json({
+          error: 'Twitter authentication failed',
+          message: 'The access token is invalid or expired',
+          details: error.message
+        });
+      }
+      
+      if (error.code === 403 || error.data?.status === 403) {
+        return res.status(403).json({
+          error: 'Twitter permission denied',
+          message: 'The app may not have tweet.write permission',
+          details: error.message
+        });
+      }
+      
+      return res.status(500).json({
+        error: 'Tweet failed',
+        message: error.message,
+        code: error.code
+      });
+    }
+  });
+  
+  console.log('🔧 DEBUG Twitter endpoints mounted (DEBUG_MODE=true)');
+}
+
 module.exports = router; 
