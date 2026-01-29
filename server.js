@@ -3258,16 +3258,16 @@ if (DEBUG_MODE) {
           
           if (userQuery) {
             const user = await User.findOne(userQuery)
-              .read('primary')
-              .select('+app_preferences')
-              .lean();
-            prefs = {
-              email: decoded.email,
+            .read('primary')
+            .select('+app_preferences')
+            .lean();
+          prefs = {
+            email: decoded.email,
               provider: decoded.provider,
               providerId: decoded.sub,
-              jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
-              schemaVersion: user?.app_preferences?.schemaVersion ?? null
-            };
+            jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
+            schemaVersion: user?.app_preferences?.schemaVersion ?? null
+          };
           }
         }
       } catch (_) {}

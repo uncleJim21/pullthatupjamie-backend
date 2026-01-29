@@ -79,16 +79,21 @@ class TwitterService {
      * @param {string} [tweetData.mediaUrl] - Optional media URL to attach
      * @returns {Promise<Object>} Tweet result with success status and data
      */
-    async postTweet(adminEmail, { text, mediaUrl }) {
+    async postTweet(adminIdentity, { text, mediaUrl }) {
         try {
             if (!text) {
                 throw new Error('Tweet text is required');
             }
 
-            console.log(`📤 TwitterService.postTweet for: ${adminEmail}`);
+            // Normalize identity (supports both string email and { userId, email } object)
+            const identity = typeof adminIdentity === 'string' 
+                ? { email: adminIdentity } 
+                : adminIdentity;
+
+            console.log(`📤 TwitterService.postTweet for:`, JSON.stringify(identity));
 
             // Get credentials (handles migration + decryption + refresh)
-            const { user, accessToken, needsSave, oauth1Tokens } = await getAdminTwitterCredentials(adminEmail);
+            const { user, accessToken, needsSave, oauth1Tokens } = await getAdminTwitterCredentials(identity);
 
             // Create Twitter client
             const client = new TwitterApi(accessToken);

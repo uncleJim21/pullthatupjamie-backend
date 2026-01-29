@@ -11,10 +11,18 @@ const ProPodcastDetailsSchema = new mongoose.Schema({
     type: String,
     required: false, // No longer required
   },
+  // Primary link to User (preferred for new records, supports all auth types)
+  adminUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true,
+    required: false, // Optional for backwards compatibility
+  },
+  // Legacy link (kept for backwards compatibility with existing records)
   adminEmail: {
     type: String,
-    required: true,
-    unique: true, // Each podcast has a distinct admin
+    required: false, // Changed from true - no longer required for non-email users
+    index: true,     // Add index for query performance
   },
   headerColor: {
     type: String,

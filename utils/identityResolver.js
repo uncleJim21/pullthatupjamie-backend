@@ -7,6 +7,7 @@
 
 const jwt = require('jsonwebtoken');
 const { User } = require('../models/shared/UserSchema');
+const { ProPodcastDetails } = require('../models/ProPodcastDetails');
 
 /**
  * Tier definitions with quota multipliers
@@ -140,10 +141,22 @@ async function resolveIdentity(req) {
  * @returns {Promise<string>}
  */
 async function determineTier(user) {
-  // Check for podcast admin status
-  // TODO: This requires checking ProPodcast collection
-  // For now, we'll check if they have a jamie-pro subscription with high limits
-  // A proper implementation would check: ProPodcast.findOne({ adminEmail: user.email })
+  // Check for podcast admin status (supports both userId and email)
+  const adminQuery = { $or: [] };
+  
+  if (user._id) {
+    adminQuery.$or.push({ adminUserId: user._id });
+  }
+  if (user.email) {
+    adminQuery.$or.push({ adminEmail: user.email });
+  }
+  
+  if (adminQuery.$or.length > 0) {
+    const isAdmin = await ProPodcastDetails.exists(adminQuery);
+    if (isAdmin) {
+      return TIERS.admin;
+    }
+  }
   
   // Check subscription type
   if (user.subscriptionType === 'jamie-pro') {

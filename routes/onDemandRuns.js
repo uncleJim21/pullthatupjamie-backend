@@ -56,8 +56,8 @@ router.get('/checkEligibility', async (req, res) => {
                 max = Math.max(existing.maxUsage, config.maxUsage); // Use higher if tier upgraded
                 periodStart = existing.periodStart;
                 nextResetDate = existing.nextResetDate;
-            }
-            
+        }
+
             const isUnlimited = max === -1;
             const remaining = isUnlimited ? Infinity : Math.max(0, max - used);
             const eligible = isUnlimited || remaining > 0;
@@ -363,7 +363,7 @@ router.post('/update-ondemand-quota', async (req, res) => {
                 details: 'Valid Bearer token required'
             });
         }
-        
+
         const user = identity.user;
         const token = req.headers.authorization?.split(' ')[1];
 

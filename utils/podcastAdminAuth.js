@@ -1,9 +1,14 @@
 const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('../models/ProPodcastDetails');
+const { User } = require('../models/shared/UserSchema');
 
 /**
  * Middleware to verify if the user is authorized to access podcast admin features
  * Checks if the user has a valid JWT token and is the admin of the specified feed
+ * 
+ * Supports both:
+ * - New JWT format: { sub, provider, email } → looks up by adminUserId
+ * - Legacy JWT format: { email } → looks up by adminEmail
  * 
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
@@ -55,15 +60,6 @@ async function verifyPodcastAdmin(req, res, next, feedId = null) {
             });
         }
 
-        // Get the admin email from the token
-        const { email } = decoded;
-        if (!email) {
-            return res.status(401).json({
-                error: 'Invalid token',
-                details: 'Token missing email claim'
-            });
-        }
-
         // Get the feedId from params if not provided
         const targetFeedId = feedId || req.params.feedId;
         if (!targetFeedId) {
@@ -73,11 +69,55 @@ async function verifyPodcastAdmin(req, res, next, feedId = null) {
             });
         }
 
-        // Check if the user is the admin of the podcast
-        const podcast = await ProPodcastDetails.findOne({
+        // Build identity from JWT (supports both new and legacy formats)
+        let userId = null;
+        let email = decoded.email || null;
+        const provider = decoded.provider || null;
+        const sub = decoded.sub || null;
+
+        // New JWT format: { sub, provider, email }
+        if (sub && provider) {
+            // Look up User to get MongoDB _id
+            const user = await User.findOne({
+                'authProvider.provider': provider,
+                'authProvider.providerId': sub
+            }).select('_id email').lean();
+            
+            if (user) {
+                userId = user._id;
+                email = email || user.email; // Use email from user if not in JWT
+            }
+        }
+        // Legacy JWT format: { email } - also get userId if possible
+        else if (email) {
+            const user = await User.findOne({ email }).select('_id').lean();
+            if (user) {
+                userId = user._id;
+            }
+        }
+
+        // Must have at least one identifier
+        if (!userId && !email) {
+            return res.status(401).json({
+                error: 'Invalid token',
+                details: 'Token missing user identifier'
+            });
+        }
+
+        // Check if the user is the admin of the podcast (supports both adminUserId and adminEmail)
+        const query = {
             feedId: targetFeedId,
-            adminEmail: email
-        }).lean();
+            $or: []
+        };
+        
+        if (userId) {
+            query.$or.push({ adminUserId: userId });
+        }
+        if (email) {
+            query.$or.push({ adminEmail: email });
+        }
+
+        const podcast = await ProPodcastDetails.findOne(query).lean();
 
         if (!podcast) {
             return res.status(403).json({
@@ -88,7 +128,9 @@ async function verifyPodcastAdmin(req, res, next, feedId = null) {
 
         // Add the verified admin info to the request object
         req.admin = {
+            userId,
             email,
+            provider,
             feedId: targetFeedId,
             podcast
         };

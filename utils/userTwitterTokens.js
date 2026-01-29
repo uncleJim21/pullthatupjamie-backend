@@ -72,21 +72,62 @@ function decryptToken(encrypted) {
 // ============================================
 
 /**
+ * Find a user by identity (supports multiple lookup methods)
+ * 
+ * @param {Object} identity - { userId, email }
+ * @returns {Promise<User|null>}
+ */
+async function findUserByAdminIdentity(identity) {
+  const { userId, email } = identity;
+  
+  if (userId) {
+    const user = await User.findById(userId);
+    if (user) return user;
+  }
+  
+  if (email) {
+    const user = await User.findOne({ email });
+    if (user) return user;
+  }
+  
+  return null;
+}
+
+/**
+ * Find ProPodcastDetails by admin identity (supports both userId and email)
+ * 
+ * @param {Object} identity - { userId, email }
+ * @returns {Promise<Object|null>}
+ */
+async function findPodcastByAdminIdentity(identity) {
+  const { userId, email } = identity;
+  
+  const query = { $or: [] };
+  if (userId) query.$or.push({ adminUserId: userId });
+  if (email) query.$or.push({ adminEmail: email });
+  
+  if (query.$or.length === 0) return null;
+  
+  return ProPodcastDetails.findOne(query).lean();
+}
+
+/**
  * Migrate Twitter tokens from ProPodcastDetails to User.twitterTokens
  * This is a one-time migration that runs on first access.
  * 
- * @param {string} adminEmail - The admin email to migrate
+ * @param {Object} identity - { userId, email } - Admin identity
  * @returns {Promise<Object|null>} The migrated user, or null if no migration needed
  */
-async function migrateTokensFromProPodcast(adminEmail) {
-  if (!adminEmail) return null;
+async function migrateTokensFromProPodcast(identity) {
+  const { userId, email } = identity;
+  if (!userId && !email) return null;
   
-  console.log(`🔄 Checking for token migration: ${adminEmail}`);
+  console.log(`🔄 Checking for token migration: userId=${userId}, email=${email}`);
   
-  // 1. Find user by email
-  const user = await User.findOne({ email: adminEmail });
+  // 1. Find user
+  const user = await findUserByAdminIdentity(identity);
   if (!user) {
-    console.log(`   No user found for email: ${adminEmail}`);
+    console.log(`   No user found for identity`);
     return null;
   }
   
@@ -97,7 +138,7 @@ async function migrateTokensFromProPodcast(adminEmail) {
   }
   
   // 3. Check ProPodcastDetails for legacy tokens
-  const podcast = await ProPodcastDetails.findOne({ adminEmail }).lean();
+  const podcast = await findPodcastByAdminIdentity(identity);
   if (!podcast?.twitterTokens?.oauthToken) {
     console.log(`   No legacy tokens found in ProPodcastDetails`);
     return user;
@@ -117,10 +158,10 @@ async function migrateTokensFromProPodcast(adminEmail) {
   };
   
   // Also set up authProvider if not already set (for email-based users)
-  if (!user.authProvider?.provider) {
+  if (!user.authProvider?.provider && email) {
     user.authProvider = {
       provider: 'email',
-      providerId: adminEmail,
+      providerId: email,
       linkedAt: new Date()
     };
   }
@@ -129,8 +170,13 @@ async function migrateTokensFromProPodcast(adminEmail) {
   console.log(`   ✅ Migrated tokens to User.twitterTokens (encrypted)`);
   
   // 5. Clear OAuth 2.0 tokens from ProPodcastDetails, but KEEP OAuth 1.0a tokens (for media uploads)
+  // Use same query that found the podcast
+  const updateQuery = { $or: [] };
+  if (userId) updateQuery.$or.push({ adminUserId: userId });
+  if (email) updateQuery.$or.push({ adminEmail: email });
+  
   await ProPodcastDetails.findOneAndUpdate(
-    { adminEmail },
+    updateQuery,
     { 
       $unset: { 
         'twitterTokens.oauthToken': 1,
@@ -147,23 +193,32 @@ async function migrateTokensFromProPodcast(adminEmail) {
 }
 
 /**
- * Get Twitter credentials for an admin email (with auto-migration)
+ * Get Twitter credentials for an admin (with auto-migration)
  * This is the main entry point for the admin/podcast posting flow.
  * 
- * @param {string} adminEmail - The admin email
+ * Supports both:
+ * - String email (legacy): getAdminTwitterCredentials('admin@example.com')
+ * - Identity object: getAdminTwitterCredentials({ userId: '...', email: '...' })
+ * 
+ * @param {string|Object} adminIdentity - Admin email (string) or identity object { userId, email }
  * @returns {Promise<Object>} { user, accessToken, refreshToken, needsSave, oauth1Tokens }
  */
-async function getAdminTwitterCredentials(adminEmail) {
-  // First, ensure any legacy tokens are migrated
-  let user = await migrateTokensFromProPodcast(adminEmail);
+async function getAdminTwitterCredentials(adminIdentity) {
+  // Normalize to identity object
+  const identity = typeof adminIdentity === 'string' 
+    ? { email: adminIdentity } 
+    : adminIdentity;
   
-  // If no user was found/returned, try finding by email
+  // First, ensure any legacy tokens are migrated
+  let user = await migrateTokensFromProPodcast(identity);
+  
+  // If no user was found/returned, try finding by identity
   if (!user) {
-    user = await User.findOne({ email: adminEmail });
+    user = await findUserByAdminIdentity(identity);
   }
   
   if (!user) {
-    const error = new Error(`No user found for admin email: ${adminEmail}`);
+    const error = new Error(`No user found for admin identity: ${JSON.stringify(identity)}`);
     error.code = 'USER_NOT_FOUND';
     throw error;
   }
@@ -252,7 +307,7 @@ async function getAdminTwitterCredentials(adminEmail) {
     }
   } else {
     // Fallback: check ProPodcastDetails (legacy location)
-    const podcast = await ProPodcastDetails.findOne({ adminEmail }).lean();
+    const podcast = await findPodcastByAdminIdentity(identity);
     if (podcast?.twitterTokens?.oauth1AccessToken && podcast?.twitterTokens?.oauth1AccessSecret) {
       oauth1Tokens = {
         oauth1AccessToken: podcast.twitterTokens.oauth1AccessToken,
