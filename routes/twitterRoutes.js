@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const { TwitterApi } = require('twitter-api-v2');
 const { updateTwitterTokens, getTwitterTokens, getProPodcastByAdminEmail } = require('../utils/ProPodcastUtils');
 const { validatePrivs } = require('../middleware/validate-privs');
@@ -7,6 +8,9 @@ const jwt = require('jsonwebtoken');
 
 // Get the port from environment variables
 const PORT = process.env.PORT || 4132;
+
+// Auth server URL for internal API calls
+const AUTH_SERVER_URL = process.env.AUTH_SERVER_URL || 'http://localhost:6111';
 
 // Temporary in-memory store for OAuth state
 const oauthStateStore = new Map();
@@ -233,6 +237,94 @@ router.all('/x-oauth', async (req, res) => {
     }
 });
 
+// ============================================
+// USER AUTHENTICATION FLOW (No existing auth required)
+// These endpoints allow users to sign up/sign in via Twitter
+// ============================================
+
+/**
+ * GET /api/twitter/auth-initiate
+ * Start Twitter OAuth for user authentication (not tweet posting)
+ * 
+ * NO AUTHENTICATION REQUIRED - this IS the authentication entry point
+ * 
+ * Query params:
+ *   - redirect_uri: Where to send user after auth (defaults to FRONTEND_URL)
+ * 
+ * Flow:
+ *   1. User visits this endpoint
+ *   2. Redirects to Twitter for authorization
+ *   3. Twitter redirects to /callback with flowType: 'userAuth'
+ *   4. Callback calls auth server to create/find user
+ *   5. User redirected to frontend with temp code
+ *   6. Frontend exchanges temp code for JWT at auth server
+ */
+router.get('/auth-initiate', async (req, res) => {
+    try {
+        const { redirect_uri } = req.query;
+        const frontendUrl = redirect_uri || process.env.FRONTEND_URL || 'http://localhost:3000';
+
+        console.log('🐦 Starting Twitter auth-initiate flow');
+        console.log('   Redirect URI:', frontendUrl);
+
+        const client = new TwitterApi({
+            clientId: process.env.TWITTER_CLIENT_ID,
+            clientSecret: process.env.TWITTER_CLIENT_SECRET,
+        });
+
+        // Use existing callback URL (already configured in Twitter Dev Portal)
+        const callbackUrl = process.env.TWITTER_CALLBACK_URL || `http://localhost:${PORT}/api/twitter/callback`;
+        console.log('   Callback URL:', callbackUrl);
+
+        const { url, codeVerifier, state } = await client.generateOAuth2AuthLink(
+            callbackUrl,
+            { 
+                scope: [
+                    'tweet.read', 
+                    'tweet.write',
+                    'users.read', 
+                    'offline.access',
+                    'media.write'
+                ],
+                codeChallengeMethod: 'S256'
+            }
+        );
+
+        // Store OAuth state - flowType: 'userAuth' tells callback this is for authentication
+        oauthStateStore.set(state, {
+            codeVerifier,
+            state,
+            timestamp: Date.now(),
+            flowType: 'userAuth',  // Key differentiator from 'unified' flow
+            redirectUri: frontendUrl
+        });
+
+        console.log('   State stored, redirecting to Twitter...');
+
+        // Redirect to Twitter
+        res.redirect(url);
+
+    } catch (error) {
+        console.error('Twitter auth-initiate error:', error);
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        res.redirect(`${frontendUrl}/auth/error?error=twitter_init_failed&details=${encodeURIComponent(error.message)}`);
+    }
+});
+
+/**
+ * Helper: Create HMAC signature for auth server communication
+ */
+function createAuthServerSignature(payload) {
+    const secret = process.env.JAMIE_TO_AUTH_SERVER_HMAC_SECRET;
+    if (!secret) {
+        throw new Error('JAMIE_TO_AUTH_SERVER_HMAC_SECRET not configured');
+    }
+    return crypto
+        .createHmac('sha256', secret)
+        .update(JSON.stringify(payload))
+        .digest('hex');
+}
+
 /**
  * GET /api/twitter/callback
  * Handle Twitter OAuth callback and chain to OAuth 1.0a if needed
@@ -349,6 +441,70 @@ router.get('/callback', async (req, res) => {
                 console.error('Failed to initiate OAuth 1.0a flow:', oauth1Error);
                 // Fall back to success page with OAuth 2.0 only
                 return res.redirect('/api/twitter/auth-success?partial=true');
+            }
+        }
+
+        // Check if this is a user authentication flow (sign up/sign in via Twitter)
+        if (oauthData.flowType === 'userAuth') {
+            console.log('🐦 User auth flow detected, calling auth server...');
+            
+            const frontendUrl = oauthData.redirectUri || process.env.FRONTEND_URL || 'http://localhost:3000';
+            
+            try {
+                // Prepare payload for auth server
+                const payload = {
+                    twitterId: user.data.id,
+                    twitterUsername: user.data.username,
+                    twitterName: user.data.name,
+                    accessToken,
+                    refreshToken,
+                    expiresAt: Date.now() + (expiresIn * 1000),
+                    timestamp: Date.now()
+                };
+
+                // Create HMAC signature
+                const signature = createAuthServerSignature(payload);
+
+                // Call auth server to create/find user and get temp code
+                console.log('   Calling auth server:', `${AUTH_SERVER_URL}/internal/twitter/create-user`);
+                
+                const authServerResponse = await fetch(`${AUTH_SERVER_URL}/internal/twitter/create-user`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Internal-Signature': signature
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!authServerResponse.ok) {
+                    const errorText = await authServerResponse.text();
+                    console.error('   Auth server error:', authServerResponse.status, errorText);
+                    throw new Error(`Auth server returned ${authServerResponse.status}: ${errorText}`);
+                }
+
+                const authResult = await authServerResponse.json();
+                console.log('   Auth server response:', {
+                    success: authResult.success,
+                    isNewUser: authResult.isNewUser,
+                    hasTempCode: !!authResult.tempCode
+                });
+
+                if (!authResult.success || !authResult.tempCode) {
+                    throw new Error('Auth server did not return a temp code');
+                }
+
+                // Redirect to frontend with temp code (NOT the JWT - frontend exchanges tempCode for JWT)
+                const redirectUrl = new URL('/auth/twitter/complete', frontendUrl);
+                redirectUrl.searchParams.set('code', authResult.tempCode);
+                redirectUrl.searchParams.set('isNewUser', authResult.isNewUser.toString());
+
+                console.log('   Redirecting to frontend:', redirectUrl.toString());
+                return res.redirect(redirectUrl.toString());
+
+            } catch (authError) {
+                console.error('🚨 User auth flow error:', authError);
+                return res.redirect(`${frontendUrl}/auth/error?error=twitter_auth_failed&details=${encodeURIComponent(authError.message)}`);
             }
         }
 

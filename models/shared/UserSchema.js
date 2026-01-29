@@ -132,6 +132,27 @@ const UserSchema = new mongoose.Schema({
   },
   
   // ─────────────────────────────────────────
+  // TWITTER TOKENS (For posting capability)
+  // ─────────────────────────────────────────
+  /**
+   * Twitter OAuth tokens for posting tweets.
+   * Stored when user authenticates via Twitter.
+   * Used by backend to post tweets on user's behalf.
+   * 
+   * NOTE: Consider encrypting accessToken and refreshToken at rest.
+   */
+  twitterTokens: {
+    type: new mongoose.Schema({
+      accessToken: { type: String },      // OAuth 2.0 access token
+      refreshToken: { type: String },     // OAuth 2.0 refresh token
+      expiresAt: { type: Date },          // Token expiration
+      twitterUsername: { type: String },  // @handle
+      twitterId: { type: String }         // Twitter user ID
+    }, { _id: false }),
+    default: null
+  },
+  
+  // ─────────────────────────────────────────
   // APP PREFERENCES (Backend manages)
   // ─────────────────────────────────────────
   app_preferences: {
