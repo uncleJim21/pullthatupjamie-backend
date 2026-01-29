@@ -7,7 +7,7 @@ mongoose.connect(process.env.MONGO_URI, {
   useUnifiedTopology: true,
 });
 
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 
 async function clearAllPins() {
   try {

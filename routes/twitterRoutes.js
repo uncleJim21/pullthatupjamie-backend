@@ -1581,6 +1581,26 @@ if (process.env.DEBUG_MODE === 'true') {
   const { User } = require('../models/shared/UserSchema');
   
   /**
+   * Encrypt a token with AES-256-CBC
+   * Uses JAMIE_TO_AUTH_SERVER_HMAC_SECRET as the key
+   */
+  function encryptToken(text) {
+    if (!text) return null;
+    
+    const SECRET = process.env.JAMIE_TO_AUTH_SERVER_HMAC_SECRET;
+    if (!SECRET) {
+      throw new Error('JAMIE_TO_AUTH_SERVER_HMAC_SECRET not configured');
+    }
+    
+    const key = crypto.createHash('sha256').update(SECRET).digest();
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return iv.toString('hex') + ':' + encrypted;
+  }
+  
+  /**
    * Decrypt a token that was encrypted with AES-256-CBC
    * Uses JAMIE_TO_AUTH_SERVER_HMAC_SECRET as the key
    */
@@ -1733,11 +1753,18 @@ if (process.env.DEBUG_MODE === 'true') {
           
           // Use the new tokens
           accessToken = newAccessToken;
-          refreshToken = newRefreshToken || refreshToken;
+          const updatedRefreshToken = newRefreshToken || refreshToken;
           
-          // Note: We're NOT re-encrypting and saving here since this is a debug endpoint
-          // In production, you'd want to encrypt and save the new tokens
-          console.log('   Token refreshed successfully (not persisted in debug mode)');
+          // Encrypt and persist the new tokens so they're available for future requests
+          const encryptedAccessToken = encryptToken(newAccessToken);
+          const encryptedRefreshToken = encryptToken(updatedRefreshToken);
+          
+          user.twitterTokens.accessToken = encryptedAccessToken;
+          user.twitterTokens.refreshToken = encryptedRefreshToken;
+          user.twitterTokens.expiresAt = new Date(Date.now() + (expiresIn * 1000));
+          await user.save();
+          
+          console.log('   Token refreshed and persisted successfully');
         } catch (refreshError) {
           console.error('   Token refresh failed:', refreshError.message);
           return res.status(401).json({

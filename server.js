@@ -56,7 +56,7 @@ const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
-const { User } = require('./models/User');
+const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
 const JamieVectorMetadata = require('./models/JamieVectorMetadata');
 const { updateEntitlementConfig } = require('./utils/entitlements');
@@ -3244,16 +3244,31 @@ if (DEBUG_MODE) {
         if (authHeader.startsWith('Bearer ')) {
           const token = authHeader.split(' ')[1];
           const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-          const { User } = require('./models/User');
-          const user = await User.findOne({ email: decoded.email })
-            .read('primary')
-            .select('+app_preferences')
-            .lean();
-          prefs = {
-            email: decoded.email,
-            jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
-            schemaVersion: user?.app_preferences?.schemaVersion ?? null
-          };
+          
+          // Build query for email OR provider-based lookup
+          let userQuery;
+          if (decoded.email) {
+            userQuery = { email: decoded.email };
+          } else if (decoded.provider && decoded.sub) {
+            userQuery = {
+              'authProvider.provider': decoded.provider,
+              'authProvider.providerId': decoded.sub
+            };
+          }
+          
+          if (userQuery) {
+            const user = await User.findOne(userQuery)
+              .read('primary')
+              .select('+app_preferences')
+              .lean();
+            prefs = {
+              email: decoded.email,
+              provider: decoded.provider,
+              providerId: decoded.sub,
+              jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
+              schemaVersion: user?.app_preferences?.schemaVersion ?? null
+            };
+          }
         }
       } catch (_) {}
 
@@ -3263,7 +3278,7 @@ if (DEBUG_MODE) {
     }
   });
 
-  // Debug endpoint: list all user docs matching token email and their jamie-assistDefaults
+  // Debug endpoint: list all user docs matching token identity and their jamie-assistDefaults
   app.get('/api/debug/user-docs', async (req, res) => {
     try {
       const authHeader = req.headers.authorization || '';
@@ -3272,14 +3287,29 @@ if (DEBUG_MODE) {
       }
       const token = authHeader.split(' ')[1];
       const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      const { User } = require('./models/User');
-      const docs = await User.find({ email: decoded.email })
+      
+      // Build query for email OR provider-based lookup
+      let userQuery;
+      if (decoded.email) {
+        userQuery = { email: decoded.email };
+      } else if (decoded.provider && decoded.sub) {
+        userQuery = {
+          'authProvider.provider': decoded.provider,
+          'authProvider.providerId': decoded.sub
+        };
+      } else {
+        return res.status(400).json({ error: 'Token missing email or provider/sub' });
+      }
+      
+      const docs = await User.find(userQuery)
         .read('primary')
-        .select('+app_preferences email')
+        .select('+app_preferences email authProvider')
         .lean();
       const simplified = docs.map(d => ({
         _id: d._id,
         email: d.email,
+        provider: d.authProvider?.provider,
+        providerId: d.authProvider?.providerId,
         jamieAssistDefaults: d?.app_preferences?.data?.jamieAssistDefaults ?? null,
         schemaVersion: d?.app_preferences?.schemaVersion ?? null
       }));

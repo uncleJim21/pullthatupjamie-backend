@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 const { SocialProfileMapping } = require('../models/SocialProfileMappings');
 const { TwitterApi } = require('twitter-api-v2');
 const { authenticateToken } = require('../middleware/authMiddleware');
@@ -11,13 +11,43 @@ function sendSSE(res, data, eventType = 'data') {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+/**
+ * Find user from req.user - supports email, provider-based, and admin mode
+ * Works with Twitter, Nostr, and email-based users
+ */
+async function findMentionsUser(reqUser, selectFields = '+mention_preferences') {
+  // Admin mode override
+  if (reqUser.isAdminMode) {
+    return User.findOne({ email: 'jim.carucci+prod@protonmail.com' }).select(selectFields);
+  }
+  
+  // Try email first
+  if (reqUser.email) {
+    return User.findOne({ email: reqUser.email }).select(selectFields);
+  }
+  
+  // Try provider-based lookup (Twitter/Nostr)
+  if (reqUser.provider && reqUser.providerId) {
+    return User.findOne({
+      'authProvider.provider': reqUser.provider,
+      'authProvider.providerId': reqUser.providerId
+    }).select(selectFields);
+  }
+  
+  // Fallback to user ID
+  if (reqUser.id) {
+    return User.findById(reqUser.id).select(selectFields);
+  }
+  
+  return null;
+}
+
 // Promisified search functions
 async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr']) {
   try {
-    // Use hardcoded admin email for admin mode, otherwise use token email
-    const userEmail = user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : user.email;
-    console.log('searchPersonalPins - Looking for user with email:', userEmail);
-    const userData = await User.findOne({ email: userEmail }).select('+mention_preferences +mentionPreferences');
+    // Use helper that supports email, provider, and admin mode
+    console.log('searchPersonalPins - Looking for user:', user.email || user.providerId || 'admin');
+    const userData = await findMentionsUser(user, '+mention_preferences +mentionPreferences');
     
     let pins = [];
     if (userData.mention_preferences?.pinned_mentions) {
@@ -1054,9 +1084,8 @@ router.post('/pins/:pinId/link-nostr', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 
@@ -1126,9 +1155,8 @@ router.post('/pins/:pinId/unlink-nostr', authenticateToken, async (req, res) => 
     
     console.log('Unlink Nostr request for pin:', pinId);
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 
@@ -1186,9 +1214,8 @@ router.get('/pins/:pinId/suggest-nostr', authenticateToken, async (req, res) => 
     
     console.log('Suggest Nostr profiles for pin:', pinId);
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 

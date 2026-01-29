@@ -6,7 +6,7 @@
  */
 
 const jwt = require('jsonwebtoken');
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 
 /**
  * Tier definitions with quota multipliers

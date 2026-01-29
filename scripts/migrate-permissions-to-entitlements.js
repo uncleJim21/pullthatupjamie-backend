@@ -1,6 +1,6 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 const { Entitlement } = require('../models/Entitlement');
 
 // Connect to MongoDB
