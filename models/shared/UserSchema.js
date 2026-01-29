@@ -136,16 +136,27 @@ const UserSchema = new mongoose.Schema({
   // ─────────────────────────────────────────
   /**
    * Twitter OAuth tokens for posting tweets.
-   * Stored when user authenticates via Twitter.
-   * Used by backend to post tweets on user's behalf.
+   * Can be obtained via:
+   *   1. Sign in with Twitter (auth-initiate flow)
+   *   2. Connect Twitter for posting (x-oauth flow)
    * 
-   * NOTE: Consider encrypting accessToken and refreshToken at rest.
+   * All tokens are encrypted at rest using JAMIE_TO_AUTH_SERVER_HMAC_SECRET.
+   * 
+   * OAuth 2.0 tokens: Required for posting tweets (text)
+   * OAuth 1.0a tokens: Required for media uploads (images/videos)
    */
   twitterTokens: {
     type: new mongoose.Schema({
-      accessToken: { type: String },      // OAuth 2.0 access token
-      refreshToken: { type: String },     // OAuth 2.0 refresh token
-      expiresAt: { type: Date },          // Token expiration
+      // OAuth 2.0 (for posting tweets)
+      accessToken: { type: String },      // Encrypted OAuth 2.0 access token
+      refreshToken: { type: String },     // Encrypted OAuth 2.0 refresh token
+      expiresAt: { type: Date },          // OAuth 2.0 token expiration
+      
+      // OAuth 1.0a (for media uploads - Twitter requires this for media)
+      oauth1AccessToken: { type: String },   // Encrypted OAuth 1.0a access token
+      oauth1AccessSecret: { type: String },  // Encrypted OAuth 1.0a access secret
+      
+      // Metadata
       twitterUsername: { type: String },  // @handle
       twitterId: { type: String }         // Twitter user ID
     }, { _id: false }),

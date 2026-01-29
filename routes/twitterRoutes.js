@@ -378,18 +378,40 @@ router.get('/callback', async (req, res) => {
 
         console.log('OAuth 2.0 tokens obtained for user:', user.data.username);
 
-        // Store OAuth 2.0 tokens in ProPodcastDetails using the correct schema structure
+        // Store OAuth 2.0 tokens encrypted in User.twitterTokens
         if (oauthData.adminEmail) {
-            const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
+            const { User } = require('../models/shared/UserSchema');
+            const { encryptToken } = require('../utils/userTwitterTokens');
             
-            await updateTwitterTokens(oauthData.adminEmail, {
-                ...existingTokens, // Preserve any existing OAuth 1.0a tokens
-                oauthToken: accessToken,
-                oauthTokenSecret: refreshToken,
-                twitterId: user.data.id,
-                twitterUsername: user.data.username,
-                expiresAt: Date.now() + (expiresIn * 1000)
-            });
+            const dbUser = await User.findOne({ email: oauthData.adminEmail });
+            if (dbUser) {
+                // Initialize or preserve existing twitterTokens
+                if (!dbUser.twitterTokens) {
+                    dbUser.twitterTokens = {};
+                }
+                
+                // Update OAuth 2.0 tokens (encrypted)
+                dbUser.twitterTokens.accessToken = encryptToken(accessToken);
+                dbUser.twitterTokens.refreshToken = encryptToken(refreshToken);
+                dbUser.twitterTokens.expiresAt = new Date(Date.now() + (expiresIn * 1000));
+                dbUser.twitterTokens.twitterId = user.data.id;
+                dbUser.twitterTokens.twitterUsername = user.data.username;
+                
+                await dbUser.save();
+                console.log('💾 OAuth 2.0 tokens saved to User.twitterTokens (encrypted)');
+            } else {
+                console.warn('⚠️ User not found, falling back to ProPodcastDetails');
+                // Fallback for backwards compatibility
+                const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
+                await updateTwitterTokens(oauthData.adminEmail, {
+                    ...existingTokens,
+                    oauthToken: accessToken,
+                    oauthTokenSecret: refreshToken,
+                    twitterId: user.data.id,
+                    twitterUsername: user.data.username,
+                    expiresAt: Date.now() + (expiresIn * 1000)
+                });
+            }
         }
 
         // Store tokens in session for backward compatibility
@@ -492,6 +514,48 @@ router.get('/callback', async (req, res) => {
 
                 if (!authResult.success || !authResult.tempCode) {
                     throw new Error('Auth server did not return a temp code');
+                }
+
+                // IMPORTANT: Also store tokens in backend User model (encrypted)
+                // This ensures the backend can post tweets without hitting auth server
+                const { User } = require('../models/shared/UserSchema');
+                const { encryptToken } = require('../utils/userTwitterTokens');
+                
+                // Find user by twitterId or wait for auth server to create
+                // We use findOneAndUpdate with upsert-like behavior
+                let dbUser = await User.findOne({ 
+                    $or: [
+                        { 'authProvider.providerId': user.data.id, 'authProvider.provider': 'twitter' },
+                        { 'twitterTokens.twitterId': user.data.id }
+                    ]
+                });
+                
+                if (dbUser) {
+                    // Initialize twitterTokens if needed
+                    if (!dbUser.twitterTokens) {
+                        dbUser.twitterTokens = {};
+                    }
+                    
+                    // Store OAuth 2.0 tokens encrypted
+                    dbUser.twitterTokens.accessToken = encryptToken(accessToken);
+                    dbUser.twitterTokens.refreshToken = encryptToken(refreshToken);
+                    dbUser.twitterTokens.expiresAt = new Date(Date.now() + (expiresIn * 1000));
+                    dbUser.twitterTokens.twitterId = user.data.id;
+                    dbUser.twitterTokens.twitterUsername = user.data.username;
+                    
+                    await dbUser.save();
+                    console.log('💾 Twitter OAuth 2.0 tokens stored in backend User.twitterTokens (encrypted)');
+                } else {
+                    // User doesn't exist yet in backend - auth server will create
+                    // Store tokens temporarily in session to be picked up later
+                    console.log('ℹ️ User not found in backend yet - auth server will create. Tokens stored in session.');
+                    req.session.pendingTwitterTokens = {
+                        accessToken: encryptToken(accessToken),
+                        refreshToken: encryptToken(refreshToken),
+                        expiresAt: new Date(Date.now() + (expiresIn * 1000)),
+                        twitterId: user.data.id,
+                        twitterUsername: user.data.username
+                    };
                 }
 
                 // Redirect to frontend with temp code (NOT the JWT - frontend exchanges tempCode for JWT)
@@ -904,15 +968,43 @@ router.get('/oauth1-callback', async (req, res) => {
         
         console.log('OAuth 1.0a tokens obtained for user:', user.screen_name);
 
-        // Update database with OAuth 1.0a tokens (alongside existing OAuth 2.0 tokens)
-        const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
-        await updateTwitterTokens(oauthData.adminEmail, {
-            ...existingTokens, // Keep existing OAuth 2.0 tokens
-            oauth1AccessToken: accessToken,      // Add OAuth 1.0a tokens
-            oauth1AccessSecret: accessSecret,
-            oauth1TwitterId: user.id_str,
-            oauth1TwitterUsername: user.screen_name
-        });
+        // Store OAuth 1.0a tokens encrypted in User.twitterTokens
+        const { User } = require('../models/shared/UserSchema');
+        const { encryptToken } = require('../utils/userTwitterTokens');
+        
+        const dbUser = await User.findOne({ email: oauthData.adminEmail });
+        if (dbUser) {
+            // Initialize twitterTokens if it doesn't exist
+            if (!dbUser.twitterTokens) {
+                dbUser.twitterTokens = {};
+            }
+            
+            // Add OAuth 1.0a tokens (encrypted)
+            dbUser.twitterTokens.oauth1AccessToken = encryptToken(accessToken);
+            dbUser.twitterTokens.oauth1AccessSecret = encryptToken(accessSecret);
+            
+            // Also update metadata if not already set
+            if (!dbUser.twitterTokens.twitterUsername) {
+                dbUser.twitterTokens.twitterUsername = user.screen_name;
+            }
+            if (!dbUser.twitterTokens.twitterId) {
+                dbUser.twitterTokens.twitterId = user.id_str;
+            }
+            
+            await dbUser.save();
+            console.log('💾 OAuth 1.0a tokens saved to User.twitterTokens (encrypted)');
+        } else {
+            console.warn('⚠️ User not found for email:', oauthData.adminEmail);
+            // Fallback: store in ProPodcastDetails for backwards compatibility
+            const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
+            await updateTwitterTokens(oauthData.adminEmail, {
+                ...existingTokens,
+                oauth1AccessToken: accessToken,
+                oauth1AccessSecret: accessSecret,
+                oauth1TwitterId: user.id_str,
+                oauth1TwitterUsername: user.screen_name
+            });
+        }
 
         // Clean up temporary store
         oauthStateStore.delete(oauth_token);
@@ -1287,42 +1379,73 @@ router.post('/tweet', validatePrivs, async (req, res) => {
 /**
  * POST /api/twitter/tokens
  * Get comprehensive Twitter token status for the authenticated podcast
+ * 
+ * Now checks:
+ * - OAuth 2.0 tokens in User.twitterTokens (migrated, encrypted)
+ * - OAuth 1.0a tokens in ProPodcastDetails.twitterTokens (for media uploads)
  */
 router.post('/tokens', validatePrivs, async (req, res) => {
     try {
-        const tokens = await getTwitterTokens(req.user.adminEmail);
-        if (!tokens) {
+        const adminEmail = req.user.adminEmail;
+        const { User } = require('../models/shared/UserSchema');
+        
+        // Check User for OAuth 2.0 tokens (new location after migration)
+        const user = await User.findOne({ email: adminEmail });
+        const userTokens = user?.twitterTokens;
+        
+        // Check ProPodcastDetails for OAuth 1.0a tokens (still stored there for media)
+        const legacyTokens = await getTwitterTokens(adminEmail);
+        
+        // Determine OAuth 2.0 status from User.twitterTokens
+        const hasOAuth2 = !!(userTokens?.accessToken);
+        const oauth2Expired = userTokens?.expiresAt && Date.now() > new Date(userTokens.expiresAt).getTime();
+        const hasRefreshToken = !!(userTokens?.refreshToken);
+        
+        // Determine OAuth 1.0a status from ProPodcastDetails (or legacy location)
+        const hasOAuth1 = !!(legacyTokens?.oauth1AccessToken && legacyTokens?.oauth1AccessSecret);
+        
+        // Get metadata from whichever source has it
+        const twitterId = userTokens?.twitterId || legacyTokens?.twitterId;
+        const twitterUsername = userTokens?.twitterUsername || legacyTokens?.twitterUsername;
+        const expiresAt = userTokens?.expiresAt || legacyTokens?.expiresAt;
+
+        // Not authenticated if missing OAuth 2.0 entirely
+        if (!hasOAuth2) {
             return res.json({ 
                 authenticated: false,
                 capabilities: {
                     canPostText: false,
-                    canUploadMedia: false
+                    canUploadMedia: false,
+                    canRefreshTokens: false
                 },
                 oauth2Status: 'missing',
-                oauth1Status: 'missing'
+                oauth1Status: hasOAuth1 ? 'valid' : 'missing',
+                message: 'Please connect your Twitter account to enable posting.'
             });
         }
 
-        // Check OAuth 2.0 status
-        const hasOAuth2 = !!(tokens.oauthToken && tokens.oauthTokenSecret);
-        const oauth2Expired = tokens.expiresAt && Date.now() > tokens.expiresAt;
-        
-        // Check OAuth 1.0a status
-        const hasOAuth1 = !!(tokens.oauth1AccessToken && tokens.oauth1AccessSecret);
-
         res.json({ 
-            authenticated: hasOAuth2 && hasOAuth1,
-            twitterId: tokens.twitterId,
-            twitterUsername: tokens.twitterUsername,
+            authenticated: true,
+            twitterId,
+            twitterUsername,
             capabilities: {
-                canPostText: hasOAuth2,
+                canPostText: hasOAuth2 && !oauth2Expired,
                 canUploadMedia: hasOAuth1,
-                canRefreshTokens: !!(tokens.oauthTokenSecret)
+                canRefreshTokens: hasRefreshToken
             },
-            oauth2Status: hasOAuth2 ? (oauth2Expired ? 'expired' : 'valid') : 'missing',
+            oauth2Status: oauth2Expired ? 'expired' : 'valid',
             oauth1Status: hasOAuth1 ? 'valid' : 'missing',
-            expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt).toISOString() : null,
-            lastUpdated: tokens.lastUpdated
+            expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+            // Helpful messages for frontend
+            ...(oauth2Expired && !hasRefreshToken && {
+                requiresReauth: true,
+                message: 'Your Twitter access has expired. Please re-authenticate.'
+            }),
+            ...(!hasOAuth1 && {
+                requiresMediaAuth: true,
+                mediaAuthUrl: '/api/twitter/oauth1-auth',
+                mediaAuthMessage: 'Media uploads require additional authorization.'
+            })
         });
     } catch (error) {
         console.error('Error getting Twitter tokens:', error);
@@ -1578,51 +1701,10 @@ router.post('/users/lookup', validatePrivs, async (req, res) => {
 // ============================================
 
 if (process.env.DEBUG_MODE === 'true') {
-  const { User } = require('../models/shared/UserSchema');
-  
-  /**
-   * Encrypt a token with AES-256-CBC
-   * Uses JAMIE_TO_AUTH_SERVER_HMAC_SECRET as the key
-   */
-  function encryptToken(text) {
-    if (!text) return null;
-    
-    const SECRET = process.env.JAMIE_TO_AUTH_SERVER_HMAC_SECRET;
-    if (!SECRET) {
-      throw new Error('JAMIE_TO_AUTH_SERVER_HMAC_SECRET not configured');
-    }
-    
-    const key = crypto.createHash('sha256').update(SECRET).digest();
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    return iv.toString('hex') + ':' + encrypted;
-  }
-  
-  /**
-   * Decrypt a token that was encrypted with AES-256-CBC
-   * Uses JAMIE_TO_AUTH_SERVER_HMAC_SECRET as the key
-   */
-  function decryptToken(encrypted) {
-    if (!encrypted || !encrypted.includes(':')) {
-      // Not encrypted, return as-is
-      return encrypted;
-    }
-    
-    const SECRET = process.env.JAMIE_TO_AUTH_SERVER_HMAC_SECRET;
-    if (!SECRET) {
-      throw new Error('JAMIE_TO_AUTH_SERVER_HMAC_SECRET not configured');
-    }
-    
-    const [ivHex, encryptedText] = encrypted.split(':');
-    const key = crypto.createHash('sha256').update(SECRET).digest();
-    const iv = Buffer.from(ivHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  }
+  const { 
+    prepareTwitterCredentials, 
+    persistTwitterTokens 
+  } = require('../utils/userTwitterTokens');
   
   /**
    * POST /api/twitter/debug/tweet
@@ -1675,107 +1757,7 @@ if (process.env.DEBUG_MODE === 'true') {
         email: decoded.email
       });
       
-      // 2. Find user by JWT payload
-      let user;
-      
-      if (decoded.email) {
-        user = await User.findOne({ email: decoded.email });
-      } else if (decoded.provider && decoded.sub) {
-        user = await User.findOne({
-          'authProvider.provider': decoded.provider,
-          'authProvider.providerId': decoded.sub
-        });
-      }
-      
-      if (!user) {
-        return res.status(404).json({
-          error: 'User not found',
-          message: 'No user found for this JWT'
-        });
-      }
-      
-      console.log('   User found:', user._id);
-      
-      // 3. Check for Twitter tokens
-      if (!user.twitterTokens?.accessToken) {
-        return res.status(400).json({
-          error: 'No Twitter tokens',
-          message: 'User does not have Twitter tokens stored. Did they sign in via Twitter?',
-          hasTwitterTokens: !!user.twitterTokens,
-          twitterTokensKeys: user.twitterTokens ? Object.keys(user.twitterTokens.toObject()) : []
-        });
-      }
-      
-      // 4. Decrypt the tokens (they're encrypted at rest)
-      let accessToken, refreshToken;
-      try {
-        accessToken = decryptToken(user.twitterTokens.accessToken);
-        refreshToken = user.twitterTokens.refreshToken ? decryptToken(user.twitterTokens.refreshToken) : null;
-        console.log('   Tokens decrypted successfully');
-      } catch (decryptError) {
-        console.error('   Token decryption failed:', decryptError.message);
-        return res.status(500).json({
-          error: 'Token decryption failed',
-          message: 'Could not decrypt stored tokens. Check JAMIE_TO_AUTH_SERVER_HMAC_SECRET.',
-          details: decryptError.message
-        });
-      }
-      
-      console.log('   Twitter tokens found:', {
-        hasAccessToken: !!accessToken,
-        hasRefreshToken: !!refreshToken,
-        twitterUsername: user.twitterTokens.twitterUsername,
-        expiresAt: user.twitterTokens.expiresAt
-      });
-      
-      // 5. Check if token is expired
-      if (user.twitterTokens.expiresAt && new Date() > user.twitterTokens.expiresAt) {
-        // Try to refresh the token
-        console.log('   Token expired, attempting refresh...');
-        
-        if (!refreshToken) {
-          return res.status(401).json({
-            error: 'Token expired',
-            message: 'Access token expired and no refresh token available. User needs to re-authenticate.',
-            expiresAt: user.twitterTokens.expiresAt
-          });
-        }
-        
-        try {
-          const refreshClient = new TwitterApi({
-            clientId: process.env.TWITTER_CLIENT_ID,
-            clientSecret: process.env.TWITTER_CLIENT_SECRET,
-          });
-          
-          const { accessToken: newAccessToken, refreshToken: newRefreshToken, expiresIn } = await refreshClient.refreshOAuth2Token(
-            refreshToken
-          );
-          
-          // Use the new tokens
-          accessToken = newAccessToken;
-          const updatedRefreshToken = newRefreshToken || refreshToken;
-          
-          // Encrypt and persist the new tokens so they're available for future requests
-          const encryptedAccessToken = encryptToken(newAccessToken);
-          const encryptedRefreshToken = encryptToken(updatedRefreshToken);
-          
-          user.twitterTokens.accessToken = encryptedAccessToken;
-          user.twitterTokens.refreshToken = encryptedRefreshToken;
-          user.twitterTokens.expiresAt = new Date(Date.now() + (expiresIn * 1000));
-          await user.save();
-          
-          console.log('   Token refreshed and persisted successfully');
-        } catch (refreshError) {
-          console.error('   Token refresh failed:', refreshError.message);
-          return res.status(401).json({
-            error: 'Token refresh failed',
-            message: 'Could not refresh expired token. User needs to re-authenticate.',
-            details: refreshError.message
-          });
-        }
-      }
-      
-      // 6. Get tweet text
+      // 2. Validate tweet text
       const { text } = req.body;
       if (!text) {
         return res.status(400).json({
@@ -1791,7 +1773,12 @@ if (process.env.DEBUG_MODE === 'true') {
         });
       }
       
-      // 7. Post the tweet
+      // 3. Prepare Twitter credentials (handles decryption + refresh)
+      const { user, accessToken, needsSave } = await prepareTwitterCredentials(decoded);
+      
+      console.log('   Credentials ready for user:', user._id);
+      
+      // 4. Post the tweet
       console.log('   Posting tweet:', text.substring(0, 50) + (text.length > 50 ? '...' : ''));
       
       const twitterClient = new TwitterApi(accessToken);
@@ -1804,6 +1791,12 @@ if (process.env.DEBUG_MODE === 'true') {
       const tweet = await twitterClient.v2.tweet({ text });
       
       console.log('   ✅ Tweet posted successfully:', tweet.data.id);
+      
+      // 5. Persist tokens if they were refreshed
+      if (needsSave) {
+        await persistTwitterTokens(user);
+        console.log('   💾 Refreshed tokens persisted');
+      }
       
       return res.json({
         success: true,
@@ -1819,14 +1812,39 @@ if (process.env.DEBUG_MODE === 'true') {
         debug: {
           userId: user._id,
           provider: user.authProvider?.provider,
-          twitterUsername: user.twitterTokens.twitterUsername
+          twitterUsername: user.twitterTokens.twitterUsername,
+          tokensRefreshed: needsSave
         }
       });
       
     } catch (error) {
       console.error('🚨 DEBUG tweet error:', error);
       
-      // Handle specific Twitter API errors
+      // Handle errors from prepareTwitterCredentials
+      if (error.code === 'USER_NOT_FOUND') {
+        return res.status(404).json({
+          error: 'User not found',
+          message: error.message
+        });
+      }
+      
+      if (error.code === 'TWITTER_NOT_CONNECTED' || error.code === 'TWITTER_AUTH_EXPIRED' || error.code === 'TOKEN_REFRESH_FAILED') {
+        return res.status(401).json({
+          error: error.code,
+          message: error.message,
+          requiresReauth: error.requiresReauth
+        });
+      }
+      
+      if (error.code === 'TOKEN_DECRYPT_FAILED') {
+        return res.status(500).json({
+          error: 'Token decryption failed',
+          message: error.message,
+          details: error.originalError
+        });
+      }
+      
+      // Handle Twitter API errors
       if (error.code === 401 || error.data?.status === 401) {
         return res.status(401).json({
           error: 'Twitter authentication failed',
