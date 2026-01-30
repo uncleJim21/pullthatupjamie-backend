@@ -4,9 +4,16 @@ const SocialPostSchema = new mongoose.Schema({
   // Basic identification - using MongoDB _id
   
   // Ownership (links to existing User model)
+  // Supports both new userId-based and legacy email-based ownership
+  adminUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true,
+    required: false // Optional for backward compatibility
+  },
   adminEmail: {
     type: String,
-    required: true,
+    required: false, // Changed: no longer required (Twitter/Nostr users may not have email)
     index: true // Links to User.email and ProPodcastDetails.adminEmail
   },
   
@@ -103,8 +110,33 @@ const SocialPostSchema = new mongoose.Schema({
 // Compound indexes for efficient querying
 SocialPostSchema.index({ scheduledFor: 1, status: 1 });
 SocialPostSchema.index({ adminEmail: 1, status: 1 });
+SocialPostSchema.index({ adminUserId: 1, status: 1 }); // NEW: For non-email users
 SocialPostSchema.index({ platform: 1, status: 1 });
 SocialPostSchema.index({ status: 1, nextRetryAt: 1 });
+
+/**
+ * Helper to build owner query (supports both userId and email)
+ * @param {Object} identity - { userId, email }
+ * @returns {Object} MongoDB query
+ */
+SocialPostSchema.statics.buildOwnerQuery = function(identity) {
+  const { userId, email } = identity || {};
+  const query = { $or: [] };
+  
+  if (userId) {
+    query.$or.push({ adminUserId: userId });
+  }
+  if (email) {
+    query.$or.push({ adminEmail: email });
+  }
+  
+  // If neither provided, return impossible query
+  if (query.$or.length === 0) {
+    return { _id: null }; // Will match nothing
+  }
+  
+  return query;
+};
 
 // Static method to get all status options
 SocialPostSchema.statics.getStatusOptions = function() {

@@ -1,5 +1,5 @@
 const { TwitterApi } = require('twitter-api-v2');
-const { getTwitterTokens } = require('./ProPodcastUtils');
+const { getAdminTwitterCredentials } = require('./userTwitterTokens');
 const SocialPost = require('../models/SocialPost');
 
 /**
@@ -59,19 +59,25 @@ class SocialPostPublisher {
     }
 
     /**
-     * Publish to Twitter - reuses existing twitterRoutes.js logic
+     * Publish to Twitter - uses identity-based token lookup
      */
     async publishToTwitter(socialPost) {
         try {
-            // Get Twitter tokens using existing utility
-            const tokens = await getTwitterTokens(socialPost.adminEmail);
+            // Build identity from post (supports both userId and email)
+            const identity = {
+                userId: socialPost.adminUserId,
+                email: socialPost.adminEmail
+            };
             
-            if (!tokens?.oauthToken) {
+            // Get Twitter credentials using new identity-based lookup
+            const { accessToken, oauth1Tokens } = await getAdminTwitterCredentials(identity);
+            
+            if (!accessToken) {
                 throw new Error('Twitter not connected for this user. Please connect Twitter account first.');
             }
 
-            // Create Twitter client (reusing existing pattern)
-            const client = new TwitterApi(tokens.oauthToken);
+            // Create Twitter client
+            const client = new TwitterApi(accessToken);
 
             // Test token validity (reusing existing pattern)
             const testUser = await client.v2.me();
@@ -102,7 +108,7 @@ class SocialPostPublisher {
                     console.log('Uploading media to Twitter using OAuth 1.0a...');
                     
                     // Use OAuth 1.0a for media uploads (required by Twitter)
-                    const mediaId = await this.uploadMediaWithOAuth1a(buffer, contentType, tokens);
+                    const mediaId = await this.uploadMediaWithOAuth1a(buffer, contentType, oauth1Tokens);
                     mediaIds.push(mediaId);
                     
                     console.log('Media upload successful, media ID:', mediaId);
@@ -148,26 +154,29 @@ class SocialPostPublisher {
     }
 
     /**
-     * Upload media using OAuth 1.0a (reused from twitterRoutes.js)
+     * Upload media using OAuth 1.0a
+     * @param {Buffer} buffer - Media buffer
+     * @param {string} contentType - MIME type
+     * @param {Object} oauth1Tokens - { oauth1AccessToken, oauth1AccessSecret }
      */
-    async uploadMediaWithOAuth1a(buffer, contentType, tokens) {
+    async uploadMediaWithOAuth1a(buffer, contentType, oauth1Tokens) {
         console.log('Starting OAuth 1.0a media upload...', {
             totalBytes: buffer.length,
             contentType
         });
 
         try {
-            // Check if we have OAuth 1.0a tokens (reusing existing pattern)
-            if (!tokens.oauth1AccessToken || !tokens.oauth1AccessSecret) {
+            // Check if we have OAuth 1.0a tokens
+            if (!oauth1Tokens?.oauth1AccessToken || !oauth1Tokens?.oauth1AccessSecret) {
                 throw new Error('OAuth 1.0a tokens not found. Media uploads require additional Twitter authorization.');
             }
 
-            // Create OAuth 1.0a client (reusing existing pattern)
+            // Create OAuth 1.0a client
             const oauth1Client = new TwitterApi({
                 appKey: process.env.TWITTER_CONSUMER_KEY,
                 appSecret: process.env.TWITTER_CONSUMER_SECRET,
-                accessToken: tokens.oauth1AccessToken,
-                accessSecret: tokens.oauth1AccessSecret,
+                accessToken: oauth1Tokens.oauth1AccessToken,
+                accessSecret: oauth1Tokens.oauth1AccessSecret,
             });
             
             console.log('Uploading media with OAuth 1.0a...');

@@ -14,6 +14,7 @@ router.post('/posts', validatePrivs, async (req, res) => {
     try {
         const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', scheduledPostSlotId } = req.body;
         const createdPosts = await schedulePosts({
+            adminUserId: req.user.adminUserId,  // NEW: For non-email users
             adminEmail: req.user.adminEmail,
             text,
             mediaUrl,
@@ -157,8 +158,11 @@ router.get('/posts', validatePrivs, async (req, res) => {
             sortOrder = 'desc'
         } = req.query;
 
-        // Build query
-        const query = { adminEmail: req.user.adminEmail };
+        // Build query using owner helper (supports both userId and email)
+        const query = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
         
         if (status) {
             const validStatuses = SocialPost.getStatusOptions();
@@ -228,9 +232,14 @@ router.get('/posts/:postId', validatePrivs, async (req, res) => {
     try {
         const { postId } = req.params;
 
+        const ownerQuery = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
+        
         const post = await SocialPost.findOne({
             _id: postId,
-            adminEmail: req.user.adminEmail
+            ...ownerQuery
         });
 
         if (!post) {
@@ -263,10 +272,15 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
         const { postId } = req.params;
         const { text, mediaUrl, scheduledFor, newScheduledDate, timezone } = req.body;
 
-        // Find the post
+        // Find the post using owner helper
+        const ownerQuery = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
+        
         const post = await SocialPost.findOne({
             _id: postId,
-            adminEmail: req.user.adminEmail
+            ...ownerQuery
         });
 
         if (!post) {
@@ -398,9 +412,14 @@ router.delete('/posts/:postId', validatePrivs, async (req, res) => {
     try {
         const { postId } = req.params;
 
+        const ownerQuery = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
+        
         const post = await SocialPost.findOne({
             _id: postId,
-            adminEmail: req.user.adminEmail
+            ...ownerQuery
         });
 
         if (!post) {
@@ -455,9 +474,14 @@ router.post('/posts/:postId/retry', validatePrivs, async (req, res) => {
     try {
         const { postId } = req.params;
 
+        const ownerQuery = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
+        
         const post = await SocialPost.findOne({
             _id: postId,
-            adminEmail: req.user.adminEmail
+            ...ownerQuery
         });
 
         if (!post) {
@@ -511,8 +535,14 @@ router.post('/posts/:postId/retry', validatePrivs, async (req, res) => {
  */
 router.get('/stats', validatePrivs, async (req, res) => {
     try {
+        // Build owner match for aggregation
+        const ownerQuery = SocialPost.buildOwnerQuery({
+            userId: req.user.adminUserId,
+            email: req.user.adminEmail
+        });
+        
         const pipeline = [
-            { $match: { adminEmail: req.user.adminEmail } },
+            { $match: ownerQuery },
             {
                 $group: {
                     _id: { status: '$status', platform: '$platform' },

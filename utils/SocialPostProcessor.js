@@ -94,8 +94,12 @@ class SocialPostProcessor {
             let result;
             
             if (post.platform === 'twitter') {
-                // Use TwitterService
-                result = await this.twitterService.postTweet(post.adminEmail, {
+                // Use TwitterService with identity object (supports non-email users)
+                const identity = {
+                    userId: post.adminUserId,
+                    email: post.adminEmail
+                };
+                result = await this.twitterService.postTweet(identity, {
                     text: post.content.text,
                     mediaUrl: post.content.mediaUrl
                 });
