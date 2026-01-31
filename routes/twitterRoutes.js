@@ -1088,14 +1088,14 @@ router.get('/oauth1-callback', async (req, res) => {
         } else if (oauthData.adminEmail) {
             console.warn('⚠️ User not found, falling back to ProPodcastDetails');
             // Fallback: store in ProPodcastDetails for backwards compatibility
-            const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
-            await updateTwitterTokens(oauthData.adminEmail, {
+        const existingTokens = await getTwitterTokens(oauthData.adminEmail) || {};
+        await updateTwitterTokens(oauthData.adminEmail, {
                 ...existingTokens,
                 oauth1AccessToken: accessToken,
-                oauth1AccessSecret: accessSecret,
-                oauth1TwitterId: user.id_str,
-                oauth1TwitterUsername: user.screen_name
-            });
+            oauth1AccessSecret: accessSecret,
+            oauth1TwitterId: user.id_str,
+            oauth1TwitterUsername: user.screen_name
+        });
         }
 
         // Clean up temporary store

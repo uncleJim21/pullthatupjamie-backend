@@ -553,9 +553,42 @@ app.post('/api/validate-privs', async (req, res) => {
 
   try {
       const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      console.log(`Authenticated email: ${decoded.email}`);
-      const proPod = await getProPodcastByAdminEmail(decoded.email);
-      console.log(`found proPod:${JSON.stringify(proPod,null,2)}`)
+      
+      // Resolve user identity (supports both email and provider-based JWTs)
+      let adminUserId = null;
+      let adminEmail = decoded.email || null;
+      
+      // New JWT format: { sub, provider }
+      if (decoded.sub && decoded.provider) {
+        const user = await User.findOne({
+          'authProvider.provider': decoded.provider,
+          'authProvider.providerId': decoded.sub
+        }).select('_id email');
+        
+        if (user) {
+          adminUserId = user._id;
+          adminEmail = adminEmail || user.email;
+        }
+      }
+      // Legacy JWT format: { email }
+      else if (decoded.email) {
+        const user = await User.findOne({ email: decoded.email }).select('_id');
+        if (user) {
+          adminUserId = user._id;
+        }
+      }
+      
+      console.log(`[validate-privs] Identity: userId=${adminUserId}, email=${adminEmail}`);
+      
+      // Use identity-based lookup (requires non-null identifiers)
+      const { getProPodcastByAdmin } = require('./utils/ProPodcastUtils');
+      const proPod = await getProPodcastByAdmin({ 
+        userId: adminUserId, 
+        email: adminEmail  // Only used if non-null (checked inside function)
+      });
+      
+      console.log(`[validate-privs] Found proPod: ${proPod ? proPod.feedId : 'none'}`);
+      
       let privs = {}
       if (proPod && proPod.feedId) {
         privs = {
@@ -564,7 +597,7 @@ app.post('/api/validate-privs', async (req, res) => {
           access: "admin"
         }
       }
-      return res.json({ privs});
+      return res.json({ privs });
   } catch (error) {
       console.error('JWT validation error:', error.message);
       return res.status(401).json({ error: 'Invalid or expired token' });

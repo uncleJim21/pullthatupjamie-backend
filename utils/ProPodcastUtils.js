@@ -105,6 +105,13 @@ async function getProPodcastByFeedId(feedId) {
 }
 
 async function getProPodcastByAdminEmail(adminEmail) {
+  // IMPORTANT: Return null if email is null/undefined/empty
+  // Otherwise MongoDB query { adminEmail: null } would match all docs with null email!
+  if (!adminEmail) {
+    console.warn('[ProPodcastUtils] getProPodcastByAdminEmail called with null/empty email - returning null');
+    return null;
+  }
+  
   try {
     const podcast = await ProPodcastDetails.findOne({ adminEmail }).lean();
     return podcast || null;

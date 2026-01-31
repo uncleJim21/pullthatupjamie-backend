@@ -7,7 +7,8 @@
 
 const jwt = require('jsonwebtoken');
 const { User } = require('../models/shared/UserSchema');
-const { ProPodcastDetails } = require('../models/ProPodcastDetails');
+// NOTE: ProPodcastDetails is NOT used for tier/quota determination
+// Subscription type (User.subscriptionType) is the sole source of truth for quotas
 
 /**
  * Tier definitions with quota multipliers
@@ -135,41 +136,28 @@ async function resolveIdentity(req) {
 }
 
 /**
- * Determine user tier based on subscription and admin status
+ * Determine user tier based on subscription status
+ * 
+ * NOTE: Being in ProPodcastDetails does NOT grant admin tier for quotas.
+ * The subscription type is the source of truth for quota limits.
+ * ProPodcastDetails association only determines access to podcast admin features.
  * 
  * @param {User} user
  * @returns {Promise<string>}
  */
 async function determineTier(user) {
-  // Check for podcast admin status (supports both userId and email)
-  const adminQuery = { $or: [] };
-  
-  if (user._id) {
-    adminQuery.$or.push({ adminUserId: user._id });
-  }
-  if (user.email) {
-    adminQuery.$or.push({ adminEmail: user.email });
-  }
-  
-  if (adminQuery.$or.length > 0) {
-    const isAdmin = await ProPodcastDetails.exists(adminQuery);
-    if (isAdmin) {
-      return TIERS.admin;
-    }
-  }
-  
-  // Check subscription type
+  // Check subscription type - this is the source of truth for quota limits
   if (user.subscriptionType === 'jamie-pro') {
-    // jamie-pro is the $50 podcast admin tier
+    // jamie-pro is the $50 podcast admin tier → unlimited quotas
     return TIERS.admin;
   }
   
   if (user.subscriptionType === 'amber') {
-    // amber is the $9.99 subscriber tier
+    // amber is the $9.99 subscriber tier → elevated quotas
     return TIERS.subscriber;
   }
   
-  // Has account but no subscription
+  // Has account but no subscription → registered tier quotas
   return TIERS.registered;
 }
 
