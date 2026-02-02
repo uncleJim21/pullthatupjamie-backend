@@ -30,7 +30,8 @@ const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
 const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
-const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
+const {getProPodcastByAdminEmail, getProPodcastByAdmin} = require('./utils/ProPodcastUtils.js')
+const { verifyPodcastAdminAuto } = require('./utils/podcastAdminAuth');
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const podcastPreferencesRoutes = require('./routes/podcastPreferencesRoutes');
 const appPreferencesRoutes = require('./routes/appPreferencesRoutes');
@@ -352,47 +353,13 @@ const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
 // Legacy auth checked: BOLT11 payments, Square subscriptions, IP-based free tier
 // New system uses MongoDB entitlements with JWT authentication
 
-// Middleware to verify podcast admin privileges
-const verifyPodcastAdminMiddleware = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+// REMOVED: inline verifyPodcastAdminMiddleware - consolidated into utils/podcastAdminAuth.js
+// Now using verifyPodcastAdminAuto which supports both email and userId-based lookups
 
-    // Extract token
-    const token = authHeader.substring(7);
-    
-    // Verify JWT token
-    const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-    
-    // Fetch podcast details for this admin
-    const proPod = await getProPodcastByAdminEmail(decoded.email);
-    
-    if (!proPod || !proPod.feedId) {
-      return res.status(403).json({ 
-        error: 'Unauthorized. You are not registered as a podcast admin.' 
-      });
-    }
-    
-    // Store feedId and admin email in request object for later use
-    req.podcastAdmin = {
-      email: decoded.email,
-      feedId: proPod.feedId
-    };
-    
-    next();
-  } catch (error) {
-    console.error('Podcast admin verification error:', error.message);
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-};
-
-// Mount video-edit and upload-related routes (uses clipUtils, clipSpacesManager, and verifyPodcastAdminMiddleware)
+// Mount video-edit and upload-related routes (uses clipUtils, clipSpacesManager, and verifyPodcastAdminAuto)
 const videoEditRoutes = createVideoEditRoutes({
   clipUtils,
-  verifyPodcastAdminMiddleware,
+  verifyPodcastAdminMiddleware: verifyPodcastAdminAuto, // Use consolidated middleware
   clipSpacesManager
 });
 app.use(videoEditRoutes);
@@ -1563,212 +1530,7 @@ app.post('/api/feedback', async (req, res) => {
 });
 
 // (generate-presigned-url route is now defined in routes/videoEditRoutes.js)
-
-app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
-  try {
-    // Check if clipSpacesManager is initialized
-    if (!clipSpacesManager) {
-      return res.status(503).json({ error: "Clip storage service not available" });
-    }
-    
-    // Get the clip bucket name from environment variable - same as used in ClipUtils
-    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
-    if (!bucketName) {
-      return res.status(503).json({ error: "Clip bucket not configured" });
-    }
-    
-    // Use feedId from verified podcast admin
-    const { feedId } = req.podcastAdmin;
-    
-    // Define the prefix for this podcast admin's uploads
-    const prefix = `jamie-pro/${feedId}/uploads/`;
-    
-    // Parse pagination parameters
-    const pageSize = 50; // Fixed page size of 50 items
-    const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
-    const includeChildren = req.query.includeChildren === 'true'; // Default to false for performance
-    
-    if (page < 1) {
-      return res.status(400).json({ error: "Page number must be 1 or greater" });
-    }
-    
-    // Create a new S3 client for this operation
-    const client = clipSpacesManager.createClient();
-    
-    // Fetch ALL objects from S3 (we'll paginate after sorting)
-    let continuationToken = null;
-    let allContents = [];
-    let hasMoreItems = true;
-    let totalCount = 0;
-    let directoryCount = 0; // Track total number of directories
-    
-    // Fetch all objects from S3 to enable proper sorting
-    let batchCount = 0;
-    while (hasMoreItems) {
-      batchCount++;
-      const listParams = {
-        Bucket: bucketName,
-        Prefix: prefix,
-        MaxKeys: 1000 // Fetch in larger batches for efficiency
-      };
-      
-      // Add the continuation token if we have one from a previous request
-      if (continuationToken) {
-        listParams.ContinuationToken = continuationToken;
-      }
-      
-      console.log(`S3 Batch ${batchCount}: Fetching with prefix: ${prefix}`);
-      
-      // Execute the command
-      const command = new ListObjectsV2Command(listParams);
-      const response = await client.send(command);
-      
-      console.log(`S3 Batch ${batchCount}: Got ${response.Contents?.length || 0} items, IsTruncated: ${response.IsTruncated}`);
-      
-      // Count directories in this response
-      const directoriesInThisPage = (response.Contents || []).filter(item => item.Key.endsWith('/')).length;
-      directoryCount += directoriesInThisPage;
-      
-      // Update total count (including directories for now)
-      totalCount += response.Contents?.length || 0;
-      
-      // Add all contents to our collection
-      allContents = allContents.concat(response.Contents || []);
-      
-      // Check if there are more items to fetch
-      hasMoreItems = response.IsTruncated;
-      
-      // Update the continuation token for the next request
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-    }
-    
-    console.log(`S3 Fetch Complete: ${batchCount} batches, ${allContents.length} total items, ${directoryCount} directories`);
-    
-    // Process the results to make them more user-friendly
-    const uploads = allContents
-      .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
-      .filter(item => !item.Key.includes('-children/')) // Filter out child edit files from main list
-      .map(item => {
-        // Extract just the filename from the full path
-        const fileName = item.Key.replace(prefix, '');
-        
-        return {
-          key: item.Key,
-          fileName: fileName,
-          size: item.Size,
-          lastModified: item.LastModified,
-          publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
-        };
-      })
-      // Sort by lastModified DESC (most recent first), with deterministic secondary sort by key
-      .sort((a, b) => {
-        // Convert to Date objects for proper comparison
-        const dateA = new Date(a.lastModified);
-        const dateB = new Date(b.lastModified);
-        const timeDiff = dateB.getTime() - dateA.getTime();
-        
-        if (timeDiff !== 0) return timeDiff;
-        return a.key.localeCompare(b.key); // Secondary sort for consistency
-      });
-    
-    console.log(`Total files found: ${uploads.length}`);
-    console.log(`First 3 files (most recent):`, uploads.slice(0, 3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
-    console.log(`Last 3 files (oldest):`, uploads.slice(-3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
-
-    // Apply server-side pagination to sorted results
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedUploads = uploads.slice(startIndex, endIndex);
-    
-    // Calculate pagination metadata
-    const totalFileCount = uploads.length; // Total files after filtering
-    const hasNextPage = endIndex < totalFileCount;
-    const hasPreviousPage = page > 1;
-    
-    console.log(`Pagination debug - Page: ${page}, Total files: ${totalFileCount}, Start: ${startIndex}, End: ${endIndex}, Paginated count: ${paginatedUploads.length}`);
-
-    // Add child relationship data if requested
-    if (includeChildren) {
-      console.log(`Adding child relationship data for ${paginatedUploads.length} uploads`);
-      
-      try {
-        // Get all file bases for batch query (only for paginated results)
-        const fileBases = paginatedUploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
-        
-        // Single database query to get all child edits at once
-        const allChildEdits = await WorkProductV2.find({
-          type: 'video-edit',
-          'result.parentFileBase': { $in: fileBases }
-        }).sort({ createdAt: -1 });
-        
-        console.log(`Found ${allChildEdits.length} total child edits`);
-        
-        // Group child edits by parent file base
-        const childEditsByParent = {};
-        allChildEdits.forEach(edit => {
-          const parentBase = edit.result.parentFileBase;
-          if (!childEditsByParent[parentBase]) {
-            childEditsByParent[parentBase] = [];
-          }
-          childEditsByParent[parentBase].push(edit);
-        });
-        
-        // Add children to each upload
-        paginatedUploads.forEach(upload => {
-          const fileBase = upload.fileName.replace(/\.[^/.]+$/, "");
-          const childEdits = childEditsByParent[fileBase] || [];
-          
-          upload.children = childEdits.map(edit => ({
-            lookupHash: edit.lookupHash,
-            status: edit.status,
-            url: edit.cdnFileId,
-            editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
-            duration: edit.result.editDuration,
-            createdAt: edit.createdAt
-          }));
-
-          upload.childCount = upload.children.length;
-          upload.hasChildren = upload.children.length > 0;
-        });
-        
-      } catch (error) {
-        console.error(`Failed to get children data: ${error.message}`);
-        // Set empty children for all uploads on error
-        paginatedUploads.forEach(upload => {
-          upload.children = [];
-          upload.childCount = 0;
-          upload.hasChildren = false;
-        });
-      }
-    }
-    
-    // Return the list of uploads with pagination metadata
-    res.json({
-      uploads: paginatedUploads,
-      pagination: {
-        page,
-        pageSize,
-        hasNextPage,
-        hasPreviousPage,
-        totalCount: totalFileCount
-      },
-      feedId,
-      includeChildren,
-      childrenSummary: includeChildren ? {
-        totalParents: paginatedUploads.length,
-        parentsWithChildren: paginatedUploads.filter(u => u.hasChildren).length,
-        totalChildren: paginatedUploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
-      } : null
-    });
-    
-  } catch (error) {
-    console.error("Error listing uploads:", error);
-    res.status(500).json({ 
-      error: "Failed to list uploads", 
-      details: error.message 
-    });
-  }
-});
+// (list-uploads route is now defined in routes/videoEditRoutes.js - duplicate removed)
 
 // Health check endpoint
 app.get('/health', (req, res) => {

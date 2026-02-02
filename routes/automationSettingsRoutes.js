@@ -1,62 +1,55 @@
 const express = require('express');
 const router = express.Router();
 const { User } = require('../models/shared/UserSchema');
-const jwt = require('jsonwebtoken');
-const {getProPodcastByAdminEmail} = require('../utils/ProPodcastUtils.js');
+const { verifyPodcastAdminAuto } = require('../utils/podcastAdminAuth');
 
 // Current schema version for app preferences
 const CURRENT_SCHEMA_VERSION = 20250812001;
 
-// Podcast admin middleware (copied from server.js for this route file)
-const verifyPodcastAdminMiddleware = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+// REMOVED: Inline verifyPodcastAdminMiddleware - now using consolidated version from utils/podcastAdminAuth.js
 
-    // Extract token
-    const token = authHeader.substring(7);
-    
-    // Verify JWT token
-    const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-    
-    // Fetch podcast details for this admin
-    const proPod = await getProPodcastByAdminEmail(decoded.email);
-    
-    if (!proPod || !proPod.feedId) {
-      return res.status(403).json({ 
-        error: 'Unauthorized. You are not registered as a podcast admin.' 
-      });
-    }
-    
-    // Store feedId and admin email in request object for later use
-    req.podcastAdmin = {
-      email: decoded.email,
-      feedId: proPod.feedId
-    };
-    
-    next();
-  } catch (error) {
-    console.error('Podcast admin verification error:', error.message);
-    return res.status(401).json({ error: 'Invalid or expired token' });
+/**
+ * Helper to find user by identity (supports both userId and email)
+ */
+async function findUserByIdentity(identity) {
+  const { userId, email } = identity;
+  
+  if (userId) {
+    return User.findById(userId).select('+app_preferences');
   }
-};
+  if (email) {
+    return User.findOne({ email }).select('+app_preferences');
+  }
+  return null;
+}
+
+/**
+ * Helper to build update filter for user (supports both userId and email)
+ */
+function buildUserUpdateFilter(identity) {
+  const { userId, email } = identity;
+  
+  if (userId) {
+    return { _id: userId };
+  }
+  if (email) {
+    return { email };
+  }
+  return null;
+}
 
 /**
  * GET /api/automation-settings
  * Retrieve automation settings for a podcast admin
- * The feedId is automatically determined from the admin's email token
+ * The feedId is automatically determined from the admin's token
  */
-//force deploy
-router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
+router.get('/', verifyPodcastAdminAuto, async (req, res) => {
   try {
-    const { email, feedId: adminFeedId } = req.podcastAdmin;
+    const { userId, email, feedId: adminFeedId } = req.podcastAdmin;
 
-    // Find user by email from token
-    const user = await User.findOne({ email }).select('+app_preferences');
-    console.log('Found user for automation settings:', user?.email);
+    // Find user by identity (supports both userId and email)
+    const user = await findUserByIdentity({ userId, email });
+    console.log('Found user for automation settings:', user?.email || userId);
 
     // Get preferences data or use defaults
     const preferencesData = user?.app_preferences?.data || {};
@@ -125,9 +118,9 @@ router.get('/', verifyPodcastAdminMiddleware, async (req, res) => {
  * POST /api/automation-settings
  * Save/Update automation settings for a podcast admin
  */
-router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
+router.post('/', verifyPodcastAdminAuto, async (req, res) => {
   try {
-    const { email, feedId: adminFeedId } = req.podcastAdmin;
+    const { userId, email, feedId: adminFeedId } = req.podcastAdmin;
     const { curationSettings, postingStyle, postingSchedule, automationSettings, automationEnabled } = req.body;
 
     // Validate request structure
@@ -142,7 +135,7 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
     // No need to validate feedId - it's automatically set from the admin's token
 
     // Load existing preferences
-    const existingUser = await User.findOne({ email }).select('+app_preferences');
+    const existingUser = await findUserByIdentity({ userId, email });
     const existingData = existingUser?.app_preferences?.data || {};
 
     // Prepare updates object
@@ -248,8 +241,16 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
       updates.jamieFullAutoEnabled = automationEnabled;
     }
 
-    // Persist updates with strong write concern
-    const updateFilter = { email };
+    // Build update filter (supports both userId and email)
+    const updateFilter = buildUserUpdateFilter({ userId, email });
+    if (!updateFilter) {
+      return res.status(400).json({
+        success: false,
+        error: 'Could not identify user for update',
+        code: 400
+      });
+    }
+
     const updateOperation = {
       $set: {
         'app_preferences.data': updates,
@@ -264,12 +265,12 @@ router.post('/', verifyPodcastAdminMiddleware, async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Read back the updated data
-    const updatedUser = await User.findOne({ email })
+    const updatedUser = await User.findOne(updateFilter)
       .read('primary')
       .select('+app_preferences')
       .lean();
 
-    console.log('Updated automation settings for:', updatedUser?.email);
+    console.log('Updated automation settings for:', updatedUser?.email || userId);
 
     const responseData = updatedUser?.app_preferences?.data || {};
     
