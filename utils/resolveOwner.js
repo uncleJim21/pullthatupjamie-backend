@@ -49,8 +49,8 @@ async function resolveOwner(req) {
         }).select('_id');
       }
       
-      if (user) {
-        userId = user._id;
+        if (user) {
+          userId = user._id;
       }
     } catch (err) {
       console.warn('[resolveOwner] Failed to verify JWT, treating as anonymous:', err.message);

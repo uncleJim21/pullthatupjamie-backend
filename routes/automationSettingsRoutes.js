@@ -21,8 +21,8 @@ async function findUserByIdentity(identity) {
     return User.findOne({ email }).select('+app_preferences');
   }
   return null;
-}
-
+    }
+    
 /**
  * Helper to build update filter for user (supports both userId and email)
  */
@@ -36,7 +36,7 @@ function buildUserUpdateFilter(identity) {
     return { email };
   }
   return null;
-}
+  }
 
 /**
  * GET /api/automation-settings

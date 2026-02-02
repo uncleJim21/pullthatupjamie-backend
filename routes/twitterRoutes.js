@@ -1577,48 +1577,74 @@ router.post('/revoke', validatePrivs, async (req, res) => {
             });
         }
 
-        const adminEmail = req.user.adminEmail;
+        // Support both userId and email-based lookups
+        const { adminUserId, adminEmail } = req.user;
+        const { User } = require('../models/shared/UserSchema');
         
-        // Get current tokens before deletion (for logging purposes)
-        const existingTokens = await getTwitterTokens(adminEmail);
-        const hadTokens = existingTokens && (existingTokens.oauthToken || existingTokens.oauth1AccessToken);
+        // Find user by identity
+        let dbUser = null;
+        if (adminUserId) {
+            dbUser = await User.findById(adminUserId);
+        } else if (adminEmail) {
+            dbUser = await User.findOne({ email: adminEmail });
+        }
         
-        console.log('Revoking Twitter tokens for:', adminEmail, {
-            hadOAuth2: !!(existingTokens?.oauthToken),
+        // Check if user had tokens
+        const existingTokens = dbUser?.twitterTokens;
+        const hadTokens = existingTokens && (existingTokens.accessToken || existingTokens.oauth1AccessToken);
+        
+        const identifier = adminEmail || adminUserId || 'unknown';
+        console.log('Revoking Twitter tokens for:', identifier, {
+            hadOAuth2: !!(existingTokens?.accessToken),
             hadOAuth1: !!(existingTokens?.oauth1AccessToken),
             username: existingTokens?.twitterUsername
         });
 
-        // Clear all Twitter tokens from database
-        await updateTwitterTokens(adminEmail, {
-            oauthToken: null,
-            oauthTokenSecret: null,
-            twitterId: null,
-            twitterUsername: null,
-            oauth1AccessToken: null,
-            oauth1AccessSecret: null,
-            oauth1TwitterId: null,
-            oauth1TwitterUsername: null,
-            expiresAt: null
-        });
+        // Clear all Twitter tokens from User.twitterTokens
+        if (dbUser) {
+            dbUser.twitterTokens = null;
+            await dbUser.save();
+        }
+        
+        // Also clear from ProPodcastDetails if legacy tokens exist there
+        if (adminEmail) {
+            try {
+                await updateTwitterTokens(adminEmail, {
+                    oauthToken: null,
+                    oauthTokenSecret: null,
+                    twitterId: null,
+                    twitterUsername: null,
+                    oauth1AccessToken: null,
+                    oauth1AccessSecret: null,
+                    oauth1TwitterId: null,
+                    oauth1TwitterUsername: null,
+                    expiresAt: null
+                });
+            } catch (e) {
+                // Ignore errors - ProPodcast may not exist
+                console.log('Note: Could not clear legacy ProPodcast tokens (may not exist)');
+            }
+        }
 
         // Clear any Twitter-related session data
-        if (req.session.twitterTokens) {
+        if (req.session?.twitterTokens) {
             delete req.session.twitterTokens;
         }
-        if (req.session.twitterOAuth) {
+        if (req.session?.twitterOAuth) {
             delete req.session.twitterOAuth;
         }
 
         // Save session after clearing Twitter data
-        req.session.save((err) => {
-            if (err) {
-                console.error('Session save error during revoke:', err);
-                // Continue anyway since database tokens are cleared
-            }
-        });
+        if (req.session) {
+            req.session.save((err) => {
+                if (err) {
+                    console.error('Session save error during revoke:', err);
+                    // Continue anyway since database tokens are cleared
+                }
+            });
+        }
 
-        console.log('Twitter tokens successfully revoked for:', adminEmail);
+        console.log('Twitter tokens successfully revoked for:', identifier);
 
         res.json({
             success: true,
