@@ -239,9 +239,9 @@ router.post('/submitOnDemandRun', createEntitlementMiddleware(ENTITLEMENT_TYPES.
                 message: 'On-demand run submitted successfully',
                 authType: req.authType,
                 entitlementInfo: {
-                    remainingRuns: entitlementResult.remainingUsage,
-                    usedThisPeriod: entitlementResult.usedCount,
-                    totalLimit: entitlementResult.maxUsage
+                    remainingRuns: entitlement.remainingUsage,
+                    usedThisPeriod: entitlement.usedCount,
+                    totalLimit: entitlement.maxUsage
                 },
                 awsResponse: awsResponse.data
             });
