@@ -182,6 +182,145 @@ class TwitterService {
             throw structuredError;
         }
     }
+
+    /**
+     * Execute operation with automatic token refresh on 401 errors
+     * @param {Object|string} identity - Identity object { userId, email } or legacy email string
+     * @param {Function} operation - Async function to execute, receives new access token on retry
+     */
+    async executeWithTokenRefresh(identity, operation) {
+        // Normalize identity - support both object and legacy email string
+        const normalizedIdentity = typeof identity === 'string' 
+            ? { userId: null, email: identity }
+            : identity;
+        const { userId, email } = normalizedIdentity;
+        const identifier = email || userId || 'unknown';
+        
+        try {
+            // First attempt with current token
+            return await operation();
+        } catch (error) {
+            // Check if it's an authentication/authorization error
+            const isAuthError = error.code === 401 || 
+                               error.status === 401 ||
+                               error.message?.includes('401') ||
+                               error.message?.includes('Unauthorized') ||
+                               error.message?.includes('Invalid or expired');
+
+            if (isAuthError) {
+                console.log('Authentication error detected, attempting token refresh for:', identifier);
+                
+                try {
+                    // Get current tokens using identity-based lookup
+                    const { decryptToken } = require('./userTwitterTokens');
+                    const creds = await getAdminTwitterCredentials(normalizedIdentity);
+                    
+                    if (!creds?.refreshToken) {
+                        console.log('No refresh token available for token refresh');
+                        throw new Error('REFRESH_TOKEN_UNAVAILABLE');
+                    }
+
+                    // Decrypt the refresh token
+                    const decryptedRefreshToken = decryptToken(creds.refreshToken);
+
+                    // Attempt token refresh
+                    const newAccessToken = await this.refreshToken(normalizedIdentity, decryptedRefreshToken);
+                    
+                    // Retry the operation with refreshed token
+                    console.log('Token refreshed successfully, retrying operation...');
+                    return await operation(newAccessToken);
+                    
+                } catch (refreshError) {
+                    console.error('Token refresh failed:', refreshError.message);
+                    
+                    // Throw a specific error that indicates re-authentication is needed
+                    const authError = new Error('Twitter authentication has expired and could not be refreshed. Please re-authenticate.');
+                    authError.code = 'TWITTER_AUTH_EXPIRED';
+                    authError.requiresReauth = true;
+                    throw authError;
+                }
+            }
+            
+            // Not an auth error, just re-throw
+            throw error;
+        }
+    }
+
+    /**
+     * Refresh Twitter OAuth 2.0 token using stored refresh token
+     * @param {Object} identity - Identity object { userId, email }
+     * @param {string} currentRefreshToken - The current refresh token (decrypted)
+     */
+    async refreshToken(identity, currentRefreshToken) {
+        const { userId, email } = identity;
+        const identifier = email || userId || 'unknown';
+        
+        try {
+            console.log('🔄 REFRESH ATTEMPT:', {
+                userId,
+                email,
+                currentRefreshTokenLength: currentRefreshToken?.length,
+                timestamp: new Date().toISOString()
+            });
+            
+            const client = new TwitterApi({
+                clientId: this.clientId,
+                clientSecret: this.clientSecret,
+            });
+
+            // Use the refresh token to get a new access token
+            const { accessToken, refreshToken, expiresIn } = await client.refreshOAuth2Token(currentRefreshToken);
+            
+            console.log('✅ REFRESH SUCCESS:', {
+                identifier,
+                newAccessTokenLength: accessToken?.length,
+                newRefreshTokenLength: refreshToken?.length,
+                expiresIn
+            });
+            
+            // Update tokens in User.twitterTokens (the new canonical location)
+            const { User } = require('../models/shared/UserSchema');
+            const { encryptToken } = require('./userTwitterTokens');
+            
+            let dbUser = null;
+            if (userId) {
+                dbUser = await User.findById(userId);
+            } else if (email) {
+                dbUser = await User.findOne({ email });
+            }
+            
+            if (dbUser) {
+                // Preserve existing OAuth 1.0a tokens and metadata
+                const existingTokens = dbUser.twitterTokens || {};
+                dbUser.twitterTokens = {
+                    ...existingTokens,
+                    accessToken: encryptToken(accessToken),
+                    refreshToken: encryptToken(refreshToken || currentRefreshToken),
+                    expiresAt: new Date(Date.now() + (expiresIn * 1000))
+                };
+                await dbUser.save();
+                
+                console.log('💾 DATABASE UPDATE VERIFIED:', {
+                    identifier,
+                    updatedSuccessfully: true,
+                    timestamp: new Date().toISOString()
+                });
+            } else {
+                console.warn('⚠️ Could not find user to update tokens:', identifier);
+            }
+
+            console.log('Database updated with refreshed tokens');
+            return accessToken;
+            
+        } catch (error) {
+            console.error('Token refresh failed:', {
+                message: error.message,
+                code: error.code,
+                data: error.data
+            });
+            throw error;
+        }
+    }
 }
 
 module.exports = TwitterService;

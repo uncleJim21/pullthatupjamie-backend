@@ -17,11 +17,19 @@ const oauthStateStore = new Map();
 
 /**
  * Refresh Twitter OAuth 2.0 token using stored refresh token
+ * @param {Object} identity - Identity object { userId, email }
+ * @param {string} currentRefreshToken - The current refresh token
  */
-async function refreshTwitterToken(adminEmail, currentRefreshToken) {
+async function refreshTwitterToken(identity, currentRefreshToken) {
+    const { userId, email } = typeof identity === 'string' 
+        ? { userId: null, email: identity }  // Legacy: accept email string for backwards compat
+        : identity;
+    const identifier = email || userId || 'unknown';
+    
     try {
         console.log('🔄 REFRESH ATTEMPT:', {
-            adminEmail,
+            userId,
+            email,
             currentRefreshTokenLength: currentRefreshToken?.length,
             timestamp: new Date().toISOString()
         });
@@ -35,30 +43,42 @@ async function refreshTwitterToken(adminEmail, currentRefreshToken) {
         const { accessToken, refreshToken, expiresIn } = await client.refreshOAuth2Token(currentRefreshToken);
         
         console.log('✅ REFRESH SUCCESS:', {
-            adminEmail,
+            identifier,
             newAccessTokenLength: accessToken?.length,
             newRefreshTokenLength: refreshToken?.length,
             expiresIn
         });
         
-        // Get existing tokens to preserve OAuth 1.0a tokens
-        const existingTokens = await getTwitterTokens(adminEmail);
+        // Update tokens in User.twitterTokens (the new canonical location)
+        const { User } = require('../models/shared/UserSchema');
+        const { encryptToken } = require('../utils/userTwitterTokens');
         
-        // Update database with new OAuth 2.0 tokens while preserving OAuth 1.0a tokens
-        await updateTwitterTokens(adminEmail, {
-            ...existingTokens, // Keep existing OAuth 1.0a tokens
-            oauthToken: accessToken,
-            oauthTokenSecret: refreshToken || currentRefreshToken, // Use new refresh token if provided
-            expiresAt: Date.now() + (expiresIn * 1000) // Calculate new expiration
-        });
-
-        // Ensure database update is complete by reading it back
-        const updatedTokens = await getTwitterTokens(adminEmail);
-        console.log('💾 DATABASE UPDATE VERIFIED:', {
-            adminEmail,
-            updatedAccessTokenMatches: updatedTokens?.oauthToken === accessToken,
-            timestamp: new Date().toISOString()
-        });
+        let dbUser = null;
+        if (userId) {
+            dbUser = await User.findById(userId);
+        } else if (email) {
+            dbUser = await User.findOne({ email });
+        }
+        
+        if (dbUser) {
+            // Preserve existing OAuth 1.0a tokens and metadata
+            const existingTokens = dbUser.twitterTokens || {};
+            dbUser.twitterTokens = {
+                ...existingTokens,
+                accessToken: encryptToken(accessToken),
+                refreshToken: encryptToken(refreshToken || currentRefreshToken),
+                expiresAt: new Date(Date.now() + (expiresIn * 1000))
+            };
+            await dbUser.save();
+            
+            console.log('💾 DATABASE UPDATE VERIFIED:', {
+                identifier,
+                updatedSuccessfully: true,
+                timestamp: new Date().toISOString()
+            });
+        } else {
+            console.warn('⚠️ Could not find user to update tokens:', identifier);
+        }
 
         console.log('Database updated with refreshed tokens');
         return accessToken;
@@ -75,8 +95,17 @@ async function refreshTwitterToken(adminEmail, currentRefreshToken) {
 
 /**
  * Execute operation with automatic token refresh on 401 errors
+ * @param {Object|string} identity - Identity object { userId, email } or legacy email string
+ * @param {Function} operation - Async function to execute, receives new access token on retry
  */
-async function executeWithTokenRefresh(adminEmail, operation) {
+async function executeWithTokenRefresh(identity, operation) {
+    // Normalize identity - support both object and legacy email string
+    const normalizedIdentity = typeof identity === 'string' 
+        ? { userId: null, email: identity }
+        : identity;
+    const { userId, email } = normalizedIdentity;
+    const identifier = email || userId || 'unknown';
+    
     try {
         // First attempt with current token
         return await operation();
@@ -89,18 +118,23 @@ async function executeWithTokenRefresh(adminEmail, operation) {
                            error.message?.includes('Invalid or expired');
 
         if (isAuthError) {
-            console.log('Authentication error detected, attempting token refresh...');
+            console.log('Authentication error detected, attempting token refresh for:', identifier);
             
             try {
-                // Get current tokens
-                const tokens = await getTwitterTokens(adminEmail);
-                if (!tokens?.oauthTokenSecret) {
+                // Get current tokens using identity-based lookup
+                const { getAdminTwitterCredentials, decryptToken } = require('../utils/userTwitterTokens');
+                const creds = await getAdminTwitterCredentials(normalizedIdentity);
+                
+                if (!creds?.refreshToken) {
                     console.log('No refresh token available for token refresh');
                     throw new Error('REFRESH_TOKEN_UNAVAILABLE');
                 }
 
-                // Attempt token refresh
-                const newAccessToken = await refreshTwitterToken(adminEmail, tokens.oauthTokenSecret);
+                // Decrypt the refresh token
+                const decryptedRefreshToken = decryptToken(creds.refreshToken);
+
+                // Attempt token refresh with identity object
+                const newAccessToken = await refreshTwitterToken(normalizedIdentity, decryptedRefreshToken);
                 
                 // Retry the operation with refreshed token
                 console.log('Token refreshed successfully, retrying operation...');
