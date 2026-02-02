@@ -3,14 +3,18 @@ const { User } = require('../models/shared/UserSchema');
 
 /**
  * Resolve the logical owner of a research request.
- * - Prefer authenticated User (via JWT Bearer token)
- * - Fallback to anonymous clientId (from query, header, or body)
+ * 
+ * Returns BOTH userId and clientId when available to support:
+ * - Querying by both (user sees anonymous sessions after signup)
+ * - Lazy migration of clientId sessions to userId
  *
  * Supports new JWT format with provider/sub for non-email auth (e.g., Nostr):
  *   { sub: "npub1...", provider: "nostr", email: null }
  *
  * Returns:
- *   { userId, clientId, ownerType } or null if no owner can be resolved
+ *   { userId, clientId, ownerType, buildQuery, isAuthenticated } or null if no owner
+ * 
+ * ownerType: 'user' (has JWT) | 'client' (anonymous with clientId)
  */
 async function resolveOwner(req) {
   let userId = null;
@@ -53,22 +57,88 @@ async function resolveOwner(req) {
     }
   }
 
-  // Accept clientId for anonymous usage
+  // Accept clientId for anonymous usage (always extract, even with JWT)
   const clientId =
     (req.query && req.query.clientId) ||
     req.headers['x-client-id'] ||
     (req.body && req.body.clientId) ||
     null;
 
-  if (userId) {
-    return { userId, clientId: null, ownerType: 'user' };
-  }
-  if (clientId) {
-    return { userId: null, clientId, ownerType: 'client' };
+  // Must have at least one identifier
+  if (!userId && !clientId) {
+    return null;
   }
 
-  return null;
+  const isAuthenticated = !!userId;
+  const ownerType = isAuthenticated ? 'user' : 'client';
+
+  return {
+    userId,
+    clientId,
+    ownerType,
+    isAuthenticated,
+    
+    /**
+     * Build a MongoDB query to find documents owned by this user.
+     * For authenticated users with clientId: queries BOTH to capture anonymous sessions.
+     * @param {object} additionalCriteria - Extra query fields (e.g., { _id: sessionId })
+     */
+    buildQuery(additionalCriteria = {}) {
+      if (userId && clientId) {
+        // Authenticated user with clientId: query both to find anonymous sessions
+        return {
+          $or: [{ userId }, { clientId }],
+          ...additionalCriteria
+        };
+      } else if (userId) {
+        // Authenticated user without clientId: query by userId only
+        return { userId, ...additionalCriteria };
+      } else {
+        // Anonymous user: query by clientId only
+        return { clientId, ...additionalCriteria };
+      }
+    }
+  };
 }
 
-module.exports = { resolveOwner };
+/**
+ * Lazily migrate documents from clientId ownership to userId ownership.
+ * Call this after fetching documents for an authenticated user.
+ * 
+ * @param {Model} Model - Mongoose model (e.g., ResearchSession)
+ * @param {object} owner - Owner object from resolveOwner()
+ * @param {Array} docs - Documents that were fetched (to check if any need migration)
+ */
+async function lazyMigrateOwnership(Model, owner, docs) {
+  if (!owner.isAuthenticated || !owner.clientId || !docs?.length) {
+    return; // Nothing to migrate
+  }
 
+  // Find docs that still have clientId but no userId
+  const docsNeedingMigration = docs.filter(doc => 
+    doc.clientId === owner.clientId && !doc.userId
+  );
+
+  if (docsNeedingMigration.length === 0) {
+    return;
+  }
+
+  const idsToMigrate = docsNeedingMigration.map(d => d._id);
+  
+  try {
+    const result = await Model.updateMany(
+      { _id: { $in: idsToMigrate } },
+      { 
+        $set: { userId: owner.userId },
+        $unset: { clientId: 1 }
+      }
+    );
+    
+    console.log(`[resolveOwner] Lazy migrated ${result.modifiedCount} documents from clientId to userId`);
+  } catch (err) {
+    // Non-fatal: log and continue
+    console.error('[resolveOwner] Lazy migration failed:', err.message);
+  }
+}
+
+module.exports = { resolveOwner, lazyMigrateOwnership };

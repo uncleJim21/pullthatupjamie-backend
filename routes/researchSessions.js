@@ -11,7 +11,7 @@ const { createCanvas, loadImage } = require('canvas');
 const path = require('path');
 const DigitalOceanSpacesManager = require('../utils/DigitalOceanSpacesManager');
 const fetch = require('node-fetch');
-const { resolveOwner } = require('../utils/resolveOwner');
+const { resolveOwner, lazyMigrateOwnership } = require('../utils/resolveOwner');
 const { streamResearchAnalysis } = require('../utils/researchAnalysis');
 
 const openai = new OpenAI({
@@ -171,14 +171,16 @@ router.get('/', async (req, res) => {
       });
     }
 
-    const query = owner.userId
-      ? { userId: owner.userId }
-      : { clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const query = owner.buildQuery();
 
     const sessions = await ResearchSession.find(query)
       .sort({ createdAt: -1 })
       .lean()
       .exec();
+
+    // Lazy migrate any anonymous sessions to the authenticated user
+    await lazyMigrateOwnership(ResearchSession, owner, sessions);
 
     const data = sessions.map((session) => ({
       id: session._id,
@@ -318,9 +320,11 @@ router.post('/', async (req, res) => {
     const defaultTitle = deriveShareTitleFromLastItem(effectiveLastItemMetadata);
     const sessionTitle = await generateSmartShareTitle(effectiveLastItemMetadata, defaultTitle);
 
+    // For new sessions: prefer userId if authenticated, otherwise use clientId
+    // This ensures new sessions are created under the authenticated identity
     const session = new ResearchSession({
-      userId: owner.userId || undefined,
-      clientId: owner.clientId || undefined,
+      userId: owner.isAuthenticated ? owner.userId : undefined,
+      clientId: owner.isAuthenticated ? undefined : owner.clientId,
       pineconeIds: uniquePineconeIds,
       items,
       title: sessionTitle,
@@ -404,9 +408,8 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     if (typeof expectedVersion === 'number') {
       ownerQuery.__v = expectedVersion;
@@ -427,6 +430,9 @@ router.patch('/:id', async (req, res) => {
         details: 'No session found for this id and owner'
       });
     }
+
+    // Lazy migrate if this session was found via clientId but user is now authenticated
+    await lazyMigrateOwnership(ResearchSession, owner, [session]);
 
     // Append new Pinecone IDs if provided (preserve order, avoid duplicates)
     if (Array.isArray(pineconeIds) && pineconeIds.length > 0) {
@@ -537,12 +543,13 @@ router.get('/:id', async (req, res) => {
     const owner = await resolveOwner(req);
 
     let session;
+    let shouldMigrate = false;
+    
     if (owner) {
-      const ownerQuery = owner.userId
-        ? { _id: id, userId: owner.userId }
-        : { _id: id, clientId: owner.clientId };
-
+      // Use buildQuery to handle $or for authenticated users with clientId
+      const ownerQuery = owner.buildQuery({ _id: id });
       session = await ResearchSession.findOne(ownerQuery).lean().exec();
+      shouldMigrate = !!session;
     }
 
     // Fallback: if no owner or not found for this owner, allow lookup by id only
@@ -554,6 +561,11 @@ router.get('/:id', async (req, res) => {
           details: 'No session found for this id'
         });
       }
+    }
+
+    // Lazy migrate if session was found via owner query (not public fallback)
+    if (shouldMigrate && owner) {
+      await lazyMigrateOwnership(ResearchSession, owner, [session]);
     }
 
     const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
@@ -1174,9 +1186,8 @@ router.post('/:id/share', async (req, res) => {
     const { id } = req.params;
     const { title, nodes, camera, visibility } = req.body || {};
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     const baseSession = await ResearchSession.findOne(ownerQuery).lean().exec();
     if (!baseSession) {
@@ -1185,6 +1196,9 @@ router.post('/:id/share', async (req, res) => {
         details: 'No session found for this id and owner'
       });
     }
+
+    // Lazy migrate if this session was found via clientId but user is now authenticated
+    await lazyMigrateOwnership(ResearchSession, owner, [baseSession]);
 
     let sanitizedNodes;
     try {
@@ -1301,11 +1315,11 @@ router.post('/:id/analyze', async (req, res) => {
     const { id } = req.params;
     const { instructions } = req.body || {};
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     let session = await ResearchSession.findOne(ownerQuery).lean().exec();
+    let shouldMigrate = !!session;
 
     // Fallback: if not found for this owner, allow lookup by id only
     if (!session) {
@@ -1316,6 +1330,12 @@ router.post('/:id/analyze', async (req, res) => {
           details: 'No session found for this id'
         });
       }
+      shouldMigrate = false;
+    }
+
+    // Lazy migrate if session was found via owner query (not public fallback)
+    if (shouldMigrate) {
+      await lazyMigrateOwnership(ResearchSession, owner, [session]);
     }
 
     const items = Array.isArray(session.items) ? session.items : [];

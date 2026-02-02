@@ -28,7 +28,7 @@ router.post('/analyze', createEntitlementMiddleware(ENTITLEMENT_TYPES.AI_ANALYZE
     if (!owner) {
       return res.status(400).json({
         error: 'Missing owner identifier',
-        details: 'Provide a valid JWT token or a clientId (query param, header, or body)'
+        details: 'Provide a valid JWT token (Authorization: Bearer ...) or a clientId (query param ?clientId=..., X-Client-Id header, or body.clientId)'
       });
     }
 
