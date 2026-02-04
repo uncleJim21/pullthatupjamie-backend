@@ -1320,6 +1320,139 @@ router.post('/:id/share', async (req, res) => {
 });
 
 /**
+ * POST /api/research-sessions/enrich
+ *
+ * Enrich a list of pineconeIds with full metadata from the MongoDB content database.
+ * Used to backfill metadata for research session items that were stored with minimal data.
+ *
+ * Request body:
+ * {
+ *   "pineconeIds": ["guid_p1", "guid_p2", ...]
+ * }
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "data": { "guid_p1": { ...metadata }, "guid_p2": { ...metadata } },
+ *   "notFound": ["invalid_id"]
+ * }
+ */
+router.post('/enrich', async (req, res) => {
+  try {
+    // Require some form of identity to prevent abuse/scraping
+    // Accept either authenticated user (JWT) or clientId
+    const owner = await resolveOwner(req);
+    console.log('[ResearchSessions/enrich] Owner resolved:', owner ? {
+      userId: owner.userId,
+      clientId: owner.clientId,
+      ownerType: owner.ownerType,
+      isAuthenticated: owner.isAuthenticated
+    } : null);
+    
+    if (!owner) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        details: 'Provide a valid JWT token or clientId'
+      });
+    }
+
+    const { pineconeIds } = req.body || {};
+
+    // Validate pineconeIds
+    if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request',
+        details: 'pineconeIds must be a non-empty array'
+      });
+    }
+
+    // Validate all entries are strings
+    const allStrings = pineconeIds.every(id => typeof id === 'string' && id.trim().length > 0);
+    if (!allStrings) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request',
+        details: 'All pineconeIds must be non-empty strings'
+      });
+    }
+
+    // Enforce max limit
+    if (pineconeIds.length > 50) {
+      return res.status(413).json({
+        success: false,
+        error: 'Too many IDs',
+        details: 'Maximum 50 pineconeIds per request'
+      });
+    }
+
+    // De-duplicate while preserving order for tracking
+    const uniqueIds = [...new Set(pineconeIds)];
+
+    // Fetch from MongoDB (JamieVectorMetadata)
+    const mongoDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: uniqueIds }
+    })
+      .select('pineconeId metadataRaw')
+      .lean();
+
+    // Format results using the shared formatter
+    const formatted = formatResults(
+      (mongoDocs || []).map((doc) => ({
+        id: doc.pineconeId,
+        score: 1,
+        metadata: doc.metadataRaw || {}
+      }))
+    );
+
+    // Build response keyed by pineconeId
+    const data = {};
+    const foundIds = new Set();
+
+    formatted.forEach((clip) => {
+      if (clip && clip.shareLink) {
+        const { embedding, shareLink, shareUrl, listenLink, similarity, ...rest } = clip;
+        
+        // Extract clean metadata matching the spec
+        data[shareLink] = {
+          quote: rest.quote || null,
+          summary: rest.summary || null,
+          headline: rest.headline || null,
+          episode: rest.episode || 'Unknown episode',
+          creator: rest.creator || 'Unknown creator',
+          episodeImage: rest.episodeImage || null,
+          audioUrl: rest.audioUrl || null,
+          date: rest.date || null,
+          feedId: rest.additionalFields?.feedId || null,
+          guid: rest.additionalFields?.guid || null,
+          timeContext: rest.timeContext || null,
+          hierarchyLevel: rest.hierarchyLevel || 'paragraph'
+        };
+        
+        foundIds.add(shareLink);
+      }
+    });
+
+    // Track which IDs were not found
+    const notFound = uniqueIds.filter(id => !foundIds.has(id));
+
+    return res.json({
+      success: true,
+      data,
+      notFound
+    });
+  } catch (error) {
+    console.error('[ResearchSessions] Error enriching pineconeIds:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: 'Failed to fetch metadata'
+    });
+  }
+});
+
+/**
  * POST /api/research-sessions/:id/analyze
  *
  * Analyze a specific research session with an LLM (gpt-4o-mini) and stream back the response.
