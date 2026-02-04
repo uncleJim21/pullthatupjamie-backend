@@ -57,6 +57,7 @@ const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
 const JamieVectorMetadata = require('./models/JamieVectorMetadata');
@@ -1599,6 +1600,7 @@ app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
 app.use('/api/research', analyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
+app.use('/api/analytics', analyticsRoutes);
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
 // Only enable admin and debug routes in debug mode

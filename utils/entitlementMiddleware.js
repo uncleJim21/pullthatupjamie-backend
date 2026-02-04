@@ -9,6 +9,8 @@ const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
+const { emitServerEvent } = require('./analyticsEmitter');
+const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
@@ -301,6 +303,9 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       // Resolve identity
       const identity = await resolveIdentity(req);
       
+      // Read analytics session ID from header (for server-side event emission)
+      const analyticsSessionId = req.headers['x-analytics-session'] || null;
+      
       // Check if anonymous is allowed
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
         return res.status(401).json({
@@ -322,6 +327,18 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       
       // Check eligibility
       if (!isUnlimited && entitlement.usedCount >= entitlement.maxUsage) {
+        // Emit entitlement_denied analytics event (async, don't await)
+        emitServerEvent(
+          SERVER_EVENT_TYPES.ENTITLEMENT_DENIED,
+          analyticsSessionId,
+          identity.tier,
+          {
+            entitlement_type: entitlementType,
+            used: entitlement.usedCount,
+            max: entitlement.maxUsage
+          }
+        );
+        
         return res.status(429).json({
           error: 'Quota exceeded',
           code: 'QUOTA_EXCEEDED',
@@ -338,6 +355,19 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         entitlement.usedCount += 1;
         entitlement.lastUsed = new Date();
         await entitlement.save();
+        
+        // Emit entitlement_consumed analytics event (async, don't await)
+        emitServerEvent(
+          SERVER_EVENT_TYPES.ENTITLEMENT_CONSUMED,
+          analyticsSessionId,
+          identity.tier,
+          {
+            entitlement_type: entitlementType,
+            used: entitlement.usedCount,
+            remaining: entitlement.maxUsage - entitlement.usedCount,
+            max: entitlement.maxUsage
+          }
+        );
       }
       
       // Attach to request for downstream use
