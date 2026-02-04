@@ -191,7 +191,8 @@ const corsOptions = {
         'Accept-Encoding',
         'Referer',
         'Origin',
-        'X-Requested-With'
+        'X-Requested-With',
+        'X-Analytics-Session'
     ],
     credentials: true
 };
