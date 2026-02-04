@@ -270,7 +270,30 @@ router.post('/', async (req, res) => {
     }
 
     // Fetch metadata snapshots from Pinecone once at creation time
-    const clips = await getClipsByIdsBatch(uniquePineconeIds);
+    // In DEBUG_MODE or if client provides items array, use client-provided metadata to avoid Pinecone latency
+    const clientItems = req.body.items;
+    const hasClientMetadata = Array.isArray(clientItems) && clientItems.length > 0;
+    const isDebugMode = process.env.DEBUG_MODE === 'true';
+    
+    let clips = [];
+    if (hasClientMetadata) {
+      console.log('[ResearchSessions POST] Using client-provided metadata for', clientItems.length, 'items');
+      // Build clips from client items
+      clips = clientItems
+        .filter(item => item && item.pineconeId)
+        .map(item => ({
+          shareLink: item.pineconeId,
+          ...(item.metadata || {})
+        }));
+    } else if (isDebugMode) {
+      console.log('[ResearchSessions POST] DEBUG_MODE: skipping Pinecone, using empty metadata');
+      // In debug mode without client items, just use IDs with empty metadata
+      clips = uniquePineconeIds.map(id => ({ shareLink: id }));
+    } else {
+      console.log('[ResearchSessions POST] Fetching clips from Pinecone...');
+      clips = await getClipsByIdsBatch(uniquePineconeIds);
+      console.log('[ResearchSessions POST] Pinecone returned', clips?.length, 'clips');
+    }
 
     // Map clips by shareLink for quick lookup
     const clipById = new Map();
