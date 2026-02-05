@@ -1451,8 +1451,14 @@ app.post('/api/stream-search', async (req, res) => {
   }
  });
 
-// REMOVED: /api/check-free-eligibility - replaced by /api/on-demand/checkEligibility
-// which returns eligibility for ALL entitlement types, not just IP-based free tier
+// STUB: Legacy endpoint - always returns eligible (beta compatibility shim)
+// Real logic now in /api/on-demand/checkEligibility
+app.get('/api/check-free-eligibility', (req, res) => {
+  res.json({
+    eligible: true,
+    remainingRequests: 999
+  });
+});
 
 
 
