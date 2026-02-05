@@ -100,7 +100,9 @@ async function emitEvent(event) {
       return false;
     }
     
-    await AnalyticsEvent.create({
+    // Add timeout to prevent hanging if MongoDB is slow/unavailable
+    const timeoutMs = 5000;
+    const createPromise = AnalyticsEvent.create({
       type: event.type,
       session_id: event.session_id,
       timestamp: new Date(event.timestamp),
@@ -109,6 +111,12 @@ async function emitEvent(event) {
       properties: event.properties || {},
       server_timestamp: new Date()
     });
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('MongoDB write timeout')), timeoutMs)
+    );
+    
+    await Promise.race([createPromise, timeoutPromise]);
     
     return true;
   } catch (error) {
@@ -133,10 +141,13 @@ async function emitEvent(event) {
 async function emitServerEvent(type, sessionId, tier, properties = {}) {
   // If no session ID provided, skip silently (client didn't send header)
   if (!sessionId) {
+    console.log(`[Analytics] Skipping ${type} - no X-Analytics-Session header`);
     return false;
   }
   
-  return emitEvent({
+  console.log(`[Analytics] Emitting server event: ${type} for session ${sessionId.slice(0,8)}...`);
+  
+  const result = await emitEvent({
     type,
     session_id: sessionId,
     timestamp: new Date().toISOString(),
@@ -144,6 +155,12 @@ async function emitServerEvent(type, sessionId, tier, properties = {}) {
     environment: getServerEnvironment(),
     properties
   });
+  
+  if (result) {
+    console.log(`[Analytics] Event ${type} stored successfully`);
+  }
+  
+  return result;
 }
 
 module.exports = {

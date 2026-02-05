@@ -57,7 +57,9 @@ const analyticsEventSchema = new mongoose.Schema({
   }
 }, {
   // Disable Mongoose's automatic timestamps since we manage our own
-  timestamps: false
+  timestamps: false,
+  // Don't block on index creation in dev - indexes created manually in prod
+  autoIndex: false
 });
 
 // Compound index for common queries (e.g., "all auth events in last 7 days")

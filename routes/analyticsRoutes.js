@@ -77,21 +77,27 @@ function checkRateLimit(sessionId) {
 router.post('/', async (req, res) => {
   try {
     const event = req.body;
+    console.log('[Analytics] Received event:', event.type);
     
     // Validate event
     const validation = validateEvent(event);
     if (!validation.valid) {
+      console.log('[Analytics] Validation failed:', validation.error);
       return res.status(400).json({ error: validation.error });
     }
+    console.log('[Analytics] Validation passed');
     
     // Check rate limit (drop silently if exceeded per spec)
     if (!checkRateLimit(event.session_id)) {
+      console.log('[Analytics] Rate limited, dropping silently');
       // Return 200 to client but don't store (silent drop)
       return res.status(200).send();
     }
+    console.log('[Analytics] Rate limit OK, storing...');
     
-    // Store event
-    await AnalyticsEvent.create({
+    // Store event with timeout to prevent hanging
+    const timeoutMs = 5000; // 5 second timeout
+    const createPromise = AnalyticsEvent.create({
       type: event.type,
       session_id: event.session_id,
       timestamp: new Date(event.timestamp),
@@ -101,11 +107,18 @@ router.post('/', async (req, res) => {
       server_timestamp: new Date()
     });
     
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('MongoDB write timeout')), timeoutMs)
+    );
+    
+    await Promise.race([createPromise, timeoutPromise]);
+    console.log('[Analytics] Stored successfully');
+    
     // Success - empty 200 response per spec
     res.status(200).send();
     
   } catch (error) {
-    console.error('[Analytics] Error storing event:', error.message);
+    console.error('[Analytics] Error storing event:', error.message, error.stack);
     // Return 500 but don't expose internal details
     res.status(500).json({ error: 'Internal server error' });
   }
