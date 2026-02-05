@@ -91,7 +91,7 @@ router.post('/', async (req, res) => {
     if (!checkRateLimit(event.session_id)) {
       console.log('[Analytics] Rate limited, dropping silently');
       // Return 200 to client but don't store (silent drop)
-      return res.status(200).send();
+      return res.status(200).json({ success: true });
     }
     console.log('[Analytics] Rate limit OK, storing...');
     
@@ -114,8 +114,8 @@ router.post('/', async (req, res) => {
     await Promise.race([createPromise, timeoutPromise]);
     console.log('[Analytics] Stored successfully');
     
-    // Success - empty 200 response per spec
-    res.status(200).send();
+    // Success
+    return res.status(200).json({ success: true });
     
   } catch (error) {
     console.error('[Analytics] Error storing event:', error.message, error.stack);
