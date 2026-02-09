@@ -13,6 +13,8 @@ const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
+// DEPRECATED: SQLite invoice DB disabled due to tar vulnerability (GHSA-3jfq-g458-7qm9)
+// The function now returns a no-op stub - see utils/invoice-db.js for MongoDB migration path
 const { initializeInvoiceDB } = require('./utils/invoice-db');
 // REMOVED: Legacy SQLite auth systems (replaced by MongoDB entitlements)
 // const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
@@ -1775,6 +1777,7 @@ app.listen(PORT, async () => {
     }
     
     // Initialize databases
+    // DEPRECATED: SQLite invoice DB - now returns stub (see utils/invoice-db.js for migration path)
     await initializeInvoiceDB();
     // REMOVED: initializeRequestsDB(), initializeJamieUserDB() - legacy SQLite systems
     await feedCacheManager.initialize();

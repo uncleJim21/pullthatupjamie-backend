@@ -1,6 +1,8 @@
 const axios = require("axios");
 const bolt11 = require("bolt11");
 const crypto = require('crypto'); 
+// DEPRECATED: SQLite invoice tracking is disabled due to security vulnerabilities
+// The imported functions are now no-op stubs - see invoice-db.js for MongoDB migration path
 const { isPaymentHashValid, recordPayment, storeInvoice } = require('./invoice-db');
 const { DEBUG_MODE } = require("../constants");
 

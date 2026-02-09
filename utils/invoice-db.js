@@ -1,4 +1,34 @@
 // invoice-db.js
+// =============================================================================
+// DEPRECATED: SQLite Invoice Database
+// =============================================================================
+// This SQLite-based invoice tracking system is deprecated due to security
+// vulnerabilities in the sqlite3 dependency chain (tar <=7.5.6).
+//
+// STATUS: Commented out pending migration to MongoDB
+//
+// RECOMMENDED UPGRADE PATH:
+// Create a Mongoose model (models/Invoice.js) with the following schema:
+//
+//   const mongoose = require('mongoose');
+//   
+//   const InvoiceSchema = new mongoose.Schema({
+//     paymentHash: { type: String, required: true, unique: true, index: true },
+//     invoiceStr: { type: String, required: true },
+//     preimage: { type: String, default: null },
+//     expiresAt: { type: Date, required: true },
+//     paidAt: { type: Date, default: null }
+//   }, { timestamps: true });
+//   
+//   // TTL index for automatic cleanup (14 days after expiry)
+//   InvoiceSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 14 * 24 * 60 * 60 });
+//   
+//   module.exports = mongoose.model('Invoice', InvoiceSchema);
+//
+// Then update lightning-utils.js to use the new Mongoose model.
+// =============================================================================
+
+/*
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
@@ -137,6 +167,52 @@ async function getInvoiceDetails(paymentHash) {
     'SELECT * FROM invoices WHERE payment_hash = ?',
     [paymentHash]
   );
+}
+
+module.exports = {
+  initializeInvoiceDB,
+  storeInvoice,
+  recordPayment,
+  isPaymentHashValid,
+  cleanupExpiredInvoices,
+  getInvoiceDetails
+};
+*/
+
+// =============================================================================
+// STUB EXPORTS - Temporary no-op functions until MongoDB migration
+// =============================================================================
+// These stub functions allow the app to run without SQLite while the 
+// Lightning payment functionality is disabled.
+
+async function initializeInvoiceDB() {
+  console.warn('[DEPRECATED] Invoice DB (SQLite) is disabled. Lightning invoice tracking unavailable.');
+  console.warn('[DEPRECATED] See utils/invoice-db.js for MongoDB migration instructions.');
+  return null;
+}
+
+async function storeInvoice(paymentHash, invoiceStr, expiryTimestamp) {
+  console.warn('[DEPRECATED] storeInvoice called but SQLite is disabled');
+  // No-op - invoice won't be stored
+}
+
+async function recordPayment(paymentHash, preimage) {
+  console.warn('[DEPRECATED] recordPayment called but SQLite is disabled');
+  return false; // Payment can't be recorded
+}
+
+async function isPaymentHashValid(paymentHash) {
+  console.warn('[DEPRECATED] isPaymentHashValid called but SQLite is disabled');
+  return false; // Can't validate without DB
+}
+
+async function cleanupExpiredInvoices() {
+  // No-op
+}
+
+async function getInvoiceDetails(paymentHash) {
+  console.warn('[DEPRECATED] getInvoiceDetails called but SQLite is disabled');
+  return null;
 }
 
 module.exports = {
