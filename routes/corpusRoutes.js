@@ -158,6 +158,7 @@ Read-only API for navigating the podcast corpus hierarchy. Designed for AI agent
 |--------|----------|-------------|
 | GET | \`/feeds\` | List all feeds |
 | GET | \`/feeds/:feedId\` | Get single feed |
+| GET | \`/feeds/:feedId/stats\` | Get feed statistics (depth check) |
 | GET | \`/feeds/:feedId/episodes\` | List episodes for feed |
 
 ### Episodes
@@ -206,6 +207,25 @@ Returns corpus-wide statistics.
   "paragraphs": { "total": 500000 },
   "people": { "creators": 10, "guests": 500, "total": 510 },
   "topics": { "total": 2000 }
+}
+\`\`\`
+
+---
+
+### GET /feeds/:feedId/stats
+
+Get statistics for a specific feed. Useful for agents to assess feed depth before searching.
+
+**Response:**
+\`\`\`json
+{
+  "feedId": "1015378",
+  "title": "What Bitcoin Did",
+  "episodeCount": 824,
+  "chapterCount": 3200,
+  "paragraphCount": 45000,
+  "dateRange": { "earliest": "2018-11-01", "latest": "2026-02-06" },
+  "generatedAt": "2026-02-09T..."
 }
 \`\`\`
 
@@ -466,6 +486,71 @@ router.get('/feeds', async (req, res) => {
   } catch (error) {
     console.error('[corpusRoutes] Error fetching feeds:', error);
     res.status(500).json({ error: 'Failed to fetch feeds', details: error.message });
+  }
+});
+
+/**
+ * GET /feeds/:feedId/stats
+ * Get statistics for a specific feed
+ * Useful for agents to assess feed depth before searching
+ */
+router.get('/feeds/:feedId/stats', async (req, res) => {
+  try {
+    const { feedId } = req.params;
+
+    // First, get the feed to verify it exists and get its title
+    const feed = await JamieVectorMetadata.findOne({ 
+      type: 'feed', 
+      feedId: feedId 
+    })
+      .select('feedId metadataRaw')
+      .lean();
+
+    if (!feed) {
+      return res.status(404).json({ error: 'Feed not found', feedId });
+    }
+
+    // Run all counts and date range query in parallel
+    const [
+      episodeCount,
+      chapterCount,
+      paragraphCount,
+      dateRangeAgg
+    ] = await Promise.all([
+      JamieVectorMetadata.countDocuments({ type: 'episode', feedId }),
+      JamieVectorMetadata.countDocuments({ type: 'chapter', feedId }),
+      JamieVectorMetadata.countDocuments({ type: 'paragraph', feedId }),
+      // Get earliest and latest episode dates
+      JamieVectorMetadata.aggregate([
+        { $match: { type: 'episode', feedId, publishedTimestamp: { $exists: true, $ne: null } } },
+        {
+          $group: {
+            _id: null,
+            earliest: { $min: '$publishedTimestamp' },
+            latest: { $max: '$publishedTimestamp' }
+          }
+        }
+      ])
+    ]);
+
+    const dateRange = dateRangeAgg[0] || {};
+    const meta = feed.metadataRaw || {};
+
+    res.json({
+      feedId,
+      title: meta.title || null,
+      episodeCount,
+      chapterCount,
+      paragraphCount,
+      dateRange: {
+        earliest: dateRange.earliest ? new Date(dateRange.earliest).toISOString().split('T')[0] : null,
+        latest: dateRange.latest ? new Date(dateRange.latest).toISOString().split('T')[0] : null
+      },
+      generatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[corpusRoutes] Error fetching feed stats:', error);
+    res.status(500).json({ error: 'Failed to fetch feed stats', details: error.message });
   }
 });
 
