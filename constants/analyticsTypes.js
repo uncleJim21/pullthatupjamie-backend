@@ -23,7 +23,10 @@ const CLIENT_EVENT_TYPES = {
   
   // Journey events
   WIZARD_STEP_REACHED: 'wizard_step_reached',
-  PROCESSING_COMPLETED: 'processing_completed'
+  PROCESSING_COMPLETED: 'processing_completed',
+  
+  // Sharing events
+  VISIT_SHARED_SESSION: 'visit_shared_session'  // properties: { share_id, source, title }
 };
 
 // Server-side events (emitted by backend)

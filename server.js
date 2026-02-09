@@ -58,6 +58,7 @@ const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const corpusRoutes = require('./routes/corpusRoutes');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
 const JamieVectorMetadata = require('./models/JamieVectorMetadata');
@@ -1608,6 +1609,7 @@ app.use('/api/research-sessions', researchSessionsRoutes);
 app.use('/api/research', analyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
 // Only enable admin and debug routes in debug mode
