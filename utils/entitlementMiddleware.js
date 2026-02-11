@@ -24,8 +24,8 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const QUOTA_CONFIG_PRODUCTION = {
   // Search quotes (basic search)
   [ENTITLEMENT_TYPES.SEARCH_QUOTES]: {
-    [TIERS.anonymous]: { maxUsage: 100, periodLengthDays: 7 },    // 100/week
-    [TIERS.registered]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
+    [TIERS.anonymous]: { maxUsage: 50, periodLengthDays: 7 },    // 100/week
+    [TIERS.registered]: { maxUsage: 50, periodLengthDays: 30 },  // 100/month
     [TIERS.subscriber]: { maxUsage: 500, periodLengthDays: 30 },  // 500/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
   },
@@ -48,7 +48,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // Jamie Assist (AI analysis)
   [ENTITLEMENT_TYPES.JAMIE_ASSIST]: {
-    [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
+    [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -64,7 +64,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // Research Analyze (AI analysis of research sessions)
   [ENTITLEMENT_TYPES.AI_ANALYZE]: {
-    [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },     // 10/week
+    [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
