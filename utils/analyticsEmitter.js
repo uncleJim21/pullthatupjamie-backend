@@ -2,7 +2,7 @@
  * Analytics Emitter
  * 
  * Shared validation and emission logic for analytics events.
- * Used by both the /api/analytics endpoint and internal server-side emission.
+ * Used by both the /api/pulse endpoint and internal server-side emission.
  */
 
 const { AnalyticsEvent } = require('../models/AnalyticsEvent');

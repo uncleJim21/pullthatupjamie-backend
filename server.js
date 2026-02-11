@@ -1610,7 +1610,8 @@ app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
 app.use('/api/research', analyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
-app.use('/api/analytics', analyticsRoutes);
+app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
+app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 

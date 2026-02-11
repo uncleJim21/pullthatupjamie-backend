@@ -1,8 +1,10 @@
 /**
  * Analytics Routes
  * 
- * POST /api/analytics - Receive and store analytics events from clients
- * GET /api/analytics/debug/:sessionId - (DEBUG_MODE only) Get all events for a session
+ * POST /api/pulse - Receive and store analytics events from clients
+ * GET /api/pulse/debug/:sessionId - (DEBUG_MODE only) Get all events for a session
+ * 
+ * Note: Also mounted at /api/analytics for backward compatibility (deprecated).
  */
 
 const express = require('express');
@@ -69,7 +71,7 @@ function checkRateLimit(sessionId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /api/analytics
+// POST /api/pulse (also /api/analytics for backward compat)
 // 
 // Receives analytics events from clients
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -132,7 +134,7 @@ router.post('/', async (req, res) => {
 
 if (DEBUG_MODE) {
   /**
-   * GET /api/analytics/debug/:sessionId
+   * GET /api/pulse/debug/:sessionId
    * 
    * Returns all events for a given session ID, useful for automated testing.
    * 
@@ -212,7 +214,7 @@ if (DEBUG_MODE) {
   });
   
   /**
-   * DELETE /api/analytics/debug/:sessionId
+   * DELETE /api/pulse/debug/:sessionId
    * 
    * Deletes all events for a session (useful for test cleanup)
    */
