@@ -195,7 +195,8 @@ const corsOptions = {
         'Referer',
         'Origin',
         'X-Requested-With',
-        'X-Analytics-Session'
+        'X-Analytics-Session',
+        'X-Pulse-Session'
     ],
     credentials: true
 };

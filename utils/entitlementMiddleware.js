@@ -304,7 +304,7 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       const identity = await resolveIdentity(req);
       
       // Read analytics session ID from header (for server-side event emission)
-      const analyticsSessionId = req.headers['x-analytics-session'] || null;
+      const analyticsSessionId = req.headers['x-pulse-session'] || req.headers['x-analytics-session'] || null;
       
       // Check if anonymous is allowed
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
