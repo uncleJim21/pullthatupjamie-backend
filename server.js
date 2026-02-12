@@ -47,6 +47,8 @@ const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
+const blogRoutes = require('./routes/blogRoutes');
+const BlogIngestionService = require('./utils/BlogIngestionService');
 const researchSessionsRoutes = require('./routes/researchSessions');
 const analyzeRoutes = require('./routes/researchAnalyzeRoutes');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
@@ -1607,6 +1609,8 @@ app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
+app.use('/api/blog', blogRoutes);   // Blog API endpoints (JSON)
+app.use('/blog', blogRoutes);       // Blog sitemap.xml + rss.xml (crawler-friendly)
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
 app.use('/api/research', analyzeRoutes);
@@ -1861,7 +1865,26 @@ app.listen(PORT, async () => {
     } else {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
-    
+
+    // Blog ingestion cron — runs every 10 minutes, independent of SCHEDULER_ENABLED
+    // Controlled by its own NOSTR_BLOG_ENABLED flag
+    if (process.env.NOSTR_BLOG_ENABLED === 'true') {
+      const cron = require('node-cron');
+      const blogIngestionService = new BlogIngestionService();
+      cron.schedule('*/10 * * * *', async () => {
+        try {
+          const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+          console.log(`[SCHEDULED TASK] Starting blog ingestion at ${now} (Chicago time)`);
+          await blogIngestionService.poll();
+        } catch (error) {
+          console.error('[SCHEDULED TASK] Error in blog ingestion:', error.message);
+        }
+      }, { timezone: 'America/Chicago' });
+      console.log('[BlogIngestion] Cron registered: every 10 minutes');
+    } else {
+      console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
+    }
+
     console.log('All systems initialized successfully');
   } catch (error) {
     console.error('Error during initialization:', error);
