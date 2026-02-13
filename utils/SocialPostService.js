@@ -13,7 +13,8 @@ function assert(condition, message, status = 400) {
  * Performs validation and creates separate SocialPost docs per platform.
  *
  * @param {Object} params
- * @param {string} params.adminEmail - Required. Owner/admin of the posts
+ * @param {string} [params.adminUserId] - MongoDB User _id (preferred for new users)
+ * @param {string} [params.adminEmail] - Owner/admin email (legacy, optional for non-email users)
  * @param {string} [params.text]
  * @param {string} [params.mediaUrl]
  * @param {string|Date} params.scheduledFor - ISO string or Date
@@ -25,6 +26,7 @@ function assert(condition, message, status = 400) {
  */
 async function schedulePosts(params) {
     const {
+        adminUserId,
         adminEmail,
         text,
         mediaUrl,
@@ -35,7 +37,8 @@ async function schedulePosts(params) {
         scheduledPostSlotId
     } = params || {};
 
-    assert(adminEmail, 'Missing adminEmail');
+    // Require at least one identifier
+    assert(adminUserId || adminEmail, 'Missing admin identifier (adminUserId or adminEmail required)');
     const hasText = !!(text && String(text).trim().length > 0);
     const hasMedia = !!(mediaUrl && String(mediaUrl).trim().length > 0);
     assert(hasText || hasMedia, 'Either text or media URL is required');
@@ -56,7 +59,8 @@ async function schedulePosts(params) {
         }
 
         const socialPost = new SocialPost({
-            adminEmail,
+            adminUserId: adminUserId || undefined,  // NEW: Store userId if available
+            adminEmail: adminEmail || undefined,    // Keep for backward compat
             platform,
             scheduledFor: scheduledDate,
             timezone,

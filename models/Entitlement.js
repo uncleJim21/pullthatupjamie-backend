@@ -8,19 +8,29 @@ const entitlementSchema = new mongoose.Schema({
     index: true
   },
   
-  // Type of identifier (ip, jwt, email, etc.)
+  // Type of identifier (ip, mongoUserId, etc.)
   identifierType: {
     type: String,
     required: true,
-    enum: ['ip', 'jwt', 'email', 'custom'],
+    enum: ['ip', 'mongoUserId', 'user', 'jwt', 'email', 'custom'], // 'mongoUserId' is preferred for authenticated users
     index: true
   },
   
-  // Type of entitlement (onDemandRun, premiumFeature, etc.)
+  // Type of entitlement (submitOnDemandRun, premiumFeature, etc.)
   entitlementType: {
     type: String,
     required: true,
-    enum: ['onDemandRun', 'premiumFeature', 'apiAccess', 'custom'],
+    enum: [
+      'submit-on-demand-run',   // Podcast on-demand processing
+      'search-quotes',     // Basic quote search
+      'search-quotes-3d',         // 3D search (embeddings + UMAP)
+      'make-clip',         // Video clip creation
+      'jamie-assist',      // Promotional content generation
+      'ai-analyze',  // Research session AI analysis
+      'premiumFeature',   // Generic premium feature
+      'apiAccess',        // API access
+      'custom'            // Custom entitlement
+    ],
     index: true
   },
   

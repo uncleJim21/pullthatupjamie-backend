@@ -58,6 +58,15 @@ const ResearchSessionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     required: false,
     default: null
+  },
+
+  // Optional cached semantic axis labels for 3D galaxy view.
+  // Shape (recommended):
+  // { center, xPositive, xNegative, yPositive, yNegative, zPositive, zNegative }
+  axisLabels: {
+    type: mongoose.Schema.Types.Mixed,
+    required: false,
+    default: null
   }
 }, {
   timestamps: true

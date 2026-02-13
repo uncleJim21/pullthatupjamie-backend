@@ -1,36 +1,42 @@
 const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('../models/ProPodcastDetails');
+const { User } = require('../models/shared/UserSchema');
 
 /**
- * Middleware to verify if the user is authorized to access podcast admin features
- * Checks if the user has a valid JWT token and is the admin of the specified feed
+ * Core podcast admin verification logic.
+ * 
+ * Supports both:
+ * - New JWT format: { sub, provider, email } → looks up by adminUserId
+ * - Legacy JWT format: { email } → looks up by adminEmail
+ * 
+ * Two modes:
+ * 1. With feedId (from URL params): Verifies user is admin of THAT specific podcast
+ * 2. Without feedId: Finds ANY podcast the user is admin of (for routes like /list-uploads)
  * 
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  * @param {Function} next - Express next function
- * @param {string} feedId - Optional feedId to check against. If not provided, will be taken from req.params
+ * @param {Object} options - Configuration options
+ * @param {string} options.feedId - Optional feedId to check against (overrides req.params.feedId)
+ * @param {boolean} options.requireFeedId - If true, requires feedId in URL (default: false)
  * @returns {Promise<void>}
  */
-async function verifyPodcastAdmin(req, res, next, feedId = null) {
+async function verifyPodcastAdminCore(req, res, next, options = {}) {
     try {
+        const { feedId: explicitFeedId, requireFeedId = false } = options;
+        
         // Development bypass - MUST be explicitly set to 'bypass'
         const bypassAuth = process.env.BYPASS_PODCAST_ADMIN_AUTH === 'bypass';
         if (bypassAuth) {
             console.warn('⚠️ WARNING: Bypassing podcast admin authentication - FOR DEVELOPMENT ONLY');
-            // Still require feedId for proper routing
-            const targetFeedId = feedId || req.params.feedId;
-            if (!targetFeedId) {
-                return res.status(400).json({
-                    error: 'Missing feed ID',
-                    details: 'Feed ID is required even in bypass mode'
-                });
-            }
-            // Add mock admin info
+            const targetFeedId = explicitFeedId || req.params.feedId || 'bypass-feed';
             req.admin = {
                 email: 'dev@bypass.local',
+                userId: null,
                 feedId: targetFeedId,
                 podcast: { feedId: targetFeedId }
             };
+            req.podcastAdmin = req.admin; // Alias for compatibility
             return next();
         }
 
@@ -55,43 +61,90 @@ async function verifyPodcastAdmin(req, res, next, feedId = null) {
             });
         }
 
-        // Get the admin email from the token
-        const { email } = decoded;
-        if (!email) {
-            return res.status(401).json({
-                error: 'Invalid token',
-                details: 'Token missing email claim'
-            });
-        }
-
-        // Get the feedId from params if not provided
-        const targetFeedId = feedId || req.params.feedId;
-        if (!targetFeedId) {
+        // Get the feedId from params if not explicitly provided
+        const targetFeedId = explicitFeedId || req.params.feedId || null;
+        
+        // If feedId is required but not present, error
+        if (requireFeedId && !targetFeedId) {
             return res.status(400).json({
                 error: 'Missing feed ID',
-                details: 'Feed ID is required'
+                details: 'Feed ID is required in URL'
             });
         }
 
-        // Check if the user is the admin of the podcast
-        const podcast = await ProPodcastDetails.findOne({
-            feedId: targetFeedId,
-            adminEmail: email
-        }).lean();
+        // Build identity from JWT (supports both new and legacy formats)
+        let userId = null;
+        let email = decoded.email || null;
+        const provider = decoded.provider || null;
+        const sub = decoded.sub || null;
+
+        // New JWT format: { sub, provider, email }
+        if (sub && provider) {
+            // Look up User to get MongoDB _id
+            const user = await User.findOne({
+                'authProvider.provider': provider,
+                'authProvider.providerId': sub
+            }).select('_id email').lean();
+            
+            if (user) {
+                userId = user._id;
+                email = email || user.email; // Use email from user if not in JWT
+            }
+        }
+        // Legacy JWT format: { email } - also get userId if possible
+        else if (email) {
+            const user = await User.findOne({ email }).select('_id').lean();
+            if (user) {
+                userId = user._id;
+            }
+        }
+
+        // Must have at least one identifier
+        if (!userId && !email) {
+            return res.status(401).json({
+                error: 'Invalid token',
+                details: 'Token missing user identifier'
+            });
+        }
+
+        // Build the query for ProPodcastDetails
+        // Supports both adminUserId and adminEmail
+        const query = { $or: [] };
+        
+        if (userId) {
+            query.$or.push({ adminUserId: userId });
+        }
+        if (email) {
+            query.$or.push({ adminEmail: email });
+        }
+        
+        // If feedId is specified, also filter by it
+        if (targetFeedId) {
+            query.feedId = targetFeedId;
+        }
+
+        const podcast = await ProPodcastDetails.findOne(query).lean();
 
         if (!podcast) {
             return res.status(403).json({
                 error: 'Unauthorized',
-                details: 'You are not authorized to access this podcast\'s data'
+                details: targetFeedId 
+                    ? 'You are not authorized to access this podcast\'s data'
+                    : 'You are not registered as a podcast admin'
             });
         }
 
         // Add the verified admin info to the request object
-        req.admin = {
+        const adminInfo = {
+            userId,
             email,
-            feedId: targetFeedId,
+            provider,
+            feedId: podcast.feedId,
             podcast
         };
+        
+        req.admin = adminInfo;
+        req.podcastAdmin = adminInfo; // Alias for compatibility with existing routes
 
         next();
     } catch (error) {
@@ -103,6 +156,39 @@ async function verifyPodcastAdmin(req, res, next, feedId = null) {
     }
 }
 
+/**
+ * Standard middleware for routes WITH feedId in URL params.
+ * Use this for routes like: /:feedId/recent, /:feedId/run/:runId
+ * 
+ * Usage: router.get('/:feedId/recent', verifyPodcastAdmin, handler)
+ */
+function verifyPodcastAdmin(req, res, next) {
+    return verifyPodcastAdminCore(req, res, next, { requireFeedId: true });
+}
+
+/**
+ * Standard middleware for routes WITHOUT feedId in URL.
+ * Finds any podcast the user is admin of.
+ * Use this for routes like: /list-uploads, /automation-settings
+ * 
+ * Usage: router.get('/list-uploads', verifyPodcastAdminAuto, handler)
+ */
+function verifyPodcastAdminAuto(req, res, next) {
+    return verifyPodcastAdminCore(req, res, next, { requireFeedId: false });
+}
+
+/**
+ * Factory function to create middleware with custom options.
+ * 
+ * Usage: router.get('/route', createPodcastAdminMiddleware({ feedId: 'custom' }), handler)
+ */
+function createPodcastAdminMiddleware(options = {}) {
+    return (req, res, next) => verifyPodcastAdminCore(req, res, next, options);
+}
+
 module.exports = {
-    verifyPodcastAdmin
-}; 
+    verifyPodcastAdmin,           // For routes WITH :feedId in URL
+    verifyPodcastAdminAuto,       // For routes WITHOUT feedId (auto-detect)
+    createPodcastAdminMiddleware, // Factory for custom options
+    verifyPodcastAdminCore        // Core function (for advanced use)
+};

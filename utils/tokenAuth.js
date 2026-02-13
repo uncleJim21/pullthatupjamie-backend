@@ -47,17 +47,22 @@ async function verifyToken(req, res, next) {
             });
         }
 
-        // Get the email from the token
-        const { email } = decoded;
-        if (!email) {
+        // Get identity from the token (email OR provider/sub)
+        const { email, provider, sub } = decoded;
+        
+        if (!email && !(provider && sub)) {
             return res.status(401).json({
                 error: 'Invalid token',
-                details: 'Token missing email claim'
+                details: 'Token missing required claims (email or provider/sub)'
             });
         }
 
-        // Add the verified email to the request object
-        req.user = { email };
+        // Add the verified identity to the request object
+        req.user = { 
+            email,      // May be null for Twitter/Nostr users
+            provider,   // e.g., 'twitter', 'nostr'
+            providerId: sub  // Provider-specific user ID
+        };
         next();
     } catch (error) {
         console.error('Error in token authentication:', error);

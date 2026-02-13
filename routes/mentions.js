@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 const { SocialProfileMapping } = require('../models/SocialProfileMappings');
 const { TwitterApi } = require('twitter-api-v2');
 const { authenticateToken } = require('../middleware/authMiddleware');
@@ -11,13 +11,43 @@ function sendSSE(res, data, eventType = 'data') {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+/**
+ * Find user from req.user - supports email, provider-based, and admin mode
+ * Works with Twitter, Nostr, and email-based users
+ */
+async function findMentionsUser(reqUser, selectFields = '+mention_preferences') {
+  // Admin mode override
+  if (reqUser.isAdminMode) {
+    return User.findOne({ email: 'jim.carucci+prod@protonmail.com' }).select(selectFields);
+  }
+  
+  // Try email first
+  if (reqUser.email) {
+    return User.findOne({ email: reqUser.email }).select(selectFields);
+  }
+  
+  // Try provider-based lookup (Twitter/Nostr)
+  if (reqUser.provider && reqUser.providerId) {
+    return User.findOne({
+      'authProvider.provider': reqUser.provider,
+      'authProvider.providerId': reqUser.providerId
+    }).select(selectFields);
+  }
+  
+  // Fallback to user ID
+  if (reqUser.id) {
+    return User.findById(reqUser.id).select(selectFields);
+  }
+  
+  return null;
+}
+
 // Promisified search functions
 async function searchPersonalPins(user, query, platforms = ['twitter', 'nostr']) {
   try {
-    // Use hardcoded admin email for admin mode, otherwise use token email
-    const userEmail = user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : user.email;
-    console.log('searchPersonalPins - Looking for user with email:', userEmail);
-    const userData = await User.findOne({ email: userEmail }).select('+mention_preferences +mentionPreferences');
+    // Use helper that supports email, provider, and admin mode
+    console.log('searchPersonalPins - Looking for user:', user.email || user.providerId || 'admin');
+    const userData = await findMentionsUser(user, '+mention_preferences +mentionPreferences');
     
     let pins = [];
     if (userData.mention_preferences?.pinned_mentions) {
@@ -180,29 +210,39 @@ async function searchTwitterAPI(query, platforms, user = null) {
   try {
     let client = null;
     let authMethod = 'app-only';
+    let identity = null;
     
     // First try: Use user OAuth tokens if available
-    if (user?.email) {
+    // Support both email and provider-based users (Twitter, Nostr, etc.)
+    const hasIdentity = user?.email || user?.id || (user?.provider && user?.providerId);
+    
+    if (hasIdentity) {
       try {
-        const TwitterService = require('../utils/TwitterService');
-        const twitterService = new TwitterService();
-        
-        // Get user's admin email (handle both user ID lookup and direct email)
-        let adminEmail = user.email;
+        // Build identity object for token lookup
         if (user.isAdminMode) {
-          adminEmail = 'jim.carucci+prod@protonmail.com';
+          identity = { userId: null, email: 'jim.carucci+prod@protonmail.com' };
+        } else {
+          // Get user's MongoDB _id if we have provider info
+          let userId = user.id || null;
+          if (!userId && user.provider && user.providerId) {
+            const dbUser = await User.findOne({
+              'authProvider.provider': user.provider,
+              'authProvider.providerId': user.providerId
+            }).select('_id');
+            userId = dbUser?._id;
+          }
+          identity = { userId, email: user.email || null };
         }
         
-        // Get tokens and create client with automatic refresh capability
-        const { getTwitterTokens } = require('../utils/ProPodcastUtils');
-        const tokens = await getTwitterTokens(adminEmail);
+        // Get tokens using identity-based lookup (supports User.twitterTokens)
+        const { getAdminTwitterCredentials, decryptToken } = require('../utils/userTwitterTokens');
+        const creds = await getAdminTwitterCredentials(identity);
         
-        if (tokens?.oauthToken) {
-          console.log('🔑 Using user OAuth tokens for Twitter search:', adminEmail);
-          client = new TwitterApi(tokens.oauthToken);
+        if (creds?.accessToken) {
+          const decryptedToken = decryptToken(creds.accessToken);
+          console.log('🔑 Using user OAuth tokens for Twitter search:', identity.email || identity.userId);
+          client = new TwitterApi(decryptedToken);
           authMethod = 'user-oauth';
-          
-          // We'll wrap the actual API call in executeWithTokenRefresh later
         } else {
           throw new Error('No valid Twitter tokens found');
         }
@@ -227,30 +267,42 @@ async function searchTwitterAPI(query, platforms, user = null) {
     let response;
     
     // If using user OAuth, wrap in token refresh logic
-    if (authMethod === 'user-oauth' && user?.email) {
-      const TwitterService = require('../utils/TwitterService');
-      const twitterService = new TwitterService();
-      
-      let adminEmail = user.email;
-      if (user.isAdminMode) {
-        adminEmail = 'jim.carucci+prod@protonmail.com';
-      }
-      
-      response = await twitterService.executeWithTokenRefresh(adminEmail, async (newAccessToken) => {
-        let apiClient = client;
+    if (authMethod === 'user-oauth' && identity) {
+      try {
+        const TwitterService = require('../utils/TwitterService');
+        const twitterService = new TwitterService();
         
-        // If we got a refreshed token, create a new client with it
-        if (newAccessToken) {
-          console.log('🔄 Using refreshed token for Twitter search');
-          apiClient = new TwitterApi(newAccessToken);
-        }
+        response = await twitterService.executeWithTokenRefresh(identity, async (newAccessToken) => {
+          let apiClient = client;
+          
+          // If we got a refreshed token, create a new client with it
+          if (newAccessToken) {
+            console.log('🔄 Using refreshed token for Twitter search');
+            apiClient = new TwitterApi(newAccessToken);
+          }
+          
+          return await apiClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
+            'user.fields': [
+              'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
+            ]
+          });
+        });
+      } catch (userOAuthError) {
+        // User OAuth failed even after refresh attempt - fall back to app-only
+        console.log('🔄 User OAuth with refresh failed, falling back to app-only:', userOAuthError.message);
         
-        return await apiClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
+        const appClient = new TwitterApi({
+          appKey: process.env.TWITTER_CONSUMER_KEY,
+          appSecret: process.env.TWITTER_CONSUMER_SECRET,
+        });
+        const appOnlyClient = await appClient.appLogin();
+        
+        response = await appOnlyClient.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
           'user.fields': [
             'id', 'name', 'username', 'verified', 'verified_type', 'profile_image_url', 'description', 'public_metrics', 'protected'
           ]
         });
-      });
+      }
     } else {
       // For app-only auth, just make the call directly
       response = await client.v2.usersByUsernames([query.replace(/^@/, '').toLowerCase()], {
@@ -1054,9 +1106,8 @@ router.post('/pins/:pinId/link-nostr', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 
@@ -1126,9 +1177,8 @@ router.post('/pins/:pinId/unlink-nostr', authenticateToken, async (req, res) => 
     
     console.log('Unlink Nostr request for pin:', pinId);
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 
@@ -1186,9 +1236,8 @@ router.get('/pins/:pinId/suggest-nostr', authenticateToken, async (req, res) => 
     
     console.log('Suggest Nostr profiles for pin:', pinId);
 
-    // Get user and find the pin
-    const userEmail = req.user.isAdminMode ? 'jim.carucci+prod@protonmail.com' : req.user.email;
-    const user = await User.findOne({ email: userEmail }).select('+mention_preferences');
+    // Get user and find the pin (supports email, provider, and admin mode)
+    const user = await findMentionsUser(req.user);
     
     if (!user || !user.mention_preferences?.pinned_mentions) {
       return res.status(404).json({ 

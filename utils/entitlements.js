@@ -1,10 +1,11 @@
 const { Entitlement } = require('../models/Entitlement');
+const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 /**
  * Default configuration for different entitlement types
  */
 const ENTITLEMENT_CONFIGS = {
-  onDemandRun: {
+  [ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN]: {
     maxUsage: parseInt(process.env.ON_DEMAND_USAGE_LIMIT) || 10,
     periodLengthDays: parseInt(process.env.ON_DEMAND_PERIOD_DAYS) || 30
   },

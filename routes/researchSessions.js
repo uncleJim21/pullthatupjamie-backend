@@ -1,17 +1,18 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
-const { User } = require('../models/User');
-const { getClipsByIdsBatch } = require('../agent-tools/pineconeTools');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const { getClipsByIdsBatch, formatResults } = require('../agent-tools/pineconeTools');
 const { OpenAI } = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const { createCanvas, loadImage } = require('canvas');
 const path = require('path');
 const DigitalOceanSpacesManager = require('../utils/DigitalOceanSpacesManager');
 const fetch = require('node-fetch');
+const { resolveOwner, lazyMigrateOwnership } = require('../utils/resolveOwner');
+const { streamResearchAnalysis } = require('../utils/researchAnalysis');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -148,51 +149,7 @@ async function generateSmartShareTitle(lastItemMetadata, fallbackTitle) {
   }
 }
 
-/**
- * Resolve the logical owner of a research session for the current request.
- * - Prefer authenticated User (via JWT Bearer token)
- * - Fallback to anonymous clientId (from query, header, or body)
- *
- * Returns:
- *   { userId, clientId, ownerType } or null if no owner can be resolved
- */
-async function resolveOwner(req) {
-  let userId = null;
-
-  // Try to resolve authenticated user from JWT (if provided)
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      const email = decoded?.email;
-      if (email) {
-        const user = await User.findOne({ email }).select('_id');
-        if (user) {
-          userId = user._id;
-        }
-      }
-    } catch (err) {
-      console.warn('[ResearchSessions] Failed to verify JWT, treating as anonymous:', err.message);
-    }
-  }
-
-  // Accept clientId for anonymous usage
-  const clientId =
-    (req.query && req.query.clientId) ||
-    req.headers['x-client-id'] ||
-    (req.body && req.body.clientId) ||
-    null;
-
-  if (userId) {
-    return { userId, clientId: null, ownerType: 'user' };
-  }
-  if (clientId) {
-    return { userId: null, clientId, ownerType: 'client' };
-  }
-
-  return null;
-}
+// resolveOwner imported from utils/resolveOwner so multiple endpoints can share it.
 
 /**
  * GET /api/research-sessions
@@ -214,14 +171,16 @@ router.get('/', async (req, res) => {
       });
     }
 
-    const query = owner.userId
-      ? { userId: owner.userId }
-      : { clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const query = owner.buildQuery();
 
     const sessions = await ResearchSession.find(query)
       .sort({ createdAt: -1 })
       .lean()
       .exec();
+
+    // Lazy migrate any anonymous sessions to the authenticated user
+    await lazyMigrateOwnership(ResearchSession, owner, sessions);
 
     const data = sessions.map((session) => ({
       id: session._id,
@@ -311,7 +270,30 @@ router.post('/', async (req, res) => {
     }
 
     // Fetch metadata snapshots from Pinecone once at creation time
-    const clips = await getClipsByIdsBatch(uniquePineconeIds);
+    // In DEBUG_MODE or if client provides items array, use client-provided metadata to avoid Pinecone latency
+    const clientItems = req.body.items;
+    const hasClientMetadata = Array.isArray(clientItems) && clientItems.length > 0;
+    const isDebugMode = process.env.DEBUG_MODE === 'true';
+    
+    let clips = [];
+    if (hasClientMetadata) {
+      console.log('[ResearchSessions POST] Using client-provided metadata for', clientItems.length, 'items');
+      // Build clips from client items
+      clips = clientItems
+        .filter(item => item && item.pineconeId)
+        .map(item => ({
+          shareLink: item.pineconeId,
+          ...(item.metadata || {})
+        }));
+    } else if (isDebugMode) {
+      console.log('[ResearchSessions POST] DEBUG_MODE: skipping Pinecone, using empty metadata');
+      // In debug mode without client items, just use IDs with empty metadata
+      clips = uniquePineconeIds.map(id => ({ shareLink: id }));
+    } else {
+      console.log('[ResearchSessions POST] Fetching clips from Pinecone...');
+      clips = await getClipsByIdsBatch(uniquePineconeIds);
+      console.log('[ResearchSessions POST] Pinecone returned', clips?.length, 'clips');
+    }
 
     // Map clips by shareLink for quick lookup
     const clipById = new Map();
@@ -361,9 +343,11 @@ router.post('/', async (req, res) => {
     const defaultTitle = deriveShareTitleFromLastItem(effectiveLastItemMetadata);
     const sessionTitle = await generateSmartShareTitle(effectiveLastItemMetadata, defaultTitle);
 
+    // For new sessions: prefer userId if authenticated, otherwise use clientId
+    // This ensures new sessions are created under the authenticated identity
     const session = new ResearchSession({
-      userId: owner.userId || undefined,
-      clientId: owner.clientId || undefined,
+      userId: owner.isAuthenticated ? owner.userId : undefined,
+      clientId: owner.isAuthenticated ? undefined : owner.clientId,
       pineconeIds: uniquePineconeIds,
       items,
       title: sessionTitle,
@@ -447,9 +431,8 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     if (typeof expectedVersion === 'number') {
       ownerQuery.__v = expectedVersion;
@@ -470,6 +453,9 @@ router.patch('/:id', async (req, res) => {
         details: 'No session found for this id and owner'
       });
     }
+
+    // Lazy migrate if this session was found via clientId but user is now authenticated
+    await lazyMigrateOwnership(ResearchSession, owner, [session]);
 
     // Append new Pinecone IDs if provided (preserve order, avoid duplicates)
     if (Array.isArray(pineconeIds) && pineconeIds.length > 0) {
@@ -580,12 +566,13 @@ router.get('/:id', async (req, res) => {
     const owner = await resolveOwner(req);
 
     let session;
+    let shouldMigrate = false;
+    
     if (owner) {
-      const ownerQuery = owner.userId
-        ? { _id: id, userId: owner.userId }
-        : { _id: id, clientId: owner.clientId };
-
+      // Use buildQuery to handle $or for authenticated users with clientId
+      const ownerQuery = owner.buildQuery({ _id: id });
       session = await ResearchSession.findOne(ownerQuery).lean().exec();
+      shouldMigrate = !!session;
     }
 
     // Fallback: if no owner or not found for this owner, allow lookup by id only
@@ -599,25 +586,124 @@ router.get('/:id', async (req, res) => {
       }
     }
 
+    // Lazy migrate if session was found via owner query (not public fallback)
+    if (shouldMigrate && owner) {
+      await lazyMigrateOwnership(ResearchSession, owner, [session]);
+    }
+
     const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
 
     let items = [];
-    if (Array.isArray(session.items) && session.items.length > 0) {
-      // Prefer stored metadata snapshots when available, and ensure embeddings are not exposed
+    if (pineconeIds.length > 0) {
+      // Prefer stored metadata snapshots when available, but do NOT drop entries with null metadata.
+      // Instead, hydrate missing metadata from MongoDB (JamieVectorMetadata) so the response aligns
+      // with pineconeIds (and preserves order/duplicates).
+
+      const orderedIds = pineconeIds;
+
+      // Build lookup map of stored snapshots by pineconeId
+      const storedById = new Map();
+      if (Array.isArray(session.items) && session.items.length > 0) {
+        session.items.forEach((entry) => {
+          if (!entry || typeof entry !== 'object') return;
+          const pid = entry.pineconeId;
+          const meta = entry.metadata;
+          if (typeof pid === 'string' && pid.length > 0 && meta && typeof meta === 'object') {
+            const { embedding, ...rest } = meta;
+            storedById.set(pid, rest);
+          }
+        });
+      }
+
+      // Determine which IDs still need hydration
+      const missingIds = [];
+      orderedIds.forEach((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return;
+        if (!storedById.has(pid)) missingIds.push(pid);
+      });
+
+      // Hydrate missing items from MongoDB mirror first (fast + local).
+      const mongoById = new Map();
+      if (missingIds.length > 0) {
+        const uniqueMissing = Array.from(new Set(missingIds));
+        const mongoDocs = await JamieVectorMetadata.find({
+          pineconeId: { $in: uniqueMissing }
+        })
+          .select('pineconeId metadataRaw')
+          .lean();
+
+        const formatted = formatResults(
+          (mongoDocs || []).map((doc) => ({
+            id: doc.pineconeId,
+            score: 1,
+            metadata: doc.metadataRaw || {}
+          }))
+        );
+
+        formatted.forEach((clip) => {
+          if (clip && clip.shareLink) {
+            const { embedding, ...rest } = clip;
+            mongoById.set(clip.shareLink, rest);
+          }
+        });
+      }
+
+      // Optional final fallback: Pinecone batch fetch for anything still missing from both snapshots + Mongo.
+      // (This keeps behavior similar to legacy sessions, but should rarely be needed if Mongo is complete.)
+      const pineconeById = new Map();
+      const stillMissing = [];
+      orderedIds.forEach((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return;
+        if (storedById.has(pid)) return;
+        if (mongoById.has(pid)) return;
+        stillMissing.push(pid);
+      });
+
+      if (stillMissing.length > 0) {
+        const clips = await getClipsByIdsBatch(stillMissing);
+        (clips || []).forEach((clip) => {
+          if (clip && clip.shareLink) {
+            const { embedding, ...rest } = clip;
+            pineconeById.set(clip.shareLink, rest);
+          }
+        });
+      }
+
+      // Rebuild in the same order as pineconeIds (including duplicates)
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+      items = orderedIds
+        .map((pid) => {
+          if (typeof pid !== 'string' || pid.length === 0) return null;
+          return storedById.get(pid) || mongoById.get(pid) || pineconeById.get(pid) || {
+            shareLink: pid,
+            shareUrl: `${baseUrl}/share?clip=${pid}`,
+            listenLink: '',
+            quote: 'Quote unavailable',
+            summary: null,
+            headline: null,
+            description: null,
+            episode: 'Unknown episode',
+            creator: 'Creator not specified',
+            audioUrl: 'URL unavailable',
+            episodeImage: 'Image unavailable',
+            date: 'Date not provided',
+            published: null,
+            similarity: { combined: 1, vector: 1 },
+            timeContext: { start_time: null, end_time: null },
+            additionalFields: {},
+            hierarchyLevel: 'paragraph'
+          };
+        })
+        .filter(Boolean);
+    } else if (Array.isArray(session.items) && session.items.length > 0) {
+      // Legacy fallback: no pineconeIds array; return any stored snapshots we have.
       items = session.items
-        .map(entry => entry?.metadata || null)
+        .map((entry) => entry?.metadata || null)
         .filter(Boolean)
-        .map(meta => {
+        .map((meta) => {
           const { embedding, ...rest } = meta;
           return rest;
         });
-    } else if (pineconeIds.length > 0) {
-      // Fallback for legacy sessions without stored metadata
-      const clips = await getClipsByIdsBatch(pineconeIds);
-      items = clips.map(clip => {
-        const { embedding, ...rest } = clip || {};
-        return rest;
-      });
     }
 
     return res.json({
@@ -1123,9 +1209,8 @@ router.post('/:id/share', async (req, res) => {
     const { id } = req.params;
     const { title, nodes, camera, visibility } = req.body || {};
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     const baseSession = await ResearchSession.findOne(ownerQuery).lean().exec();
     if (!baseSession) {
@@ -1134,6 +1219,9 @@ router.post('/:id/share', async (req, res) => {
         details: 'No session found for this id and owner'
       });
     }
+
+    // Lazy migrate if this session was found via clientId but user is now authenticated
+    await lazyMigrateOwnership(ResearchSession, owner, [baseSession]);
 
     let sanitizedNodes;
     try {
@@ -1232,6 +1320,139 @@ router.post('/:id/share', async (req, res) => {
 });
 
 /**
+ * POST /api/research-sessions/enrich
+ *
+ * Enrich a list of pineconeIds with full metadata from the MongoDB content database.
+ * Used to backfill metadata for research session items that were stored with minimal data.
+ *
+ * Request body:
+ * {
+ *   "pineconeIds": ["guid_p1", "guid_p2", ...]
+ * }
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "data": { "guid_p1": { ...metadata }, "guid_p2": { ...metadata } },
+ *   "notFound": ["invalid_id"]
+ * }
+ */
+router.post('/enrich', async (req, res) => {
+  try {
+    // Require some form of identity to prevent abuse/scraping
+    // Accept either authenticated user (JWT) or clientId
+    const owner = await resolveOwner(req);
+    console.log('[ResearchSessions/enrich] Owner resolved:', owner ? {
+      userId: owner.userId,
+      clientId: owner.clientId,
+      ownerType: owner.ownerType,
+      isAuthenticated: owner.isAuthenticated
+    } : null);
+    
+    if (!owner) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        details: 'Provide a valid JWT token or clientId'
+      });
+    }
+
+    const { pineconeIds } = req.body || {};
+
+    // Validate pineconeIds
+    if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request',
+        details: 'pineconeIds must be a non-empty array'
+      });
+    }
+
+    // Validate all entries are strings
+    const allStrings = pineconeIds.every(id => typeof id === 'string' && id.trim().length > 0);
+    if (!allStrings) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request',
+        details: 'All pineconeIds must be non-empty strings'
+      });
+    }
+
+    // Enforce max limit
+    if (pineconeIds.length > 50) {
+      return res.status(413).json({
+        success: false,
+        error: 'Too many IDs',
+        details: 'Maximum 50 pineconeIds per request'
+      });
+    }
+
+    // De-duplicate while preserving order for tracking
+    const uniqueIds = [...new Set(pineconeIds)];
+
+    // Fetch from MongoDB (JamieVectorMetadata)
+    const mongoDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: uniqueIds }
+    })
+      .select('pineconeId metadataRaw')
+      .lean();
+
+    // Format results using the shared formatter
+    const formatted = formatResults(
+      (mongoDocs || []).map((doc) => ({
+        id: doc.pineconeId,
+        score: 1,
+        metadata: doc.metadataRaw || {}
+      }))
+    );
+
+    // Build response keyed by pineconeId
+    const data = {};
+    const foundIds = new Set();
+
+    formatted.forEach((clip) => {
+      if (clip && clip.shareLink) {
+        const { embedding, shareLink, shareUrl, listenLink, similarity, ...rest } = clip;
+        
+        // Extract clean metadata matching the spec
+        data[shareLink] = {
+          quote: rest.quote || null,
+          summary: rest.summary || null,
+          headline: rest.headline || null,
+          episode: rest.episode || 'Unknown episode',
+          creator: rest.creator || 'Unknown creator',
+          episodeImage: rest.episodeImage || null,
+          audioUrl: rest.audioUrl || null,
+          date: rest.date || null,
+          feedId: rest.additionalFields?.feedId || null,
+          guid: rest.additionalFields?.guid || null,
+          timeContext: rest.timeContext || null,
+          hierarchyLevel: rest.hierarchyLevel || 'paragraph'
+        };
+        
+        foundIds.add(shareLink);
+      }
+    });
+
+    // Track which IDs were not found
+    const notFound = uniqueIds.filter(id => !foundIds.has(id));
+
+    return res.json({
+      success: true,
+      data,
+      notFound
+    });
+  } catch (error) {
+    console.error('[ResearchSessions] Error enriching pineconeIds:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: 'Failed to fetch metadata'
+    });
+  }
+});
+
+/**
  * POST /api/research-sessions/:id/analyze
  *
  * Analyze a specific research session with an LLM (gpt-4o-mini) and stream back the response.
@@ -1250,11 +1471,11 @@ router.post('/:id/analyze', async (req, res) => {
     const { id } = req.params;
     const { instructions } = req.body || {};
 
-    const ownerQuery = owner.userId
-      ? { _id: id, userId: owner.userId }
-      : { _id: id, clientId: owner.clientId };
+    // Use buildQuery to handle $or for authenticated users with clientId
+    const ownerQuery = owner.buildQuery({ _id: id });
 
     let session = await ResearchSession.findOne(ownerQuery).lean().exec();
+    let shouldMigrate = !!session;
 
     // Fallback: if not found for this owner, allow lookup by id only
     if (!session) {
@@ -1265,6 +1486,12 @@ router.post('/:id/analyze', async (req, res) => {
           details: 'No session found for this id'
         });
       }
+      shouldMigrate = false;
+    }
+
+    // Lazy migrate if session was found via owner query (not public fallback)
+    if (shouldMigrate) {
+      await lazyMigrateOwnership(ResearchSession, owner, [session]);
     }
 
     const items = Array.isArray(session.items) ? session.items : [];
@@ -1276,92 +1503,17 @@ router.post('/:id/analyze', async (req, res) => {
       });
     }
 
-    // Build a concise text context from the session items (cap at 20 items)
-    const MAX_ITEMS = 20;
-    const limitedItems = items.slice(0, MAX_ITEMS);
-
-    const contextLines = limitedItems.map((item, index) => {
-      const meta = item.metadata || {};
-      const quote = meta.quote || meta.summary || meta.headline || '(no quote)';
-      const episode = meta.episode || 'Unknown episode';
-      const creator = meta.creator || 'Unknown creator';
-      const audioUrl = meta.audioUrl || '';
-      const startTime = meta.timeContext?.start_time ?? null;
-      const startSeconds = typeof startTime === 'number' && !Number.isNaN(startTime)
-        ? Math.floor(startTime)
-        : null;
-
-      return [
-        `Item ${index + 1}:`,
-        `Episode: ${episode}`,
-        `Creator: ${creator}`,
-        audioUrl ? `AudioUrl: ${audioUrl}` : 'AudioUrl: (not available)',
-        startSeconds !== null
-          ? `StartTimeSeconds: ${startSeconds}`
-          : 'StartTimeSeconds: (unknown)',
-        `Quote: ${quote}`,
-        ''
-      ].join('\n');
+    const orderedIds = Array.isArray(session.pineconeIds) && session.pineconeIds.length
+      ? session.pineconeIds
+      : items
+          .map((it) => it && it.pineconeId)
+          .filter((val) => typeof val === 'string' && val.length > 0);
+    await streamResearchAnalysis({
+      openai,
+      res,
+      orderedPineconeIds: orderedIds,
+      instructions
     });
-
-    const contextText = contextLines.join('\n---\n');
-
-    const baseInstructions = `
-You are an AI assistant analyzing a research session composed of podcast clips.
-
-You will receive:
-- A list of items, each with episode title, creator, a short quote,
-  and when available: an AudioUrl and a StartTimeSeconds value.
-
-Your goals:
-1. Summarize the key themes and ideas across all items.
-2. Call out any patterns, contradictions, or notable perspectives.
-3. Suggest 3–5 follow-up questions or angles for deeper research.
-
-Source citation requirements (IMPORTANT):
-- When you reference a specific item or quote, and BOTH AudioUrl and StartTimeSeconds are available,
-  append an inline source in this exact format on the SAME line:
-  {AudioUrl}#t={StartTimeSeconds}
-  Example: https://example.com/audio.mp3#t=300
-- If either AudioUrl or StartTimeSeconds is missing, you may omit the source.
-
-Output format (IMPORTANT):
-- On the FIRST line, output: TITLE: <concise title, max 8 words, no quotes, no emojis>.
-- On the SECOND line, output a single blank line.
-- Starting from the THIRD line, output your full analysis of the research session
-  following the source citation rules above.
-
-Do NOT output anything before the TITLE line. Be concise but insightful. Assume the reader is technical and curious.
-`.trim();
-
-    const userInstructions = (typeof instructions === 'string' && instructions.trim().length > 0)
-      ? instructions.trim()
-      : 'Use the default analysis goals above.';
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-
-    const stream = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      stream: true,
-      messages: [
-        { role: 'system', content: baseInstructions },
-        {
-          role: 'user',
-          content: `Here is the research session context:\n\n${contextText}\n\nUser instructions: ${userInstructions}`
-        }
-      ],
-      temperature: 0.4
-    });
-
-    for await (const chunk of stream) {
-      const content = chunk.choices?.[0]?.delta?.content || '';
-      if (content) {
-        res.write(content);
-      }
-    }
-
-    res.end();
   } catch (error) {
     console.error('[ResearchSessions] Error analyzing session with AI:', error);
     if (!res.headersSent) {

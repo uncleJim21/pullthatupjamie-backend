@@ -1,10 +1,46 @@
 const express = require('express');
 const router = express.Router();
-const { User } = require('../models/User');
+const { User } = require('../models/shared/UserSchema');
 const { authenticateToken } = require('../middleware/authMiddleware');
 
 // Current schema version (YYYYMMDDXXX format)
 const CURRENT_SCHEMA_VERSION = 20250812001;
+
+/**
+ * Find user by req.user (supports email OR provider-based auth)
+ * Works with Twitter, Nostr, and email-based users
+ */
+async function findUserFromRequest(req, selectFields = '') {
+  if (req.user.email) {
+    return User.findOne({ email: req.user.email }).select(selectFields);
+  } else if (req.user.provider && req.user.providerId) {
+    return User.findOne({
+      'authProvider.provider': req.user.provider,
+      'authProvider.providerId': req.user.providerId
+    }).select(selectFields);
+  } else if (req.user.id) {
+    // Fallback to user ID if available
+    return User.findById(req.user.id).select(selectFields);
+  }
+  return null;
+}
+
+/**
+ * Build query filter from req.user (supports email OR provider-based auth)
+ */
+function buildUserFilter(req) {
+  if (req.user.email) {
+    return { email: req.user.email };
+  } else if (req.user.provider && req.user.providerId) {
+    return {
+      'authProvider.provider': req.user.provider,
+      'authProvider.providerId': req.user.providerId
+    };
+  } else if (req.user.id) {
+    return { _id: req.user.id };
+  }
+  return null;
+}
 
 // Deep merge helper that merges arrays of objects by "id" when present,
 // otherwise replaces arrays. Objects are merged recursively.
@@ -60,9 +96,9 @@ function deepMergeById(base, incoming) {
  */
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    // Find user by email from token
-    const user = await User.findOne({ email: req.user.email }).select('+app_preferences');
-    console.log('Found user:', user?.email);
+    // Find user by email OR provider (supports Twitter/Nostr)
+    const user = await findUserFromRequest(req, '+app_preferences');
+    console.log('Found user:', user?.email || user?.authProvider?.providerId);
 
     // Return default preferences if no preferences exist yet
     if (!user?.app_preferences) {
@@ -106,7 +142,7 @@ router.put('/', authenticateToken, async (req, res) => {
     }
 
     // Load existing preferences to perform a deep merge
-    const existingUser = await User.findOne({ email: req.user.email }).select('+app_preferences');
+    const existingUser = await findUserFromRequest(req, '+app_preferences');
     const existingData = existingUser?.app_preferences?.data || {};
 
     // Ensure scheduledPostSlots exists as array on base before merging
@@ -157,8 +193,11 @@ router.put('/', authenticateToken, async (req, res) => {
     }
 
     // Persist merged preferences with strong write concern, then re-read fresh from DB
-    // Update all docs that match this email in case of accidental duplicates
-    const updateFilter = { email: req.user.email };
+    const updateFilter = buildUserFilter(req);
+    if (!updateFilter) {
+      return res.status(400).json({ error: 'Unable to identify user' });
+    }
+    
     const updateOperation = {
       $set: {
         'app_preferences.data': mergedPreferences,
@@ -171,12 +210,12 @@ router.put('/', authenticateToken, async (req, res) => {
     // Wait briefly to ensure replication and read-after-write visibility even under lag
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    const user = await User.findOne({ email: req.user.email })
+    const user = await User.findOne(updateFilter)
       .read('primary')
       .select('+app_preferences')
       .lean();
 
-    console.log('Updated user preferences for:', user?.email);
+    console.log('Updated user preferences for:', user?.email || user?.authProvider?.providerId);
 
     const responseData = user?.app_preferences?.data || {};
     if (!Array.isArray(responseData.scheduledPostSlots)) {

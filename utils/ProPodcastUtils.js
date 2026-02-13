@@ -1,6 +1,78 @@
 const { ProPodcastDetails } = require('../models/ProPodcastDetails');
 
 /**
+ * Find a podcast by admin identity (supports both new userId and legacy email)
+ * 
+ * @param {Object} identity - Admin identity object
+ * @param {string} [identity.userId] - MongoDB User _id (preferred)
+ * @param {string} [identity.email] - Admin email (legacy fallback)
+ * @returns {Promise<Object|null>} - Returns the podcast details or null
+ */
+async function getProPodcastByAdmin(identity) {
+  const { userId, email } = identity;
+  
+  if (!userId && !email) {
+    console.warn('[ProPodcastUtils] getProPodcastByAdmin called without userId or email');
+    return null;
+  }
+  
+  try {
+    // Build query: prefer adminUserId, fallback to adminEmail
+    const query = { $or: [] };
+    
+    if (userId) {
+      query.$or.push({ adminUserId: userId });
+    }
+    if (email) {
+      query.$or.push({ adminEmail: email });
+    }
+    
+    const podcast = await ProPodcastDetails.findOne(query).lean();
+    return podcast || null;
+  } catch (error) {
+    console.error('[ProPodcastUtils] Error in getProPodcastByAdmin:', error);
+    throw new Error('Database query failed');
+  }
+}
+
+/**
+ * Check if a user is admin of a specific podcast
+ * 
+ * @param {string} feedId - The podcast feed ID
+ * @param {Object} identity - Admin identity object
+ * @param {string} [identity.userId] - MongoDB User _id
+ * @param {string} [identity.email] - Admin email
+ * @returns {Promise<Object|null>} - Returns the podcast if user is admin, null otherwise
+ */
+async function verifyPodcastAdminAccess(feedId, identity) {
+  const { userId, email } = identity;
+  
+  if (!feedId || (!userId && !email)) {
+    return null;
+  }
+  
+  try {
+    const query = { 
+      feedId,
+      $or: []
+    };
+    
+    if (userId) {
+      query.$or.push({ adminUserId: userId });
+    }
+    if (email) {
+      query.$or.push({ adminEmail: email });
+    }
+    
+    const podcast = await ProPodcastDetails.findOne(query).lean();
+    return podcast || null;
+  } catch (error) {
+    console.error('[ProPodcastUtils] Error in verifyPodcastAdminAccess:', error);
+    throw new Error('Database query failed');
+  }
+}
+
+/**
  * Retrieves a podcast by its feedId from the database.
  * @param {string} feedId - The unique ID of the podcast feed.
  * @returns {Promise<Object|null>} - Returns the podcast details or null if not found.
@@ -33,6 +105,13 @@ async function getProPodcastByFeedId(feedId) {
 }
 
 async function getProPodcastByAdminEmail(adminEmail) {
+  // IMPORTANT: Return null if email is null/undefined/empty
+  // Otherwise MongoDB query { adminEmail: null } would match all docs with null email!
+  if (!adminEmail) {
+    console.warn('[ProPodcastUtils] getProPodcastByAdminEmail called with null/empty email - returning null');
+    return null;
+  }
+  
   try {
     const podcast = await ProPodcastDetails.findOne({ adminEmail }).lean();
     return podcast || null;
@@ -92,7 +171,9 @@ async function getTwitterTokens(adminEmail) {
 
 module.exports = {
   getProPodcastByFeedId,
-  getProPodcastByAdminEmail,
+  getProPodcastByAdminEmail,  // Legacy - prefer getProPodcastByAdmin
+  getProPodcastByAdmin,       // New - supports userId + email
+  verifyPodcastAdminAccess,   // New - check admin access to specific feed
   updateTwitterTokens,
   getTwitterTokens
 };

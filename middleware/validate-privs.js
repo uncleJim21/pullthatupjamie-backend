@@ -1,8 +1,13 @@
-const { getProPodcastByAdminEmail } = require('../utils/ProPodcastUtils');
+const { getProPodcastByAdmin } = require('../utils/ProPodcastUtils');
+const { User } = require('../models/shared/UserSchema');
 const jwt = require('jsonwebtoken');
 
 /**
  * Middleware to validate podcast admin privileges using bearer token
+ * 
+ * Supports both:
+ * - New JWT format: { sub, provider, email } → looks up by adminUserId
+ * - Legacy JWT format: { email } → looks up by adminEmail
  */
 const validatePrivs = async (req, res, next) => {
     try {
@@ -20,19 +25,52 @@ const validatePrivs = async (req, res, next) => {
         // Verify the JWT token
         const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
         
-        // Get the podcast details using the email from the token
-        const podcast = await getProPodcastByAdminEmail(decoded.email);
+        // Resolve user identity (supports both email and provider-based JWTs)
+        let dbUser = null;
+        let adminUserId = null;
+        let adminEmail = decoded.email || null;
+        
+        // New JWT format: { sub, provider }
+        if (decoded.sub && decoded.provider) {
+            dbUser = await User.findOne({
+                'authProvider.provider': decoded.provider,
+                'authProvider.providerId': decoded.sub
+            }).select('_id email');
+            
+            if (dbUser) {
+                adminUserId = dbUser._id;
+                adminEmail = adminEmail || dbUser.email;
+            }
+        }
+        // Legacy JWT format: { email }
+        else if (decoded.email) {
+            dbUser = await User.findOne({ email: decoded.email }).select('_id');
+            if (dbUser) {
+                adminUserId = dbUser._id;
+            }
+        }
+        
+        if (!adminUserId && !adminEmail) {
+            return res.status(401).json({ 
+                error: 'Not authenticated',
+                message: 'Could not identify user from token'
+            });
+        }
+        
+        // Get the podcast details using the new helper (supports both userId and email)
+        const podcast = await getProPodcastByAdmin({ userId: adminUserId, email: adminEmail });
         
         if (!podcast) {
             return res.status(401).json({ 
                 error: 'Not authorized',
-                message: 'No podcast found for this admin email'
+                message: 'No podcast found for this admin'
             });
         }
 
         // Add the podcast to the request for use in routes
         req.user = {
-            adminEmail: decoded.email,
+            adminUserId,       // NEW: For non-email users
+            adminEmail,
             podcast
         };
 

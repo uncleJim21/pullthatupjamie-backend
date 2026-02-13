@@ -1,11 +1,34 @@
 // db-backup-manager.js
+// =============================================================================
+// DEPRECATED: SQLite Database Backup Manager
+// =============================================================================
+// This backup manager was designed for SQLite databases which have been removed
+// due to security vulnerabilities in the sqlite3 dependency chain.
+//
+// STATUS: Disabled - no SQLite databases remain to backup
+//
+// NOTE: MongoDB handles its own backups through Atlas or mongodump.
+// If you need application-level backups, consider:
+// - MongoDB Atlas automated backups
+// - mongodump scheduled via cron
+// - A new backup utility for MongoDB collections
+// =============================================================================
+
 const fs = require('fs').promises;
 const path = require('path');
 const DigitalOceanSpacesManager = require('./DigitalOceanSpacesManager');
 
 class DatabaseBackupManager {
   constructor(config) {
-    // Validate required configuration
+    // DEPRECATED: SQLite databases have been removed
+    console.warn('[DEPRECATED] DatabaseBackupManager: SQLite databases have been removed.');
+    console.warn('[DEPRECATED] This backup manager is now a no-op. Use MongoDB backup solutions instead.');
+    
+    // Keep minimal config for compatibility but don't actually do anything
+    this.disabled = true;
+    
+    /*
+    // Original implementation - kept for reference
     if (!config) {
       throw new Error('Configuration object is required');
     }
@@ -23,7 +46,6 @@ class DatabaseBackupManager {
       }
     } = config;
 
-    // Validate required credentials
     if (!spacesEndpoint || !accessKeyId || !secretAccessKey || !bucketName) {
       throw new Error('Missing required DigitalOcean Spaces credentials. Check your environment variables.');
     }
@@ -43,9 +65,16 @@ class DatabaseBackupManager {
     this.backupInterval = backupInterval;
     this.dbPaths = dbPaths;
     this.spacesEndpoint = spacesEndpoint;
+    */
   }
 
   async initialize() {
+    if (this.disabled) {
+      console.log('[DEPRECATED] DatabaseBackupManager.initialize() - no-op, SQLite removed');
+      return;
+    }
+    
+    /*
     try {
       console.log('Initializing database backup system...');
       await this.checkAndRestoreBackups();
@@ -55,12 +84,15 @@ class DatabaseBackupManager {
       console.error('Error initializing database backup system:', error);
       throw error;
     }
+    */
   }
 
   async checkAndRestoreBackups() {
+    if (this.disabled) return;
+    
+    /*
     for (const [dbName, localPath] of Object.entries(this.dbPaths)) {
       try {
-        // Check if local database exists
         const localExists = await fs.access(localPath)
           .then(() => true)
           .catch(() => false);
@@ -76,80 +108,27 @@ class DatabaseBackupManager {
         console.error(`Error checking/restoring backup for ${dbName}:`, error);
       }
     }
+    */
   }
 
   async checkAndRestoreIfNewer(dbName, localPath) {
-    try {
-      const backupKey = `db-backups/${dbName}-${this.getDateString()}`;
-      const localStats = await fs.stat(localPath);
-      
-      // Try to get the backup file's metadata
-      try {
-        const backupBuffer = await this.spacesManager.getFileAsBuffer(
-          this.bucketName,
-          backupKey
-        );
-        
-        // If backup exists and is newer, restore it
-        const backupStats = await fs.stat(backupBuffer);
-        if (backupStats.mtime > localStats.mtime) {
-          console.log(`Backup of ${dbName} is newer, restoring...`);
-          await this.restoreFromBackup(dbName, localPath);
-        }
-      } catch (error) {
-        // If backup doesn't exist, that's fine
-        console.log(`No newer backup found for ${dbName}`);
-      }
-    } catch (error) {
-      console.error(`Error checking backup age for ${dbName}:`, error);
-    }
+    if (this.disabled) return;
+    // Original implementation removed - SQLite deprecated
   }
 
   async restoreFromBackup(dbName, localPath) {
-    try {
-      const backupKey = `db-backups/${dbName}-${this.getDateString()}`;
-      const backupBuffer = await this.spacesManager.getFileAsBuffer(
-        this.bucketName,
-        backupKey
-      );
-      
-      await fs.writeFile(localPath, backupBuffer);
-      console.log(`Successfully restored ${dbName} from backup`);
-    } catch (error) {
-      console.error(`Error restoring ${dbName} from backup:`, error);
-      throw error;
-    }
+    if (this.disabled) return;
+    // Original implementation removed - SQLite deprecated
   }
 
   startPeriodicBackup() {
-    // Perform initial backup
-    this.performBackup();
-
-    // Schedule periodic backups
-    setInterval(() => {
-      this.performBackup();
-    }, this.backupInterval);
+    if (this.disabled) return;
+    // Original implementation removed - SQLite deprecated
   }
 
   async performBackup() {
-    for (const [dbName, localPath] of Object.entries(this.dbPaths)) {
-      try {
-        const fileContent = await fs.readFile(localPath);
-        const backupKey = `db-backups/${dbName}-${this.getDateString()}`;
-        
-        await this.spacesManager.uploadFile(
-          this.bucketName,
-          backupKey,
-          fileContent,
-          'application/x-sqlite3',
-          this.spacesEndpoint
-        );
-
-        console.log(`Successfully backed up ${dbName} to ${backupKey}`);
-      } catch (error) {
-        console.error(`Error backing up ${dbName}:`, error);
-      }
-    }
+    if (this.disabled) return;
+    // Original implementation removed - SQLite deprecated
   }
 
   getDateString() {
@@ -157,9 +136,11 @@ class DatabaseBackupManager {
     return now.toISOString().split('T')[0];
   }
 
-  // Optional: Method to force an immediate backup
   async forceBackup() {
-    await this.performBackup();
+    if (this.disabled) {
+      console.log('[DEPRECATED] DatabaseBackupManager.forceBackup() - no-op, SQLite removed');
+      return;
+    }
   }
 }
 

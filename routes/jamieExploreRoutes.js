@@ -5,9 +5,12 @@ const { findSimilarDiscussions, getEpisodeByGuid, getParagraphWithEpisodeData, g
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
+const { multiSearchCache } = require('../utils/MultiSearchCacheManager.js');
+const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 // Feature flags
-const jamieExplorePostRoutesEnabled = false; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
+const jamieExplorePostRoutesEnabled = true; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
 
 // Pinecone timeout helper
 const PINECONE_TIMEOUT_MS = parseInt(process.env.PINECONE_TIMEOUT_MS || '45000', 10);
@@ -94,9 +97,20 @@ async function callOpenAIEmbeddingsWithRetry({ input, model = "text-embedding-ad
 if (jamieExplorePostRoutesEnabled) {
   printLog('[JAMIE-EXPLORE-ROUTES] POST routes ENABLED (search-quotes-3d, fetch-research-id)');
 
-router.post('/search-quotes-3d', async (req, res) => {
+router.post('/search-quotes-3d', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES_3D), async (req, res) => {
   const requestId = `SEARCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { query, feedIds=[], limit = 100, minDate = null, maxDate = null, episodeName = null, fastMode = false, extractAxisLabels = false } = req.body;
+  let {
+    query,
+    feedIds = [],
+    guid = null, // Optional: filter to a specific episode GUID (same as /api/search-quotes)
+    limit = 100,
+    minDate = null,
+    maxDate = null,
+    episodeName = null,
+    fastMode = false,
+    extractAxisLabels = false,
+    createSession = false // If true, creates a multi-search session and returns sessionId
+  } = req.body;
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -118,7 +132,9 @@ router.post('/search-quotes-3d', async (req, res) => {
   };
 
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST ==========`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}`);
+  printLog(
+    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUID: ${guid || 'none'}, CreateSession: ${createSession}`
+  );
 
   if (!query) {
     printLog(`[${requestId}] ERROR: Missing query parameter`);
@@ -148,6 +164,7 @@ router.post('/search-quotes-3d', async (req, res) => {
     printLog(`[${requestId}] Pinecone query params:`, {
       limit: effectiveLimit,
       feedIds,
+      guid,
       minDate,
       maxDate,
       episodeName,
@@ -160,6 +177,7 @@ router.post('/search-quotes-3d', async (req, res) => {
     const pineconeMatches = await findSimilarDiscussions({
       embedding,
       feedIds,
+      guid, // Optional GUID filter (same behavior as /api/search-quotes)
       limit: effectiveLimit,
       query,
       minDate,
@@ -389,6 +407,8 @@ router.post('/search-quotes-3d', async (req, res) => {
 
     // Step 6: Attach 3D coordinates to results
     printLog(`[${requestId}] Step 6: Attaching 3D coordinates to results...`);
+    
+    // Build results with coordinates, optionally keeping embeddings for session storage
     const results3d = similarDiscussions.map((result, index) => {
       // Remove embedding/values from response (too large, not needed by client)
       const { embedding, values, ...resultWithoutEmbedding } = result;
@@ -399,6 +419,22 @@ router.post('/search-quotes-3d', async (req, res) => {
         // hierarchyLevel already added by formatResults
       };
     });
+    
+    // If creating a session, build items with embeddings for storage
+    let sessionItems = null;
+    if (createSession) {
+      sessionItems = similarDiscussions.map((result, index) => {
+        const { values, ...resultWithoutValues } = result;
+        return {
+          pineconeId: result.shareLink || result.id || `item_${index}`,
+          embedding: embeddings[index], // Keep embedding for UMAP re-runs
+          metadata: resultWithoutValues,
+          coordinates3d: coordinates3d[index],
+          sourceQueryIndex: 0
+        };
+      });
+    }
+    
     printLog(`[${requestId}] ✓ Attached coordinates to ${results3d.length} results`);
 
     // Step 7: Extract axis labels (optional)
@@ -566,6 +602,19 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
     printLog(`[${requestId}]   - Total: ${timings.total}ms`);
     printLog(`[${requestId}] Returning ${results3d.length} results with 3D coordinates`);
 
+    // Create session if requested
+    let sessionId = null;
+    if (createSession && sessionItems && sessionItems.length > 0) {
+      const session = multiSearchCache.createSession({
+        query,
+        items: sessionItems,
+        axisLabels,
+        umapConfig: fastMode ? 'fast' : 'standard'
+      });
+      sessionId = session.id;
+      printLog(`[${requestId}] ✓ Created multi-search session: ${sessionId}`);
+    }
+
     // Return results with metadata
     const response = {
       query,
@@ -589,6 +638,12 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         approach: 'mongodb-optimized-metadata'
       }
     };
+    
+    // Add session ID if created
+    if (sessionId) {
+      response.sessionId = sessionId;
+      response.metadata.sessionCreated = true;
+    }
     
     // Add axis labels if generated
     if (axisLabels) {
@@ -636,10 +691,434 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
   }
 });
 
+router.post('/search-quotes-3d/expand', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES_3D), async (req, res) => {
+  const requestId = `EXPAND-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const {
+    sessionId,
+    queries = [], // Array of { query, feedIds?, guid?, minDate?, maxDate?, episodeName?, limit? }
+    fastMode = false,
+    extractAxisLabels = false
+  } = req.body;
+
+  printLog(`[${requestId}] ========== EXPAND SESSION REQUEST ==========`);
+  printLog(`[${requestId}] SessionId: ${sessionId}, Queries: ${queries.length}, FastMode: ${fastMode}`);
+
+  const startTime = Date.now();
+  const timings = {
+    embedding: 0,
+    search: 0,
+    mongoLookup: 0,
+    reembedding: 0,
+    umap: 0,
+    axisLabeling: 0,
+    total: 0
+  };
+
+  // Validate inputs
+  if (!sessionId) {
+    return res.status(400).json({ error: 'sessionId is required' });
+  }
+
+  if (!Array.isArray(queries) || queries.length === 0) {
+    return res.status(400).json({ error: 'queries array is required and must not be empty' });
+  }
+
+  // Limit queries per request to prevent abuse
+  const MAX_QUERIES_PER_EXPAND = 5;
+  if (queries.length > MAX_QUERIES_PER_EXPAND) {
+    return res.status(400).json({ 
+      error: `Maximum ${MAX_QUERIES_PER_EXPAND} queries per expand request`,
+      provided: queries.length
+    });
+  }
+
+  // Validate each query has the required 'query' field
+  for (let i = 0; i < queries.length; i++) {
+    if (!queries[i].query || typeof queries[i].query !== 'string') {
+      return res.status(400).json({ 
+        error: `Query at index ${i} is missing required 'query' field` 
+      });
+    }
+  }
+
+  // Get existing session
+  const session = multiSearchCache.getSession(sessionId);
+  if (!session) {
+    return res.status(404).json({ 
+      error: 'Session not found or expired',
+      sessionId
+    });
+  }
+
+  // Check if session is at capacity
+  const sessionStats = multiSearchCache.getStats();
+  if (session.items.length >= sessionStats.maxItemsPerSession) {
+    return res.status(400).json({
+      error: 'Session is at capacity',
+      currentItems: session.items.length,
+      maxItems: sessionStats.maxItemsPerSession
+    });
+  }
+
+  try {
+    // Process each query and collect new items
+    const allNewItems = [];
+    const queryResults = [];
+
+    for (const querySpec of queries) {
+      const {
+        query,
+        feedIds = [],
+        guid = null,
+        minDate = null,
+        maxDate = null,
+        episodeName = null,
+        limit = 25 // Default per-query limit
+      } = querySpec;
+
+      const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
+      printLog(`[${requestId}] Processing query: "${query}" (limit: ${effectiveLimit})`);
+
+      // Step 1: Embed the query
+      const embeddingStart = Date.now();
+      const embeddingResponse = await openai.embeddings.create({
+        model: "text-embedding-ada-002",
+        input: query
+      });
+      const embedding = embeddingResponse.data[0].embedding;
+      timings.embedding += Date.now() - embeddingStart;
+
+      // Step 2: Search Pinecone
+      const searchStart = Date.now();
+      const pineconeMatches = await findSimilarDiscussions({
+        embedding,
+        feedIds,
+        guid,
+        limit: effectiveLimit,
+        query,
+        minDate,
+        maxDate,
+        episodeName,
+        includeValues: false,
+        includeMetadata: false
+      });
+      timings.search += Date.now() - searchStart;
+
+      if (pineconeMatches.length === 0) {
+        printLog(`[${requestId}] No results for query: "${query}"`);
+        queryResults.push({ query, found: 0, added: 0 });
+        continue;
+      }
+
+      // Step 3: Fetch metadata from MongoDB
+      const mongoStart = Date.now();
+      const pineconeIds = pineconeMatches.map(m => m.id);
+      const pineconeScores = new Map(pineconeMatches.map(m => [m.id, m.score]));
+
+      const mongoDocs = await JamieVectorMetadata.find({
+        pineconeId: { $in: pineconeIds }
+      }).select('pineconeId metadataRaw').lean();
+
+      timings.mongoLookup += Date.now() - mongoStart;
+
+      const mongoMetadataMap = new Map(mongoDocs.map(doc => [doc.pineconeId, doc.metadataRaw]));
+
+      // Merge and format
+      const mergedResults = pineconeMatches.map(pineconeMatch => {
+        const metadata = mongoMetadataMap.get(pineconeMatch.id);
+        if (!metadata) return null;
+        return {
+          id: pineconeMatch.id,
+          score: pineconeMatch.score,
+          metadata: metadata
+        };
+      }).filter(Boolean);
+
+      const formattedResults = formatResults(mergedResults);
+      printLog(`[${requestId}] Found ${formattedResults.length} results for query: "${query}"`);
+
+      // Extract texts for re-embedding
+      const texts = formattedResults.map(result => 
+        result.quote || result.summary || result.description || ''
+      );
+
+      // Step 4: Re-embed texts
+      const reembedStart = Date.now();
+      const batchEmbeddingResponse = await callOpenAIEmbeddingsWithRetry({
+        input: texts,
+        model: "text-embedding-ada-002",
+        requestId,
+        description: `expand query: ${query.substring(0, 30)}...`
+      });
+      const itemEmbeddings = batchEmbeddingResponse.data.map(item => item.embedding);
+      timings.reembedding += Date.now() - reembedStart;
+
+      // Build items for session storage
+      const queryItems = formattedResults.map((result, index) => ({
+        pineconeId: result.shareLink || result.id || `item_${Date.now()}_${index}`,
+        embedding: itemEmbeddings[index],
+        metadata: result,
+        coordinates3d: null, // Will be set after UMAP
+        sourceQueryIndex: session.queries.length // Will be the next query index
+      }));
+
+      // Track results
+      queryResults.push({ query, found: queryItems.length, added: 0 }); // 'added' updated after dedup
+      allNewItems.push(...queryItems);
+    }
+
+    if (allNewItems.length === 0) {
+      timings.total = Date.now() - startTime;
+      return res.json({
+        sessionId,
+        message: 'No new items found across queries',
+        queryResults,
+        session: {
+          totalItems: session.items.length,
+          queries: session.queries.length
+        },
+        metadata: { totalTimeMs: timings.total }
+      });
+    }
+
+    // Add items to session (handles deduplication and capacity)
+    // We need to add items query by query to track proper query indices
+    let totalAdded = 0;
+    let totalDupes = 0;
+    let queryIndex = 0;
+
+    for (const querySpec of queries) {
+      const queryItems = allNewItems.filter(item => 
+        item.metadata && 
+        (item.sourceQueryIndex === session.queries.length + queryIndex ||
+         // For items we just created, match by the original query
+         allNewItems.indexOf(item) >= queryIndex * 25 && allNewItems.indexOf(item) < (queryIndex + 1) * 25)
+      );
+
+      // Actually, let's simplify - process all items in bulk since they're already tagged
+      queryIndex++;
+    }
+
+    // Simpler approach: add all items at once with a combined "query" 
+    const combinedQuery = queries.map(q => q.query).join(' | ');
+    const addResult = multiSearchCache.addItemsToSession(sessionId, {
+      query: combinedQuery,
+      items: allNewItems
+    });
+
+    if (!addResult.success) {
+      return res.status(500).json({ error: addResult.error });
+    }
+
+    totalAdded = addResult.added;
+    totalDupes = addResult.duplicatesSkipped;
+
+    printLog(`[${requestId}] Added ${totalAdded} new items to session (${totalDupes} duplicates skipped)`);
+
+    // Get updated session
+    const updatedSession = multiSearchCache.getSession(sessionId);
+    if (!updatedSession || updatedSession.items.length < 4) {
+      timings.total = Date.now() - startTime;
+      return res.json({
+        sessionId,
+        message: 'Items added but insufficient for UMAP projection',
+        added: totalAdded,
+        duplicatesSkipped: totalDupes,
+        totalItems: updatedSession?.items.length || 0,
+        metadata: { totalTimeMs: timings.total }
+      });
+    }
+
+    // Step 5: Re-run UMAP on all session embeddings
+    printLog(`[${requestId}] Re-running UMAP on ${updatedSession.items.length} items...`);
+    const umapStart = Date.now();
+
+    const UmapProjector = require('../utils/UmapProjector');
+    const projectorConfig = fastMode 
+      ? UmapProjector.getFastModeConfig() 
+      : {};
+
+    const projector = new UmapProjector(projectorConfig);
+    const allEmbeddings = updatedSession.items.map(item => item.embedding);
+    const coordinates3d = await projector.project(allEmbeddings);
+
+    timings.umap = Date.now() - umapStart;
+    printLog(`[${requestId}] ✓ UMAP projection completed in ${timings.umap}ms`);
+
+    // Step 6: Optional axis labels
+    let axisLabels = null;
+    if (extractAxisLabels && updatedSession.items.length >= 7) {
+      printLog(`[${requestId}] Generating axis labels...`);
+      const labelingStart = Date.now();
+
+      try {
+        const findClosestPoint = (targetX, targetY, targetZ) => {
+          let minDist = Infinity;
+          let closestIndex = 0;
+
+          coordinates3d.forEach((coord, index) => {
+            const { x, y, z } = coord;
+            const dist = Math.sqrt(
+              Math.pow(x - targetX, 2) +
+              Math.pow(y - targetY, 2) +
+              Math.pow(z - targetZ, 2)
+            );
+            if (dist < minDist) {
+              minDist = dist;
+              closestIndex = index;
+            }
+          });
+
+          return closestIndex;
+        };
+
+        const cardinalIndices = {
+          center: findClosestPoint(0, 0, 0),
+          xPositive: findClosestPoint(1, 0, 0),
+          xNegative: findClosestPoint(-1, 0, 0),
+          yPositive: findClosestPoint(0, 1, 0),
+          yNegative: findClosestPoint(0, -1, 0),
+          zPositive: findClosestPoint(0, 0, 1),
+          zNegative: findClosestPoint(0, 0, -1)
+        };
+
+        const getTextFromItem = (item) => {
+          const m = item.metadata || {};
+          const level = m.hierarchyLevel;
+          let text = '';
+
+          switch(level) {
+            case 'paragraph':
+              text = m.quote || m.text || '';
+              break;
+            case 'chapter':
+              text = m.summary || m.headline || '';
+              break;
+            default:
+              text = m.quote || m.summary || m.description || '';
+          }
+
+          return text || `${m.episode || ''} by ${m.creator || ''}`.trim();
+        };
+
+        const cardinalTexts = {
+          center: getTextFromItem(updatedSession.items[cardinalIndices.center]),
+          xPositive: getTextFromItem(updatedSession.items[cardinalIndices.xPositive]),
+          xNegative: getTextFromItem(updatedSession.items[cardinalIndices.xNegative]),
+          yPositive: getTextFromItem(updatedSession.items[cardinalIndices.yPositive]),
+          yNegative: getTextFromItem(updatedSession.items[cardinalIndices.yNegative]),
+          zPositive: getTextFromItem(updatedSession.items[cardinalIndices.zPositive]),
+          zNegative: getTextFromItem(updatedSession.items[cardinalIndices.zNegative])
+        };
+
+        const labelingPrompt = `You are analyzing a 3D semantic space visualization where similar content clusters together. For each text excerpt below, provide a concise thematic label (1-3 words maximum) that captures its core concept.
+
+1. CENTER (average of all content): "${cardinalTexts.center.substring(0, 300)}"
+
+2. +X AXIS (one semantic extreme): "${cardinalTexts.xPositive.substring(0, 300)}"
+
+3. -X AXIS (opposite semantic extreme): "${cardinalTexts.xNegative.substring(0, 300)}"
+
+4. +Y AXIS (another semantic dimension): "${cardinalTexts.yPositive.substring(0, 300)}"
+
+5. -Y AXIS (opposite dimension): "${cardinalTexts.yNegative.substring(0, 300)}"
+
+6. +Z AXIS (third semantic dimension): "${cardinalTexts.zPositive.substring(0, 300)}"
+
+7. -Z AXIS (opposite dimension): "${cardinalTexts.zNegative.substring(0, 300)}"
+
+Return ONLY valid JSON in this exact format (no markdown, no explanation):
+{"center": "label", "xPositive": "label", "xNegative": "label", "yPositive": "label", "yNegative": "label", "zPositive": "label", "zNegative": "label"}`;
+
+        const labelingResponse = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: labelingPrompt }],
+          temperature: 0.3,
+          max_tokens: 150
+        });
+
+        const labelsText = labelingResponse.choices[0].message.content.trim();
+        axisLabels = JSON.parse(labelsText);
+
+        timings.axisLabeling = Date.now() - labelingStart;
+        printLog(`[${requestId}] ✓ Generated axis labels in ${timings.axisLabeling}ms`);
+
+      } catch (error) {
+        printLog(`[${requestId}] ✗ Failed to generate axis labels: ${error.message}`);
+      }
+    }
+
+    // Update session with new coordinates and axis labels
+    multiSearchCache.updateSessionCoordinates(sessionId, {
+      coordinates3d,
+      axisLabels
+    });
+
+    // Build response with results
+    const results3d = updatedSession.items.map((item, index) => {
+      const { embedding, ...itemWithoutEmbedding } = item;
+      return {
+        ...item.metadata,
+        coordinates3d: coordinates3d[index],
+        sourceQueryIndex: item.sourceQueryIndex
+      };
+    });
+
+    timings.total = Date.now() - startTime;
+
+    printLog(`[${requestId}] ========== EXPAND SESSION COMPLETED ==========`);
+    printLog(`[${requestId}] Total time: ${timings.total}ms, Items: ${results3d.length}`);
+
+    res.json({
+      sessionId,
+      query: combinedQuery,
+      results: results3d,
+      total: results3d.length,
+      queryResults: queries.map((q, i) => ({
+        query: q.query,
+        found: queryResults[i]?.found || 0
+      })),
+      added: totalAdded,
+      duplicatesSkipped: totalDupes,
+      model: "text-embedding-ada-002",
+      metadata: {
+        numResults: results3d.length,
+        embeddingTimeMs: timings.embedding,
+        searchTimeMs: timings.search,
+        mongoLookupTimeMs: timings.mongoLookup,
+        reembeddingTimeMs: timings.reembedding,
+        umapTimeMs: timings.umap,
+        axisLabelingTimeMs: timings.axisLabeling,
+        totalTimeMs: timings.total,
+        fastMode,
+        umapConfig: fastMode ? 'fast' : 'standard',
+        queriesProcessed: queries.length,
+        approach: 'multi-search-expand'
+      },
+      axisLabels
+    });
+
+  } catch (error) {
+    timings.total = Date.now() - startTime;
+    printLog(`[${requestId}] ✗ Error: ${error.message}`);
+    console.error(`[${requestId}] Stack trace:`, error.stack);
+
+    return res.status(500).json({
+      error: 'Failed to expand session',
+      message: error.message,
+      requestId
+    });
+  }
+});
+
 router.post('/fetch-research-id', async (req, res) => {
   const requestId = `FETCH-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  let { researchSessionId, fastMode = false, extractAxisLabels = false } = req.body || {};
-
+  let {
+    researchSessionId,
+    fastMode = false,
+    extractAxisLabels = false,
+    forceRecompute = false
+  } = req.body || {};
   printLog(`[${requestId}] ========== FETCH RESEARCH SESSION 3D REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
 
@@ -670,33 +1149,134 @@ router.post('/fetch-research-id', async (req, res) => {
       });
     }
 
+    // Optional cached axis labels. If present and extractAxisLabels=true, reuse them
+    // to avoid OpenAI calls on subsequent requests.
+    const cachedAxisLabels =
+      session && session.axisLabels && typeof session.axisLabels === 'object'
+        ? session.axisLabels
+        : null;
+
+    const pineconeIds = Array.isArray(session.pineconeIds) ? session.pineconeIds : [];
     const rawItems = Array.isArray(session.items) ? session.items : [];
 
-    const items = rawItems
-      .map((it) => (it && it.metadata ? it : null))
-      .filter(Boolean);
-
-    if (!items.length) {
-      printLog(`[${requestId}] ✗ Research session has no items`);
+    if (!pineconeIds.length) {
+      printLog(`[${requestId}] ✗ Research session has no pineconeIds`);
       return res.status(400).json({
         error: 'Empty research session',
-        details: 'This research session has no items to project'
+        details: 'This research session has no pineconeIds to project'
       });
     }
 
-    // Enrich results with episode metadata (same as search-quotes-3d Step 3b)
-    printLog(`[${requestId}] Step 2: Enriching results with episode metadata where missing...`);
-    const similarDiscussions = items.map((item) => {
-      const base = item.metadata ? { ...item.metadata } : {};
-      const storedCoords = item.coordinates3d || null;
-      if (storedCoords && typeof storedCoords === 'object') {
-        const x = typeof storedCoords.x === 'number' ? storedCoords.x : null;
-        const y = typeof storedCoords.y === 'number' ? storedCoords.y : null;
-        const z = typeof storedCoords.z === 'number' ? storedCoords.z : null;
-        base.coordinates3d = { x, y, z };
+    // Build quick lookup maps from stored session items (metadata may be null).
+    const storedMetaById = new Map();
+    const storedCoordsById = new Map();
+    rawItems.forEach((it) => {
+      if (!it || typeof it !== 'object') return;
+      const pid = it.pineconeId;
+      if (typeof pid !== 'string' || pid.length === 0) return;
+      if (it.metadata && typeof it.metadata === 'object') {
+        storedMetaById.set(pid, it.metadata);
       }
-      return base;
+      const c = it.coordinates3d;
+      if (c && typeof c === 'object') {
+        const x = typeof c.x === 'number' ? c.x : null;
+        const y = typeof c.y === 'number' ? c.y : null;
+        const z = typeof c.z === 'number' ? c.z : null;
+        if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') {
+          storedCoordsById.set(pid, { x, y, z });
+        }
+      }
     });
+
+    // Step 2: Hydrate item metadata from MongoDB (source of truth) using pineconeIds.
+    // Keep response schema consistent by using the existing formatResults(...) helper.
+    printLog(`[${requestId}] Step 2: Hydrating item metadata from MongoDB by pineconeId...`);
+    const mongoHydrateStart = Date.now();
+
+    const pineconeIdsForSession = pineconeIds.filter((id) => typeof id === 'string' && id.length > 0);
+
+    const mongoDocs = await JamieVectorMetadata.find({
+      pineconeId: { $in: pineconeIdsForSession }
+    }).select('pineconeId metadataRaw').lean();
+
+    const hydratedFormatted = formatResults(
+      (mongoDocs || []).map((doc) => ({
+        id: doc.pineconeId,
+        score: 1,
+        metadata: doc.metadataRaw || {}
+      }))
+    );
+
+    const hydratedById = new Map(hydratedFormatted.map((r) => [r.shareLink, r]));
+
+    printLog(
+      `[${requestId}] ✓ MongoDB hydration completed in ${Date.now() - mongoHydrateStart}ms (${mongoDocs.length} docs)`
+    );
+
+    // Prefer Mongo-hydrated metadata (better quote/creator/etc), but fall back to stored snapshots,
+    // and ALWAYS preserve the session's ordering via session.pineconeIds (including duplicates).
+    const similarDiscussions = pineconeIds
+      .map((pid) => {
+        if (typeof pid !== 'string' || pid.length === 0) return null;
+        const hydrated = hydratedById.get(pid) || null;
+        const storedMeta = storedMetaById.get(pid) || null;
+        const base = hydrated ? { ...hydrated } : (storedMeta ? { ...storedMeta } : null);
+        if (!base) return null;
+
+        const coords = storedCoordsById.get(pid) || null;
+        if (coords) {
+          base.coordinates3d = coords;
+        }
+
+        return base;
+      })
+      .filter(Boolean);
+
+    // Best-effort backfill: persist hydrated metadata into the ResearchSession items array
+    // for any items that currently have null metadata, so future reads don't need hydration.
+    try {
+      if (hydratedFormatted.length > 0) {
+        const hydratedMetaById = new Map(
+          hydratedFormatted.map((r) => [r.shareLink, r])
+        );
+
+        const existingIds = new Set(rawItems.map((it) => it && it.pineconeId).filter(Boolean));
+        let changed = false;
+        const nextItems = rawItems.map((it) => {
+          if (!it || typeof it !== 'object') return it;
+          if (!it.pineconeId || typeof it.pineconeId !== 'string') return it;
+          if (it.metadata) return it;
+          const hydrated = hydratedMetaById.get(it.pineconeId);
+          if (!hydrated) return it;
+          changed = true;
+          return { ...it, metadata: hydrated };
+        });
+
+        // Ensure there is at least an item entry for each pineconeId (helpful for legacy sessions)
+        pineconeIds.forEach((pid) => {
+          if (typeof pid !== 'string' || pid.length === 0) return;
+          if (existingIds.has(pid)) return;
+          const hydrated = hydratedMetaById.get(pid);
+          if (!hydrated) return;
+          changed = true;
+          nextItems.push({ pineconeId: pid, metadata: hydrated, coordinates3d: { x: null, y: null, z: null } });
+        });
+
+        if (changed) {
+          await ResearchSession.findByIdAndUpdate(
+            researchSessionId,
+            { $set: { items: nextItems } },
+            { new: false }
+          ).exec();
+          printLog(`[${requestId}] ✓ Backfilled hydrated metadata into ResearchSession.items`);
+        }
+      }
+    } catch (backfillErr) {
+      printLog(`[${requestId}] ⚠️ Backfill of hydrated metadata failed: ${backfillErr.message}`);
+    }
+
+    // Step 3: Enrich results with episode metadata where missing (same as search-quotes-3d Step 3d)
+    printLog(`[${requestId}] Step 3: Enriching results with episode metadata where missing...`);
     const episodeCache = {};
     const guidsToFetch = new Set();
 
@@ -777,6 +1357,179 @@ router.post('/fetch-research-id', async (req, res) => {
         error: 'No items to project',
         message: 'No valid items found in this research session.',
         resultCount: similarDiscussions.length
+      });
+    }
+
+    // Fast path: if ALL items already have stored coordinates, reuse them and skip re-embedding + UMAP
+    // unless the caller explicitly requests recomputation.
+    const hasAllStoredCoordinates = similarDiscussions.every((r) => {
+      const c = r && r.coordinates3d;
+      return (
+        c &&
+        typeof c === 'object' &&
+        typeof c.x === 'number' &&
+        typeof c.y === 'number' &&
+        typeof c.z === 'number'
+      );
+    });
+
+    if (hasAllStoredCoordinates && !forceRecompute) {
+      printLog(
+        `[${requestId}] ✓ Using stored coordinates for all ${similarDiscussions.length} items (skipping OpenAI re-embedding + UMAP)`
+      );
+
+      const results3d = similarDiscussions;
+
+      // Optional axis labels (can still run using stored coords)
+      let axisLabels = extractAxisLabels ? cachedAxisLabels : null;
+      if (extractAxisLabels && results3d.length >= 7) {
+        if (axisLabels) {
+          printLog(`[${requestId}] ✓ Using cached axis labels from ResearchSession`);
+        } else {
+          printLog(`[${requestId}] Axis labels requested; generating from stored coordinates...`);
+          console.time(`[${requestId}] Axis-Labeling`);
+          const labelingStart = Date.now();
+
+          try {
+          const findClosestPoint = (targetX, targetY, targetZ) => {
+            let minDist = Infinity;
+            let closestIndex = 0;
+
+            results3d.forEach((result, index) => {
+              const { x, y, z } = result.coordinates3d;
+              const dist = Math.sqrt(
+                Math.pow(x - targetX, 2) +
+                Math.pow(y - targetY, 2) +
+                Math.pow(z - targetZ, 2)
+              );
+              if (dist < minDist) {
+                minDist = dist;
+                closestIndex = index;
+              }
+            });
+
+            return closestIndex;
+          };
+
+          const cardinalIndices = {
+            center: findClosestPoint(0, 0, 0),
+            xPositive: findClosestPoint(1, 0, 0),
+            xNegative: findClosestPoint(-1, 0, 0),
+            yPositive: findClosestPoint(0, 1, 0),
+            yNegative: findClosestPoint(0, -1, 0),
+            zPositive: findClosestPoint(0, 0, 1),
+            zNegative: findClosestPoint(0, 0, -1)
+          };
+
+          const getTextFromResult = (result) => {
+            let text = '';
+
+            switch(result.hierarchyLevel) {
+              case 'paragraph':
+                text = result.quote || result.text || '';
+                break;
+              case 'chapter':
+                text = result.headline || result.summary || '';
+                break;
+              case 'episode':
+              case 'feed':
+              default:
+                text = result.description || result.summary || result.headline || result.quote || '';
+                break;
+            }
+
+            return text || result.quote || '';
+          };
+
+          const labelPrompts = {
+            center: 'a short phrase describing what these clips have in common',
+            xPositive: 'what semantic theme is strongest at the positive X direction?',
+            xNegative: 'what semantic theme is strongest at the negative X direction?',
+            yPositive: 'what semantic theme is strongest at the positive Y direction?',
+            yNegative: 'what semantic theme is strongest at the negative Y direction?',
+            zPositive: 'what semantic theme is strongest at the positive Z direction?',
+            zNegative: 'what semantic theme is strongest at the negative Z direction?'
+          };
+
+          axisLabels = {};
+
+          for (const [axis, index] of Object.entries(cardinalIndices)) {
+            const result = results3d[index];
+            const text = getTextFromResult(result);
+
+            if (!text) {
+              axisLabels[axis] = null;
+              continue;
+            }
+
+            const labelingResponse = await openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'You are helping label semantic axes in a 3D embedding space of podcast clips. ' +
+                    'Given an example clip, respond with a very short 1-3 word label capturing its main theme. ' +
+                    'Do not add quotes or extra explanation.'
+                },
+                {
+                  role: 'user',
+                  content: `Example text:\n\n${text}\n\nQuestion: ${labelPrompts[axis]}\n\nAxis label:`
+                }
+              ],
+              max_tokens: 16,
+              temperature: 0.4
+            });
+
+            const rawLabel = labelingResponse.choices?.[0]?.message?.content || '';
+            const firstLine = rawLabel.split('\n')[0].trim();
+            axisLabels[axis] = firstLine.replace(/^["']|["']$/g, '').trim();
+          }
+
+          timings.axisLabeling = Date.now() - labelingStart;
+          console.timeEnd(`[${requestId}] Axis-Labeling`);
+
+          // Best-effort persist for future requests (do not block response on failure).
+          try {
+            await ResearchSession.findByIdAndUpdate(
+              researchSessionId,
+              { $set: { axisLabels } },
+              { new: false }
+            ).exec();
+            printLog(`[${requestId}] ✓ Persisted axis labels to ResearchSession`);
+          } catch (persistErr) {
+            printLog(`[${requestId}] ⚠️ Failed to persist axis labels: ${persistErr.message}`);
+          }
+          } catch (e) {
+            printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+            axisLabels = null;
+          }
+        }
+      }
+
+      timings.total = Date.now() - startTime;
+
+      return res.json({
+        query: researchSessionId,
+        results: results3d,
+        total: results3d.length,
+        model: "text-embedding-ada-002",
+        metadata: {
+          numResults: results3d.length,
+          embeddingTimeMs: timings.embedding,
+          searchTimeMs: timings.search,
+          reembeddingTimeMs: 0,
+          umapTimeMs: 0,
+          axisLabelingTimeMs: timings.axisLabeling,
+          totalTimeMs: timings.total,
+          fastMode,
+          umapConfig: 'skipped',
+          skippedUMAP: true,
+          reusedStoredCoordinates: true,
+          forceRecompute: false,
+          approach: 'research-session'
+        },
+        axisLabels
       });
     }
 
@@ -884,13 +1637,16 @@ router.post('/fetch-research-id', async (req, res) => {
     }));
 
     // Optional axis labels
-    let axisLabels = null;
+    let axisLabels = extractAxisLabels ? cachedAxisLabels : null;
     if (extractAxisLabels && results3d.length >= 7) {
-      printLog(`[${requestId}] Step 6: Extracting axis labels for semantic space...`);
-      console.time(`[${requestId}] Axis-Labeling`);
-      const labelingStart = Date.now();
+      if (axisLabels) {
+        printLog(`[${requestId}] ✓ Using cached axis labels from ResearchSession`);
+      } else {
+        printLog(`[${requestId}] Step 6: Extracting axis labels for semantic space...`);
+        console.time(`[${requestId}] Axis-Labeling`);
+        const labelingStart = Date.now();
 
-      try {
+        try {
         const findClosestPoint = (targetX, targetY, targetZ) => {
           let minDist = Infinity;
           let closestIndex = 0;
@@ -988,9 +1744,22 @@ router.post('/fetch-research-id', async (req, res) => {
 
         timings.axisLabeling = Date.now() - labelingStart;
         console.timeEnd(`[${requestId}] Axis-Labeling`);
-      } catch (e) {
-        printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
-        axisLabels = null;
+
+        // Best-effort persist for future requests (do not block response on failure).
+        try {
+          await ResearchSession.findByIdAndUpdate(
+            researchSessionId,
+            { $set: { axisLabels } },
+            { new: false }
+          ).exec();
+          printLog(`[${requestId}] ✓ Persisted axis labels to ResearchSession`);
+        } catch (persistErr) {
+          printLog(`[${requestId}] ⚠️ Failed to persist axis labels: ${persistErr.message}`);
+        }
+        } catch (e) {
+          printLog(`[${requestId}] Axis labeling failed: ${e.message}`);
+          axisLabels = null;
+        }
       }
     }
 

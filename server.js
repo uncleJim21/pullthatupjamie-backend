@@ -13,9 +13,12 @@ const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
 const { RateLimitedInvoiceGenerator } = require('./utils/rate-limited-invoice');
 const invoiceGenerator = new RateLimitedInvoiceGenerator();
+// DEPRECATED: SQLite invoice DB disabled due to tar vulnerability (GHSA-3jfq-g458-7qm9)
+// The function now returns a no-op stub - see utils/invoice-db.js for MongoDB migration path
 const { initializeInvoiceDB } = require('./utils/invoice-db');
-const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
-const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
+// REMOVED: Legacy SQLite auth systems (replaced by MongoDB entitlements)
+// const {initializeRequestsDB, checkFreeEligibility, freeRequestMiddleware} = require('./utils/requests-db')
+// const {squareRequestMiddleware, initializeJamieUserDB, upsertJamieUser} = require('./utils/jamie-user-db')
 const DatabaseBackupManager = require('./utils/DatabaseBackupManager');
 const Scheduler = require('./utils/Scheduler');
 const callIngestor = require('./utils/callIngestor');
@@ -29,7 +32,8 @@ const ClipQueueManager = require('./utils/ClipQueueManager');
 const FeedCacheManager = require('./utils/FeedCacheManager');
 const jwt = require('jsonwebtoken');
 const { ProPodcastDetails } = require('./models/ProPodcastDetails.js');
-const {getProPodcastByAdminEmail} = require('./utils/ProPodcastUtils.js')
+const {getProPodcastByAdminEmail, getProPodcastByAdmin} = require('./utils/ProPodcastUtils.js')
+const { verifyPodcastAdminAuto } = require('./utils/podcastAdminAuth');
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const podcastPreferencesRoutes = require('./routes/podcastPreferencesRoutes');
 const appPreferencesRoutes = require('./routes/appPreferencesRoutes');
@@ -43,16 +47,23 @@ const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
+const blogRoutes = require('./routes/blogRoutes');
+const BlogIngestionService = require('./utils/BlogIngestionService');
 const researchSessionsRoutes = require('./routes/researchSessions');
+const analyzeRoutes = require('./routes/researchAnalyzeRoutes');
 const sharedResearchSessionsRoutes = require('./routes/sharedResearchSessions');
 const jamieExploreRoutes = require('./routes/jamieExploreRoutes');
+const { createEntitlementMiddleware } = require('./utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES } = require('./constants/entitlementTypes');
 const createVideoEditRoutes = require('./routes/videoEditRoutes');
 const { ResearchSession } = require('./models/ResearchSession');
 const cookieParser = require('cookie-parser'); // Add this line
 const { OnDemandQuota } = require('./models/OnDemandQuota');
 const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
-const { User } = require('./models/User');
+const analyticsRoutes = require('./routes/analyticsRoutes');
+const corpusRoutes = require('./routes/corpusRoutes');
+const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
 const JamieVectorMetadata = require('./models/JamieVectorMetadata');
 const { updateEntitlementConfig } = require('./utils/entitlements');
@@ -61,7 +72,7 @@ const { serviceHmac } = require('./middleware/hmac');
 const GarbageCollector = require('./utils/GarbageCollector');
 
 
-const mongoURI = process.env.MONGO_URI;
+const mongoURI = process.env.DEBUG_MODE === 'true' ? process.env.MONGO_DEBUG_URI : process.env.MONGO_URI;
 const invoicePoolSize = 1;
 
 const processingCache = new Map();
@@ -185,7 +196,9 @@ const corsOptions = {
         'Accept-Encoding',
         'Referer',
         'Origin',
-        'X-Requested-With'
+        'X-Requested-With',
+        'X-Analytics-Session',
+        'X-Pulse-Session'
     ],
     credentials: true
 };
@@ -344,100 +357,17 @@ const clipQueueManager = new ClipQueueManager({
 // Initialize the scheduler if enabled
 const scheduler = SCHEDULER_ENABLED ? new Scheduler() : null;
 
-//Validates user meets one of three requirements:
-//1. Has valid BOLT11 invoice payment hash + preimage (proof that they paid)
-//2. The user has a valid subscription through CASCDR's square payment gateway
-//3. The user is eligible for free usage based on their IP address
-const jamieAuthMiddleware = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const route = req.path;
+// REMOVED: jamieAuthMiddleware - replaced by createEntitlementMiddleware
+// Legacy auth checked: BOLT11 payments, Square subscriptions, IP-based free tier
+// New system uses MongoDB entitlements with JWT authentication
 
-  console.log('[INFO] Checking Jamie authentication...');
+// REMOVED: inline verifyPodcastAdminMiddleware - consolidated into utils/podcastAdminAuth.js
+// Now using verifyPodcastAdminAuto which supports both email and userId-based lookups
 
-  if (authHeader) {
-      if (!authHeader.startsWith('Basic ')) {//checks for BOLT11 (1 above)
-          const [preimage, paymentHash] = authHeader.split(':');
-          if (!preimage || !paymentHash) {
-              return res.status(401).json({
-                  error: 'Authentication required: missing preimage or payment hash',
-              });
-          }
-
-          // Validate the preimage
-          const isValid = await getIsInvoicePaid(preimage, paymentHash);
-          if (!isValid) {
-              return res.status(401).json({
-                  error: 'Invalid payment credentials',
-              });
-          }
-
-          // Store validated credentials
-          req.auth = { preimage, paymentHash };
-          console.log('[INFO] Valid lightning payment credentials provided.');
-          return next();
-      }
-
-      // Try subscription auth with square
-      await squareRequestMiddleware(req, res, () => {//Checks if user has valid sub based on email provided in header
-          // Only proceed to free middleware if Square auth didn't set isValidSquareAuth
-          if (!req.auth?.isValidSquareAuth) {
-              console.log('[INFO] Square auth failed, trying free tier');
-              return freeRequestMiddleware(req, res, next);// If not check if the user requests from an IP eligible
-          }
-      });
-      
-      // If we got valid Square auth, we're done
-      if (req.auth?.isValidSquareAuth) {
-          return next();
-      }
-  } else {
-      // No auth header, fallback to free request middleware
-      console.log('[INFO] No authentication provided. Falling back to free eligibility.');
-      return freeRequestMiddleware(req, res, next);
-  }
-};
-
-// Middleware to verify podcast admin privileges
-const verifyPodcastAdminMiddleware = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    // Extract token
-    const token = authHeader.substring(7);
-    
-    // Verify JWT token
-    const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-    
-    // Fetch podcast details for this admin
-    const proPod = await getProPodcastByAdminEmail(decoded.email);
-    
-    if (!proPod || !proPod.feedId) {
-      return res.status(403).json({ 
-        error: 'Unauthorized. You are not registered as a podcast admin.' 
-      });
-    }
-    
-    // Store feedId and admin email in request object for later use
-    req.podcastAdmin = {
-      email: decoded.email,
-      feedId: proPod.feedId
-    };
-    
-    next();
-  } catch (error) {
-    console.error('Podcast admin verification error:', error.message);
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-};
-
-// Mount video-edit and upload-related routes (uses clipUtils, clipSpacesManager, and verifyPodcastAdminMiddleware)
+// Mount video-edit and upload-related routes (uses clipUtils, clipSpacesManager, and verifyPodcastAdminAuto)
 const videoEditRoutes = createVideoEditRoutes({
   clipUtils,
-  verifyPodcastAdminMiddleware,
+  verifyPodcastAdminMiddleware: verifyPodcastAdminAuto, // Use consolidated middleware
   clipSpacesManager
 });
 app.use(videoEditRoutes);
@@ -598,9 +528,42 @@ app.post('/api/validate-privs', async (req, res) => {
 
   try {
       const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      console.log(`Authenticated email: ${decoded.email}`);
-      const proPod = await getProPodcastByAdminEmail(decoded.email);
-      console.log(`found proPod:${JSON.stringify(proPod,null,2)}`)
+      
+      // Resolve user identity (supports both email and provider-based JWTs)
+      let adminUserId = null;
+      let adminEmail = decoded.email || null;
+      
+      // New JWT format: { sub, provider }
+      if (decoded.sub && decoded.provider) {
+        const user = await User.findOne({
+          'authProvider.provider': decoded.provider,
+          'authProvider.providerId': decoded.sub
+        }).select('_id email');
+        
+        if (user) {
+          adminUserId = user._id;
+          adminEmail = adminEmail || user.email;
+        }
+      }
+      // Legacy JWT format: { email }
+      else if (decoded.email) {
+        const user = await User.findOne({ email: decoded.email }).select('_id');
+        if (user) {
+          adminUserId = user._id;
+        }
+      }
+      
+      console.log(`[validate-privs] Identity: userId=${adminUserId}, email=${adminEmail}`);
+      
+      // Use identity-based lookup (requires non-null identifiers)
+      const { getProPodcastByAdmin } = require('./utils/ProPodcastUtils');
+      const proPod = await getProPodcastByAdmin({ 
+        userId: adminUserId, 
+        email: adminEmail  // Only used if non-null (checked inside function)
+      });
+      
+      console.log(`[validate-privs] Found proPod: ${proPod ? proPod.feedId : 'none'}`);
+      
       let privs = {}
       if (proPod && proPod.feedId) {
         privs = {
@@ -609,7 +572,7 @@ app.post('/api/validate-privs', async (req, res) => {
           access: "admin"
         }
       }
-      return res.json({ privs});
+      return res.json({ privs });
   } catch (error) {
       console.error('JWT validation error:', error.message);
       return res.status(401).json({ error: 'Invalid or expired token' });
@@ -737,7 +700,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/make-clip', createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -1091,7 +1054,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   }
 });
 
-app.post('/api/search-quotes', async (req, res) => {
+app.post('/api/search-quotes', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1207,7 +1170,7 @@ app.post('/api/search-quotes', async (req, res) => {
   }
 });
 
-app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/stream-search', async (req, res) => {
   const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
   
@@ -1494,8 +1457,14 @@ app.post('/api/stream-search', jamieAuthMiddleware, async (req, res) => {
   }
  });
 
-//check if the user is eligible for free usage based on IP address
-app.get('/api/check-free-eligibility', checkFreeEligibility);
+// STUB: Legacy endpoint - always returns eligible (beta compatibility shim)
+// Real logic now in /api/on-demand/checkEligibility
+app.get('/api/check-free-eligibility', (req, res) => {
+  res.json({
+    eligible: true,
+    remainingRequests: 999
+  });
+});
 
 
 
@@ -1524,49 +1493,9 @@ app.get('/invoice-pool', async (req, res) => {
   }
 });
 
-//Syncs remote auth server with this server for future request validation
-app.post('/register-sub', async (req, res) => {
-  try {
-      const { email, token } = req.body;
-      
-      if (!email || !token) {
-          return res.status(400).json({ error: 'Email and token are required' });
-      }
-
-      // First validate with auth server using axios
-      const authResponse = await axios.get(`${process.env.CASCDR_AUTH_SERVER_URL}/validate-subscription`, {
-          headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-          }
-      });
-
-      const authData = authResponse.data;
-
-      if (!authData.subscriptionValid) {
-          return res.status(403).json({ error: 'Subscription not active' });
-      }
-
-      // If validated, register/update user in jamie-users db
-      await upsertJamieUser(email, 'active');
-
-      console.log(`[INFO] Registered subscription for validated email: ${email}`);
-      res.status(201).json({ 
-          message: 'Subscription registered successfully',
-          email 
-      });
-  } catch (error) {
-      console.error('[ERROR] Failed to register subscription:', error);
-      if (error.response) {
-          // Error response from auth server
-          return res.status(error.response.status).json({ 
-              error: 'Auth server validation failed',
-              details: error.response.data
-          });
-      }
-      res.status(500).json({ error: 'Failed to register subscription' });
-  }
-});
+// REMOVED: /register-sub - no longer needed
+// Auth server now writes directly to MongoDB users collection
+// Subscription status is read from User.subscriptionType at request time
 
 
 //collects data from user submitted feedback form
@@ -1615,212 +1544,7 @@ app.post('/api/feedback', async (req, res) => {
 });
 
 // (generate-presigned-url route is now defined in routes/videoEditRoutes.js)
-
-app.get("/api/list-uploads", verifyPodcastAdminMiddleware, async (req, res) => {
-  try {
-    // Check if clipSpacesManager is initialized
-    if (!clipSpacesManager) {
-      return res.status(503).json({ error: "Clip storage service not available" });
-    }
-    
-    // Get the clip bucket name from environment variable - same as used in ClipUtils
-    const bucketName = process.env.SPACES_CLIP_BUCKET_NAME;
-    if (!bucketName) {
-      return res.status(503).json({ error: "Clip bucket not configured" });
-    }
-    
-    // Use feedId from verified podcast admin
-    const { feedId } = req.podcastAdmin;
-    
-    // Define the prefix for this podcast admin's uploads
-    const prefix = `jamie-pro/${feedId}/uploads/`;
-    
-    // Parse pagination parameters
-    const pageSize = 50; // Fixed page size of 50 items
-    const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
-    const includeChildren = req.query.includeChildren === 'true'; // Default to false for performance
-    
-    if (page < 1) {
-      return res.status(400).json({ error: "Page number must be 1 or greater" });
-    }
-    
-    // Create a new S3 client for this operation
-    const client = clipSpacesManager.createClient();
-    
-    // Fetch ALL objects from S3 (we'll paginate after sorting)
-    let continuationToken = null;
-    let allContents = [];
-    let hasMoreItems = true;
-    let totalCount = 0;
-    let directoryCount = 0; // Track total number of directories
-    
-    // Fetch all objects from S3 to enable proper sorting
-    let batchCount = 0;
-    while (hasMoreItems) {
-      batchCount++;
-      const listParams = {
-        Bucket: bucketName,
-        Prefix: prefix,
-        MaxKeys: 1000 // Fetch in larger batches for efficiency
-      };
-      
-      // Add the continuation token if we have one from a previous request
-      if (continuationToken) {
-        listParams.ContinuationToken = continuationToken;
-      }
-      
-      console.log(`S3 Batch ${batchCount}: Fetching with prefix: ${prefix}`);
-      
-      // Execute the command
-      const command = new ListObjectsV2Command(listParams);
-      const response = await client.send(command);
-      
-      console.log(`S3 Batch ${batchCount}: Got ${response.Contents?.length || 0} items, IsTruncated: ${response.IsTruncated}`);
-      
-      // Count directories in this response
-      const directoriesInThisPage = (response.Contents || []).filter(item => item.Key.endsWith('/')).length;
-      directoryCount += directoriesInThisPage;
-      
-      // Update total count (including directories for now)
-      totalCount += response.Contents?.length || 0;
-      
-      // Add all contents to our collection
-      allContents = allContents.concat(response.Contents || []);
-      
-      // Check if there are more items to fetch
-      hasMoreItems = response.IsTruncated;
-      
-      // Update the continuation token for the next request
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-    }
-    
-    console.log(`S3 Fetch Complete: ${batchCount} batches, ${allContents.length} total items, ${directoryCount} directories`);
-    
-    // Process the results to make them more user-friendly
-    const uploads = allContents
-      .filter(item => !item.Key.endsWith('/')) // Filter out directory entries
-      .filter(item => !item.Key.includes('-children/')) // Filter out child edit files from main list
-      .map(item => {
-        // Extract just the filename from the full path
-        const fileName = item.Key.replace(prefix, '');
-        
-        return {
-          key: item.Key,
-          fileName: fileName,
-          size: item.Size,
-          lastModified: item.LastModified,
-          publicUrl: `https://${bucketName}.${process.env.SPACES_ENDPOINT}/${item.Key}`
-        };
-      })
-      // Sort by lastModified DESC (most recent first), with deterministic secondary sort by key
-      .sort((a, b) => {
-        // Convert to Date objects for proper comparison
-        const dateA = new Date(a.lastModified);
-        const dateB = new Date(b.lastModified);
-        const timeDiff = dateB.getTime() - dateA.getTime();
-        
-        if (timeDiff !== 0) return timeDiff;
-        return a.key.localeCompare(b.key); // Secondary sort for consistency
-      });
-    
-    console.log(`Total files found: ${uploads.length}`);
-    console.log(`First 3 files (most recent):`, uploads.slice(0, 3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
-    console.log(`Last 3 files (oldest):`, uploads.slice(-3).map(u => ({ fileName: u.fileName, lastModified: u.lastModified })));
-
-    // Apply server-side pagination to sorted results
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedUploads = uploads.slice(startIndex, endIndex);
-    
-    // Calculate pagination metadata
-    const totalFileCount = uploads.length; // Total files after filtering
-    const hasNextPage = endIndex < totalFileCount;
-    const hasPreviousPage = page > 1;
-    
-    console.log(`Pagination debug - Page: ${page}, Total files: ${totalFileCount}, Start: ${startIndex}, End: ${endIndex}, Paginated count: ${paginatedUploads.length}`);
-
-    // Add child relationship data if requested
-    if (includeChildren) {
-      console.log(`Adding child relationship data for ${paginatedUploads.length} uploads`);
-      
-      try {
-        // Get all file bases for batch query (only for paginated results)
-        const fileBases = paginatedUploads.map(upload => upload.fileName.replace(/\.[^/.]+$/, ""));
-        
-        // Single database query to get all child edits at once
-        const allChildEdits = await WorkProductV2.find({
-          type: 'video-edit',
-          'result.parentFileBase': { $in: fileBases }
-        }).sort({ createdAt: -1 });
-        
-        console.log(`Found ${allChildEdits.length} total child edits`);
-        
-        // Group child edits by parent file base
-        const childEditsByParent = {};
-        allChildEdits.forEach(edit => {
-          const parentBase = edit.result.parentFileBase;
-          if (!childEditsByParent[parentBase]) {
-            childEditsByParent[parentBase] = [];
-          }
-          childEditsByParent[parentBase].push(edit);
-        });
-        
-        // Add children to each upload
-        paginatedUploads.forEach(upload => {
-          const fileBase = upload.fileName.replace(/\.[^/.]+$/, "");
-          const childEdits = childEditsByParent[fileBase] || [];
-          
-          upload.children = childEdits.map(edit => ({
-            lookupHash: edit.lookupHash,
-            status: edit.status,
-            url: edit.cdnFileId,
-            editRange: `${edit.result.editStart}s-${edit.result.editEnd}s`,
-            duration: edit.result.editDuration,
-            createdAt: edit.createdAt
-          }));
-
-          upload.childCount = upload.children.length;
-          upload.hasChildren = upload.children.length > 0;
-        });
-        
-      } catch (error) {
-        console.error(`Failed to get children data: ${error.message}`);
-        // Set empty children for all uploads on error
-        paginatedUploads.forEach(upload => {
-          upload.children = [];
-          upload.childCount = 0;
-          upload.hasChildren = false;
-        });
-      }
-    }
-    
-    // Return the list of uploads with pagination metadata
-    res.json({
-      uploads: paginatedUploads,
-      pagination: {
-        page,
-        pageSize,
-        hasNextPage,
-        hasPreviousPage,
-        totalCount: totalFileCount
-      },
-      feedId,
-      includeChildren,
-      childrenSummary: includeChildren ? {
-        totalParents: paginatedUploads.length,
-        parentsWithChildren: paginatedUploads.filter(u => u.hasChildren).length,
-        totalChildren: paginatedUploads.reduce((sum, u) => sum + (u.childCount || 0), 0)
-      } : null
-    });
-    
-  } catch (error) {
-    console.error("Error listing uploads:", error);
-    res.status(500).json({ 
-      error: "Failed to list uploads", 
-      details: error.message 
-    });
-  }
-});
+// (list-uploads route is now defined in routes/videoEditRoutes.js - duplicate removed)
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -1885,9 +1609,15 @@ app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
+app.use('/api/blog', blogRoutes);   // Blog API endpoints (JSON)
+app.use('/blog', blogRoutes);       // Blog sitemap.xml + rss.xml (crawler-friendly)
 app.use('/api/automation-settings', automationSettingsRoutes);
 app.use('/api/research-sessions', researchSessionsRoutes);
+app.use('/api/research', analyzeRoutes);
 app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
+app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
+app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
+app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
 // Only enable admin and debug routes in debug mode
@@ -2053,9 +1783,9 @@ app.listen(PORT, async () => {
     }
     
     // Initialize databases
+    // DEPRECATED: SQLite invoice DB - now returns stub (see utils/invoice-db.js for migration path)
     await initializeInvoiceDB();
-    await initializeRequestsDB();
-    await initializeJamieUserDB();
+    // REMOVED: initializeRequestsDB(), initializeJamieUserDB() - legacy SQLite systems
     await feedCacheManager.initialize();
     console.log('Feed cache manager initialized successfully');
     
@@ -2135,7 +1865,26 @@ app.listen(PORT, async () => {
     } else {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
-    
+
+    // Blog ingestion cron — runs every 10 minutes, independent of SCHEDULER_ENABLED
+    // Controlled by its own NOSTR_BLOG_ENABLED flag
+    if (process.env.NOSTR_BLOG_ENABLED === 'true') {
+      const cron = require('node-cron');
+      const blogIngestionService = new BlogIngestionService();
+      cron.schedule('*/10 * * * *', async () => {
+        try {
+          const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+          console.log(`[SCHEDULED TASK] Starting blog ingestion at ${now} (Chicago time)`);
+          await blogIngestionService.poll();
+        } catch (error) {
+          console.error('[SCHEDULED TASK] Error in blog ingestion:', error.message);
+        }
+      }, { timezone: 'America/Chicago' });
+      console.log('[BlogIngestion] Cron registered: every 10 minutes');
+    } else {
+      console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
+    }
+
     console.log('All systems initialized successfully');
   } catch (error) {
     console.error('Error during initialization:', error);
@@ -2535,7 +2284,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 
 // Promotional tweet generation endpoint with jamie-assist name (refactored to service)
 const { streamJamieAssist } = require('./utils/JamieAssistService');
-app.post('/api/jamie-assist/:lookupHash', jamieAuthMiddleware, async (req, res) => {
+app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;
@@ -3312,7 +3061,7 @@ if (DEBUG_MODE) {
     }
   });
 
-  // Debug endpoint: show DB connection info and current user's jamieAssistDefaults
+  // Debug endpoint: show DB connection info and current user's jamie-assistDefaults
   app.get('/api/debug/db-info', async (req, res) => {
     try {
       const conn = mongoose.connection;
@@ -3329,16 +3078,31 @@ if (DEBUG_MODE) {
         if (authHeader.startsWith('Bearer ')) {
           const token = authHeader.split(' ')[1];
           const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-          const { User } = require('./models/User');
-          const user = await User.findOne({ email: decoded.email })
+          
+          // Build query for email OR provider-based lookup
+          let userQuery;
+          if (decoded.email) {
+            userQuery = { email: decoded.email };
+          } else if (decoded.provider && decoded.sub) {
+            userQuery = {
+              'authProvider.provider': decoded.provider,
+              'authProvider.providerId': decoded.sub
+            };
+          }
+          
+          if (userQuery) {
+            const user = await User.findOne(userQuery)
             .read('primary')
             .select('+app_preferences')
             .lean();
           prefs = {
             email: decoded.email,
+              provider: decoded.provider,
+              providerId: decoded.sub,
             jamieAssistDefaults: user?.app_preferences?.data?.jamieAssistDefaults ?? null,
             schemaVersion: user?.app_preferences?.schemaVersion ?? null
           };
+          }
         }
       } catch (_) {}
 
@@ -3348,7 +3112,7 @@ if (DEBUG_MODE) {
     }
   });
 
-  // Debug endpoint: list all user docs matching token email and their jamieAssistDefaults
+  // Debug endpoint: list all user docs matching token identity and their jamie-assistDefaults
   app.get('/api/debug/user-docs', async (req, res) => {
     try {
       const authHeader = req.headers.authorization || '';
@@ -3357,14 +3121,29 @@ if (DEBUG_MODE) {
       }
       const token = authHeader.split(' ')[1];
       const decoded = jwt.verify(token, process.env.CASCDR_AUTH_SECRET);
-      const { User } = require('./models/User');
-      const docs = await User.find({ email: decoded.email })
+      
+      // Build query for email OR provider-based lookup
+      let userQuery;
+      if (decoded.email) {
+        userQuery = { email: decoded.email };
+      } else if (decoded.provider && decoded.sub) {
+        userQuery = {
+          'authProvider.provider': decoded.provider,
+          'authProvider.providerId': decoded.sub
+        };
+      } else {
+        return res.status(400).json({ error: 'Token missing email or provider/sub' });
+      }
+      
+      const docs = await User.find(userQuery)
         .read('primary')
-        .select('+app_preferences email')
+        .select('+app_preferences email authProvider')
         .lean();
       const simplified = docs.map(d => ({
         _id: d._id,
         email: d.email,
+        provider: d.authProvider?.provider,
+        providerId: d.authProvider?.providerId,
         jamieAssistDefaults: d?.app_preferences?.data?.jamieAssistDefaults ?? null,
         schemaVersion: d?.app_preferences?.schemaVersion ?? null
       }));
@@ -3654,6 +3433,136 @@ if (DEBUG_MODE) {
       });
     }
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NEW AUTH SYSTEM TEST ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Test endpoint: Identity resolution
+  app.get('/api/debug/test-identity', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const identity = await resolveIdentity(req);
+      
+      res.json({
+        success: true,
+        identity: {
+          tier: identity.tier,
+          identifier: identity.identifier,
+          identifierType: identity.identifierType,
+          provider: identity.provider,
+          email: identity.email,
+          hasUser: !!identity.user,
+          userId: identity.user?._id?.toString() || null,
+          subscriptionType: identity.user?.subscriptionType || null
+        }
+      });
+    } catch (error) {
+      console.error('Error in test-identity:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Test endpoint: Entitlement check (doesn't consume)
+  app.get('/api/debug/test-entitlement/:type', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const { getOrCreateEntitlement, getQuotaConfig } = require('./utils/entitlementMiddleware');
+      
+      const entitlementType = req.params.type;
+      const identity = await resolveIdentity(req);
+      
+      // Get quota config for this tier
+      const quotaConfig = getQuotaConfig(entitlementType, identity.tier);
+      
+      // Get or create entitlement (but don't consume)
+      const entitlement = await getOrCreateEntitlement(
+        identity.identifier,
+        identity.identifierType,
+        entitlementType,
+        identity.tier
+      );
+      
+      const isUnlimited = entitlement.maxUsage === -1;
+      
+      res.json({
+        success: true,
+        entitlementType,
+        identity: {
+          tier: identity.tier,
+          identifier: identity.identifier,
+          identifierType: identity.identifierType
+        },
+        quota: {
+          used: entitlement.usedCount,
+          max: isUnlimited ? 'unlimited' : entitlement.maxUsage,
+          remaining: isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount),
+          isUnlimited,
+          periodLengthDays: entitlement.periodLengthDays,
+          nextResetDate: entitlement.nextResetDate,
+          isEligible: isUnlimited || entitlement.usedCount < entitlement.maxUsage
+        },
+        tierConfig: quotaConfig
+      });
+    } catch (error) {
+      console.error('Error in test-entitlement:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Test endpoint: Consume entitlement (actually decrements quota)
+  app.post('/api/debug/test-consume/:type', async (req, res) => {
+    try {
+      const { resolveIdentity } = require('./utils/identityResolver');
+      const { getOrCreateEntitlement } = require('./utils/entitlementMiddleware');
+      
+      const entitlementType = req.params.type;
+      const identity = await resolveIdentity(req);
+      
+      const entitlement = await getOrCreateEntitlement(
+        identity.identifier,
+        identity.identifierType,
+        entitlementType,
+        identity.tier
+      );
+      
+      const isUnlimited = entitlement.maxUsage === -1;
+      
+      // Check if eligible
+      if (!isUnlimited && entitlement.usedCount >= entitlement.maxUsage) {
+        return res.status(429).json({
+          success: false,
+          error: 'Quota exceeded',
+          used: entitlement.usedCount,
+          max: entitlement.maxUsage,
+          nextResetDate: entitlement.nextResetDate
+        });
+      }
+      
+      // Consume
+      if (!isUnlimited) {
+        entitlement.usedCount += 1;
+        entitlement.lastUsed = new Date();
+        await entitlement.save();
+      }
+      
+      res.json({
+        success: true,
+        consumed: !isUnlimited,
+        entitlementType,
+        quota: {
+          used: entitlement.usedCount,
+          max: isUnlimited ? 'unlimited' : entitlement.maxUsage,
+          remaining: isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount)
+        }
+      });
+    } catch (error) {
+      console.error('Error in test-consume:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  console.log('🔐 New auth test endpoints enabled: /api/debug/test-identity, /api/debug/test-entitlement/:type, /api/debug/test-consume/:type');
 }
 
 
