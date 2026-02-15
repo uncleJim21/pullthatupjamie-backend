@@ -226,6 +226,38 @@ router.get('/', async (req, res) => {
  * }
  */
 router.post('/', async (req, res) => {
+  // #swagger.tags = ['Research Sessions']
+  // #swagger.summary = 'Create a new research session'
+  // #swagger.description = 'Creates a new research session with an ordered list of Pinecone vector IDs. Requires either a Bearer JWT or a clientId for ownership.'
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      clientId: 'optional-when-authenticated',
+      pineconeIds: ['id1', 'id2', 'id3'],
+      lastItemMetadata: {},
+      coordinatesById: {}
+    }
+  } */
+  /* #swagger.responses[201] = {
+    description: 'Research session created',
+    schema: {
+      success: true,
+      data: {
+        id: '507f1f77bcf86cd799439011',
+        pineconeIds: ['id1', 'id2', 'id3'],
+        createdAt: '2026-02-13T00:00:00.000Z'
+      }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Invalid request (missing owner or invalid pineconeIds)',
+    schema: { error: 'Invalid pineconeIds', details: 'pineconeIds must be a non-empty array of strings' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Internal server error', details: 'Error creating research session' }
+  } */
   try {
     const owner = await resolveOwner(req);
     if (!owner) {
@@ -561,6 +593,34 @@ router.patch('/:id', async (req, res) => {
  * Return a specific research session plus full Pinecone data for all pineconeIds.
  */
 router.get('/:id', async (req, res) => {
+  // #swagger.tags = ['Research Sessions']
+  // #swagger.summary = 'Get a research session by ID'
+  // #swagger.description = 'Returns a specific research session with all its items and metadata. Hydrates item data from MongoDB and Pinecone as needed.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Research session ID (MongoDB ObjectId)' } */
+  /* #swagger.responses[200] = {
+    description: 'Research session with items',
+    schema: {
+      success: true,
+      data: {
+        session: {
+          _id: '507f1f77bcf86cd799439011',
+          pineconeIds: ['id1', 'id2'],
+          lastItemMetadata: {},
+          createdAt: '2026-02-13T00:00:00.000Z',
+          updatedAt: '2026-02-13T00:00:00.000Z'
+        },
+        items: []
+      }
+    }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Session not found',
+    schema: { error: 'Research session not found', details: 'No session found for this id' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Internal server error', details: 'Error fetching research session' }
+  } */
   try {
     const { id } = req.params;
     const owner = await resolveOwner(req);
@@ -1197,6 +1257,45 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
  * Create an immutable, shareable snapshot of a research session and generate a preview image.
  */
 router.post('/:id/share', async (req, res) => {
+  // #swagger.tags = ['Research Sessions']
+  // #swagger.summary = 'Create a shareable snapshot of a session'
+  // #swagger.description = 'Creates an immutable, shareable snapshot of a research session with a preview image. Returns a shareId and shareUrl for link sharing.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Research session ID (MongoDB ObjectId)' } */
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      title: 'My Research on Bitcoin',
+      nodes: [{ pineconeId: 'id1', x: 0, y: 0, z: 0 }],
+      camera: { x: 0, y: 0, z: 5 },
+      visibility: 'unlisted'
+    }
+  } */
+  /* #swagger.responses[201] = {
+    description: 'Shared session created',
+    schema: {
+      success: true,
+      data: {
+        shareId: '8d5417e36d3d',
+        shareUrl: 'https://pullthatupjamie.ai/researchSession/8d5417e36d3d',
+        previewImageUrl: 'https://...',
+        title: 'My Research on Bitcoin',
+        visibility: 'unlisted'
+      }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Invalid snapshot or missing owner',
+    schema: { error: 'Invalid snapshot', details: 'Validation error message' }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Session not found',
+    schema: { error: 'Research session not found', details: 'No session found for this id and owner' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Internal server error', details: 'Error sharing research session' }
+  } */
   try {
     const owner = await resolveOwner(req);
     if (!owner) {
@@ -1459,6 +1558,33 @@ router.post('/enrich', async (req, res) => {
  * Optional body: { "instructions": "custom prompt text" }
  */
 router.post('/:id/analyze', async (req, res) => {
+  // #swagger.tags = ['Research Sessions']
+  // #swagger.summary = 'Analyze a research session with AI'
+  // #swagger.description = 'Analyzes a research session using gpt-4o-mini and streams the response as Server-Sent Events (SSE). Optionally provide custom instructions to guide the analysis.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Research session ID (MongoDB ObjectId)' } */
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: false,
+    schema: {
+      instructions: 'Summarize the key themes discussed across these clips'
+    }
+  } */
+  /* #swagger.responses[200] = {
+    description: 'SSE stream of analysis text',
+    content: { 'text/event-stream': { schema: { type: 'string' } } }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Empty session or missing owner',
+    schema: { error: 'Empty session', details: 'This research session has no items to analyze' }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Session not found',
+    schema: { error: 'Research session not found', details: 'No session found for this id' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Internal server error', details: 'Error analyzing research session with AI' }
+  } */
   try {
     const owner = await resolveOwner(req);
     if (!owner) {

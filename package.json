@@ -9,7 +9,8 @@
     "test:hmac": "node test/test-hmac-all.js",
     "setup-subtitle-test": "node setup-subtitle-test.js",
     "test-subtitles": "node test-subtitles.js",
-    "test-server-subtitles": "node test-server-subtitles.js"
+    "test-server-subtitles": "node test-server-subtitles.js",
+    "generate-openapi": "node swagger.js"
   },
   "author": "uj21",
   "license": "ISC",
@@ -42,6 +43,8 @@
     "nostr-tools": "^2.16.2",
     "openai": "^4.70.2",
     "sharp": "^0.33.5",
+    "swagger-autogen": "^2.23.7",
+    "swagger-ui-express": "^5.0.1",
     "twitter-api-v2": "^1.23.2",
     "umap-js": "^1.4.0",
     "wav": "^1.0.2",
