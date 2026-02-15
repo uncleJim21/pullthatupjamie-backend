@@ -2084,15 +2084,15 @@ router.get('/get-hierarchy', async (req, res) => {
       guid = chapter.metadata.guid;
       feedId = chapter.metadata.feedId;
 
-      if (!guid || !feedId) {
+      if (!guid) {
         return res.status(400).json({ 
-          error: 'Chapter missing required metadata (guid or feedId)',
+          error: 'Chapter missing required metadata (guid)',
           chapterId,
           metadata: chapter.metadata
         });
       }
 
-      printLog(`[${requestId}] Chapter guid: ${guid}, feedId: ${feedId}`);
+      printLog(`[${requestId}] Chapter guid: ${guid}, feedId: ${feedId}${!feedId ? ' (falsy — will attempt lazy repair)' : ''}`);
 
     } else {
       // PARAGRAPH MODE: Start from paragraph, go UP
@@ -2132,15 +2132,15 @@ router.get('/get-hierarchy', async (req, res) => {
       const paragraphStartTime = paragraph.metadata.start_time;
       const paragraphEndTime = paragraph.metadata.end_time;
 
-      if (!guid || !feedId) {
+      if (!guid) {
         return res.status(400).json({ 
-          error: 'Paragraph missing required metadata (guid or feedId)',
+          error: 'Paragraph missing required metadata (guid)',
           paragraphId,
           metadata: paragraph.metadata
         });
       }
 
-      printLog(`[${requestId}] Paragraph guid: ${guid}, feedId: ${feedId}, time: ${paragraphStartTime}-${paragraphEndTime}`);
+      printLog(`[${requestId}] Paragraph guid: ${guid}, feedId: ${feedId}${!feedId ? ' (falsy — will attempt lazy repair)' : ''}, time: ${paragraphStartTime}-${paragraphEndTime}`);
 
       // Step 2: Query MongoDB for chapter using timestamp filter
       printLog(`[${requestId}] Step 2: Querying MongoDB for containing chapter...`);
@@ -2168,24 +2168,32 @@ router.get('/get-hierarchy', async (req, res) => {
       }
     }
 
-    // COMMON: Fetch episode and feed (going UP) - PARALLEL MongoDB queries
-    printLog(`[${requestId}] Step 3: Fetching episode and feed from MongoDB (parallel)...`);
+    // COMMON: Fetch episode and (conditionally) feed - PARALLEL MongoDB queries
+    printLog(`[${requestId}] Step 3: Fetching episode${feedId ? ' and feed' : ' (skipping feed — feedId is falsy)'} from MongoDB...`);
     const episodeFeedStart = Date.now();
     
     const episodeId = `episode_${guid}`;
-    const feedIdStr = `feed_${feedId}`;
     
-    const [episodeDoc, feedDoc] = await Promise.all([
+    const queries = [
       JamieVectorMetadata.findOne({ pineconeId: episodeId })
         .select('pineconeId metadataRaw')
-        .lean(),
-      JamieVectorMetadata.findOne({ pineconeId: feedIdStr })
-        .select('pineconeId metadataRaw')
         .lean()
-    ]);
+    ];
+
+    // Only query for feed when feedId is truthy (not 0, null, undefined, '')
+    if (feedId) {
+      const feedIdStr = `feed_${feedId}`;
+      queries.push(
+        JamieVectorMetadata.findOne({ pineconeId: feedIdStr })
+          .select('pineconeId metadataRaw')
+          .lean()
+      );
+    }
+
+    const [episodeDoc, feedDoc] = await Promise.all(queries);
     
     timings.mongoLookup += Date.now() - episodeFeedStart;
-    printLog(`[${requestId}] ✓ Episode and feed queries completed in ${Date.now() - episodeFeedStart}ms`);
+    printLog(`[${requestId}] ✓ Episode${feedId ? ' and feed' : ''} queries completed in ${Date.now() - episodeFeedStart}ms`);
     
     if (episodeDoc && episodeDoc.metadataRaw) {
       episode = {
@@ -2198,13 +2206,48 @@ router.get('/get-hierarchy', async (req, res) => {
     }
     
     if (feedDoc && feedDoc.metadataRaw) {
+      const feedIdStr = `feed_${feedId}`;
       feed = {
         id: feedIdStr,
         metadata: feedDoc.metadataRaw
       };
       printLog(`[${requestId}] ✓ Found feed: ${feedIdStr}`);
-    } else {
+    } else if (feedId) {
       printLog(`[${requestId}] Feed not found in MongoDB`);
+    }
+
+    // LAZY REPAIR: When feedId is falsy (0, null, undefined), try to resolve from episode metadata
+    if (!feedId && episode && episode.metadata && episode.metadata.feedId) {
+      const resolvedFeedId = episode.metadata.feedId;
+      printLog(`[${requestId}] Lazy repair: resolved feedId=${resolvedFeedId} from episode metadata`);
+
+      // Use resolved feedId to fetch the feed for the current response
+      const repairFeedStart = Date.now();
+      const resolvedFeedIdStr = `feed_${resolvedFeedId}`;
+      const resolvedFeedDoc = await JamieVectorMetadata.findOne({ pineconeId: resolvedFeedIdStr })
+        .select('pineconeId metadataRaw')
+        .lean();
+      timings.mongoLookup += Date.now() - repairFeedStart;
+
+      if (resolvedFeedDoc && resolvedFeedDoc.metadataRaw) {
+        feed = {
+          id: resolvedFeedIdStr,
+          metadata: resolvedFeedDoc.metadataRaw
+        };
+        feedId = resolvedFeedId;
+        printLog(`[${requestId}] ✓ Found feed via lazy repair: ${resolvedFeedIdStr}`);
+      }
+
+      // Fire-and-forget: update the original doc so future requests have the correct feedId
+      const repairPineconeId = paragraphId || chapterId;
+      JamieVectorMetadata.updateOne(
+        { pineconeId: repairPineconeId },
+        { $set: { 'metadataRaw.feedId': resolvedFeedId } }
+      ).then(() => {
+        printLog(`[${requestId}] Lazy repair: updated ${repairPineconeId} with feedId=${resolvedFeedId}`);
+      }).catch((err) => {
+        printLog(`[${requestId}] Lazy repair: failed to update ${repairPineconeId}: ${err.message}`);
+      });
     }
 
     // Build hierarchical path string
