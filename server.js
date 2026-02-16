@@ -700,7 +700,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
+app.post('/api/make-clip', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -1054,7 +1054,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   }
 });
 
-app.post('/api/search-quotes', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
+app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -2284,7 +2284,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 
 // Promotional tweet generation endpoint with jamie-assist name (refactored to service)
 const { streamJamieAssist } = require('./utils/JamieAssistService');
-app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
+app.post('/api/jamie-assist/:lookupHash', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;
