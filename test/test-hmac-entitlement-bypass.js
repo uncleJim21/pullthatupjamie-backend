@@ -10,12 +10,14 @@
  *   - The anonymous entitlement for search-quotes is maxed out (usedCount >= maxUsage)
  *
  * Usage:
- *   node test/test-hmac-entitlement-bypass.js
+ *   node test/test-hmac-entitlement-bypass.js            # localhost:4132
+ *   node test/test-hmac-entitlement-bypass.js --prod      # production
  */
 
 require('dotenv').config();
 const crypto = require('crypto');
 const http = require('http');
+const https = require('https');
 
 // ── HMAC helpers (mirrors middleware/hmac.js) ──────────────────────────────
 
@@ -71,9 +73,9 @@ function loadKey() {
 
 // ── HTTP request helper ────────────────────────────────────────────────────
 
-function makeRequest(options, body) {
+function makeRequest(options, body, requestProtocol = http) {
   return new Promise((resolve, reject) => {
-    const req = http.request(options, (res) => {
+    const req = requestProtocol.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -93,8 +95,13 @@ function makeRequest(options, body) {
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  const host = process.env.HOST || 'localhost';
-  const port = process.env.PORT || 4132;
+  const isProd = process.argv.includes('--prod');
+  const host = isProd ? 'pullthatupjamie-nsh57.ondigitalocean.app' : (process.env.HOST || 'localhost');
+  const port = isProd ? 443 : (process.env.PORT || 4132);
+  const protocol = isProd ? https : http;
+
+  if (isProd) console.log('🌐 Targeting PRODUCTION: https://' + host + '\n');
+
   const { keyId, secret } = loadKey();
 
   const apiPath = '/api/search-quotes';
@@ -120,7 +127,7 @@ async function main() {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body)
     }
-  }, body);
+  }, body, protocol);
 
   console.log(`   Status:          ${anonResult.status}`);
   console.log(`   X-Quota-Used:    ${anonResult.headers['x-quota-used'] || 'n/a'}`);
@@ -158,7 +165,7 @@ async function main() {
       'X-Svc-Body-Hash': bodyHashHex,
       'X-Svc-Signature': signature
     }
-  }, body);
+  }, body, protocol);
 
   console.log(`   Status:          ${hmacResult.status}`);
   console.log(`   X-Quota-Used:    ${hmacResult.headers['x-quota-used'] || 'n/a'}`);
