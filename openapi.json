@@ -37,7 +37,7 @@
     },
     {
       "name": "Agent Auth",
-      "description": "Lightning-based credit system for agent API access. Pay a Lightning invoice, receive a preimage credential, and use it as a stateless auth token. (Not yet implemented — see Issue #63)"
+      "description": "Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents."
     }
   ],
   "paths": {
@@ -3008,7 +3008,7 @@
           "Agent Auth"
         ],
         "summary": "Purchase API credits via Lightning invoice",
-        "description": "Request a Lightning invoice to purchase API credits. Agents pay the invoice and use the preimage as a stateless auth credential. Tiers: 1,000 sats → 50 credits, 5,000 sats → 300 credits (10% bonus), 10,000 sats → 700 credits (20% bonus). Min 1,000 / Max 50,000 sats.",
+        "description": "Request a Lightning invoice to pre-pay for API usage. Specify an amount in sats (10 - 500,000). The sats are converted to USD at the current BTC/USD median rate and become your API balance. Each subsequent API call deducts its USD cost from your balance.",
         "parameters": [
           {
             "name": "body",
@@ -3017,9 +3017,9 @@
             "schema": {
               "type": "object",
               "properties": {
-                "amount": {
+                "amountSats": {
                   "type": "number",
-                  "example": 1000
+                  "example": 5000
                 },
                 "clientId": {
                   "type": "string",
@@ -3039,15 +3039,27 @@
                   "properties": {
                     "invoice": {
                       "type": "string",
-                      "example": "lnbc10u1p..."
+                      "example": "lnbc50u1p..."
                     },
                     "paymentHash": {
                       "type": "string",
                       "example": "abc123def456..."
                     },
-                    "credits": {
+                    "amountSats": {
                       "type": "number",
-                      "example": 50
+                      "example": 5000
+                    },
+                    "amountUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "example": "2026-02-13T01:00:00.000Z"
                     }
                   },
                   "xml": {
@@ -3061,15 +3073,27 @@
                   "properties": {
                     "invoice": {
                       "type": "string",
-                      "example": "lnbc10u1p..."
+                      "example": "lnbc50u1p..."
                     },
                     "paymentHash": {
                       "type": "string",
                       "example": "abc123def456..."
                     },
-                    "credits": {
+                    "amountSats": {
                       "type": "number",
-                      "example": 50
+                      "example": 5000
+                    },
+                    "amountUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "example": "2026-02-13T01:00:00.000Z"
                     }
                   },
                   "xml": {
@@ -3080,7 +3104,7 @@
             }
           },
           "400": {
-            "description": "Invalid amount (must be between 1,000 and 50,000 sats)",
+            "description": "Invalid amount",
             "content": {
               "application/json": {
                 "schema": {
@@ -3092,7 +3116,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "example": "Amount must be between 1000 and 50000 sats"
+                      "example": "amountSats must be an integer between 10 and 500000"
                     }
                   },
                   "xml": {
@@ -3110,7 +3134,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "example": "Amount must be between 1000 and 50000 sats"
+                      "example": "amountSats must be an integer between 10 and 500000"
                     }
                   },
                   "xml": {
@@ -3120,8 +3144,11 @@
               }
             }
           },
-          "501": {
-            "description": "Not yet implemented",
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Lightning services temporarily unavailable (stale BTC price)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3129,11 +3156,11 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Not implemented"
+                      "example": "Lightning services temporarily unavailable"
                     },
-                    "message": {
+                    "code": {
                       "type": "string",
-                      "example": "Lightning credit purchase is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
+                      "example": "LIGHTNING_UNAVAILABLE"
                     }
                   },
                   "xml": {
@@ -3147,15 +3174,32 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Not implemented"
+                      "example": "Lightning services temporarily unavailable"
                     },
-                    "message": {
+                    "code": {
                       "type": "string",
-                      "example": "Lightning credit purchase is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
+                      "example": "LIGHTNING_UNAVAILABLE"
                     }
                   },
                   "xml": {
                     "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amountSats": {
+                    "example": "any"
+                  },
+                  "clientId": {
+                    "example": "any"
                   }
                 }
               }
@@ -3170,7 +3214,7 @@
           "Agent Auth"
         ],
         "summary": "Activate credits with Lightning preimage",
-        "description": "After paying the Lightning invoice, submit the preimage and paymentHash to activate your credits. The preimage becomes your stateless auth credential for subsequent API calls.",
+        "description": "After paying the Lightning invoice, submit the preimage and paymentHash to activate your USD balance. The preimage becomes your stateless auth credential for subsequent API calls (format: Authorization: preimage:paymentHash).",
         "parameters": [
           {
             "name": "body",
@@ -3203,9 +3247,13 @@
                       "type": "string",
                       "example": "def456..."
                     },
-                    "credits": {
+                    "balanceUsd": {
                       "type": "number",
-                      "example": 50
+                      "example": 5
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
                     },
                     "clientId": {
                       "type": "string",
@@ -3225,9 +3273,13 @@
                       "type": "string",
                       "example": "def456..."
                     },
-                    "credits": {
+                    "balanceUsd": {
                       "type": "number",
-                      "example": 50
+                      "example": 5
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
                     },
                     "clientId": {
                       "type": "string",
@@ -3242,7 +3294,7 @@
             }
           },
           "400": {
-            "description": "Invalid preimage or paymentHash",
+            "description": "Invalid preimage, paymentHash, or invoice not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3250,11 +3302,11 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Invalid preimage"
+                      "example": "Activation failed"
                     },
                     "message": {
                       "type": "string",
-                      "example": "Preimage does not match the payment hash"
+                      "example": "Description of the issue"
                     }
                   },
                   "xml": {
@@ -3268,11 +3320,11 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Invalid preimage"
+                      "example": "Activation failed"
                     },
                     "message": {
                       "type": "string",
-                      "example": "Preimage does not match the payment hash"
+                      "example": "Description of the issue"
                     }
                   },
                   "xml": {
@@ -3282,42 +3334,24 @@
               }
             }
           },
-          "501": {
-            "description": "Not yet implemented",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Not implemented"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Lightning credit activation is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
-                    }
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "preimage": {
+                    "example": "any"
                   },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Not implemented"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Lightning credit activation is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
+                  "paymentHash": {
+                    "example": "any"
                   }
                 }
               }
@@ -3331,9 +3365,16 @@
         "tags": [
           "Agent Auth"
         ],
-        "summary": "Check remaining credit balance",
-        "description": "Returns the remaining credit balance for the given agent credential. Requires Authorization header with format \"preimage:paymentHash\". Uses existing checkEntitlementEligibility().",
+        "summary": "Check remaining balance",
+        "description": "Returns the remaining USD balance for the given agent credential. Requires Authorization header with format preimage:paymentHash.",
         "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "Authorization",
             "in": "header",
@@ -3346,23 +3387,39 @@
         ],
         "responses": {
           "200": {
-            "description": "Credit balance retrieved",
+            "description": "Balance retrieved",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "remainingUsage": {
+                    "balanceUsd": {
                       "type": "number",
-                      "example": 47
+                      "example": 4.8
                     },
-                    "maxUsage": {
+                    "balanceUsdMicro": {
                       "type": "number",
-                      "example": 50
+                      "example": 4800000
                     },
-                    "usedCount": {
+                    "totalDepositedUsd": {
                       "type": "number",
-                      "example": 3
+                      "example": 5
+                    },
+                    "totalDepositedUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "usedUsd": {
+                      "type": "number",
+                      "example": 0.2
+                    },
+                    "usedUsdMicro": {
+                      "type": "number",
+                      "example": 200000
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
                     },
                     "clientId": {
                       "type": "string",
@@ -3378,17 +3435,33 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "remainingUsage": {
+                    "balanceUsd": {
                       "type": "number",
-                      "example": 47
+                      "example": 4.8
                     },
-                    "maxUsage": {
+                    "balanceUsdMicro": {
                       "type": "number",
-                      "example": 50
+                      "example": 4800000
                     },
-                    "usedCount": {
+                    "totalDepositedUsd": {
                       "type": "number",
-                      "example": 3
+                      "example": 5
+                    },
+                    "totalDepositedUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "usedUsd": {
+                      "type": "number",
+                      "example": 0.2
+                    },
+                    "usedUsdMicro": {
+                      "type": "number",
+                      "example": 200000
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
                     },
                     "clientId": {
                       "type": "string",
@@ -3443,46 +3516,14 @@
               }
             }
           },
-          "501": {
-            "description": "Not yet implemented",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Not implemented"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Lightning credit balance check is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Not implemented"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Lightning credit balance check is not yet available. See: https://github.com/uncleJim21/pullthatupjamie-backend/issues/63"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }

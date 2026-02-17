@@ -11,6 +11,8 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { emitServerEvent } = require('./analyticsEmitter');
 const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
+const { getAgentCostMicroUsd } = require('../constants/agentPricing');
+const { isLightningAvailable, microUsdToUsd } = require('./btcPrice');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
@@ -314,6 +316,89 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         });
       }
       
+      // ═══════════════════════════════════════════════════════════════════════
+      // Lightning agent path: deduct USD microdollars from balance per call
+      // ═══════════════════════════════════════════════════════════════════════
+      if (identity.identifierType === 'prepaid') {
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+
+        if (costMicroUsd === null) {
+          return res.status(403).json({
+            error: 'Not available for agent access',
+            code: 'AGENT_ENDPOINT_NOT_PRICED',
+            message: `Endpoint ${entitlementType} is not available via Lightning agent access`
+          });
+        }
+
+        // Look up the lightning entitlement (apiAccess, keyed by paymentHash)
+        const lightningEntitlement = await Entitlement.findOne({
+          identifier: identity.identifier,
+          identifierType: 'prepaid',
+          entitlementType: 'apiAccess',
+          status: 'active'
+        });
+
+        if (!lightningEntitlement) {
+          return res.status(401).json({
+            error: 'No active credit balance',
+            code: 'NO_BALANCE',
+            message: 'Purchase credits at POST /api/agent/purchase-credits'
+          });
+        }
+
+        const remainingMicroUsd = lightningEntitlement.maxUsage - lightningEntitlement.usedCount;
+
+        if (remainingMicroUsd < costMicroUsd) {
+          return res.status(429).json({
+            error: 'Insufficient funds',
+            code: 'INSUFFICIENT_FUNDS',
+            message: 'Your credit balance is too low for this request. Top up at POST /api/agent/purchase-credits',
+            costUsd: parseFloat(microUsdToUsd(costMicroUsd).toFixed(6)),
+            balanceUsd: parseFloat(microUsdToUsd(remainingMicroUsd).toFixed(6)),
+            balanceUsdMicro: remainingMicroUsd,
+            costUsdMicro: costMicroUsd
+          });
+        }
+
+        // Deduct usage (in microdollars)
+        lightningEntitlement.usedCount += costMicroUsd;
+        lightningEntitlement.lastUsed = new Date();
+        await lightningEntitlement.save();
+
+        const newRemainingMicroUsd = lightningEntitlement.maxUsage - lightningEntitlement.usedCount;
+
+        // Attach to request for downstream use
+        req.identity = identity;
+        req.entitlement = {
+          type: entitlementType,
+          used: lightningEntitlement.usedCount,
+          max: lightningEntitlement.maxUsage,
+          remaining: newRemainingMicroUsd,
+          isUnlimited: false,
+          costMicroUsd,
+          isLightning: true
+        };
+
+        // Set lightning-specific headers
+        res.setHeader('X-Credits-Remaining-USD', microUsdToUsd(newRemainingMicroUsd).toFixed(6));
+        res.setHeader('X-Credits-Cost-USD', microUsdToUsd(costMicroUsd).toFixed(6));
+
+        // Emit analytics event
+        emitServerEvent(
+          SERVER_EVENT_TYPES.ENTITLEMENT_CONSUMED,
+          analyticsSessionId,
+          identity.tier,
+          {
+            entitlement_type: entitlementType,
+            cost_micro_usd: costMicroUsd,
+            remaining_micro_usd: newRemainingMicroUsd,
+            identifier_type: 'prepaid'
+          }
+        );
+
+        return next();
+      }
+
       // Get or create entitlement
       const entitlement = await getOrCreateEntitlement(
         identity.identifier,
