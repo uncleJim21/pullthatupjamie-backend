@@ -27,13 +27,26 @@ const TIERS = {
  * @returns {Promise<{
  *   tier: string,
  *   identifier: string,
- *   identifierType: 'user' | 'ip',
+ *   identifierType: 'user' | 'ip' | 'serviceKey',
  *   user: User | null,
  *   provider: string | null,
  *   email: string | null
  * }>}
  */
 async function resolveIdentity(req) {
+  // HMAC service-to-service auth → admin tier (unlimited quotas)
+  // req.serviceAuth is set by serviceHmac middleware in middleware/hmac.js
+  if (req.serviceAuth && req.serviceAuth.keyId) {
+    return {
+      tier: TIERS.admin,
+      identifier: `svc:${req.serviceAuth.keyId}`,
+      identifierType: 'serviceKey',
+      user: null,
+      provider: 'hmac',
+      email: null
+    };
+  }
+
   const authHeader = req.headers.authorization;
   
   // No auth header → anonymous (IP-based)
