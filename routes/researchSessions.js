@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 
 const { ResearchSession } = require('../models/ResearchSession');
 const { SharedResearchSession } = require('../models/SharedResearchSession');
@@ -435,6 +436,14 @@ router.patch('/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id and owner'
+      });
+    }
+
     const { pineconeIds, lastItemMetadata, coordinatesById, expectedVersion } = req.body || {};
 
     if (
@@ -579,6 +588,12 @@ router.patch('/:id', async (req, res) => {
       }
     });
   } catch (error) {
+    if (error.name === 'CastError') {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id and owner'
+      });
+    }
     console.error('[ResearchSessions] Error updating session:', error);
     res.status(500).json({
       error: 'Internal server error',
@@ -623,6 +638,14 @@ router.get('/:id', async (req, res) => {
   } */
   try {
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id'
+      });
+    }
+
     const owner = await resolveOwner(req);
 
     let session;
@@ -785,6 +808,12 @@ router.get('/:id', async (req, res) => {
       }
     });
   } catch (error) {
+    if (error.name === 'CastError') {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id'
+      });
+    }
     console.error('[ResearchSessions] Error fetching session with Pinecone data:', error);
     res.status(500).json({
       error: 'Internal server error',
@@ -1306,6 +1335,14 @@ router.post('/:id/share', async (req, res) => {
     }
 
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id and owner'
+      });
+    }
+
     const { title, nodes, camera, visibility } = req.body || {};
 
     // Use buildQuery to handle $or for authenticated users with clientId
@@ -1410,6 +1447,12 @@ router.post('/:id/share', async (req, res) => {
       }
     });
   } catch (error) {
+    if (error.name === 'CastError') {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id and owner'
+      });
+    }
     console.error('[SharedResearchSession] Error sharing research session:', error);
     res.status(500).json({
       error: 'Internal server error',
@@ -1595,6 +1638,14 @@ router.post('/:id/analyze', async (req, res) => {
     }
 
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        error: 'Research session not found',
+        details: 'No session found for this id'
+      });
+    }
+
     const { instructions } = req.body || {};
 
     // Use buildQuery to handle $or for authenticated users with clientId
@@ -1641,6 +1692,15 @@ router.post('/:id/analyze', async (req, res) => {
       instructions
     });
   } catch (error) {
+    if (error.name === 'CastError') {
+      if (!res.headersSent) {
+        return res.status(404).json({
+          error: 'Research session not found',
+          details: 'No session found for this id'
+        });
+      }
+      return res.end();
+    }
     console.error('[ResearchSessions] Error analyzing session with AI:', error);
     if (!res.headersSent) {
       res.status(500).json({
