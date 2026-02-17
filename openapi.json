@@ -1,0 +1,4433 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Pull That Up Jamie API",
+    "version": "1.0.0",
+    "description": "Public API for Pull That Up Jamie — a podcast search and research platform. Provides semantic search across podcast transcripts, corpus navigation for AI agents, research session management, and (upcoming) Lightning-based agent authentication.",
+    "contact": {
+      "name": "Pull That Up Jamie",
+      "url": "https://pullthatupjamie.ai"
+    },
+    "license": {
+      "name": "ISC"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://pullthatupjamie.ai",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Corpus Discovery",
+      "description": "Read-only endpoints for navigating the podcast corpus hierarchy (feeds, episodes, chapters, topics, people). Designed for AI agents."
+    },
+    {
+      "name": "Search",
+      "description": "Semantic search across podcast transcripts using vector embeddings."
+    },
+    {
+      "name": "Research Sessions",
+      "description": "Create, retrieve, share, and analyze research sessions — curated collections of podcast clips."
+    },
+    {
+      "name": "Agent Auth",
+      "description": "Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents."
+    }
+  ],
+  "paths": {
+    "/api/search-quotes": {
+      "post": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Semantic search across podcast transcripts",
+        "description": "Performs vector-based semantic search across the podcast corpus using OpenAI embeddings and Pinecone. Supports filtering by feed, episode, date range, and episode name.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "example": "What is the future of Bitcoin?"
+                },
+                "feedIds": {
+                  "type": "array",
+                  "example": [
+                    "1015378"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "limit": {
+                  "type": "number",
+                  "example": 5
+                },
+                "minDate": {
+                  "type": "string",
+                  "example": "2024-01-01"
+                },
+                "maxDate": {
+                  "type": "string",
+                  "example": "2026-02-13"
+                },
+                "episodeName": {
+                  "type": "string",
+                  "example": ""
+                },
+                "guid": {
+                  "type": "string",
+                  "example": ""
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results with similarity scores",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "example": "What is the future of Bitcoin?"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SearchResult"
+                      }
+                    },
+                    "total": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "model": {
+                      "type": "string",
+                      "example": "text-embedding-ada-002"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "example": "What is the future of Bitcoin?"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SearchResult"
+                      }
+                    },
+                    "total": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "model": {
+                      "type": "string",
+                      "example": "text-embedding-ada-002"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Failed to search quotes"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error message"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Failed to search quotes"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error message"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "example": "any"
+                  },
+                  "feedIds": {
+                    "example": "any"
+                  },
+                  "limit": {
+                    "example": "any"
+                  },
+                  "minDate": {
+                    "example": "any"
+                  },
+                  "maxDate": {
+                    "example": "any"
+                  },
+                  "episodeName": {
+                    "example": "any"
+                  },
+                  "guid": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research-sessions/": {
+      "post": {
+        "tags": [
+          "Research Sessions"
+        ],
+        "summary": "Create a new research session",
+        "description": "Creates a new research session with an ordered list of Pinecone vector IDs. Requires either a Bearer JWT or a clientId for ownership.",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-client-id",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "req",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "clientId": {
+                  "type": "string",
+                  "example": "optional-when-authenticated"
+                },
+                "pineconeIds": {
+                  "type": "array",
+                  "example": [
+                    "id1",
+                    "id2",
+                    "id3"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "lastItemMetadata": {
+                  "type": "object",
+                  "properties": {}
+                },
+                "coordinatesById": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Research session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "507f1f77bcf86cd799439011"
+                        },
+                        "pineconeIds": {
+                          "type": "array",
+                          "example": [
+                            "id1",
+                            "id2",
+                            "id3"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "507f1f77bcf86cd799439011"
+                        },
+                        "pineconeIds": {
+                          "type": "array",
+                          "example": [
+                            "id1",
+                            "id2",
+                            "id3"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (missing owner or invalid pineconeIds)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid pineconeIds"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "pineconeIds must be a non-empty array of strings"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid pineconeIds"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "pineconeIds must be a non-empty array of strings"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error creating research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error creating research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "example": "any"
+                  },
+                  "pineconeIds": {
+                    "example": "any"
+                  },
+                  "lastItemMetadata": {
+                    "example": "any"
+                  },
+                  "coordinatesById": {
+                    "example": "any"
+                  },
+                  "req": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research-sessions/{id}": {
+      "get": {
+        "tags": [
+          "Research Sessions"
+        ],
+        "summary": "Get a research session by ID",
+        "description": "Returns a specific research session with all its items and metadata. Hydrates item data from MongoDB and Pinecone as needed.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Research session ID (MongoDB ObjectId)"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-client-id",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "req",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Research session with items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "session": {
+                          "type": "object",
+                          "properties": {
+                            "_id": {
+                              "type": "string",
+                              "example": "507f1f77bcf86cd799439011"
+                            },
+                            "pineconeIds": {
+                              "type": "array",
+                              "example": [
+                                "id1",
+                                "id2"
+                              ],
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "lastItemMetadata": {
+                              "type": "object",
+                              "properties": {}
+                            },
+                            "createdAt": {
+                              "type": "string",
+                              "example": "2026-02-13T00:00:00.000Z"
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "example": "2026-02-13T00:00:00.000Z"
+                            }
+                          }
+                        },
+                        "items": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "session": {
+                          "type": "object",
+                          "properties": {
+                            "_id": {
+                              "type": "string",
+                              "example": "507f1f77bcf86cd799439011"
+                            },
+                            "pineconeIds": {
+                              "type": "array",
+                              "example": [
+                                "id1",
+                                "id2"
+                              ],
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "lastItemMetadata": {
+                              "type": "object",
+                              "properties": {}
+                            },
+                            "createdAt": {
+                              "type": "string",
+                              "example": "2026-02-13T00:00:00.000Z"
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "example": "2026-02-13T00:00:00.000Z"
+                            }
+                          }
+                        },
+                        "items": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error fetching research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error fetching research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research-sessions/{id}/share": {
+      "post": {
+        "tags": [
+          "Research Sessions"
+        ],
+        "summary": "Create a shareable snapshot of a session",
+        "description": "Creates an immutable, shareable snapshot of a research session with a preview image. Returns a shareId and shareUrl for link sharing.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Research session ID (MongoDB ObjectId)"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "example": "My Research on Bitcoin"
+                },
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "pineconeId": {
+                        "type": "string",
+                        "example": "id1"
+                      },
+                      "x": {
+                        "type": "number",
+                        "example": 0
+                      },
+                      "y": {
+                        "type": "number",
+                        "example": 0
+                      },
+                      "z": {
+                        "type": "number",
+                        "example": 0
+                      }
+                    }
+                  }
+                },
+                "camera": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "example": 0
+                    },
+                    "y": {
+                      "type": "number",
+                      "example": 0
+                    },
+                    "z": {
+                      "type": "number",
+                      "example": 5
+                    }
+                  }
+                },
+                "visibility": {
+                  "type": "string",
+                  "example": "unlisted"
+                }
+              }
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-client-id",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "req",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Shared session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "shareId": {
+                          "type": "string",
+                          "example": "8d5417e36d3d"
+                        },
+                        "shareUrl": {
+                          "type": "string",
+                          "example": "https://pullthatupjamie.ai/researchSession/8d5417e36d3d"
+                        },
+                        "previewImageUrl": {
+                          "type": "string",
+                          "example": "https://..."
+                        },
+                        "title": {
+                          "type": "string",
+                          "example": "My Research on Bitcoin"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "example": "unlisted"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "shareId": {
+                          "type": "string",
+                          "example": "8d5417e36d3d"
+                        },
+                        "shareUrl": {
+                          "type": "string",
+                          "example": "https://pullthatupjamie.ai/researchSession/8d5417e36d3d"
+                        },
+                        "previewImageUrl": {
+                          "type": "string",
+                          "example": "https://..."
+                        },
+                        "title": {
+                          "type": "string",
+                          "example": "My Research on Bitcoin"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "example": "unlisted"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid snapshot or missing owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid snapshot"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Validation error message"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid snapshot"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Validation error message"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id and owner"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id and owner"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error sharing research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error sharing research session"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "in": {
+                    "example": "any"
+                  },
+                  "required": {
+                    "example": "any"
+                  },
+                  "schema": {
+                    "example": "any"
+                  },
+                  "camera": {
+                    "example": "any"
+                  },
+                  "visibility": {
+                    "example": "any"
+                  },
+                  "req": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/research-sessions/{id}/analyze": {
+      "post": {
+        "tags": [
+          "Research Sessions"
+        ],
+        "summary": "Analyze a research session with AI",
+        "description": "Analyzes a research session using gpt-4o-mini and streams the response as Server-Sent Events (SSE). Optionally provide custom instructions to guide the analysis.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Research session ID (MongoDB ObjectId)"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-client-id",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "req",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "instructions": {
+                  "type": "string",
+                  "example": "Summarize the key themes discussed across these clips"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream of analysis text",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty session or missing owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Empty session"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "This research session has no items to analyze"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Empty session"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "This research session has no items to analyze"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Research session not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No session found for this id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error analyzing research session with AI"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error analyzing research session with AI"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "instructions": {
+                    "example": "any"
+                  },
+                  "req": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shared-research-sessions/{shareId}": {
+      "get": {
+        "tags": [
+          "Research Sessions"
+        ],
+        "summary": "Get a shared research session",
+        "description": "Returns metadata for a shared research session by its shareId. Intended for link unfurling and preview cards. Includes title, description, preview image, node positions, and camera configuration.",
+        "parameters": [
+          {
+            "name": "shareId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Shared session identifier (12-character hex string)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared session metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "researchSessionId": {
+                          "type": "string",
+                          "example": "507f1f77bcf86cd799439011"
+                        },
+                        "shareId": {
+                          "type": "string",
+                          "example": "8d5417e36d3d"
+                        },
+                        "shareUrl": {
+                          "type": "string",
+                          "example": "https://pullthatupjamie.ai/researchSession/8d5417e36d3d"
+                        },
+                        "title": {
+                          "type": "string",
+                          "example": "My Research on Bitcoin"
+                        },
+                        "brandImage": {},
+                        "brandColors": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        },
+                        "description": {
+                          "type": "string",
+                          "example": "Short description or quote..."
+                        },
+                        "previewImageUrl": {
+                          "type": "string",
+                          "example": "https://.../preview.jpg"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "example": "unlisted"
+                        },
+                        "lastItemMetadata": {
+                          "type": "object",
+                          "properties": {}
+                        },
+                        "nodes": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        },
+                        "camera": {
+                          "type": "object",
+                          "properties": {}
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "researchSessionId": {
+                          "type": "string",
+                          "example": "507f1f77bcf86cd799439011"
+                        },
+                        "shareId": {
+                          "type": "string",
+                          "example": "8d5417e36d3d"
+                        },
+                        "shareUrl": {
+                          "type": "string",
+                          "example": "https://pullthatupjamie.ai/researchSession/8d5417e36d3d"
+                        },
+                        "title": {
+                          "type": "string",
+                          "example": "My Research on Bitcoin"
+                        },
+                        "brandImage": {},
+                        "brandColors": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        },
+                        "description": {
+                          "type": "string",
+                          "example": "Short description or quote..."
+                        },
+                        "previewImageUrl": {
+                          "type": "string",
+                          "example": "https://.../preview.jpg"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "example": "unlisted"
+                        },
+                        "lastItemMetadata": {
+                          "type": "object",
+                          "properties": {}
+                        },
+                        "nodes": {
+                          "type": "array",
+                          "example": [],
+                          "items": {}
+                        },
+                        "camera": {
+                          "type": "object",
+                          "properties": {}
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "example": "2026-02-13T00:00:00.000Z"
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid shareId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid shareId"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "shareId path parameter is required"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid shareId"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "shareId path parameter is required"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No shared research session found for this shareId"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Not found"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "No shared research session found for this shareId"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error fetching shared research session metadata"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    },
+                    "details": {
+                      "type": "string",
+                      "example": "Error fetching shared research session metadata"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/spec": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get API specification as markdown",
+        "description": "Returns the Corpus API specification as a markdown document. Useful for agents to understand available endpoints.",
+        "responses": {
+          "200": {
+            "description": "Markdown API specification",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/stats": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get corpus-wide statistics",
+        "description": "Returns aggregate counts for feeds, episodes, chapters, paragraphs, people, and topics across the entire corpus.",
+        "responses": {
+          "200": {
+            "description": "Corpus statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feeds": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 10
+                        }
+                      }
+                    },
+                    "episodes": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 5000
+                        }
+                      }
+                    },
+                    "chapters": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 50000
+                        }
+                      }
+                    },
+                    "paragraphs": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 500000
+                        }
+                      }
+                    },
+                    "people": {
+                      "type": "object",
+                      "properties": {
+                        "creators": {
+                          "type": "number",
+                          "example": 10
+                        },
+                        "guests": {
+                          "type": "number",
+                          "example": 500
+                        },
+                        "total": {
+                          "type": "number",
+                          "example": 510
+                        }
+                      }
+                    },
+                    "topics": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 2000
+                        }
+                      }
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "example": "2026-02-13T00:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feeds": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 10
+                        }
+                      }
+                    },
+                    "episodes": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 5000
+                        }
+                      }
+                    },
+                    "chapters": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 50000
+                        }
+                      }
+                    },
+                    "paragraphs": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 500000
+                        }
+                      }
+                    },
+                    "people": {
+                      "type": "object",
+                      "properties": {
+                        "creators": {
+                          "type": "number",
+                          "example": 10
+                        },
+                        "guests": {
+                          "type": "number",
+                          "example": 500
+                        },
+                        "total": {
+                          "type": "number",
+                          "example": 510
+                        }
+                      }
+                    },
+                    "topics": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "number",
+                          "example": 2000
+                        }
+                      }
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "example": "2026-02-13T00:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/feeds": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "List all podcast feeds",
+        "description": "Returns a paginated list of all podcast feeds in the corpus.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Results per page (default: 50, max: 200)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (default: 1)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated feed list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Feed"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Feed"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/feeds/{feedId}/stats": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get statistics for a specific feed",
+        "description": "Returns episode, chapter, and paragraph counts plus date range for a specific feed. Useful for agents to assess feed depth before searching.",
+        "parameters": [
+          {
+            "name": "feedId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Feed identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Feed statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    },
+                    "title": {
+                      "type": "string",
+                      "example": "What Bitcoin Did"
+                    },
+                    "episodeCount": {
+                      "type": "number",
+                      "example": 824
+                    },
+                    "chapterCount": {
+                      "type": "number",
+                      "example": 3200
+                    },
+                    "paragraphCount": {
+                      "type": "number",
+                      "example": 45000
+                    },
+                    "dateRange": {
+                      "type": "object",
+                      "properties": {
+                        "earliest": {
+                          "type": "string",
+                          "example": "2018-11-01"
+                        },
+                        "latest": {
+                          "type": "string",
+                          "example": "2026-02-06"
+                        }
+                      }
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "example": "2026-02-13T00:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    },
+                    "title": {
+                      "type": "string",
+                      "example": "What Bitcoin Did"
+                    },
+                    "episodeCount": {
+                      "type": "number",
+                      "example": 824
+                    },
+                    "chapterCount": {
+                      "type": "number",
+                      "example": 3200
+                    },
+                    "paragraphCount": {
+                      "type": "number",
+                      "example": 45000
+                    },
+                    "dateRange": {
+                      "type": "object",
+                      "properties": {
+                        "earliest": {
+                          "type": "string",
+                          "example": "2018-11-01"
+                        },
+                        "latest": {
+                          "type": "string",
+                          "example": "2026-02-06"
+                        }
+                      }
+                    },
+                    "generatedAt": {
+                      "type": "string",
+                      "example": "2026-02-13T00:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Feed not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Feed not found"
+                    },
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Feed not found"
+                    },
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/feeds/{feedId}": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get a single feed by ID",
+        "description": "Returns details for a specific podcast feed.",
+        "parameters": [
+          {
+            "name": "feedId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Feed identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Feed details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Feed"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Feed"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Feed not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Feed not found"
+                    },
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Feed not found"
+                    },
+                    "feedId": {
+                      "type": "string",
+                      "example": "1015378"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/feeds/{feedId}/episodes": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "List episodes for a feed",
+        "description": "Returns a paginated list of episodes for a specific feed, with optional date filtering and sort order.",
+        "parameters": [
+          {
+            "name": "feedId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Feed identifier"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Results per page (default: 50, max: 200)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (default: 1)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order: newest (default) or oldest",
+            "required": false,
+            "enum": [
+              "newest",
+              "oldest"
+            ],
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDate",
+            "in": "query",
+            "description": "Minimum published date (ISO format)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxDate",
+            "in": "query",
+            "description": "Maximum published date (ISO format)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated episode list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Episode"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Episode"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/episodes/{guid}": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get a single episode by GUID",
+        "description": "Returns details for a specific episode by its GUID.",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Episode GUID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Episode details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Episode"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Episode"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Episode not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Episode not found"
+                    },
+                    "guid": {
+                      "type": "string",
+                      "example": "abc123"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Episode not found"
+                    },
+                    "guid": {
+                      "type": "string",
+                      "example": "abc123"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/episodes/{guid}/chapters": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "List chapters for an episode",
+        "description": "Returns a paginated list of chapters for a specific episode, sorted by start time.",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Episode GUID"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Results per page (default: 50, max: 200)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (default: 1)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated chapter list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Chapter"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Chapter"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/topics": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "List aggregated topics",
+        "description": "Returns aggregated topics derived from chapter keywords, sorted by frequency. Optionally filter by feedId.",
+        "parameters": [
+          {
+            "name": "feedId",
+            "in": "query",
+            "description": "Filter topics to a specific feed",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Results per page (default: 50, max: 200)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (default: 1)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated topic list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Topic"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Topic"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/people": {
+      "get": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "List people (creators and guests)",
+        "description": "Returns a paginated list of people (podcast creators and guests), sorted by number of appearances. Supports filtering by role, name search, and feed.",
+        "parameters": [
+          {
+            "name": "guestsOnly",
+            "in": "query",
+            "description": "Exclude hosts/creators, only show guests (default: false)",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Partial name match (case-insensitive)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "feedId",
+            "in": "query",
+            "description": "Filter to a specific podcast",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Results per page (default: 50, max: 200)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (default: 1)",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated people list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Person"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "guestsOnly": {
+                          "type": "boolean",
+                          "example": false
+                        },
+                        "search": {},
+                        "feedId": {}
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Person"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "guestsOnly": {
+                          "type": "boolean",
+                          "example": false
+                        },
+                        "search": {},
+                        "feedId": {}
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/corpus/people/episodes": {
+      "post": {
+        "tags": [
+          "Corpus Discovery"
+        ],
+        "summary": "Get episodes featuring a person",
+        "description": "Returns a paginated list of episodes that feature a specific person (as guest or creator). Requires person name in request body.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "Elon Musk"
+                },
+                "guestsOnly": {
+                  "type": "boolean",
+                  "example": false
+                },
+                "feedId": {
+                  "type": "string",
+                  "example": ""
+                },
+                "limit": {
+                  "type": "number",
+                  "example": 50
+                },
+                "page": {
+                  "type": "number",
+                  "example": 1
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated episodes featuring the person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "string",
+                            "example": "abc123"
+                          },
+                          "title": {
+                            "type": "string",
+                            "example": "#252 - Elon Musk: SpaceX, Mars..."
+                          },
+                          "feedId": {
+                            "type": "string",
+                            "example": "123"
+                          },
+                          "feedTitle": {
+                            "type": "string",
+                            "example": "Lex Fridman Podcast"
+                          },
+                          "publishedDate": {
+                            "type": "string",
+                            "example": "2024-03-15"
+                          },
+                          "role": {
+                            "type": "string",
+                            "example": "guest"
+                          },
+                          "imageUrl": {
+                            "type": "string",
+                            "example": "https://..."
+                          },
+                          "duration": {
+                            "type": "string",
+                            "example": "2:30:00"
+                          }
+                        }
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "example": "Elon Musk"
+                        },
+                        "guestsOnly": {
+                          "type": "boolean",
+                          "example": false
+                        },
+                        "feedId": {}
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "string",
+                            "example": "abc123"
+                          },
+                          "title": {
+                            "type": "string",
+                            "example": "#252 - Elon Musk: SpaceX, Mars..."
+                          },
+                          "feedId": {
+                            "type": "string",
+                            "example": "123"
+                          },
+                          "feedTitle": {
+                            "type": "string",
+                            "example": "Lex Fridman Podcast"
+                          },
+                          "publishedDate": {
+                            "type": "string",
+                            "example": "2024-03-15"
+                          },
+                          "role": {
+                            "type": "string",
+                            "example": "guest"
+                          },
+                          "imageUrl": {
+                            "type": "string",
+                            "example": "https://..."
+                          },
+                          "duration": {
+                            "type": "string",
+                            "example": "2:30:00"
+                          }
+                        }
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "example": "Elon Musk"
+                        },
+                        "guestsOnly": {
+                          "type": "boolean",
+                          "example": false
+                        },
+                        "feedId": {}
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Bad request"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "name is required in request body"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Bad request"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "name is required in request body"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "example": "any"
+                  },
+                  "guestsOnly": {
+                    "example": "any"
+                  },
+                  "feedId": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/purchase-credits": {
+      "post": {
+        "tags": [
+          "Agent Auth"
+        ],
+        "summary": "Purchase API credits via Lightning invoice",
+        "description": "Request a Lightning invoice to pre-pay for API usage. Specify an amount in sats (10 - 500,000). The sats are converted to USD at the current BTC/USD median rate and become your API balance. Each subsequent API call deducts its USD cost from your balance.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "amountSats": {
+                  "type": "number",
+                  "example": 5000
+                },
+                "clientId": {
+                  "type": "string",
+                  "example": "optional-for-session-linking"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lightning invoice generated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invoice": {
+                      "type": "string",
+                      "example": "lnbc50u1p..."
+                    },
+                    "paymentHash": {
+                      "type": "string",
+                      "example": "abc123def456..."
+                    },
+                    "amountSats": {
+                      "type": "number",
+                      "example": 5000
+                    },
+                    "amountUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "example": "2026-02-13T01:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invoice": {
+                      "type": "string",
+                      "example": "lnbc50u1p..."
+                    },
+                    "paymentHash": {
+                      "type": "string",
+                      "example": "abc123def456..."
+                    },
+                    "amountSats": {
+                      "type": "number",
+                      "example": 5000
+                    },
+                    "amountUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "example": "2026-02-13T01:00:00.000Z"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid amount",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid amount"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "amountSats must be an integer between 10 and 500000"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Invalid amount"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "amountSats must be an integer between 10 and 500000"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Lightning services temporarily unavailable (stale BTC price)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Lightning services temporarily unavailable"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "LIGHTNING_UNAVAILABLE"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Lightning services temporarily unavailable"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "LIGHTNING_UNAVAILABLE"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amountSats": {
+                    "example": "any"
+                  },
+                  "clientId": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/activate-credits": {
+      "post": {
+        "tags": [
+          "Agent Auth"
+        ],
+        "summary": "Activate credits with Lightning preimage",
+        "description": "After paying the Lightning invoice, submit the preimage and paymentHash to activate your USD balance. The preimage becomes your stateless auth credential for subsequent API calls (format: Authorization: preimage:paymentHash).",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "preimage": {
+                  "type": "string",
+                  "example": "abc123..."
+                },
+                "paymentHash": {
+                  "type": "string",
+                  "example": "def456..."
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Credits activated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "paymentHash": {
+                      "type": "string",
+                      "example": "def456..."
+                    },
+                    "balanceUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "clientId": {
+                      "type": "string",
+                      "example": "optional-session-id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "paymentHash": {
+                      "type": "string",
+                      "example": "def456..."
+                    },
+                    "balanceUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "clientId": {
+                      "type": "string",
+                      "example": "optional-session-id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid preimage, paymentHash, or invoice not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Activation failed"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Description of the issue"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Activation failed"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Description of the issue"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "preimage": {
+                    "example": "any"
+                  },
+                  "paymentHash": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/balance": {
+      "get": {
+        "tags": [
+          "Agent Auth"
+        ],
+        "summary": "Check remaining balance",
+        "description": "Returns the remaining USD balance for the given agent credential. Requires Authorization header with format preimage:paymentHash.",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "description": "Agent credential in format preimage:paymentHash",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Balance retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "balanceUsd": {
+                      "type": "number",
+                      "example": 4.8
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 4800000
+                    },
+                    "totalDepositedUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "totalDepositedUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "usedUsd": {
+                      "type": "number",
+                      "example": 0.2
+                    },
+                    "usedUsdMicro": {
+                      "type": "number",
+                      "example": 200000
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "clientId": {
+                      "type": "string",
+                      "example": "optional-session-id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "balanceUsd": {
+                      "type": "number",
+                      "example": 4.8
+                    },
+                    "balanceUsdMicro": {
+                      "type": "number",
+                      "example": 4800000
+                    },
+                    "totalDepositedUsd": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "totalDepositedUsdMicro": {
+                      "type": "number",
+                      "example": 5000000
+                    },
+                    "usedUsd": {
+                      "type": "number",
+                      "example": 0.2
+                    },
+                    "usedUsdMicro": {
+                      "type": "number",
+                      "example": 200000
+                    },
+                    "btcUsdRate": {
+                      "type": "number",
+                      "example": 100000
+                    },
+                    "clientId": {
+                      "type": "string",
+                      "example": "optional-session-id"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid Authorization header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Unauthorized"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Valid Authorization header required (format: preimage:paymentHash)"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Unauthorized"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Valid Authorization header required (format: preimage:paymentHash)"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AgentCredential": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Lightning preimage credential in format \"preimage:paymentHash\". Used for agent auth endpoints."
+      },
+      "BearerJWT": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token for authenticated user sessions."
+      },
+      "ClientId": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Client-Id",
+        "description": "Anonymous client identifier for session tracking without authentication."
+      }
+    },
+    "schemas": {
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "page": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 1
+                  }
+                }
+              },
+              "totalPages": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 5
+                  }
+                }
+              },
+              "totalCount": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 250
+                  }
+                }
+              },
+              "limit": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 50
+                  }
+                }
+              },
+              "hasMore": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "boolean"
+                  },
+                  "example": {
+                    "type": "boolean",
+                    "example": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Pagination"
+        }
+      },
+      "Feed": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "feedId": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "example": {
+                    "type": "string",
+                    "example": "1015378"
+                  }
+                }
+              },
+              "title": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "example": {
+                    "type": "string",
+                    "example": "What Bitcoin Did"
+                  }
+                }
+              },
+              "author": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "example": {
+                    "type": "string",
+                    "example": "Peter McCormack"
+                  }
+                }
+              },
+              "description": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "episodeCount": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 824
+                  }
+                }
+              },
+              "imageUrl": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "example": "uri"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Feed"
+        }
+      },
+      "Episode": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "guid": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "title": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "creator": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "description": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "publishedDate": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "duration": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "imageUrl": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "example": "uri"
+                  }
+                }
+              },
+              "guests": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Episode"
+        }
+      },
+      "Chapter": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "pineconeId": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "chapterNumber": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  }
+                }
+              },
+              "headline": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "keywords": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "summary": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "startTime": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "number"
+                  }
+                }
+              },
+              "endTime": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "number"
+                  }
+                }
+              },
+              "duration": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Chapter"
+        }
+      },
+      "Topic": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "keyword": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "example": {
+                    "type": "string",
+                    "example": "artificial intelligence"
+                  }
+                }
+              },
+              "count": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 150
+                  }
+                }
+              },
+              "feeds": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "object"
+                      },
+                      "properties": {
+                        "type": "object",
+                        "properties": {
+                          "feedId": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          },
+                          "title": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "sampleEpisodes": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "object"
+                      },
+                      "properties": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          },
+                          "title": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Topic"
+        }
+      },
+      "Person": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "example": {
+                    "type": "string",
+                    "example": "Elon Musk"
+                  }
+                }
+              },
+              "role": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "enum": {
+                    "type": "array",
+                    "example": [
+                      "guest",
+                      "creator"
+                    ],
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "appearances": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "integer"
+                  },
+                  "example": {
+                    "type": "number",
+                    "example": 3
+                  }
+                }
+              },
+              "feeds": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "object"
+                      },
+                      "properties": {
+                        "type": "object",
+                        "properties": {
+                          "feedId": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          },
+                          "title": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "recentEpisodes": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "array"
+                  },
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "example": "object"
+                      },
+                      "properties": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          },
+                          "title": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          },
+                          "publishedDate": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "example": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Person"
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "shareUrl": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "example": "uri"
+                  }
+                }
+              },
+              "shareLink": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "quote": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "episode": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "creator": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "audioUrl": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "example": "uri"
+                  }
+                }
+              },
+              "episodeImage": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "example": "uri"
+                  }
+                }
+              },
+              "listenLink": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "date": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "similarity": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "object"
+                  },
+                  "properties": {
+                    "type": "object",
+                    "properties": {
+                      "combined": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "example": "number"
+                          },
+                          "example": {
+                            "type": "number",
+                            "example": 0.8542
+                          }
+                        }
+                      },
+                      "vector": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "example": "number"
+                          },
+                          "example": {
+                            "type": "number",
+                            "example": 0.8542
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "timeContext": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "object"
+                  },
+                  "properties": {
+                    "type": "object",
+                    "properties": {
+                      "start_time": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "example": "number"
+                          }
+                        }
+                      },
+                      "end_time": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "example": "number"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "SearchResult"
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "object"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "error": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              },
+              "details": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "example": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "xml": {
+          "name": "Error"
+        }
+      }
+    }
+  }
+}

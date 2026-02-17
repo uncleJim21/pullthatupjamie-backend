@@ -217,9 +217,54 @@ async function generateInvoice(service='PTUJ Quick Search') {
   }
 }
 
+/**
+ * Generate a Lightning invoice for an arbitrary sat amount via Alby API.
+ * Used by the agent credit system for variable top-up amounts.
+ * 
+ * @param {number} amountSats - Amount in satoshis
+ * @param {string} [description] - Invoice description
+ * @returns {Promise<{ pr: string, paymentHash: string, expiresAt: Date }>}
+ */
+async function generateInvoiceForSats(amountSats, description = 'PTUJ Agent API Credits') {
+  if (!Number.isInteger(amountSats) || amountSats <= 0) {
+    throw new Error(`Invalid amountSats: ${amountSats}`);
+  }
+
+  const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const fullDescription = `${description} (${amountSats} sats) at ${timestamp}`;
+
+  const response = await axios.post('https://api.getalby.com/invoices', {
+    description: fullDescription,
+    amount: amountSats
+  }, {
+    headers: {
+      'Authorization': `Bearer ${process.env.ALBY_WALLET_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  const invoiceData = response.data;
+
+  if (!invoiceData.payment_request) {
+    throw new Error(`No payment request in Alby response: ${JSON.stringify(invoiceData)}`);
+  }
+
+  const decodedInvoice = bolt11.decode(invoiceData.payment_request);
+  const expirySeconds = decodedInvoice.tags.find(tag => tag.tagName === 'expire_time')?.data || 3600;
+  const expiresAt = new Date((decodedInvoice.timestamp + expirySeconds) * 1000);
+
+  return {
+    pr: invoiceData.payment_request,
+    paymentHash: invoiceData.payment_hash,
+    expiresAt
+  };
+}
+
 module.exports = {
     getLNURL,
     getIsInvoicePaid,
+    validatePreimage,
     generateInvoice,
-    generateInvoiceAlbyAPI
-}
+    generateInvoiceAlbyAPI,
+    generateInvoiceForSats
+};

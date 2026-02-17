@@ -63,6 +63,8 @@ const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const corpusRoutes = require('./routes/corpusRoutes');
+const agentRoutes = require('./routes/agentRoutes');
+const swaggerUi = require('swagger-ui-express');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
 const JamieVectorMetadata = require('./models/JamieVectorMetadata');
@@ -700,7 +702,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
+app.post('/api/make-clip', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -1054,7 +1056,37 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
   }
 });
 
-app.post('/api/search-quotes', createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
+  
+app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
+  // #swagger.tags = ['Search']
+  // #swagger.summary = 'Semantic search across podcast transcripts'
+  // #swagger.description = 'Performs vector-based semantic search across the podcast corpus using OpenAI embeddings and Pinecone. Supports filtering by feed, episode, date range, and episode name.'
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      query: 'What is the future of Bitcoin?',
+      feedIds: ['1015378'],
+      limit: 5,
+      minDate: '2024-01-01',
+      maxDate: '2026-02-13',
+      episodeName: '',
+      guid: ''
+    }
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Search results with similarity scores',
+    schema: {
+      query: 'What is the future of Bitcoin?',
+      results: [{ $ref: '#/components/schemas/SearchResult' }],
+      total: 5,
+      model: 'text-embedding-ada-002'
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Failed to search quotes', details: 'Error message' }
+  } */
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -1618,6 +1650,24 @@ app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
 app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
+app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
+
+// OpenAPI spec and Swagger UI
+const openapiSpec = require('./openapi.json');
+app.get('/api/openapi.json', (req, res) => {
+  // #swagger.ignore = true
+  res.json(openapiSpec);
+});
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
+  customSiteTitle: 'Pull That Up Jamie API Docs',
+  customCss: '.swagger-ui .topbar { display: none }',
+  swaggerOptions: {
+    docExpansion: 'list',
+    filter: true,
+    tagsSorter: 'alpha'
+  }
+}));
+
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
 
 // Only enable admin and debug routes in debug mode
@@ -2284,7 +2334,7 @@ app.get('/api/clip-details/:lookupHash', async (req, res) => {
 
 // Promotional tweet generation endpoint with jamie-assist name (refactored to service)
 const { streamJamieAssist } = require('./utils/JamieAssistService');
-app.post('/api/jamie-assist/:lookupHash', createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
+app.post('/api/jamie-assist/:lookupHash', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.JAMIE_ASSIST), async (req, res) => {
   try {
     const { lookupHash } = req.params;
     const { additionalPrefs = "" } = req.body;

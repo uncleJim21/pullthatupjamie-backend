@@ -28,6 +28,44 @@ const { SharedResearchSession } = require('../models/SharedResearchSession');
  * }
  */
 router.get('/:shareId', async (req, res) => {
+  // #swagger.tags = ['Research Sessions']
+  // #swagger.summary = 'Get a shared research session'
+  // #swagger.description = 'Returns metadata for a shared research session by its shareId. Intended for link unfurling and preview cards. Includes title, description, preview image, node positions, and camera configuration.'
+  /* #swagger.parameters['shareId'] = { in: 'path', required: true, type: 'string', description: 'Shared session identifier (12-character hex string)' } */
+  /* #swagger.responses[200] = {
+    description: 'Shared session metadata',
+    schema: {
+      success: true,
+      data: {
+        researchSessionId: '507f1f77bcf86cd799439011',
+        shareId: '8d5417e36d3d',
+        shareUrl: 'https://pullthatupjamie.ai/researchSession/8d5417e36d3d',
+        title: 'My Research on Bitcoin',
+        brandImage: null,
+        brandColors: [],
+        description: 'Short description or quote...',
+        previewImageUrl: 'https://.../preview.jpg',
+        visibility: 'unlisted',
+        lastItemMetadata: {},
+        nodes: [],
+        camera: {},
+        createdAt: '2026-02-13T00:00:00.000Z',
+        updatedAt: '2026-02-13T00:00:00.000Z'
+      }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Invalid shareId',
+    schema: { success: false, error: 'Invalid shareId', details: 'shareId path parameter is required' }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Not found',
+    schema: { success: false, error: 'Not found', details: 'No shared research session found for this shareId' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { success: false, error: 'Internal server error', details: 'Error fetching shared research session metadata' }
+  } */
   try {
     const { shareId } = req.params;
     if (!shareId || typeof shareId !== 'string') {

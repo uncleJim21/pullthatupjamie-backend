@@ -114,6 +114,9 @@ function computeSignature({ method, path, queryString, bodyHashHex, timestamp, k
  * Middleware factory.
  * Options:
  *  - requiredScopes: array of scope strings to require (optional)
+ *  - optional: if true, skip HMAC check when headers are absent (default false)
+ *              When true, requests without HMAC headers pass through normally.
+ *              Requests WITH HMAC headers are still fully validated.
  *  - maxSkewSeconds: allowed clock skew in seconds (default 60)
  *  - keyHeader: header name for key id (default 'x-svc-keyid')
  *  - timestampHeader: header name for timestamp (default 'x-svc-timestamp')
@@ -123,6 +126,7 @@ function computeSignature({ method, path, queryString, bodyHashHex, timestamp, k
 function serviceHmac(options = {}) {
   const {
     requiredScopes = [],
+    optional = false,
     maxSkewSeconds = Number(process.env.SVC_HMAC_MAX_SKEW_SECS || 60),
     keyHeader = 'x-svc-keyid',
     timestampHeader = 'x-svc-timestamp',
@@ -136,6 +140,11 @@ function serviceHmac(options = {}) {
       const keyId = String(req.headers[keyHeader] || '');
       const tsStr = String(req.headers[timestampHeader] || '');
       const providedSig = String(req.headers[sigHeader] || '');
+
+      // Optional mode: if no HMAC headers present, skip validation and pass through
+      if (optional && !keyId && !tsStr && !providedSig) {
+        return next();
+      }
       const providedBodyHash = String(req.headers[bodyHashHeader] || '');
       const scopeStr = String(req.headers[scopeHeader] || '');
       const contentLength = Number(req.headers['content-length'] || 0);

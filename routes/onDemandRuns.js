@@ -10,6 +10,7 @@ const { Entitlement } = require('../models/Entitlement');
 const { resolveIdentity } = require('../utils/identityResolver');
 const { getQuotaConfig, TIERS, createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
+const { serviceHmac } = require('../middleware/hmac');
 
 /**
  * GET /api/on-demand/checkEligibility
@@ -113,7 +114,7 @@ function isPeriodExpired(periodStart, periodLengthDays) {
  * 
  * Uses new entitlement middleware for authentication and quota management
  */
-router.post('/submitOnDemandRun', createEntitlementMiddleware(ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN), async (req, res) => {
+router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN), async (req, res) => {
     try {
         // Identity and entitlement already resolved by middleware
         const { identity, entitlement } = req;

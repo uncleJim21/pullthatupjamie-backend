@@ -6,7 +6,9 @@
  */
 
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { User } = require('../models/shared/UserSchema');
+const { Entitlement } = require('../models/Entitlement');
 // NOTE: ProPodcastDetails is NOT used for tier/quota determination
 // Subscription type (User.subscriptionType) is the sole source of truth for quotas
 
@@ -27,17 +29,86 @@ const TIERS = {
  * @returns {Promise<{
  *   tier: string,
  *   identifier: string,
- *   identifierType: 'user' | 'ip',
+ *   identifierType: 'user' | 'ip' | 'serviceKey',
  *   user: User | null,
  *   provider: string | null,
  *   email: string | null
  * }>}
  */
 async function resolveIdentity(req) {
+  // HMAC service-to-service auth → admin tier (unlimited quotas)
+  // req.serviceAuth is set by serviceHmac middleware in middleware/hmac.js
+  if (req.serviceAuth && req.serviceAuth.keyId) {
+    return {
+      tier: TIERS.admin,
+      identifier: `svc:${req.serviceAuth.keyId}`,
+      identifierType: 'serviceKey',
+      user: null,
+      provider: 'hmac',
+      email: null
+    };
+  }
+
   const authHeader = req.headers.authorization;
   
   // No auth header → anonymous (IP-based)
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader) {
+    return {
+      tier: TIERS.anonymous,
+      identifier: getClientIp(req),
+      identifierType: 'ip',
+      user: null,
+      provider: null,
+      email: null
+    };
+  }
+
+  // Lightning agent auth: "preimage:paymentHash" format (no Bearer prefix)
+  // Preimage and paymentHash are both 64-char hex strings
+  if (!authHeader.startsWith('Bearer ') && authHeader.includes(':')) {
+    const parts = authHeader.split(':');
+    if (parts.length === 2) {
+      const [preimage, paymentHash] = parts;
+      // Quick format validation (both should be 64-char hex)
+      const hexPattern = /^[0-9a-fA-F]{64}$/;
+      if (hexPattern.test(preimage) && hexPattern.test(paymentHash)) {
+        try {
+          // Verify preimage: SHA256(preimage) must equal paymentHash
+          const computedHash = crypto.createHash('sha256')
+            .update(Buffer.from(preimage, 'hex'))
+            .digest('hex');
+
+          if (computedHash === paymentHash.toLowerCase()) {
+            // Verify an entitlement exists for this paymentHash
+            const entitlement = await Entitlement.findOne({
+              identifier: paymentHash,
+              identifierType: 'prepaid',
+              status: 'active'
+            }).lean();
+
+            if (entitlement) {
+              // Attach lightning auth info for downstream middleware
+              req.lightningAuth = { paymentHash, preimage };
+              return {
+                tier: TIERS.registered,
+                identifier: paymentHash,
+                identifierType: 'prepaid',
+                user: null,
+                provider: 'lightning',
+                email: null
+              };
+            }
+          }
+        } catch (err) {
+          console.warn('[IDENTITY] Lightning auth error:', err.message);
+        }
+      }
+    }
+    // If lightning auth fails, fall through to anonymous
+  }
+
+  // No Bearer prefix and not lightning → anonymous
+  if (!authHeader.startsWith('Bearer ')) {
     return {
       tier: TIERS.anonymous,
       identifier: getClientIp(req),

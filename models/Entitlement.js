@@ -12,7 +12,7 @@ const entitlementSchema = new mongoose.Schema({
   identifierType: {
     type: String,
     required: true,
-    enum: ['ip', 'mongoUserId', 'user', 'jwt', 'email', 'custom'], // 'mongoUserId' is preferred for authenticated users
+    enum: ['ip', 'mongoUserId', 'user', 'jwt', 'email', 'serviceKey', 'prepaid', 'custom'], // 'mongoUserId' is preferred for authenticated users
     index: true
   },
   

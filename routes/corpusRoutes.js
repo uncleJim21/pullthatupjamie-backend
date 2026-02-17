@@ -131,6 +131,13 @@ function formatChapter(doc) {
  * Returns the API specification as markdown
  */
 router.get('/spec', (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get API specification as markdown'
+  // #swagger.description = 'Returns the Corpus API specification as a markdown document. Useful for agents to understand available endpoints.'
+  /* #swagger.responses[200] = {
+    description: 'Markdown API specification',
+    content: { 'text/markdown': { schema: { type: 'string' } } }
+  } */
   const spec = `# Corpus API Specification
 
 Base URL: \`/api/corpus\`
@@ -392,6 +399,25 @@ Common HTTP status codes:
  * Corpus-wide statistics
  */
 router.get('/stats', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get corpus-wide statistics'
+  // #swagger.description = 'Returns aggregate counts for feeds, episodes, chapters, paragraphs, people, and topics across the entire corpus.'
+  /* #swagger.responses[200] = {
+    description: 'Corpus statistics',
+    schema: {
+      feeds: { total: 10 },
+      episodes: { total: 5000 },
+      chapters: { total: 50000 },
+      paragraphs: { total: 500000 },
+      people: { creators: 10, guests: 500, total: 510 },
+      topics: { total: 2000 },
+      generatedAt: '2026-02-13T00:00:00.000Z'
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     // Run all counts in parallel
     const [
@@ -465,6 +491,22 @@ router.get('/stats', async (req, res) => {
  *   - page (default: 1)
  */
 router.get('/feeds', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'List all podcast feeds'
+  // #swagger.description = 'Returns a paginated list of all podcast feeds in the corpus.'
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Results per page (default: 50, max: 200)', required: false } */
+  /* #swagger.parameters['page'] = { in: 'query', type: 'integer', description: 'Page number (default: 1)', required: false } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated feed list',
+    schema: {
+      data: [{ $ref: '#/components/schemas/Feed' }],
+      pagination: { $ref: '#/components/schemas/Pagination' }
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { limit, page, skip } = getPaginationParams(req.query);
     
@@ -495,6 +537,30 @@ router.get('/feeds', async (req, res) => {
  * Useful for agents to assess feed depth before searching
  */
 router.get('/feeds/:feedId/stats', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get statistics for a specific feed'
+  // #swagger.description = 'Returns episode, chapter, and paragraph counts plus date range for a specific feed. Useful for agents to assess feed depth before searching.'
+  /* #swagger.parameters['feedId'] = { in: 'path', required: true, type: 'string', description: 'Feed identifier' } */
+  /* #swagger.responses[200] = {
+    description: 'Feed statistics',
+    schema: {
+      feedId: '1015378',
+      title: 'What Bitcoin Did',
+      episodeCount: 824,
+      chapterCount: 3200,
+      paragraphCount: 45000,
+      dateRange: { earliest: '2018-11-01', latest: '2026-02-06' },
+      generatedAt: '2026-02-13T00:00:00.000Z'
+    }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Feed not found',
+    schema: { error: 'Feed not found', feedId: '1015378' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { feedId } = req.params;
 
@@ -559,6 +625,22 @@ router.get('/feeds/:feedId/stats', async (req, res) => {
  * Get a single feed by feedId
  */
 router.get('/feeds/:feedId', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get a single feed by ID'
+  // #swagger.description = 'Returns details for a specific podcast feed.'
+  /* #swagger.parameters['feedId'] = { in: 'path', required: true, type: 'string', description: 'Feed identifier' } */
+  /* #swagger.responses[200] = {
+    description: 'Feed details',
+    schema: { data: { $ref: '#/components/schemas/Feed' } }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Feed not found',
+    schema: { error: 'Feed not found', feedId: '1015378' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { feedId } = req.params;
     
@@ -592,6 +674,26 @@ router.get('/feeds/:feedId', async (req, res) => {
  *   - maxDate: ISO date string (optional)
  */
 router.get('/feeds/:feedId/episodes', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'List episodes for a feed'
+  // #swagger.description = 'Returns a paginated list of episodes for a specific feed, with optional date filtering and sort order.'
+  /* #swagger.parameters['feedId'] = { in: 'path', required: true, type: 'string', description: 'Feed identifier' } */
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Results per page (default: 50, max: 200)', required: false } */
+  /* #swagger.parameters['page'] = { in: 'query', type: 'integer', description: 'Page number (default: 1)', required: false } */
+  /* #swagger.parameters['sort'] = { in: 'query', type: 'string', description: 'Sort order: newest (default) or oldest', required: false, enum: ['newest', 'oldest'] } */
+  /* #swagger.parameters['minDate'] = { in: 'query', type: 'string', description: 'Minimum published date (ISO format)', required: false } */
+  /* #swagger.parameters['maxDate'] = { in: 'query', type: 'string', description: 'Maximum published date (ISO format)', required: false } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated episode list',
+    schema: {
+      data: [{ $ref: '#/components/schemas/Episode' }],
+      pagination: { $ref: '#/components/schemas/Pagination' }
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { feedId } = req.params;
     const { limit, page, skip } = getPaginationParams(req.query);
@@ -644,6 +746,22 @@ router.get('/feeds/:feedId/episodes', async (req, res) => {
  * Get a single episode by GUID
  */
 router.get('/episodes/:guid', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get a single episode by GUID'
+  // #swagger.description = 'Returns details for a specific episode by its GUID.'
+  /* #swagger.parameters['guid'] = { in: 'path', required: true, type: 'string', description: 'Episode GUID' } */
+  /* #swagger.responses[200] = {
+    description: 'Episode details',
+    schema: { data: { $ref: '#/components/schemas/Episode' } }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Episode not found',
+    schema: { error: 'Episode not found', guid: 'abc123' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { guid } = req.params;
     
@@ -674,6 +792,23 @@ router.get('/episodes/:guid', async (req, res) => {
  *   - page (default: 1)
  */
 router.get('/episodes/:guid/chapters', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'List chapters for an episode'
+  // #swagger.description = 'Returns a paginated list of chapters for a specific episode, sorted by start time.'
+  /* #swagger.parameters['guid'] = { in: 'path', required: true, type: 'string', description: 'Episode GUID' } */
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Results per page (default: 50, max: 200)', required: false } */
+  /* #swagger.parameters['page'] = { in: 'query', type: 'integer', description: 'Page number (default: 1)', required: false } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated chapter list',
+    schema: {
+      data: [{ $ref: '#/components/schemas/Chapter' }],
+      pagination: { $ref: '#/components/schemas/Pagination' }
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { guid } = req.params;
     const { limit, page, skip } = getPaginationParams(req.query);
@@ -716,6 +851,23 @@ router.get('/episodes/:guid/chapters', async (req, res) => {
  *   - page (default: 1)
  */
 router.get('/topics', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'List aggregated topics'
+  // #swagger.description = 'Returns aggregated topics derived from chapter keywords, sorted by frequency. Optionally filter by feedId.'
+  /* #swagger.parameters['feedId'] = { in: 'query', type: 'string', description: 'Filter topics to a specific feed', required: false } */
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Results per page (default: 50, max: 200)', required: false } */
+  /* #swagger.parameters['page'] = { in: 'query', type: 'integer', description: 'Page number (default: 1)', required: false } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated topic list',
+    schema: {
+      data: [{ $ref: '#/components/schemas/Topic' }],
+      pagination: { $ref: '#/components/schemas/Pagination' }
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { feedId } = req.query;
     const { limit, page, skip } = getPaginationParams(req.query);
@@ -802,6 +954,26 @@ router.get('/topics', async (req, res) => {
  *   - page (default: 1)
  */
 router.get('/people', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'List people (creators and guests)'
+  // #swagger.description = 'Returns a paginated list of people (podcast creators and guests), sorted by number of appearances. Supports filtering by role, name search, and feed.'
+  /* #swagger.parameters['guestsOnly'] = { in: 'query', type: 'boolean', description: 'Exclude hosts/creators, only show guests (default: false)', required: false } */
+  /* #swagger.parameters['search'] = { in: 'query', type: 'string', description: 'Partial name match (case-insensitive)', required: false } */
+  /* #swagger.parameters['feedId'] = { in: 'query', type: 'string', description: 'Filter to a specific podcast', required: false } */
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Results per page (default: 50, max: 200)', required: false } */
+  /* #swagger.parameters['page'] = { in: 'query', type: 'integer', description: 'Page number (default: 1)', required: false } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated people list',
+    schema: {
+      data: [{ $ref: '#/components/schemas/Person' }],
+      pagination: { $ref: '#/components/schemas/Pagination' },
+      query: { guestsOnly: false, search: null, feedId: null }
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { guestsOnly, search, feedId } = req.query;
     const { limit, page, skip } = getPaginationParams(req.query);
@@ -964,6 +1136,45 @@ router.get('/people', async (req, res) => {
  *   - page (default: 1)
  */
 router.post('/people/episodes', async (req, res) => {
+  // #swagger.tags = ['Corpus Discovery']
+  // #swagger.summary = 'Get episodes featuring a person'
+  // #swagger.description = 'Returns a paginated list of episodes that feature a specific person (as guest or creator). Requires person name in request body.'
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      name: 'Elon Musk',
+      guestsOnly: false,
+      feedId: '',
+      limit: 50,
+      page: 1
+    }
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated episodes featuring the person',
+    schema: {
+      data: [{
+        guid: 'abc123',
+        title: '#252 - Elon Musk: SpaceX, Mars...',
+        feedId: '123',
+        feedTitle: 'Lex Fridman Podcast',
+        publishedDate: '2024-03-15',
+        role: 'guest',
+        imageUrl: 'https://...',
+        duration: '2:30:00'
+      }],
+      pagination: { $ref: '#/components/schemas/Pagination' },
+      query: { name: 'Elon Musk', guestsOnly: false, feedId: null }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Missing or invalid name',
+    schema: { error: 'Bad request', message: 'name is required in request body' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
   try {
     const { name, guestsOnly = false, feedId } = req.body;
     
