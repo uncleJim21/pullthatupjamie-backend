@@ -15,7 +15,7 @@ const AGENT_PRICING_MICRO_USD = {
   'make-clip':            50000,   // $0.05 per clip (video processing)
   'jamie-assist':         20000,   // $0.02 per assist (LLM call)
   'ai-analyze':           20000,   // $0.02 per analysis (LLM call)
-  'submit-on-demand-run': 100000   // $0.10 per on-demand run (heavy processing)
+  'submit-on-demand-run': 300000   // $0.10 per on-demand run (heavy processing)
 };
 
 // Deposit limits (in sats)
