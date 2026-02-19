@@ -931,6 +931,63 @@ function sanitizeShareNodes(rawNodes) {
   return sanitized;
 }
 
+/**
+ * Auto-generate share nodes from a session's stored items when the caller
+ * (e.g. a headless agent) omits the nodes array.
+ *
+ * Fast path: reuse coordinates3d already persisted on each item.
+ * Fallback: distribute points on a circle in the x-y plane.
+ */
+function generateNodesFromSession(baseSession) {
+  const DEFAULT_COLOR = '#4a9eff';
+  const items = Array.isArray(baseSession.items) ? baseSession.items : [];
+
+  if (items.length === 0) {
+    const err = new Error('Session has no items to generate nodes from');
+    err.statusCode = 400;
+    err.details =
+      'Cannot auto-generate a share layout because the session contains no items. ' +
+      'Either add items to the session first or provide an explicit nodes array.';
+    throw err;
+  }
+
+  const hasValidCoords = (c) =>
+    c &&
+    typeof c === 'object' &&
+    typeof c.x === 'number' && Number.isFinite(c.x) &&
+    typeof c.y === 'number' && Number.isFinite(c.y) &&
+    typeof c.z === 'number' && Number.isFinite(c.z);
+
+  const allHaveCoords = items.every((it) => hasValidCoords(it.coordinates3d));
+
+  if (allHaveCoords) {
+    return items.map((it) => ({
+      pineconeId: it.pineconeId,
+      x: it.coordinates3d.x,
+      y: it.coordinates3d.y,
+      z: it.coordinates3d.z,
+      color: DEFAULT_COLOR
+    }));
+  }
+
+  // Circular fallback: evenly spaced on a circle of radius 0.5 in the x-y plane
+  const radius = 0.5;
+  return items.map((it, i) => {
+    const c = it.coordinates3d;
+    if (hasValidCoords(c)) {
+      return { pineconeId: it.pineconeId, x: c.x, y: c.y, z: c.z, color: DEFAULT_COLOR };
+    }
+    const angle = (2 * Math.PI * i) / items.length;
+    return {
+      pineconeId: it.pineconeId,
+      x: parseFloat((radius * Math.cos(angle)).toFixed(6)),
+      y: parseFloat((radius * Math.sin(angle)).toFixed(6)),
+      z: 0,
+      color: DEFAULT_COLOR
+    };
+  });
+}
+
 async function fetchImageBufferWithTimeout(url, timeoutMs) {
   if (!url) return null;
 
@@ -1288,17 +1345,18 @@ async function generateSharedSessionPreviewImage({ shareId, title, lastItemMetad
 router.post('/:id/share', async (req, res) => {
   // #swagger.tags = ['Research Sessions']
   // #swagger.summary = 'Create a shareable snapshot of a session'
-  // #swagger.description = 'Creates an immutable, shareable snapshot of a research session with a preview image. Returns a shareId and shareUrl for link sharing.'
+  // #swagger.description = 'Creates an immutable, shareable snapshot of a research session with a preview image. When nodes is omitted the backend auto-generates a 3D layout from stored session coordinates (useful for headless/agent callers).'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Research session ID (MongoDB ObjectId)' } */
   /* #swagger.parameters['body'] = {
     in: 'body',
     required: true,
     schema: {
       title: 'My Research on Bitcoin',
-      nodes: [{ pineconeId: 'id1', x: 0, y: 0, z: 0 }],
+      nodes: [{ pineconeId: 'id1', x: 0, y: 0, z: 0, color: '#4a9eff' }],
       camera: { x: 0, y: 0, z: 5 },
       visibility: 'unlisted'
-    }
+    },
+    description: 'nodes is optional. When omitted the server generates a layout from the session items stored coordinates.'
   } */
   /* #swagger.responses[201] = {
     description: 'Shared session created',
@@ -1308,8 +1366,7 @@ router.post('/:id/share', async (req, res) => {
         shareId: '8d5417e36d3d',
         shareUrl: 'https://pullthatupjamie.ai/researchSession/8d5417e36d3d',
         previewImageUrl: 'https://...',
-        title: 'My Research on Bitcoin',
-        visibility: 'unlisted'
+        generatedLayout: false
       }
     }
   } */
@@ -1359,9 +1416,15 @@ router.post('/:id/share', async (req, res) => {
     // Lazy migrate if this session was found via clientId but user is now authenticated
     await lazyMigrateOwnership(ResearchSession, owner, [baseSession]);
 
+    const nodesProvided = Array.isArray(nodes) && nodes.length > 0;
     let sanitizedNodes;
     try {
-      sanitizedNodes = sanitizeShareNodes(nodes);
+      if (nodesProvided) {
+        sanitizedNodes = sanitizeShareNodes(nodes);
+      } else {
+        const generated = generateNodesFromSession(baseSession);
+        sanitizedNodes = sanitizeShareNodes(generated);
+      }
     } catch (validationError) {
       console.error('[SharedResearchSession] Node validation error:', validationError.message);
       return res.status(validationError.statusCode || 400).json({
@@ -1443,7 +1506,8 @@ router.post('/:id/share', async (req, res) => {
       data: {
         shareId,
         shareUrl,
-        previewImageUrl
+        previewImageUrl,
+        generatedLayout: !nodesProvided
       }
     });
   } catch (error) {
