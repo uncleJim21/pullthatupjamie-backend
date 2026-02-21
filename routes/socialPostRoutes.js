@@ -13,6 +13,18 @@ const { schedulePosts } = require('../utils/SocialPostService');
 router.post('/posts', validatePrivs, async (req, res) => {
     try {
         const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', scheduledPostSlotId } = req.body;
+        
+        // Validate content - either text or media required
+        const hasText = !!(text && String(text).trim().length > 0);
+        const hasMedia = !!(mediaUrl && String(mediaUrl).trim().length > 0);
+        
+        if (!hasText && !hasMedia) {
+            return res.status(400).json({ 
+                error: 'Content required',
+                message: 'Either text or media URL must be provided' 
+            });
+        }
+        
         const createdPosts = await schedulePosts({
             adminUserId: req.user.adminUserId,  // NEW: For non-email users
             adminEmail: req.user.adminEmail,
