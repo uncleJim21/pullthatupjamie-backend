@@ -46,6 +46,7 @@ const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
+const userSocialPostRoutes = require('./routes/userSocialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
 const blogRoutes = require('./routes/blogRoutes');
 const BlogIngestionService = require('./utils/BlogIngestionService');
@@ -1640,6 +1641,7 @@ app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
+app.use('/api/user/social', userSocialPostRoutes);
 app.use('/api/nostr', nostrRoutes);
 app.use('/api/blog', blogRoutes);   // Blog API endpoints (JSON)
 app.use('/blog', blogRoutes);       // Blog sitemap.xml + rss.xml (crawler-friendly)
