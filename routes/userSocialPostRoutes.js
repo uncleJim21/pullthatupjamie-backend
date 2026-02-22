@@ -1,3 +1,4 @@
+// User social posts API routes - handles cross-posting to Twitter and Nostr
 // Handles user social posts for Twitter and Nostr cross-posting
 const express = require('express');
 const router = express.Router();
