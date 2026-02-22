@@ -1,3 +1,4 @@
+// Handles user social posts for Twitter and Nostr cross-posting
 const express = require('express');
 const router = express.Router();
 const SocialPost = require('../models/SocialPost');
