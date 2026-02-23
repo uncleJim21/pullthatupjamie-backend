@@ -8,8 +8,7 @@ const crypto = require('crypto');
 // Get the port from environment variables
 const PORT = process.env.PORT || 4132;
 
-// Temporary in-memory store for OAuth state (shared with twitterRoutes)
-const oauthStateStore = new Map();
+const oauthStateStore = require('../utils/oauthStateStore');
 
 /**
  * Find user by req.user (supports email OR provider-based auth)

@@ -12,8 +12,7 @@ const PORT = process.env.PORT || 4132;
 // Auth server URL for internal API calls
 const AUTH_SERVER_URL = process.env.AUTH_SERVER_URL || 'http://localhost:6111';
 
-// Temporary in-memory store for OAuth state
-const oauthStateStore = new Map();
+const oauthStateStore = require('../utils/oauthStateStore');
 
 /**
  * Refresh Twitter OAuth 2.0 token using stored refresh token
