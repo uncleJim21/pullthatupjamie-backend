@@ -116,7 +116,7 @@ router.all('/oauth/start', async (req, res) => {
             codeVerifier,
             adminUserId,
             adminEmail,
-            flowType: 'userAuth' // Flag to indicate this is user auth (not podcast)
+            flowType: 'unified' // Chain to OAuth 1.0a for media upload capability
         };
 
         oauthStateStore.set(state, oauthData);
