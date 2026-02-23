@@ -144,6 +144,77 @@ router.all('/oauth/start', async (req, res) => {
 });
 
 /**
+ * POST /api/user/twitter/tokens
+ * Get Twitter token status for authenticated user (no podcast required)
+ * Pattern from twitterRoutes.js /tokens but uses authenticateToken
+ */
+router.post('/tokens', authenticateToken, async (req, res) => {
+    try {
+        const user = await findUserFromRequest(req, 'twitterTokens');
+        if (!user) {
+            return res.status(400).json({ error: 'User not found' });
+        }
+        
+        const userTokens = user?.twitterTokens;
+        
+        // Determine OAuth 2.0 status from User.twitterTokens
+        const hasOAuth2 = !!(userTokens?.accessToken);
+        const oauth2Expired = userTokens?.expiresAt && Date.now() > new Date(userTokens.expiresAt).getTime();
+        const hasRefreshToken = !!(userTokens?.refreshToken);
+        
+        // Determine OAuth 1.0a status
+        const hasOAuth1 = !!(userTokens?.oauth1AccessToken && userTokens?.oauth1AccessSecret);
+        
+        // Get metadata
+        const twitterId = userTokens?.twitterId;
+        const twitterUsername = userTokens?.twitterUsername;
+        const expiresAt = userTokens?.expiresAt;
+
+        // Not authenticated if missing OAuth 2.0 entirely
+        if (!hasOAuth2) {
+            return res.json({ 
+                authenticated: false,
+                capabilities: {
+                    canPostText: false,
+                    canUploadMedia: false,
+                    canRefreshTokens: false
+                },
+                oauth2Status: 'missing',
+                oauth1Status: hasOAuth1 ? 'valid' : 'missing',
+                message: 'Please connect your Twitter account to enable posting.'
+            });
+        }
+
+        res.json({ 
+            authenticated: true,
+            twitterId,
+            twitterUsername,
+            capabilities: {
+                canPostText: hasOAuth2 && !oauth2Expired,
+                canUploadMedia: hasOAuth1,
+                canRefreshTokens: hasRefreshToken
+            },
+            oauth2Status: oauth2Expired ? 'expired' : 'valid',
+            oauth1Status: hasOAuth1 ? 'valid' : 'missing',
+            expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+            // Helpful messages for frontend
+            ...(oauth2Expired && !hasRefreshToken && {
+                requiresReauth: true,
+                message: 'Your Twitter access has expired. Please re-authenticate.'
+            }),
+            ...(!hasOAuth1 && {
+                requiresMediaAuth: true,
+                mediaAuthUrl: '/api/user/twitter/oauth1-auth',
+                mediaAuthMessage: 'Media uploads require additional authorization.'
+            })
+        });
+    } catch (error) {
+        console.error('Error getting Twitter tokens:', error);
+        res.status(500).json({ error: 'Failed to get Twitter tokens' });
+    }
+});
+
+/**
  * POST /api/user/twitter/tweet
  * Post tweet for authenticated user (no podcast required)
  */
