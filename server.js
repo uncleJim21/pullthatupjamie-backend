@@ -45,6 +45,7 @@ const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Co
 const debugRoutes = require('./routes/debugRoutes');
 const ScheduledPodcastFeed = require('./models/ScheduledPodcastFeed.js');
 const twitterRoutes = require('./routes/twitterRoutes');
+const userTwitterRoutes = require('./routes/userTwitterRoutes');
 const socialPostRoutes = require('./routes/socialPostRoutes');
 const userSocialPostRoutes = require('./routes/userSocialPostRoutes');
 const nostrRoutes = require('./routes/nostrRoutes');
@@ -1639,6 +1640,7 @@ app.use('/api/podcast-preferences', podcastPreferencesRoutes);
 app.use('/api/preferences', appPreferencesRoutes);
 app.use('/api/on-demand', onDemandRunsRoutes);
 app.use('/api/twitter', twitterRoutes);
+app.use('/api/user/twitter', userTwitterRoutes);
 app.use('/api/mentions', mentionsRoutes);
 app.use('/api/social', socialPostRoutes);
 app.use('/api/user/social', userSocialPostRoutes);
