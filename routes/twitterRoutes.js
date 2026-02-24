@@ -12,8 +12,7 @@ const PORT = process.env.PORT || 4132;
 // Auth server URL for internal API calls
 const AUTH_SERVER_URL = process.env.AUTH_SERVER_URL || 'http://localhost:6111';
 
-// Temporary in-memory store for OAuth state
-const oauthStateStore = new Map();
+const oauthStateStore = require('../utils/oauthStateStore');
 
 /**
  * Refresh Twitter OAuth 2.0 token using stored refresh token
@@ -1438,71 +1437,32 @@ async function uploadMediaWithOAuth1a(buffer, contentType, tokens) {
  */
 router.post('/tweet', validatePrivs, async (req, res) => {
     try {
-        // Get tweet text and media URL from request body
         const { text, mediaUrl } = req.body;
-        if (!text) {
-            return res.status(400).json({
-                error: 'Missing text',
-                message: 'Please provide tweet text'
-            });
-        }
-
-        // Use the new TwitterService with identity object (supports non-email users)
-        const TwitterService = require('../utils/TwitterService');
-        const twitterService = new TwitterService();
         
         const identity = {
             userId: req.user.adminUserId,
             email: req.user.adminEmail
         };
         
-        const result = await twitterService.postTweet(identity, { text, mediaUrl });
-        
+        const { postTweetCore } = require('../utils/twitterPostingService');
+        const result = await postTweetCore(identity, { text, mediaUrl });
         res.json(result);
 
     } catch (error) {
         console.error('Error posting tweet:', error);
         
-        // Check if this is a re-authentication required error
+        // Keep existing error handling
         if (error.code === 'TWITTER_AUTH_EXPIRED' || error.requiresReauth) {
             return res.status(401).json({
                 error: 'TWITTER_AUTH_EXPIRED',
-                message: 'Twitter authentication has expired. Please re-authenticate.',
                 requiresReauth: true,
-                details: error.originalError || error.message
-            });
-        }
-
-        // Check if this is a media authorization required error
-        if (error.message?.includes('OAuth 1.0a tokens not found')) {
-            return res.status(403).json({
-                error: 'TWITTER_MEDIA_AUTH_REQUIRED',
-                message: 'Media upload requires additional authorization. You can post text-only tweets or authorize media uploads.',
-                requiresReauth: false,
-                requiresMediaAuth: true,
-                mediaAuthUrl: '/api/twitter/oauth1-auth',
-                fallbackOptions: {
-                    textOnly: 'Post tweet without media',
-                    authorizeMedia: 'Authorize media uploads'
-                }
-            });
-        }
-
-        // Check if this is a missing token error
-        if (error.message?.includes('No authentication tokens found')) {
-            return res.status(401).json({
-                error: 'TWITTER_NOT_CONNECTED',
-                message: 'Twitter account not connected. Please connect your Twitter account first.',
-                requiresReauth: true,
-                authUrl: '/api/twitter/x-oauth'
+                message: error.message || 'Twitter authentication expired'
             });
         }
         
-        // For all other errors
-        res.status(500).json({ 
-            error: 'TWEET_POST_FAILED',
-            message: error.message,
-            requiresReauth: false
+        res.status(500).json({
+            error: 'Failed to post tweet',
+            message: error.message
         });
     }
 });
