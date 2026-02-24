@@ -3,32 +3,11 @@ const router = express.Router();
 const { authenticateToken } = require('../middleware/authMiddleware');
 const { postTweetCore } = require('../utils/twitterPostingService');
 const { TwitterApi } = require('twitter-api-v2');
-const crypto = require('crypto');
+const { findUserFromRequest } = require('../utils/userLookup');
 
-// Get the port from environment variables
 const PORT = process.env.PORT || 4132;
 
 const oauthStateStore = require('../utils/oauthStateStore');
-
-/**
- * Find user by req.user (supports email OR provider-based auth)
- * Pattern from userSocialPostRoutes.js
- */
-async function findUserFromRequest(req, selectFields = '') {
-  const { User } = require('../models/shared/UserSchema');
-  
-  if (req.user.email) {
-    return User.findOne({ email: req.user.email }).select(selectFields);
-  } else if (req.user.provider && req.user.providerId) {
-    return User.findOne({
-      'authProvider.provider': req.user.provider,
-      'authProvider.providerId': req.user.providerId
-    }).select(selectFields);
-  } else if (req.user.id) {
-    return User.findById(req.user.id).select(selectFields);
-  }
-  return null;
-}
 
 /**
  * Manual token verification (for routes that accept token in body)

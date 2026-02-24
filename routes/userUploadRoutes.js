@@ -1,31 +1,8 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/authMiddleware');
+const { findUserFromRequest } = require('../utils/userLookup');
 const { v4: uuidv4 } = require('uuid');
-
-function validateUploadFileName(fileName) {
-  if (!fileName || typeof fileName !== 'string') {
-    return { ok: false, code: 'empty', message: 'File name is required' };
-  }
-
-  const trimmed = fileName.trim();
-  if (trimmed.length === 0) {
-    return { ok: false, code: 'empty', message: 'File name cannot be empty' };
-  }
-
-  if (trimmed.length > 255) {
-    return { ok: false, code: 'too_long', message: 'File name must be 255 characters or less' };
-  }
-
-  if (trimmed.includes('..') || trimmed.includes('/') || trimmed.includes('\\')) {
-    return { ok: false, code: 'invalid_chars', message: 'File name cannot contain path separators' };
-  }
-
-  if (!trimmed.includes('.')) {
-    return { ok: false, code: 'missing_extension', message: 'File name must have an extension' };
-  }
-
-  return { ok: true };
-}
+const { validateUploadFileName } = require('../utils/videoEditHelpers');
 
 const ALLOWED_FILE_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -70,20 +47,7 @@ function createUserUploadRoutes({ clipSpacesManager }) {
         });
       }
 
-      const { User } = require('../models/shared/UserSchema');
-      let user = null;
-
-      if (req.user.email) {
-        user = await User.findOne({ email: req.user.email }).select('_id');
-      } else if (req.user.provider && req.user.providerId) {
-        user = await User.findOne({
-          'authProvider.provider': req.user.provider,
-          'authProvider.providerId': req.user.providerId
-        }).select('_id');
-      } else if (req.user.id) {
-        user = await User.findById(req.user.id).select('_id');
-      }
-
+      const user = await findUserFromRequest(req, '_id');
       if (!user) {
         return res.status(400).json({ error: 'User not found' });
       }
