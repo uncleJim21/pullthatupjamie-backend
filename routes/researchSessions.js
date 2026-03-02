@@ -935,10 +935,12 @@ function sanitizeShareNodes(rawNodes) {
  * Auto-generate share nodes from a session's stored items when the caller
  * (e.g. a headless agent) omits the nodes array.
  *
- * Fast path: reuse coordinates3d already persisted on each item.
- * Fallback: distribute points on a circle in the x-y plane.
+ * Priority order:
+ *   1. Fast path: reuse coordinates3d already persisted on each item.
+ *   2. UMAP path: re-embed item text via OpenAI, project with UmapProjector (>=4 items).
+ *   3. Circular fallback: deterministic circle in x-y plane (<4 items or UMAP failure).
  */
-function generateNodesFromSession(baseSession) {
+async function generateNodesFromSession(baseSession) {
   const DEFAULT_COLOR = '#4a9eff';
   const items = Array.isArray(baseSession.items) ? baseSession.items : [];
 
@@ -968,6 +970,70 @@ function generateNodesFromSession(baseSession) {
       z: it.coordinates3d.z,
       color: DEFAULT_COLOR
     }));
+  }
+
+  // UMAP path: re-embed item text and project to 3D (requires >=4 items)
+  if (items.length >= 4) {
+    try {
+      // First try stored metadata, then hydrate missing ones from MongoDB
+      let texts = items.map((it) => {
+        const m = it.metadata || {};
+        return m.quote || m.summary || m.description || m.headline || '';
+      });
+
+      const missingTextCount = texts.filter((t) => !t).length;
+      if (missingTextCount > 0) {
+        console.log(`[generateNodesFromSession] ${missingTextCount}/${items.length} items lack text, hydrating from MongoDB`);
+        const idsToHydrate = items
+          .filter((it, i) => !texts[i])
+          .map((it) => it.pineconeId)
+          .filter(Boolean);
+
+        if (idsToHydrate.length > 0) {
+          const mongoDocs = await JamieVectorMetadata.find({
+            pineconeId: { $in: idsToHydrate }
+          }).select('pineconeId metadataRaw').lean();
+
+          const hydratedMap = new Map();
+          (mongoDocs || []).forEach((doc) => {
+            if (doc.pineconeId && doc.metadataRaw) {
+              const m = doc.metadataRaw;
+              hydratedMap.set(doc.pineconeId, m.quote || m.text || m.summary || m.description || m.headline || '');
+            }
+          });
+
+          texts = items.map((it, i) => {
+            if (texts[i]) return texts[i];
+            return hydratedMap.get(it.pineconeId) || '';
+          });
+        }
+      }
+
+      const hasText = texts.some((t) => t.length > 0);
+      if (hasText) {
+        console.log(`[generateNodesFromSession] UMAP path: re-embedding ${texts.length} items`);
+        const embeddingResponse = await openai.embeddings.create({
+          model: 'text-embedding-ada-002',
+          input: texts
+        });
+        const embeddings = embeddingResponse.data.map((d) => d.embedding);
+
+        const UmapProjector = require('../utils/UmapProjector');
+        const projector = new UmapProjector(UmapProjector.getFastModeConfig());
+        const coords3d = await projector.project(embeddings);
+
+        console.log(`[generateNodesFromSession] UMAP projection succeeded for ${coords3d.length} items`);
+        return items.map((it, i) => ({
+          pineconeId: it.pineconeId,
+          x: coords3d[i].x,
+          y: coords3d[i].y,
+          z: coords3d[i].z,
+          color: DEFAULT_COLOR
+        }));
+      }
+    } catch (umapErr) {
+      console.warn('[generateNodesFromSession] UMAP fallback failed, using circular layout:', umapErr.message);
+    }
   }
 
   // Circular fallback: evenly spaced on a circle of radius 0.5 in the x-y plane
@@ -1422,7 +1488,7 @@ router.post('/:id/share', async (req, res) => {
       if (nodesProvided) {
         sanitizedNodes = sanitizeShareNodes(nodes);
       } else {
-        const generated = generateNodesFromSession(baseSession);
+        const generated = await generateNodesFromSession(baseSession);
         sanitizedNodes = sanitizeShareNodes(generated);
       }
     } catch (validationError) {
