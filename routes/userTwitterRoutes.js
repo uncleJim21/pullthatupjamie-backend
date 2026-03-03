@@ -4,6 +4,8 @@ const { authenticateToken } = require('../middleware/authMiddleware');
 const { postTweetCore } = require('../utils/twitterPostingService');
 const { TwitterApi } = require('twitter-api-v2');
 const { findUserFromRequest } = require('../utils/userLookup');
+const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
+const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 const PORT = process.env.PORT || 4132;
 
@@ -196,7 +198,7 @@ router.post('/tokens', authenticateToken, async (req, res) => {
  * POST /api/user/twitter/tweet
  * Post tweet for authenticated user (no podcast required)
  */
-router.post('/tweet', authenticateToken, async (req, res) => {
+router.post('/tweet', authenticateToken, createEntitlementMiddleware(ENTITLEMENT_TYPES.TWITTER_POST, { allowAnonymous: false }), async (req, res) => {
     try {
         const { text, mediaUrl } = req.body;
         

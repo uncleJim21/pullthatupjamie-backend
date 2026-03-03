@@ -10,6 +10,8 @@
  *   /api/jamie-assist/:hash         → jamie-assist
  *   /api/research/analyze           → ai-analyze
  *   /api/on-demand/submitOnDemandRun → submit-on-demand-run
+ *   /api/user/twitter/tweet          → twitter-post
+ *   /api/user/social/posts (twitter) → twitter-post
  */
 
 const ENTITLEMENT_TYPES = {
@@ -18,7 +20,8 @@ const ENTITLEMENT_TYPES = {
   MAKE_CLIP: 'make-clip',
   JAMIE_ASSIST: 'jamie-assist',
   AI_ANALYZE: 'ai-analyze',
-  SUBMIT_ON_DEMAND_RUN: 'submit-on-demand-run'
+  SUBMIT_ON_DEMAND_RUN: 'submit-on-demand-run',
+  TWITTER_POST: 'twitter-post'
 };
 
 // Array of all types for iteration

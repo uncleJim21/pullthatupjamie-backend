@@ -70,6 +70,14 @@ const QUOTA_CONFIG_PRODUCTION = {
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
+  },
+
+  // Twitter posting (~$0.01/tweet, Nostr is free and unlimited)
+  [ENTITLEMENT_TYPES.TWITTER_POST]: {
+    [TIERS.anonymous]: { maxUsage: 0, periodLengthDays: 30 },      // Must have account
+    [TIERS.registered]: { maxUsage: 60, periodLengthDays: 30 },    // 60/month (~$0.60)
+    [TIERS.subscriber]: { maxUsage: 200, periodLengthDays: 30 },   // 200/month (~$2.00)
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
   }
 };
 
@@ -112,6 +120,12 @@ const QUOTA_CONFIG_DEBUG = {
   },
   [ENTITLEMENT_TYPES.AI_ANALYZE]: {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  [ENTITLEMENT_TYPES.TWITTER_POST]: {
+    [TIERS.anonymous]: { maxUsage: 0, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }

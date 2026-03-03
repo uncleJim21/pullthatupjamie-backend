@@ -27,6 +27,7 @@ const entitlementSchema = new mongoose.Schema({
       'make-clip',         // Video clip creation
       'jamie-assist',      // Promotional content generation
       'ai-analyze',  // Research session AI analysis
+      'twitter-post', // Twitter posting (costs ~$0.01/tweet, Nostr is free)
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement
