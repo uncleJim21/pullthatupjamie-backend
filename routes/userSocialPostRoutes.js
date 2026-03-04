@@ -6,6 +6,11 @@ const SocialPost = require('../models/SocialPost');
 const { authenticateToken } = require('../middleware/authMiddleware');
 const { schedulePosts } = require('../utils/SocialPostService');
 const { findUserFromRequest, buildUserFilter } = require('../utils/userLookup');
+const { getOrCreateEntitlement, getQuotaConfig, TIERS } = require('../utils/entitlementMiddleware');
+const { resolveIdentity } = require('../utils/identityResolver');
+const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
+const { emitServerEvent } = require('../utils/analyticsEmitter');
+const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
 
 /**
  * POST /api/user/social/posts
@@ -26,6 +31,73 @@ router.post('/posts', authenticateToken, async (req, res) => {
             });
         }
         
+        const requestsTwitter = Array.isArray(platforms) && platforms.includes('twitter');
+
+        if (requestsTwitter) {
+            const identity = await resolveIdentity(req);
+            const analyticsSessionId = req.headers['x-pulse-session'] || req.headers['x-analytics-session'] || null;
+
+            if (identity.tier === TIERS.anonymous) {
+                return res.status(401).json({
+                    error: 'Authentication required',
+                    code: 'AUTH_REQUIRED',
+                    message: 'An account is required to post to Twitter. Nostr posting is unlimited and does not require an account.'
+                });
+            }
+
+            const entitlement = await getOrCreateEntitlement(
+                identity.identifier,
+                identity.identifierType,
+                ENTITLEMENT_TYPES.TWITTER_POST,
+                identity.tier
+            );
+
+            const isUnlimited = entitlement.maxUsage === -1;
+
+            if (!isUnlimited && entitlement.usedCount >= entitlement.maxUsage) {
+                emitServerEvent(
+                    SERVER_EVENT_TYPES.ENTITLEMENT_DENIED,
+                    analyticsSessionId,
+                    identity.tier,
+                    { entitlement_type: ENTITLEMENT_TYPES.TWITTER_POST, used: entitlement.usedCount, max: entitlement.maxUsage }
+                );
+
+                return res.status(429).json({
+                    error: 'Twitter post quota exceeded',
+                    code: 'QUOTA_EXCEEDED',
+                    message: `You've used all ${entitlement.maxUsage} Twitter posts this period (resets in ${Math.ceil((entitlement.nextResetDate - new Date()) / (1000 * 60 * 60 * 24))} days). Nostr posting is unlimited and unaffected — remove Twitter from platforms to post to Nostr only.`,
+                    used: entitlement.usedCount,
+                    max: entitlement.maxUsage,
+                    resetDate: entitlement.nextResetDate,
+                    daysUntilReset: Math.ceil((entitlement.nextResetDate - new Date()) / (1000 * 60 * 60 * 24)),
+                    tier: identity.tier
+                });
+            }
+
+            if (!isUnlimited) {
+                entitlement.usedCount += 1;
+                entitlement.lastUsed = new Date();
+                await entitlement.save();
+
+                emitServerEvent(
+                    SERVER_EVENT_TYPES.ENTITLEMENT_CONSUMED,
+                    analyticsSessionId,
+                    identity.tier,
+                    {
+                        entitlement_type: ENTITLEMENT_TYPES.TWITTER_POST,
+                        used: entitlement.usedCount,
+                        remaining: entitlement.maxUsage - entitlement.usedCount,
+                        max: entitlement.maxUsage
+                    }
+                );
+            }
+
+            res.setHeader('X-Twitter-Quota-Used', entitlement.usedCount);
+            res.setHeader('X-Twitter-Quota-Max', isUnlimited ? 'unlimited' : entitlement.maxUsage);
+            res.setHeader('X-Twitter-Quota-Remaining', isUnlimited ? 'unlimited' : Math.max(0, entitlement.maxUsage - entitlement.usedCount));
+            res.setHeader('X-Twitter-Quota-Reset', entitlement.nextResetDate.toISOString());
+        }
+
         // Get user ID
         const user = await findUserFromRequest(req, '_id email');
         if (!user) {
