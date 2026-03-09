@@ -36,11 +36,485 @@
       "description": "Create, retrieve, share, and analyze research sessions — curated collections of podcast clips."
     },
     {
+      "name": "Create",
+      "description": "Generate shareable audio/video clips from podcast search results. Async processing with status polling."
+    },
+    {
       "name": "Agent Auth",
       "description": "Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents."
     }
   ],
   "paths": {
+    "/api/make-clip": {
+      "post": {
+        "tags": [
+          "Create"
+        ],
+        "summary": "Create audio clip with burned-in subtitles",
+        "description": "Generates an MP4 video clip from a podcast segment with burned-in subtitles. Processing is asynchronous — poll /api/clip-status/{lookupHash} for completion. Clips are cached: identical clipId + timestamps return immediately at no extra cost. Agent pricing: $0.05/clip (50,000 microUSD). Free tier quotas: 5/week (anonymous), 10/month (registered), 50/month (subscriber). Typical processing: <1 min, max ~2 min.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "clipId": {
+                  "type": "string",
+                  "example": "1015378_38c8e3a2b0e94b2b80feb2e426fbf0b3_p1234"
+                },
+                "timestamps": {
+                  "type": "array",
+                  "example": [
+                    1234.5,
+                    1289
+                  ],
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "description": "clipId (required): shareLink from a search result. timestamps (optional): [startSeconds, endSeconds] to override natural clip bounds."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Clip already exists (cached — no charge)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "completed"
+                    },
+                    "lookupHash": {
+                      "type": "string",
+                      "example": "abc123def456"
+                    },
+                    "url": {
+                      "type": "string",
+                      "example": "https://cdn.pullthatupjamie.ai/clips/abc123.mp4"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "completed"
+                    },
+                    "lookupHash": {
+                      "type": "string",
+                      "example": "abc123def456"
+                    },
+                    "url": {
+                      "type": "string",
+                      "example": "https://cdn.pullthatupjamie.ai/clips/abc123.mp4"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Clip queued for processing — poll /api/clip-status/{lookupHash}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "processing"
+                    },
+                    "lookupHash": {
+                      "type": "string",
+                      "example": "abc123def456"
+                    },
+                    "pollUrl": {
+                      "type": "string",
+                      "example": "/api/clip-status/abc123def456"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "processing"
+                    },
+                    "lookupHash": {
+                      "type": "string",
+                      "example": "abc123def456"
+                    },
+                    "pollUrl": {
+                      "type": "string",
+                      "example": "/api/clip-status/abc123def456"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required clipId parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "clipId is required"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "clipId is required"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Clip ID not found in corpus",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Clip not found"
+                    },
+                    "clipId": {
+                      "type": "string",
+                      "example": "1015378_invalid_p999"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Clip not found"
+                    },
+                    "clipId": {
+                      "type": "string",
+                      "example": "1015378_invalid_p999"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Quota exceeded or insufficient funds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Quota exceeded"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "QUOTA_EXCEEDED"
+                    },
+                    "used": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "max": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "resetDate": {
+                      "type": "string",
+                      "example": "2026-03-01T00:00:00Z"
+                    },
+                    "daysUntilReset": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "tier": {
+                      "type": "string",
+                      "example": "registered"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Quota exceeded"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "QUOTA_EXCEEDED"
+                    },
+                    "used": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "max": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "resetDate": {
+                      "type": "string",
+                      "example": "2026-03-01T00:00:00Z"
+                    },
+                    "daysUntilReset": {
+                      "type": "number",
+                      "example": 5
+                    },
+                    "tier": {
+                      "type": "string",
+                      "example": "registered"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error during clip creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "clipId": {
+                    "example": "any"
+                  },
+                  "timestamps": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/clip-status/{lookupHash}": {
+      "get": {
+        "tags": [
+          "Create"
+        ],
+        "summary": "Check audio clip processing status",
+        "description": "Poll this endpoint to check if a clip has finished processing. No authentication required — the lookupHash serves as the credential. Recommended polling: every 5 seconds, max 30 attempts (~2.5 min timeout).",
+        "parameters": [
+          {
+            "name": "lookupHash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The lookupHash returned from POST /api/make-clip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Clip status (completed, processing, or failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "completed"
+                    },
+                    "url": {
+                      "type": "string",
+                      "example": "https://cdn.pullthatupjamie.ai/clips/abc123.mp4"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "completed"
+                    },
+                    "url": {
+                      "type": "string",
+                      "example": "https://cdn.pullthatupjamie.ai/clips/abc123.mp4"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Lookup hash not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "not_found"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "not_found"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Internal server error"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/search-quotes": {
       "post": {
         "tags": [
@@ -733,7 +1207,7 @@
           "Research Sessions"
         ],
         "summary": "Create a shareable snapshot of a session",
-        "description": "Creates an immutable, shareable snapshot of a research session with a preview image. Returns a shareId and shareUrl for link sharing.",
+        "description": "Creates an immutable, shareable snapshot of a research session with a preview image. When nodes is omitted the backend auto-generates a 3D layout from stored session coordinates (useful for headless/agent callers).",
         "parameters": [
           {
             "name": "id",
@@ -775,6 +1249,10 @@
                       "z": {
                         "type": "number",
                         "example": 0
+                      },
+                      "color": {
+                        "type": "string",
+                        "example": "#4a9eff"
                       }
                     }
                   }
@@ -801,7 +1279,8 @@
                   "example": "unlisted"
                 }
               }
-            }
+            },
+            "description": "nodes is optional. When omitted the server generates a layout from the session items stored coordinates."
           },
           {
             "name": "authorization",
@@ -852,13 +1331,9 @@
                           "type": "string",
                           "example": "https://..."
                         },
-                        "title": {
-                          "type": "string",
-                          "example": "My Research on Bitcoin"
-                        },
-                        "visibility": {
-                          "type": "string",
-                          "example": "unlisted"
+                        "generatedLayout": {
+                          "type": "boolean",
+                          "example": false
                         }
                       }
                     }
@@ -891,13 +1366,9 @@
                           "type": "string",
                           "example": "https://..."
                         },
-                        "title": {
-                          "type": "string",
-                          "example": "My Research on Bitcoin"
-                        },
-                        "visibility": {
-                          "type": "string",
-                          "example": "unlisted"
+                        "generatedLayout": {
+                          "type": "boolean",
+                          "example": false
                         }
                       }
                     }

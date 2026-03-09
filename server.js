@@ -706,6 +706,58 @@ async function generateSubtitlesForClip(clipData, start, end) {
 }
 
 app.post('/api/make-clip', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
+  // #swagger.tags = ['Create']
+  // #swagger.summary = 'Create audio clip with burned-in subtitles'
+  // #swagger.description = 'Generates an MP4 video clip from a podcast segment with burned-in subtitles. Processing is asynchronous — poll /api/clip-status/{lookupHash} for completion. Clips are cached: identical clipId + timestamps return immediately at no extra cost. Agent pricing: $0.05/clip (50,000 microUSD). Free tier quotas: 5/week (anonymous), 10/month (registered), 50/month (subscriber). Typical processing: <1 min, max ~2 min.'
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      clipId: '1015378_38c8e3a2b0e94b2b80feb2e426fbf0b3_p1234',
+      timestamps: [1234.5, 1289.0]
+    },
+    description: 'clipId (required): shareLink from a search result. timestamps (optional): [startSeconds, endSeconds] to override natural clip bounds.'
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Clip already exists (cached — no charge)',
+    schema: {
+      status: 'completed',
+      lookupHash: 'abc123def456',
+      url: 'https://cdn.pullthatupjamie.ai/clips/abc123.mp4'
+    }
+  } */
+  /* #swagger.responses[202] = {
+    description: 'Clip queued for processing — poll /api/clip-status/{lookupHash}',
+    schema: {
+      status: 'processing',
+      lookupHash: 'abc123def456',
+      pollUrl: '/api/clip-status/abc123def456'
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Missing required clipId parameter',
+    schema: { error: 'clipId is required' }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Clip ID not found in corpus',
+    schema: { error: 'Clip not found', clipId: '1015378_invalid_p999' }
+  } */
+  /* #swagger.responses[429] = {
+    description: 'Quota exceeded or insufficient funds',
+    schema: {
+      error: 'Quota exceeded',
+      code: 'QUOTA_EXCEEDED',
+      used: 10,
+      max: 10,
+      resetDate: '2026-03-01T00:00:00Z',
+      daysUntilReset: 5,
+      tier: 'registered'
+    }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error during clip creation',
+    schema: { error: 'Internal server error' }
+  } */
   const debugPrefix = `[MAKE-CLIP][${Date.now()}]`;
   console.log(`${debugPrefix} ==== /api/make-clip ENDPOINT CALLED ====`);
   const { clipId, timestamps } = req.body;
@@ -804,6 +856,30 @@ app.get('/api/clip-queue-status/:lookupHash', async (req, res) => {
 
 // Status check endpoint
 app.get('/api/clip-status/:lookupHash', async (req, res) => {
+  // #swagger.tags = ['Create']
+  // #swagger.summary = 'Check audio clip processing status'
+  // #swagger.description = 'Poll this endpoint to check if a clip has finished processing. No authentication required — the lookupHash serves as the credential. Recommended polling: every 5 seconds, max 30 attempts (~2.5 min timeout).'
+  /* #swagger.parameters['lookupHash'] = {
+    in: 'path',
+    required: true,
+    type: 'string',
+    description: 'The lookupHash returned from POST /api/make-clip'
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Clip status (completed, processing, or failed)',
+    schema: {
+      status: 'completed',
+      url: 'https://cdn.pullthatupjamie.ai/clips/abc123.mp4'
+    }
+  } */
+  /* #swagger.responses[404] = {
+    description: 'Lookup hash not found',
+    schema: { status: 'not_found' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { error: 'Internal server error' }
+  } */
   const { lookupHash } = req.params;
 
   try {
