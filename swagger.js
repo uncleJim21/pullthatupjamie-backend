@@ -41,6 +41,10 @@ const doc = {
       description: 'Create, retrieve, share, and analyze research sessions — curated collections of podcast clips.'
     },
     {
+      name: 'Create',
+      description: 'Generate shareable audio/video clips from podcast search results. Async processing with status polling.'
+    },
+    {
       name: 'Agent Auth',
       description: 'Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents.'
     }
@@ -221,6 +225,7 @@ const ALLOWED_TAGS = new Set([
   'Corpus Discovery',
   'Search',
   'Research Sessions',
+  'Create',
   'Agent Auth'
 ]);
 
