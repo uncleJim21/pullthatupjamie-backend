@@ -83,6 +83,10 @@ JamieVectorMetadataSchema.index({ feedId: 1, publishedTimestamp: 1 });
 // Chapter containment helper index (narrows by type+guid, then scans start_time)
 JamieVectorMetadataSchema.index({ type: 1, guid: 1, start_time: 1, end_time: 1 });
 
+// Multikey indexes for smart search triage entity resolution
+JamieVectorMetadataSchema.index({ type: 1, 'metadataRaw.guests': 1 });
+JamieVectorMetadataSchema.index({ type: 1, 'metadataRaw.keywords': 1 });
+
 // Enforce single canonical episode doc per guid (still one collection)
 JamieVectorMetadataSchema.index(
   // Use different key order than the non-unique index to avoid duplicate-index warnings in mongoose

@@ -17,7 +17,7 @@ async function getFirstParagraph(feedId, guid) {
         const results = await findSimilarDiscussions({
             embedding: dummyVector,
             feedIds: [feedId],
-            guid,
+            guids: guid ? [guid] : [],
             limit: 1,
             query: ''
         });

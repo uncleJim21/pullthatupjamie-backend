@@ -8,6 +8,7 @@ const openai = new OpenAI({
 });
 const { SearxNGTool } = require('./agent-tools/searxngTool');
 const {findSimilarDiscussions, getFeedsDetails, getClipById, getEpisodeByGuid, getParagraphWithEpisodeData, getFeedById, getParagraphWithFeedData, getTextForTimeRange, getAdjacentParagraphs,formatResults} = require('./agent-tools/pineconeTools.js')
+const { triageQuery } = require('./utils/queryTriage');
 const mongoose = require('mongoose');
 const {JamieFeedback} = require('./models/JamieFeedback.js');
 const {generateInvoiceAlbyAPI,getIsInvoicePaid} = require('./utils/lightning-utils')
@@ -1166,12 +1167,31 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     description: 'Server error',
     schema: { error: 'Failed to search quotes', details: 'Error message' }
   } */
-  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null } = req.body;
+  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null, smartMode = false } = req.body;
+  const originalQuery = query;
+  let guids = guid ? [guid] : [];
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
   printLog(`[${requestId}] /api/search-quotes request received`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUID: ${guid || 'none'}`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUIDs: ${guids.length || 'none'}, SmartMode: ${smartMode}`);
+
+  let triageResult = null;
+  if (smartMode && !feedIds.length && !guids.length) {
+    try {
+      triageResult = await triageQuery(query, openai);
+      printLog(`[${requestId}] Triage result: intent=${triageResult.triage?.intent}, confidence=${triageResult.triage?.confidence}, latency=${triageResult.triage?.latencyMs}ms`);
+      if (triageResult.rewrittenQuery) query = triageResult.rewrittenQuery;
+      if (triageResult.feedIds?.length) feedIds = triageResult.feedIds;
+      if (triageResult.guids?.length) guids = triageResult.guids;
+      if (triageResult.episodeName) episodeName = triageResult.episodeName;
+      if (triageResult.minDate && !minDate) minDate = triageResult.minDate;
+      if (triageResult.maxDate && !maxDate) maxDate = triageResult.maxDate;
+      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guids=${JSON.stringify(guids)}`);
+    } catch (triageError) {
+      printLog(`[${requestId}] Triage failed (non-fatal): ${triageError.message}`);
+    }
+  }
 
   try {
     // Step 1: Generate query embedding
@@ -1189,13 +1209,13 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     const minimalResults = await findSimilarDiscussions({
       embedding,
       feedIds,
-      guid,  // NEW: Optional GUID filter for specific episode
+      guids,
       limit,
       query,
       minDate,
       maxDate,
       episodeName,
-      includeMetadata: false  // NEW: Don't fetch metadata from Pinecone
+      includeMetadata: false
     });
     
     printLog(`[${requestId}] ✓ Pinecone returned ${minimalResults.length} results`);
@@ -1264,12 +1284,17 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     printLog(`[${requestId}] ✓ Formatted ${results.length} results`);
     printLog(`[${requestId}] /api/search-quotes complete`);
 
-    res.json({
+    const response = {
       query,
       results,
       total: results.length,
       model: "text-embedding-ada-002"
-    });
+    };
+    if (triageResult) {
+      response.originalQuery = originalQuery;
+      response.triage = triageResult.triage;
+    }
+    res.json(response);
 
   } catch (error) {
     printLog(`[${requestId}] ✗ Error:`, error.message);
