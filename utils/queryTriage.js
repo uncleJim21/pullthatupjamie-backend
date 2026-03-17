@@ -126,6 +126,7 @@ Given a user's search query for a podcast transcript database, return JSON with 
 
 - "show_hint": the podcast/show name mentioned or implied, or null
 - "person_hint": a specific person (guest, host) mentioned, or null
+- "person_variants": array of 2-5 plausible spelling/formatting variants of the person name for database matching (e.g. for "Steve O" include ["Steve O", "Steve-O", "SteveO", "Steve O."], for "Sagar" include ["Sagar", "Saagar", "Sagar Enjeti", "Saagar Enjeti"]). Include the original plus common alternate spellings, hyphenations, full names, and nicknames. Return empty array if no person.
 - "topic_keywords": array of 1-5 topic keywords extracted from the query (short, specific terms)
 - "time_hint": any time reference ("last year", "2023", "recent"), or null
 - "rewritten_query": the query rewritten to match what would actually appear in a transcript. Strip out meta-references like "that time" or "the episode where" and focus on the actual content/topic words. For direct_quote intent, return the original query unchanged.
@@ -145,11 +146,18 @@ async function classifyQuery(query, openai) {
     max_tokens: 300
   });
 
-  return JSON.parse(response.choices[0].message.content);
+  const parsed = JSON.parse(response.choices[0].message.content);
+  const usage = response.usage || {};
+  parsed._usage = {
+    prompt_tokens: usage.prompt_tokens || 0,
+    completion_tokens: usage.completion_tokens || 0,
+    total_tokens: usage.total_tokens || 0
+  };
+  return parsed;
 }
 
 async function resolveEntities(classification) {
-  const { show_hint, person_hint, topic_keywords = [], intent } = classification;
+  const { show_hint, person_hint, person_variants = [], topic_keywords = [], intent } = classification;
   const results = { feedIds: [], guids: [], episodeName: null };
   const signals = {
     feed: { matched: false },
@@ -172,8 +180,11 @@ async function resolveEntities(classification) {
   // Signal 2 & 3 run in parallel
   const parallelQueries = [];
 
-  // Signal 2: Guest resolution using text index instead of regex for speed
-  if (person_hint) {
+  // Signal 2: Guest resolution using name variants for fuzzy matching
+  const nameVariants = person_variants.length > 0 ? person_variants : (person_hint ? [person_hint] : []);
+  if (nameVariants.length > 0) {
+    const escapedVariants = nameVariants.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const variantRegex = escapedVariants.join('|');
     const feedFilter = results.feedIds.length > 0 ? { feedId: { $in: results.feedIds } } : {};
     parallelQueries.push(
       JamieVectorMetadata.aggregate([
@@ -184,7 +195,7 @@ async function resolveEntities(classification) {
         }},
         { $unwind: '$metadataRaw.guests' },
         { $match: {
-          'metadataRaw.guests': { $regex: person_hint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
+          'metadataRaw.guests': { $regex: variantRegex, $options: 'i' }
         }},
         { $group: {
           _id: '$guid',
@@ -208,7 +219,7 @@ async function resolveEntities(classification) {
                 results.feedIds = guestFeedIds;
               }
             }
-            printLog(`[QUERY-TRIAGE] Guest resolved: "${person_hint}" -> ${episodes.length} episodes`);
+            printLog(`[QUERY-TRIAGE] Guest resolved: "${nameVariants.join(' / ')}" -> ${episodes.length} episodes`);
           }
         })
     );
@@ -287,7 +298,7 @@ async function triageQuery(query, openai) {
       const totalLatency = Date.now() - startTime;
       printLog(`${debugPrefix} Direct quote detected - skipping entity resolution (${totalLatency}ms)`);
       return {
-        rewrittenQuery: null, // null = use original query
+        rewrittenQuery: null,
         feedIds: [],
         guid: null,
         episodeName: null,
@@ -297,7 +308,8 @@ async function triageQuery(query, openai) {
           intent: 'direct_quote',
           confidence: classification.confidence,
           resolvedSignals: {},
-          latencyMs: totalLatency
+          latencyMs: totalLatency,
+          usage: classification._usage
         }
       };
     }
@@ -332,6 +344,7 @@ async function triageQuery(query, openai) {
         intent: classification.intent,
         show_hint: classification.show_hint,
         person_hint: classification.person_hint,
+        person_variants: classification.person_variants || [],
         topic_keywords: classification.topic_keywords,
         time_hint: classification.time_hint,
         rewrittenQuery: classification.rewritten_query,
@@ -340,7 +353,8 @@ async function triageQuery(query, openai) {
         filtersApplied: applyFilters,
         latencyMs: totalLatency,
         classificationLatencyMs: classLatency,
-        resolutionLatencyMs: resolveLatency
+        resolutionLatencyMs: resolveLatency,
+        usage: classification._usage
       }
     };
 
