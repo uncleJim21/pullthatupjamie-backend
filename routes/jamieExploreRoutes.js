@@ -9,6 +9,7 @@ const { multiSearchCache } = require('../utils/MultiSearchCacheManager.js');
 const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { serviceHmac } = require('../middleware/hmac');
+const { triageQuery } = require('../utils/queryTriage');
 
 // Feature flags
 const jamieExplorePostRoutesEnabled = true; // Set to true to enable POST routes (/search-quotes-3d, /fetch-research-id)
@@ -103,15 +104,17 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
   let {
     query,
     feedIds = [],
-    guid = null, // Optional: filter to a specific episode GUID (same as /api/search-quotes)
+    guid = null,
     limit = 100,
     minDate = null,
     maxDate = null,
     episodeName = null,
     fastMode = false,
     extractAxisLabels = false,
-    createSession = false // If true, creates a multi-search session and returns sessionId
+    createSession = false,
+    smartMode = false
   } = req.body;
+  const originalQuery = query;
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -124,6 +127,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
   
   const startTime = Date.now();
   const timings = {
+    triage: 0,
     embedding: 0,
     search: 0,
     reembedding: 0,
@@ -134,12 +138,31 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
 
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST ==========`);
   printLog(
-    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUID: ${guid || 'none'}, CreateSession: ${createSession}`
+    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUID: ${guid || 'none'}, CreateSession: ${createSession}, SmartMode: ${smartMode}`
   );
 
   if (!query) {
     printLog(`[${requestId}] ERROR: Missing query parameter`);
     return res.status(400).json({ error: 'Query is required' });
+  }
+
+  let triageResult = null;
+  if (smartMode && !feedIds.length && !guid) {
+    try {
+      const triageStart = Date.now();
+      triageResult = await triageQuery(query, openai);
+      timings.triage = Date.now() - triageStart;
+      printLog(`[${requestId}] Triage result (${timings.triage}ms): intent=${triageResult.triage?.intent}, confidence=${triageResult.triage?.confidence}`);
+      if (triageResult.rewrittenQuery) query = triageResult.rewrittenQuery;
+      if (triageResult.feedIds?.length) feedIds = triageResult.feedIds;
+      if (triageResult.guid) guid = triageResult.guid;
+      if (triageResult.episodeName) episodeName = triageResult.episodeName;
+      if (triageResult.minDate && !minDate) minDate = triageResult.minDate;
+      if (triageResult.maxDate && !maxDate) maxDate = triageResult.maxDate;
+      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guid=${guid || 'none'}`);
+    } catch (triageError) {
+      printLog(`[${requestId}] Triage failed (non-fatal): ${triageError.message}`);
+    }
   }
 
   try {
@@ -624,6 +647,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
       model: "text-embedding-ada-002",
       metadata: {
         numResults: results3d.length,
+        triageTimeMs: timings.triage || 0,
         embeddingTimeMs: timings.embedding,
         searchTimeMs: timings.search,
         mongoLookupTimeMs: timings.mongoLookup,
@@ -639,6 +663,11 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         approach: 'mongodb-optimized-metadata'
       }
     };
+
+    if (triageResult) {
+      response.originalQuery = originalQuery;
+      response.triage = triageResult.triage;
+    }
     
     // Add session ID if created
     if (sessionId) {
