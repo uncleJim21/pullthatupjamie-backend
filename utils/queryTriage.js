@@ -115,7 +115,12 @@ function fuzzyMatchFeed(showHint, feeds) {
   return bestMatch;
 }
 
-const TRIAGE_SYSTEM_PROMPT = `You classify podcast transcript search queries and extract structured entities.
+function buildTriageSystemPrompt() {
+  const today = new Date().toISOString().split('T')[0];
+  const year = new Date().getFullYear();
+  return `You classify podcast transcript search queries and extract structured entities.
+
+Today's date is ${today}. The current year is ${year}. "Last year" means ${year - 1}.
 
 Given a user's search query for a podcast transcript database, return JSON with these fields:
 
@@ -124,21 +129,24 @@ Given a user's search query for a podcast transcript database, return JSON with 
   - "topical": user is searching for a topic/subject discussed (e.g. "Bitcoin price prediction")
   - "descriptive": user is describing a moment, story, or conversation they vaguely remember (e.g. "that funny story Steve O told Joe Rogan")
 
-- "show_hint": the podcast/show name mentioned or implied, or null
-- "person_hint": a specific person, organization, or brand mentioned that identifies who is speaking or being discussed. This could be a person name (guest/host), a company, a brand, or an affiliation (e.g. "Weinstein" -> person, "CASCDR" -> organization, "Breaking Points" -> show/org). Extract the most specific entity the user is referring to. Null if none.
+- "show_hint": the podcast/show name mentioned or implied, or null. IMPORTANT: When a query mentions a well-known podcast host in the context of their show (e.g. "told Joe", "on Rogan", "with Tucker", "to Lex"), treat that as a show_hint for their podcast. Examples: "Joe" or "Rogan" -> "Joe Rogan Experience", "Tucker" -> "Tucker Carlson", "Lex" -> "Lex Fridman". The person_hint should be the OTHER person (the guest/subject), not the host.
+- "person_hint": the primary person, organization, or brand being discussed or who is speaking. This is typically the guest, NOT the host. For "Trump explains the weave to Joe", person_hint is "Trump" and show_hint is "Joe Rogan Experience". This could be a person name, a company, a brand, or an affiliation. Null if none.
 - "person_variants": array of 2-5 plausible spelling/formatting variants for database matching. Include the original plus: alternate spellings, hyphenations, full names, nicknames, and for people include their known organizational affiliations or brand names (e.g. for "Steve O" include ["Steve O", "Steve-O", "SteveO", "Steve O."], for "Sagar" include ["Sagar", "Saagar", "Sagar Enjeti", "Saagar Enjeti", "Breaking Points"], for "Weinstein" include ["Weinstein", "Eric Weinstein", "Bret Weinstein", "Brett Weinstein"]). Return empty array if no entity.
-- "topic_keywords": array of 1-5 topic keywords extracted from the query (short, specific terms)
+- "topic_keywords": array of 1-5 topic keywords extracted from the query (short, specific terms). Do NOT put host/show names here — those belong in show_hint.
 - "time_hint": any time reference ("last year", "2023", "recent"), or null
+- "min_date": if the user references a time period, resolve it to an ISO date string (YYYY-MM-DD) for the start of the range. Examples for today=${today}: "last month" -> "${year}-${String(new Date().getMonth()).padStart(2,'0')}-01", "last year" -> "${year - 1}-01-01", "recently" -> 3 months ago, "in 2024" -> "2024-01-01". Null if no time reference.
+- "max_date": the end of the time range as ISO date string. For "last month" use the last day of that month, for "last year" use "${year - 1}-12-31", for "recently" use "${today}", for "in 2024" use "2024-12-31". Null if no time reference.
 - "rewritten_query": the query rewritten to match what would actually appear in a transcript. Strip out meta-references like "that time" or "the episode where" and focus on the actual content/topic words. For direct_quote intent, return the original query unchanged.
 - "confidence": 0.0-1.0 how confident you are in the classification
 
 Return ONLY valid JSON, no markdown or explanation.`;
+}
 
 async function classifyQuery(query, openai) {
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: TRIAGE_SYSTEM_PROMPT },
+      { role: 'system', content: buildTriageSystemPrompt() },
       { role: 'user', content: query }
     ],
     response_format: { type: 'json_object' },
@@ -337,8 +345,8 @@ async function triageQuery(query, openai) {
       feedIds: applyFilters ? resolved.feedIds : [],
       guids: applyFilters ? guids : [],
       episodeName: null,
-      minDate: null,
-      maxDate: null,
+      minDate: applyFilters ? (classification.min_date || null) : null,
+      maxDate: applyFilters ? (classification.max_date || null) : null,
       triage: {
         intent: classification.intent,
         show_hint: classification.show_hint,
@@ -346,6 +354,8 @@ async function triageQuery(query, openai) {
         person_variants: classification.person_variants || [],
         topic_keywords: classification.topic_keywords,
         time_hint: classification.time_hint,
+        minDate: classification.min_date || null,
+        maxDate: classification.max_date || null,
         rewrittenQuery: classification.rewritten_query,
         confidence: classification.confidence,
         resolvedSignals: resolved.signals,
