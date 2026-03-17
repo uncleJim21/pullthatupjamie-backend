@@ -115,6 +115,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
     smartMode = false
   } = req.body;
   const originalQuery = query;
+  let guids = guid ? [guid] : [];
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -138,7 +139,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
 
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST ==========`);
   printLog(
-    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUID: ${guid || 'none'}, CreateSession: ${createSession}, SmartMode: ${smartMode}`
+    `[${requestId}] Query: "${query}", Limit: ${effectiveLimit} (requested: ${limit}), FastMode: ${fastMode}, GUIDs: ${guids.length || 'none'}, CreateSession: ${createSession}, SmartMode: ${smartMode}`
   );
 
   if (!query) {
@@ -147,7 +148,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
   }
 
   let triageResult = null;
-  if (smartMode && !feedIds.length && !guid) {
+  if (smartMode && !feedIds.length && !guids.length) {
     try {
       const triageStart = Date.now();
       triageResult = await triageQuery(query, openai);
@@ -155,11 +156,11 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
       printLog(`[${requestId}] Triage result (${timings.triage}ms): intent=${triageResult.triage?.intent}, confidence=${triageResult.triage?.confidence}`);
       if (triageResult.rewrittenQuery) query = triageResult.rewrittenQuery;
       if (triageResult.feedIds?.length) feedIds = triageResult.feedIds;
-      if (triageResult.guid) guid = triageResult.guid;
+      if (triageResult.guids?.length) guids = triageResult.guids;
       if (triageResult.episodeName) episodeName = triageResult.episodeName;
       if (triageResult.minDate && !minDate) minDate = triageResult.minDate;
       if (triageResult.maxDate && !maxDate) maxDate = triageResult.maxDate;
-      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guid=${guid || 'none'}`);
+      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guids=${JSON.stringify(guids)}`);
     } catch (triageError) {
       printLog(`[${requestId}] Triage failed (non-fatal): ${triageError.message}`);
     }
@@ -201,14 +202,14 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
     const pineconeMatches = await findSimilarDiscussions({
       embedding,
       feedIds,
-      guid, // Optional GUID filter (same behavior as /api/search-quotes)
+      guids,
       limit: effectiveLimit,
       query,
       minDate,
       maxDate,
       episodeName,
-      includeValues: false, // Pinecone limitation
-      includeMetadata: false // Use MongoDB instead
+      includeValues: false,
+      includeMetadata: false
     });
     
     timings.search = Date.now() - searchStart;
@@ -805,6 +806,7 @@ router.post('/search-quotes-3d/expand', serviceHmac({ optional: true }), createE
         episodeName = null,
         limit = 25 // Default per-query limit
       } = querySpec;
+      const guidsForQuery = guid ? [guid] : [];
 
       const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
       printLog(`[${requestId}] Processing query: "${query}" (limit: ${effectiveLimit})`);
@@ -823,7 +825,7 @@ router.post('/search-quotes-3d/expand', serviceHmac({ optional: true }), createE
       const pineconeMatches = await findSimilarDiscussions({
         embedding,
         feedIds,
-        guid,
+        guids: guidsForQuery,
         limit: effectiveLimit,
         query,
         minDate,

@@ -1169,24 +1169,25 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
   } */
   let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null, smartMode = false } = req.body;
   const originalQuery = query;
+  let guids = guid ? [guid] : [];
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
   printLog(`[${requestId}] /api/search-quotes request received`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUID: ${guid || 'none'}, SmartMode: ${smartMode}`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUIDs: ${guids.length || 'none'}, SmartMode: ${smartMode}`);
 
   let triageResult = null;
-  if (smartMode && !feedIds.length && !guid) {
+  if (smartMode && !feedIds.length && !guids.length) {
     try {
       triageResult = await triageQuery(query, openai);
       printLog(`[${requestId}] Triage result: intent=${triageResult.triage?.intent}, confidence=${triageResult.triage?.confidence}, latency=${triageResult.triage?.latencyMs}ms`);
       if (triageResult.rewrittenQuery) query = triageResult.rewrittenQuery;
       if (triageResult.feedIds?.length) feedIds = triageResult.feedIds;
-      if (triageResult.guid) guid = triageResult.guid;
+      if (triageResult.guids?.length) guids = triageResult.guids;
       if (triageResult.episodeName) episodeName = triageResult.episodeName;
       if (triageResult.minDate && !minDate) minDate = triageResult.minDate;
       if (triageResult.maxDate && !maxDate) maxDate = triageResult.maxDate;
-      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guid=${guid || 'none'}`);
+      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guids=${JSON.stringify(guids)}`);
     } catch (triageError) {
       printLog(`[${requestId}] Triage failed (non-fatal): ${triageError.message}`);
     }
@@ -1208,13 +1209,13 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     const minimalResults = await findSimilarDiscussions({
       embedding,
       feedIds,
-      guid,  // NEW: Optional GUID filter for specific episode
+      guids,
       limit,
       query,
       minDate,
       maxDate,
       episodeName,
-      includeMetadata: false  // NEW: Don't fetch metadata from Pinecone
+      includeMetadata: false
     });
     
     printLog(`[${requestId}] ✓ Pinecone returned ${minimalResults.length} results`);

@@ -125,8 +125,8 @@ Given a user's search query for a podcast transcript database, return JSON with 
   - "descriptive": user is describing a moment, story, or conversation they vaguely remember (e.g. "that funny story Steve O told Joe Rogan")
 
 - "show_hint": the podcast/show name mentioned or implied, or null
-- "person_hint": a specific person (guest, host) mentioned, or null
-- "person_variants": array of 2-5 plausible spelling/formatting variants of the person name for database matching (e.g. for "Steve O" include ["Steve O", "Steve-O", "SteveO", "Steve O."], for "Sagar" include ["Sagar", "Saagar", "Sagar Enjeti", "Saagar Enjeti"]). Include the original plus common alternate spellings, hyphenations, full names, and nicknames. Return empty array if no person.
+- "person_hint": a specific person, organization, or brand mentioned that identifies who is speaking or being discussed. This could be a person name (guest/host), a company, a brand, or an affiliation (e.g. "Weinstein" -> person, "CASCDR" -> organization, "Breaking Points" -> show/org). Extract the most specific entity the user is referring to. Null if none.
+- "person_variants": array of 2-5 plausible spelling/formatting variants for database matching. Include the original plus: alternate spellings, hyphenations, full names, nicknames, and for people include their known organizational affiliations or brand names (e.g. for "Steve O" include ["Steve O", "Steve-O", "SteveO", "Steve O."], for "Sagar" include ["Sagar", "Saagar", "Sagar Enjeti", "Saagar Enjeti", "Breaking Points"], for "Weinstein" include ["Weinstein", "Eric Weinstein", "Bret Weinstein", "Brett Weinstein"]). Return empty array if no entity.
 - "topic_keywords": array of 1-5 topic keywords extracted from the query (short, specific terms)
 - "time_hint": any time reference ("last year", "2023", "recent"), or null
 - "rewritten_query": the query rewritten to match what would actually appear in a transcript. Strip out meta-references like "that time" or "the episode where" and focus on the actual content/topic words. For direct_quote intent, return the original query unchanged.
@@ -320,11 +320,10 @@ async function triageQuery(query, openai) {
     const resolveLatency = Date.now() - resolveStart;
     printLog(`${debugPrefix} Entity resolution (${resolveLatency}ms):`, JSON.stringify(resolved.signals));
 
-    // Determine guid: prefer guest-resolved GUIDs (more specific), fall back to keyword GUIDs
-    let guid = null;
-    if (resolved.guids.length === 1) {
-      guid = resolved.guids[0];
-    }
+    // Pass resolved GUIDs when the set is small enough to be a useful filter.
+    // Too many GUIDs (>10) means the match was too broad (e.g. "Jim" matched everyone named Jim).
+    const MAX_GUID_FILTER = 10;
+    const guids = resolved.guids.length <= MAX_GUID_FILTER ? resolved.guids : [];
 
     // If confidence is too low, don't apply any filters
     const confidenceThreshold = 0.5;
@@ -336,7 +335,7 @@ async function triageQuery(query, openai) {
     return {
       rewrittenQuery: classification.rewritten_query || null,
       feedIds: applyFilters ? resolved.feedIds : [],
-      guid: applyFilters ? guid : null,
+      guids: applyFilters ? guids : [],
       episodeName: null,
       minDate: null,
       maxDate: null,

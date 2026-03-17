@@ -284,7 +284,7 @@ const pineconeTools = {
     findSimilarDiscussions : async ({ 
         embedding,
         feedIds, 
-        guid = null, // Optional guid to filter by specific episode
+        guids = [], // Optional array of guids to filter by specific episodes
         limit = 5,
         query = '', // Optional text query for keyword matching
         hybridWeight = 0.7, // Weight for combining vector and keyword scores (0.7 = 70% vector, 30% keywords)
@@ -300,7 +300,7 @@ const pineconeTools = {
         printLog(`${debugPrefix} ========== findSimilarDiscussions CALLED ==========`);
         printLog(`${debugPrefix} Parameters:`, {
             feedIds: feedIds.length,
-            guid,
+            guids: guids.length,
             limit,
             query: query.substring(0, 50) + (query.length > 50 ? '...' : ''),
             minDate,
@@ -321,7 +321,7 @@ const pineconeTools = {
             const filter = {
                 type: 'paragraph',
                 ...(intFeedIds.length > 0 && { feedId: { $in: intFeedIds } }),
-                ...(guid && { guid }),  // Add guid filter when provided
+                ...(guids.length === 1 ? { guid: guids[0] } : guids.length > 1 ? { guid: { $in: guids } } : {}),
             };
             
             // Add date filters using timestamp (more precise than date strings)
