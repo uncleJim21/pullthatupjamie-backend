@@ -41,13 +41,24 @@ async function send402Challenge(req, res, options = {}) {
 
     console.log('[L402-DEBUG] Checking isLightningAvailable...');
     if (!isLightningAvailable()) {
-      console.log('[L402-DEBUG] Lightning NOT available (stale BTC price)');
-      return res.status(503).json({
-        error: 'Lightning services temporarily unavailable',
-        code: 'LIGHTNING_UNAVAILABLE'
-      });
+      console.log('[L402-DEBUG] Lightning not available — attempting synchronous price fetch...');
+      try {
+        await getBtcUsdRate();
+      } catch (priceErr) {
+        console.error('[L402-DEBUG] Price fetch failed:', priceErr.message);
+      }
+
+      if (!isLightningAvailable()) {
+        console.log('[L402-DEBUG] Lightning still NOT available after fetch attempt');
+        return res.status(503).json({
+          error: 'Lightning services temporarily unavailable',
+          code: 'LIGHTNING_UNAVAILABLE'
+        });
+      }
+      console.log('[L402-DEBUG] Price fetch succeeded, lightning now available');
+    } else {
+      console.log('[L402-DEBUG] Lightning is available');
     }
-    console.log('[L402-DEBUG] Lightning is available');
 
     let amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
     const requestedAmount = parseInt(req.query?.amountSats, 10);

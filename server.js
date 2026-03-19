@@ -2093,6 +2093,15 @@ app.listen(PORT, async () => {
       console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
     }
 
+    // Warm BTC/USD price cache on startup so L402 challenges work immediately
+    try {
+      const { getBtcUsdRate } = require('./utils/btcPrice');
+      const { rate } = await getBtcUsdRate();
+      console.log(`[btcPrice] Startup cache warmed: $${rate.toFixed(2)}`);
+    } catch (priceErr) {
+      console.warn('[btcPrice] Startup cache warm failed:', priceErr.message, '— L402 challenges will retry on first request');
+    }
+
     console.log('All systems initialized successfully');
   } catch (error) {
     console.error('Error during initialization:', error);
