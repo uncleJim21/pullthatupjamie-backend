@@ -46,16 +46,16 @@ const doc = {
     },
     {
       name: 'Agent Auth',
-      description: 'Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents.'
+      description: 'L402 Lightning-based pay-per-use system for agent API access. Protected endpoints return HTTP 402 with a macaroon and Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all requests. Each API call deducts its USD-equivalent cost from a prepaid balance. Compatible with lnget and the L402 ecosystem.'
     }
   ],
   components: {
     securitySchemes: {
-      AgentCredential: {
+      L402Credential: {
         type: 'apiKey',
         in: 'header',
         name: 'Authorization',
-        description: 'Lightning preimage credential in format "preimage:paymentHash". Used for agent auth endpoints.'
+        description: 'L402 credential in format "L402 <base64_macaroon>:<hex_preimage>". Obtained by paying a Lightning invoice from a 402 challenge.'
       },
       BearerJWT: {
         type: 'http',

@@ -20,7 +20,7 @@ const clipId = results[0].shareLink;
 const createRes = await fetch(`${BASE_URL}/api/make-clip`, {
   method: 'POST',
   headers: {
-    'Authorization': 'YOUR_PREIMAGE:YOUR_PAYMENT_HASH',
+    'Authorization': 'L402 YOUR_MACAROON:YOUR_PREIMAGE',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({ clipId })
@@ -45,65 +45,46 @@ if (status === 'completed') {
 
 **Cost:** $0.05 per clip (50,000 microUSD)
 
-Lightning auth uses a 3-step flow. The resulting `preimage:paymentHash` credential is stateless and long-lived.
+Lightning auth uses the L402 protocol. Hit the endpoint, get a 402 challenge, pay the invoice, retry with the credential.
 
-#### Step 1 — Purchase credits
-
-```bash
-curl -X POST https://pullthatupjamie.ai/api/agent/purchase-credits \
-  -H "Content-Type: application/json" \
-  -d '{"amountSats": 5000}'
-```
-
-Response:
-
-```json
-{
-  "invoice": "lnbc50u1p...",
-  "paymentHash": "def456...",
-  "amountSats": 5000,
-  "amountUsd": 5.00,
-  "btcUsdRate": 100000,
-  "expiresAt": "2026-03-09T12:00:00.000Z"
-}
-```
-
-#### Step 2 — Pay the Lightning invoice, then activate
-
-Pay `invoice` with any Lightning wallet. Then submit the preimage:
+#### Step 1 — Hit the endpoint (or purchase credits for a custom amount)
 
 ```bash
-curl -X POST https://pullthatupjamie.ai/api/agent/activate-credits \
-  -H "Content-Type: application/json" \
-  -d '{"preimage": "abc123...", "paymentHash": "def456..."}'
-```
-
-Response:
-
-```json
-{
-  "paymentHash": "def456...",
-  "balanceUsd": 5.00,
-  "balanceUsdMicro": 5000000
-}
-```
-
-#### Step 3 — Use credential on API calls
-
-Pass the `preimage:paymentHash` pair as the Authorization header:
-
-```bash
-curl -X POST https://pullthatupjamie.ai/api/make-clip \
-  -H "Authorization: abc123...:def456..." \
+curl -X POST https://www.pullthatupjamie.ai/api/make-clip \
   -H "Content-Type: application/json" \
   -d '{"clipId": "1015378_guid_p123"}'
 ```
 
+Returns `HTTP 402` with a `macaroon` and `invoice` in the `WWW-Authenticate` header. Or for a custom amount:
+
+```bash
+curl -X POST https://www.pullthatupjamie.ai/api/agent/purchase-credits \
+  -H "Content-Type: application/json" \
+  -d '{"amountSats": 5000}'
+```
+
+Response includes `macaroon`, `invoice`, `paymentHash`, `amountSats`.
+
+#### Step 2 — Pay the Lightning invoice
+
+Pay `invoice` with any Lightning wallet. Returns `preimage`.
+
+#### Step 3 — Retry with L402 credential
+
+```bash
+curl -X POST https://www.pullthatupjamie.ai/api/make-clip \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
+  -H "Content-Type: application/json" \
+  -d '{"clipId": "1015378_guid_p123"}'
+```
+
+Credits are auto-activated on first use. The credential is reused for all subsequent requests.
+
 #### Checking balance
 
 ```bash
-curl https://pullthatupjamie.ai/api/agent/balance \
-  -H "Authorization: abc123...:def456..."
+curl https://www.pullthatupjamie.ai/api/agent/balance \
+  -H "Authorization: L402 MACAROON:PREIMAGE"
 ```
 
 Returns `balanceUsd`, `usedUsd`, `totalDepositedUsd`, and current `btcUsdRate`.
@@ -283,7 +264,7 @@ When polling returns `status: 'failed'`, the `error` field describes the cause. 
 ```javascript
 async function createClipFromSearch(query) {
   const BASE_URL = 'https://pullthatupjamie.ai';
-  const AUTH = 'YOUR_PREIMAGE:YOUR_PAYMENT_HASH';
+  const AUTH = 'L402 YOUR_MACAROON:YOUR_PREIMAGE';
 
   // 1. Search
   const searchRes = await fetch(`${BASE_URL}/api/search-quotes`, {
@@ -367,6 +348,6 @@ console.log('Share this:', clipUrl);
 | 400 "clipId is required" | Missing body parameter | Include `{ "clipId": "..." }` in request body |
 | 404 "Clip not found" | Invalid clipId | Verify `shareLink` from a search result |
 | 429 "Quota exceeded" | Free tier limit reached | Wait for reset or buy Lightning credits |
-| 429 "Insufficient funds" | Lightning balance too low | Top up via `/api/agent/purchase-credits` + `/activate-credits` |
+| 402 "Insufficient funds" | Lightning balance too low | Pay the new invoice in the 402 response to top up |
 | `status: 'failed'` during poll | Processing error | Check `error` field, retry once, contact support if persistent |
 | Timeout after 30 polls | Rare processing hang | Contact support with the `lookupHash` |

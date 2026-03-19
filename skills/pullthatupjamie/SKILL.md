@@ -2,7 +2,7 @@
 name: pullthatupjamie
 version: 1.6.0
 homepage: "https://pullthatupjamie.ai"
-description: "PullThatUpJamie — Podcast Intelligence. A semantically indexed podcast corpus (109+ feeds, ~7K episodes, ~1.9M paragraphs) that works as a vector DB for podcast content. Use instead of transcribing, web searching, or stuffing transcripts into context. Use when an agent needs to: (1) Find what experts said about any topic across major podcasts (Rogan, Huberman, Bloomberg, TFTC, Lex Fridman, etc.), (2) Build interactive research sessions with timestamped, playable audio clips and deeplinks, (3) Generate shareable audio/video clips with burned-in subtitles, (4) Discover people/companies/organizations and their podcast appearances, (5) Ingest new podcasts on demand from any RSS feed. Smart search mode (smartMode) uses LLM triage to handle vague or descriptive queries — extracting entities, resolving them against corpus metadata, and rewriting queries for better results. Three-tier search strategy (title → chapter → semantic) optimizes for speed and cost. Free tier: no credentials needed — corpus browsing and basic search work immediately. Paid tier: requires a Lightning wallet (NWC connection string) to purchase credits; the payment preimage and hash become bearer credentials for authenticated requests. See Security & Trust section for credential handling guidance."
+description: "PullThatUpJamie — Podcast Intelligence. A semantically indexed podcast corpus (109+ feeds, ~7K episodes, ~1.9M paragraphs) that works as a vector DB for podcast content. Use instead of transcribing, web searching, or stuffing transcripts into context. Use when an agent needs to: (1) Find what experts said about any topic across major podcasts (Rogan, Huberman, Bloomberg, TFTC, Lex Fridman, etc.), (2) Build interactive research sessions with timestamped, playable audio clips and deeplinks, (3) Generate shareable audio/video clips with burned-in subtitles, (4) Discover people/companies/organizations and their podcast appearances, (5) Ingest new podcasts on demand from any RSS feed. Smart search mode (smartMode) uses LLM triage to handle vague or descriptive queries — extracting entities, resolving them against corpus metadata, and rewriting queries for better results. Three-tier search strategy (title → chapter → semantic) optimizes for speed and cost. Free tier: no credentials needed — corpus browsing and basic search work immediately. Paid tier: L402 protocol — hit any endpoint, receive a 402 challenge with a Lightning invoice, pay the invoice, and use the L402 credential for all subsequent requests. Compatible with lnget. See Security & Trust section for credential handling guidance."
 metadata:
   clawdbot:
     emoji: "🎙️"
@@ -15,11 +15,8 @@ metadata:
       - name: NWC_CONNECTION_STRING
         description: "Nostr Wallet Connect URI for paying Lightning invoices. Only needed for paid tier (free tier works without credentials)."
         required: false
-      - name: JAMIE_PREIMAGE
-        description: "Lightning payment preimage returned after paying a credit invoice. Used as part of Authorization header (PREIMAGE:PAYMENT_HASH)."
-        required: false
-      - name: JAMIE_PAYMENT_HASH
-        description: "Payment hash from credit purchase. Used as part of Authorization header and as clientId."
+      - name: JAMIE_L402_CREDENTIAL
+        description: "L402 credential returned after paying a credit invoice. Format: L402 <base64_macaroon>:<hex_preimage>. Used as the Authorization header for all paid requests."
         required: false
     externalServices:
       - url: "https://www.pullthatupjamie.ai"
@@ -62,46 +59,62 @@ You run a single semantic search ($0.002, returns in under 2s) and get the **exa
 
 **Free corpus browsing** (no auth required for reads): `GET /api/corpus/feeds`, `/api/corpus/stats`, `/api/corpus/people`. Check before you search.
 
-## Auth Flow
+## Auth Flow (L402 Protocol)
 
 **Free tier works with no auth at all** — corpus browsing and IP-based search quota are available immediately. The steps below are only needed for the paid tier.
 
-Lightning payments instead of traditional API keys. Three steps:
+Jamie uses the [L402 protocol](https://docs.lightning.engineering/the-lightning-network/l402) for paid access. Compatible with [lnget](https://github.com/lightninglabs/lnget) and any L402-aware client.
 
-### 1. Purchase Credits
+### Automatic Flow (lnget)
+
+If using lnget, everything happens automatically:
+```bash
+lnget "https://www.pullthatupjamie.ai/api/search-quotes" \
+  -d '{"query": "bitcoin energy consumption"}'
+```
+lnget handles the 402 challenge, pays the invoice, caches the credential, and retries. No manual steps.
+
+### Manual Flow
+
+#### 1. Hit any protected endpoint
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"amountSats": 500}' \
-  "https://www.pullthatupjamie.ai/api/agent/purchase-credits"
+  -d '{"query": "bitcoin energy consumption"}' \
+  "https://www.pullthatupjamie.ai/api/search-quotes"
 ```
-Returns `invoice` (BOLT-11), `paymentHash`, `amountSats`.
+Returns `HTTP 402` with a `WWW-Authenticate` header containing a `macaroon` and `invoice` (BOLT-11).
 
-### 2. Pay the Invoice
+#### 2. Pay the Invoice
 **Pay using ANY Lightning wallet** (Zeus, BlueWallet, Phoenix, Alby browser extension, etc.). The agent does NOT need to execute any commands.
 
 **Optional developer workflow (manual only):** If using [Alby CLI](https://github.com/getAlby/alby-cli) with NWC:
 ```bash
 npx @getalby/cli pay-invoice -c "NWC_CONNECTION_STRING" -i "BOLT11_INVOICE"
 ```
-⚠️ **This command is NEVER auto-executed by the agent.** The operator must manually run it after reviewing the invoice. Alternative: paste the BOLT-11 invoice into any Lightning wallet.
-
 Returns `preimage`.
 
-### 3. Activate Credits
+#### 3. Retry with L402 credential
+```bash
+curl -s -X POST \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "bitcoin energy consumption"}' \
+  "https://www.pullthatupjamie.ai/api/search-quotes"
+```
+Credits are auto-activated on first use. The `macaroon:preimage` credential is reused for all subsequent requests until the balance is depleted, at which point a new 402 challenge is issued.
+
+#### Custom Credit Amount
+The default 402 challenge issues an invoice for 500 sats (~$0.33). For a custom amount:
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"preimage": "PREIMAGE", "paymentHash": "PAYMENT_HASH"}' \
-  "https://www.pullthatupjamie.ai/api/agent/activate-credits"
+  -d '{"amountSats": 5000}' \
+  "https://www.pullthatupjamie.ai/api/agent/purchase-credits"
 ```
-Save preimage and paymentHash — they are your credentials for all requests:
-```
-Authorization: PREIMAGE:PAYMENT_HASH
-```
-The `paymentHash` also serves as your `clientId` for session creation and other endpoints that require owner identification.
+Returns `macaroon`, `invoice`, `paymentHash`, `amountSats`. Pay the invoice, then use the macaroon and preimage on any protected endpoint.
 
 ### Check Balance
 ```bash
-curl -s -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+curl -s -H "Authorization: L402 MACAROON:PREIMAGE" \
   "https://www.pullthatupjamie.ai/api/agent/balance"
 ```
 
@@ -115,7 +128,7 @@ curl -s -H "Authorization: PREIMAGE:PAYMENT_HASH" \
 - **Publish:** Cross-post to Twitter, Nostr, and more. Research a topic → generate a post → publish everywhere.
 
 ## Credits Running Low
-Check balance before multi-search workflows. If balance drops below $0.01, purchase more credits before continuing — don't let a research session fail mid-way. The purchase→pay→activate flow takes ~5 seconds.
+Check balance before multi-search workflows. If balance drops below $0.01, the next request will return a fresh 402 challenge with a new invoice. Pay it to continue. If using lnget, this happens automatically.
 
 ## Security & Trust
 
@@ -126,10 +139,10 @@ Check balance before multi-search workflows. If balance drops below $0.01, purch
 
 **Free tier (no credentials needed):** Corpus browsing (`/api/corpus/*`), basic search (IP-based quota), and viewing shared research sessions all work without any credentials. You can evaluate the entire service before providing any payment info.
 
-**Paid tier credentials:** The NWC connection string, preimage, and paymentHash are sensitive bearer credentials. They should be:
+**Paid tier credentials:** The L402 credential (macaroon + preimage) is a sensitive bearer token. It should be:
 - Stored securely (env vars or encrypted config, not in plaintext logs)
 - Never shared with untrusted agents or services
-- Scoped to a dedicated wallet with limited funds (e.g., 500-1000 sats)
+- Backed by a wallet with limited funds (e.g., 500-1000 sats)
 
 **All API calls proxied:** All operations route through `https://www.pullthatupjamie.ai`. RSS feed parsing, search, and ingestion are handled server-side. No direct external URL fetching by the agent.
 

@@ -9,6 +9,9 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { User } = require('../models/shared/UserSchema');
 const { Entitlement } = require('../models/Entitlement');
+const { AgentInvoice } = require('../models/AgentInvoice');
+const { parseL402Header, verifyMacaroon } = require('./macaroon-utils');
+const { validatePreimage } = require('./lightning-utils');
 // NOTE: ProPodcastDetails is NOT used for tier/quota determination
 // Subscription type (User.subscriptionType) is the sole source of truth for quotas
 
@@ -63,48 +66,53 @@ async function resolveIdentity(req) {
     };
   }
 
-  // Lightning agent auth: "preimage:paymentHash" format (no Bearer prefix)
-  // Preimage and paymentHash are both 64-char hex strings
-  if (!authHeader.startsWith('Bearer ') && authHeader.includes(':')) {
-    const parts = authHeader.split(':');
-    if (parts.length === 2) {
-      const [preimage, paymentHash] = parts;
-      // Quick format validation (both should be 64-char hex)
-      const hexPattern = /^[0-9a-fA-F]{64}$/;
-      if (hexPattern.test(preimage) && hexPattern.test(paymentHash)) {
-        try {
-          // Verify preimage: SHA256(preimage) must equal paymentHash
-          const computedHash = crypto.createHash('sha256')
-            .update(Buffer.from(preimage, 'hex'))
-            .digest('hex');
+  // L402 agent auth: "L402 <base64_macaroon>:<hex_preimage>" format
+  const l402 = parseL402Header(authHeader);
+  if (l402) {
+    try {
+      const { macaroonBase64, preimage } = l402;
 
-          if (computedHash === paymentHash.toLowerCase()) {
-            // Verify an entitlement exists for this paymentHash
-            const entitlement = await Entitlement.findOne({
+      // Verify macaroon HMAC chain and extract payment hash
+      const macResult = verifyMacaroon(macaroonBase64);
+      if (!macResult.valid) {
+        console.warn('[IDENTITY] L402 macaroon verification failed:', macResult.error);
+        // Fall through to anonymous
+      } else {
+        const { paymentHash } = macResult;
+
+        // Verify preimage: SHA256(preimage) must equal paymentHash
+        if (!validatePreimage(preimage, paymentHash)) {
+          console.warn('[IDENTITY] L402 preimage does not match payment hash');
+          // Fall through to anonymous
+        } else {
+          // Check for existing active entitlement
+          let entitlement = await Entitlement.findOne({
+            identifier: paymentHash,
+            identifierType: 'prepaid',
+            status: 'active'
+          }).lean();
+
+          // Auto-activate: if no entitlement yet, check for a pending invoice and activate it
+          if (!entitlement) {
+            entitlement = await autoActivateCredential(paymentHash);
+          }
+
+          if (entitlement) {
+            req.lightningAuth = { paymentHash, preimage, macaroonBase64 };
+            return {
+              tier: TIERS.registered,
               identifier: paymentHash,
               identifierType: 'prepaid',
-              status: 'active'
-            }).lean();
-
-            if (entitlement) {
-              // Attach lightning auth info for downstream middleware
-              req.lightningAuth = { paymentHash, preimage };
-              return {
-                tier: TIERS.registered,
-                identifier: paymentHash,
-                identifierType: 'prepaid',
-                user: null,
-                provider: 'lightning',
-                email: null
-              };
-            }
+              user: null,
+              provider: 'lightning',
+              email: null
+            };
           }
-        } catch (err) {
-          console.warn('[IDENTITY] Lightning auth error:', err.message);
         }
       }
+    } catch (err) {
+      console.warn('[IDENTITY] L402 auth error:', err.message);
     }
-    // If lightning auth fails, fall through to anonymous
   }
 
   // No Bearer prefix and not lightning → anonymous
@@ -275,6 +283,72 @@ function hasValidAuth(req) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Auto-activate a credential on first use.
+ * 
+ * When a valid L402 credential (macaroon + preimage) hits a protected endpoint
+ * but no Entitlement exists yet, look up the AgentInvoice and activate it.
+ * This merges the old POST /activate-credits step into the auth flow.
+ * 
+ * @param {string} paymentHash
+ * @returns {Promise<Object|null>} The created entitlement, or null if activation failed
+ */
+async function autoActivateCredential(paymentHash) {
+  try {
+    const invoice = await AgentInvoice.findOne({ paymentHash });
+    if (!invoice) return null;
+
+    if (invoice.status === 'expired' || new Date() > invoice.expiresAt) {
+      return null;
+    }
+
+    if (invoice.status === 'pending') {
+      invoice.status = 'paid';
+      invoice.paidAt = new Date();
+      await invoice.save();
+    }
+
+    const now = new Date();
+    const farFuture = new Date(now);
+    farFuture.setDate(farFuture.getDate() + 36500);
+
+    const entitlement = await Entitlement.findOneAndUpdate(
+      {
+        identifier: paymentHash,
+        identifierType: 'prepaid',
+        entitlementType: 'apiAccess'
+      },
+      {
+        $setOnInsert: {
+          identifier: paymentHash,
+          identifierType: 'prepaid',
+          entitlementType: 'apiAccess',
+          usedCount: 0,
+          periodStart: now,
+          periodLengthDays: 36500,
+          nextResetDate: farFuture,
+          lastUsed: now,
+          status: 'active',
+          metadata: {
+            clientId: invoice.clientId,
+            fundingSource: 'lightning',
+            amountSats: invoice.amountSats,
+            btcUsdRateAtPurchase: invoice.btcUsdRate
+          }
+        },
+        $inc: { maxUsage: invoice.amountUsdMicro }
+      },
+      { new: true, upsert: true }
+    );
+
+    console.log(`[IDENTITY] Auto-activated L402 credential for paymentHash=${paymentHash}, balance=${entitlement.maxUsage} microUSD`);
+    return entitlement;
+  } catch (err) {
+    console.error('[IDENTITY] Auto-activation failed:', err.message);
+    return null;
   }
 }
 

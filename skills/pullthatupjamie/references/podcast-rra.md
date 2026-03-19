@@ -58,7 +58,7 @@ For vague, descriptive, or entity-rich queries, enable Smart Search by passing `
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{"query": "that time Jim talked about the AI monolith", "smartMode": true, "limit": 10}' \
   "API_BASE/api/search-quotes"
@@ -190,7 +190,7 @@ When title/chapter search doesn't fit, use semantic search across all transcribe
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{"query": "Bitcoin Lightning Network scaling", "limit": 10}' \
   "API_BASE/api/search-quotes"
@@ -249,7 +249,7 @@ Research sessions are **interactive visual artifacts** — not text dumps. Users
 ### Create a Session
 ```bash
 curl -s -X POST \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Compelling Session Title",
@@ -306,7 +306,7 @@ The backend needs client-provided metadata. Without the `items` array, clips sav
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   "API_BASE/api/research-sessions/SESSION_ID/analyze"
 ```
 Returns AI-generated analysis of the session content.
@@ -319,7 +319,7 @@ Generate a public share link with 3D visualization:
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Share Title",
@@ -349,7 +349,7 @@ curl -s "API_BASE/api/corpus/stats"
 
 ### Feed Episodes
 ```bash
-curl -s -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+curl -s -H "Authorization: L402 MACAROON:PREIMAGE" \
   "API_BASE/api/corpus/feeds/FEED_ID/episodes"
 ```
 
@@ -396,7 +396,7 @@ Extract `feedGuid` from `feedInfo.feedGuid`.
 ```bash
 curl -s -X POST \
   -H "Content-Type: application/json" \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -d '{
     "message": "Ingest episodes for [Podcast Name]",
     "parameters": {},
@@ -414,7 +414,7 @@ curl -s -X POST \
 ### Step 5: Poll Status
 ```bash
 curl -s "https://www.pullthatupjamie.ai/api/on-demand/getOnDemandJobStatus/JOB_ID" \
-  -H "Authorization: PREIMAGE:PAYMENT_HASH"
+  -H "Authorization: L402 MACAROON:PREIMAGE"
 ```
 Poll every 30-60 seconds. Status: `pending` → `complete` or `failed`. Typical: 8 episodes in ~1 minute.
 

@@ -22,6 +22,9 @@ const AGENT_PRICING_MICRO_USD = {
 const AGENT_MIN_DEPOSIT_SATS = 10;        // 10 sats minimum
 const AGENT_MAX_DEPOSIT_SATS = 500000;    // 500,000 sats maximum
 
+// Default amount for inline 402 challenges on protected endpoints
+const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHASE_SATS) || 500;
+
 /**
  * Get the microdollar cost for a given entitlement type.
  * Returns null if the entitlement type has no agent pricing (not billable).
@@ -37,5 +40,6 @@ module.exports = {
   AGENT_PRICING_MICRO_USD,
   AGENT_MIN_DEPOSIT_SATS,
   AGENT_MAX_DEPOSIT_SATS,
+  DEFAULT_CREDIT_PURCHASE_SATS,
   getAgentCostMicroUsd
 };

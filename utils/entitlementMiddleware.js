@@ -7,14 +7,79 @@
 
 const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
+const { AgentInvoice } = require('../models/AgentInvoice');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { emitServerEvent } = require('./analyticsEmitter');
 const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
-const { getAgentCostMicroUsd } = require('../constants/agentPricing');
-const { isLightningAvailable, microUsdToUsd } = require('./btcPrice');
+const { getAgentCostMicroUsd, DEFAULT_CREDIT_PURCHASE_SATS } = require('../constants/agentPricing');
+const { isLightningAvailable, microUsdToUsd, getBtcUsdRate, satsToUsdMicro } = require('./btcPrice');
+const { generateInvoiceForSats } = require('./lightning-utils');
+const { mintMacaroon, buildWwwAuthenticateHeader } = require('./macaroon-utils');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
+
+/**
+ * Generate a 402 Payment Required response with L402 challenge.
+ * Creates a Lightning invoice and macaroon for the agent to pay.
+ * 
+ * @param {object} res - Express response
+ * @param {object} options - Additional context for the response body
+ * @returns {Promise<object>} The response (already sent)
+ */
+async function send402Challenge(res, options = {}) {
+  try {
+    if (!isLightningAvailable()) {
+      return res.status(503).json({
+        error: 'Lightning services temporarily unavailable',
+        code: 'LIGHTNING_UNAVAILABLE'
+      });
+    }
+
+    const amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
+    const { rate: btcUsdRate } = await getBtcUsdRate();
+    const amountUsdMicro = satsToUsdMicro(amountSats);
+    const amountUsd = microUsdToUsd(amountUsdMicro);
+
+    const invoice = await generateInvoiceForSats(amountSats);
+    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash, invoice.expiresAt);
+
+    await AgentInvoice.create({
+      paymentHash: invoice.paymentHash,
+      invoiceStr: invoice.pr,
+      amountSats,
+      amountUsdMicro,
+      btcUsdRate,
+      clientId: options.clientId || null,
+      status: 'pending',
+      expiresAt: invoice.expiresAt
+    });
+
+    res.setHeader('WWW-Authenticate', buildWwwAuthenticateHeader(macaroonBase64, invoice.pr));
+
+    return res.status(402).json({
+      type: 'https://pullthatupjamie.ai/l402/payment-required',
+      title: 'Payment Required',
+      status: 402,
+      detail: options.detail || 'Purchase credits to access this endpoint. Pay the Lightning invoice, then retry with Authorization: L402 <macaroon>:<preimage>',
+      macaroon: macaroonBase64,
+      invoice: invoice.pr,
+      paymentHash: invoice.paymentHash,
+      amountSats,
+      amountUsd: parseFloat(amountUsd.toFixed(6)),
+      btcUsdRate,
+      expiresAt: invoice.expiresAt,
+      purchaseUrl: '/api/agent/purchase-credits',
+      ...options.extra
+    });
+  } catch (err) {
+    console.error('[ENTITLEMENT] Failed to generate 402 challenge:', err.message);
+    return res.status(500).json({
+      error: 'Failed to generate payment challenge',
+      code: 'CHALLENGE_ERROR'
+    });
+  }
+}
 
 /**
  * PRODUCTION Quota configurations per tier per entitlement type
@@ -324,6 +389,13 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       
       // Check if anonymous is allowed
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (costMicroUsd !== null) {
+          return send402Challenge(res, {
+            detail: 'Authentication required. Pay the Lightning invoice to get access.',
+            extra: { code: 'AUTH_REQUIRED' }
+          });
+        }
         return res.status(401).json({
           error: 'Authentication required',
           code: 'AUTH_REQUIRED'
@@ -353,24 +425,22 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         });
 
         if (!lightningEntitlement) {
-          return res.status(401).json({
-            error: 'No active credit balance',
-            code: 'NO_BALANCE',
-            message: 'Purchase credits at POST /api/agent/purchase-credits'
+          return send402Challenge(res, {
+            detail: 'No active credit balance. Pay the invoice to purchase credits.',
+            extra: { code: 'NO_BALANCE' }
           });
         }
 
         const remainingMicroUsd = lightningEntitlement.maxUsage - lightningEntitlement.usedCount;
 
         if (remainingMicroUsd < costMicroUsd) {
-          return res.status(429).json({
-            error: 'Insufficient funds',
-            code: 'INSUFFICIENT_FUNDS',
-            message: 'Your credit balance is too low for this request. Top up at POST /api/agent/purchase-credits',
-            costUsd: parseFloat(microUsdToUsd(costMicroUsd).toFixed(6)),
-            balanceUsd: parseFloat(microUsdToUsd(remainingMicroUsd).toFixed(6)),
-            balanceUsdMicro: remainingMicroUsd,
-            costUsdMicro: costMicroUsd
+          return send402Challenge(res, {
+            detail: 'Insufficient funds. Pay the invoice to top up your balance.',
+            extra: {
+              code: 'INSUFFICIENT_FUNDS',
+              costUsd: parseFloat(microUsdToUsd(costMicroUsd).toFixed(6)),
+              balanceUsd: parseFloat(microUsdToUsd(remainingMicroUsd).toFixed(6))
+            }
           });
         }
 
@@ -437,6 +507,20 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
             max: entitlement.maxUsage
           }
         );
+
+        // Anonymous users on priced endpoints get a 402 L402 challenge instead of 429
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (identity.tier === TIERS.anonymous && costMicroUsd !== null) {
+          return send402Challenge(res, {
+            detail: 'Free quota exceeded. Pay the Lightning invoice to continue with paid access.',
+            extra: {
+              code: 'QUOTA_EXCEEDED',
+              freeQuotaUsed: entitlement.usedCount,
+              freeQuotaMax: entitlement.maxUsage,
+              resetDate: entitlement.nextResetDate
+            }
+          });
+        }
         
         return res.status(429).json({
           error: 'Quota exceeded',
@@ -619,6 +703,7 @@ module.exports = {
   createEntitlementMiddleware,
   identityMiddleware,
   requireAuth,
+  send402Challenge,
   getQuotaConfig,
   getOrCreateEntitlement,
   checkAllEligibility,
