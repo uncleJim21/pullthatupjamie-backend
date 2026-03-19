@@ -32,12 +32,22 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
  */
 async function send402Challenge(req, res, options = {}) {
   try {
+    console.log('[L402-DEBUG] send402Challenge triggered', {
+      path: req.path,
+      method: req.method,
+      detail: options.detail,
+      code: options.extra?.code
+    });
+
+    console.log('[L402-DEBUG] Checking isLightningAvailable...');
     if (!isLightningAvailable()) {
+      console.log('[L402-DEBUG] Lightning NOT available (stale BTC price)');
       return res.status(503).json({
         error: 'Lightning services temporarily unavailable',
         code: 'LIGHTNING_UNAVAILABLE'
       });
     }
+    console.log('[L402-DEBUG] Lightning is available');
 
     let amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
     const requestedAmount = parseInt(req.query?.amountSats, 10);
@@ -53,13 +63,32 @@ async function send402Challenge(req, res, options = {}) {
       amountSats = requestedAmount;
     }
 
+    console.log('[L402-DEBUG] Fetching BTC/USD rate...');
     const { rate: btcUsdRate } = await getBtcUsdRate();
+    console.log('[L402-DEBUG] BTC/USD rate:', btcUsdRate);
+
     const amountUsdMicro = satsToUsdMicro(amountSats);
     const amountUsd = microUsdToUsd(amountUsdMicro);
+    console.log('[L402-DEBUG] Amount:', { amountSats, amountUsdMicro, amountUsd });
 
+    console.log('[L402-DEBUG] Generating invoice via Alby...', {
+      hasAlbyWalletApiKey: !!process.env.ALBY_WALLET_API_KEY,
+      hasAlbyHubToken: !!process.env.ALBY_HUB_TOKEN
+    });
     const invoice = await generateInvoiceForSats(amountSats);
-    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash);
+    console.log('[L402-DEBUG] Invoice generated:', {
+      paymentHash: invoice.paymentHash,
+      expiresAt: invoice.expiresAt,
+      prLength: invoice.pr?.length
+    });
 
+    console.log('[L402-DEBUG] Minting macaroon...', {
+      hasL402Secret: !!process.env.L402_MACAROON_SECRET
+    });
+    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash);
+    console.log('[L402-DEBUG] Macaroon minted, length:', macaroonBase64?.length);
+
+    console.log('[L402-DEBUG] Creating AgentInvoice in MongoDB...');
     await AgentInvoice.create({
       paymentHash: invoice.paymentHash,
       invoiceStr: invoice.pr,
@@ -70,9 +99,11 @@ async function send402Challenge(req, res, options = {}) {
       status: 'pending',
       expiresAt: invoice.expiresAt
     });
+    console.log('[L402-DEBUG] AgentInvoice stored');
 
     res.setHeader('WWW-Authenticate', buildWwwAuthenticateHeader(macaroonBase64, invoice.pr));
 
+    console.log('[L402-DEBUG] Sending 402 response');
     return res.status(402).json({
       type: 'https://pullthatupjamie.ai/l402/payment-required',
       title: 'Payment Required',
@@ -100,7 +131,14 @@ async function send402Challenge(req, res, options = {}) {
       ...options.extra
     });
   } catch (err) {
-    console.error('[ENTITLEMENT] Failed to generate 402 challenge:', err.message);
+    console.error('[L402-DEBUG] send402Challenge CAUGHT ERROR:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+      code: err.code,
+      response: err.response?.status,
+      responseData: err.response?.data
+    });
     return res.status(500).json({
       error: 'Failed to generate payment challenge',
       code: 'CHALLENGE_ERROR'

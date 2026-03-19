@@ -1727,11 +1727,13 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 process.on('uncaughtException', (err) => {
-  console.error("🔥 Uncaught Exception:", err);
+  console.error("🔥 Uncaught Exception:", err?.message, err?.stack);
+  console.error("🔥 Full error object:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error("🚨 Unhandled Promise Rejection:", reason);
+  console.error("🚨 Unhandled Promise Rejection:", reason?.message || reason, reason?.stack);
+  console.error("🚨 Full reason:", JSON.stringify(reason, Object.getOwnPropertyNames(reason || {})));
 });
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
