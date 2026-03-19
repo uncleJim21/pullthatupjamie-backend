@@ -55,15 +55,7 @@ curl -X POST https://www.pullthatupjamie.ai/api/make-clip \
   -d '{"clipId": "1015378_guid_p123"}'
 ```
 
-Returns `HTTP 402` with a `macaroon` and `invoice` in the `WWW-Authenticate` header. Or for a custom amount:
-
-```bash
-curl -X POST https://www.pullthatupjamie.ai/api/agent/purchase-credits \
-  -H "Content-Type: application/json" \
-  -d '{"amountSats": 5000}'
-```
-
-Response includes `macaroon`, `invoice`, `paymentHash`, `amountSats`.
+Returns `HTTP 402` with a `macaroon` and `invoice` in the `WWW-Authenticate` header. For a custom credit amount, add `?amountSats=N` to the request (min 10, max 500,000 sats).
 
 #### Step 2 — Pay the Lightning invoice
 
@@ -237,7 +229,7 @@ Different timestamps produce a different `lookupHash`, which means new processin
 }
 ```
 
-**Action:** Top up at `POST /api/agent/purchase-credits`, then activate.
+**Action:** Hit any paid endpoint to receive a 402 challenge, pay the invoice to top up, then retry.
 
 ### Processing failure
 

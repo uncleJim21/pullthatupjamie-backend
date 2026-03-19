@@ -12,7 +12,7 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { emitServerEvent } = require('./analyticsEmitter');
 const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
-const { getAgentCostMicroUsd, DEFAULT_CREDIT_PURCHASE_SATS } = require('../constants/agentPricing');
+const { getAgentCostMicroUsd, DEFAULT_CREDIT_PURCHASE_SATS, AGENT_MIN_DEPOSIT_SATS, AGENT_MAX_DEPOSIT_SATS, AGENT_PRICING_MICRO_USD } = require('../constants/agentPricing');
 const { isLightningAvailable, microUsdToUsd, getBtcUsdRate, satsToUsdMicro } = require('./btcPrice');
 const { generateInvoiceForSats } = require('./lightning-utils');
 const { mintMacaroon, buildWwwAuthenticateHeader } = require('./macaroon-utils');
@@ -23,11 +23,14 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
  * Generate a 402 Payment Required response with L402 challenge.
  * Creates a Lightning invoice and macaroon for the agent to pay.
  * 
+ * Supports optional ?amountSats=N query param for custom credit amounts.
+ * 
+ * @param {object} req - Express request (reads amountSats from query)
  * @param {object} res - Express response
  * @param {object} options - Additional context for the response body
  * @returns {Promise<object>} The response (already sent)
  */
-async function send402Challenge(res, options = {}) {
+async function send402Challenge(req, res, options = {}) {
   try {
     if (!isLightningAvailable()) {
       return res.status(503).json({
@@ -36,13 +39,26 @@ async function send402Challenge(res, options = {}) {
       });
     }
 
-    const amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
+    let amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
+    const requestedAmount = parseInt(req.query?.amountSats, 10);
+    if (!isNaN(requestedAmount)) {
+      if (requestedAmount < AGENT_MIN_DEPOSIT_SATS || requestedAmount > AGENT_MAX_DEPOSIT_SATS) {
+        return res.status(400).json({
+          error: 'Invalid amountSats',
+          message: `amountSats must be between ${AGENT_MIN_DEPOSIT_SATS} and ${AGENT_MAX_DEPOSIT_SATS}`,
+          minSats: AGENT_MIN_DEPOSIT_SATS,
+          maxSats: AGENT_MAX_DEPOSIT_SATS
+        });
+      }
+      amountSats = requestedAmount;
+    }
+
     const { rate: btcUsdRate } = await getBtcUsdRate();
     const amountUsdMicro = satsToUsdMicro(amountSats);
     const amountUsd = microUsdToUsd(amountUsdMicro);
 
     const invoice = await generateInvoiceForSats(amountSats);
-    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash, invoice.expiresAt);
+    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash);
 
     await AgentInvoice.create({
       paymentHash: invoice.paymentHash,
@@ -69,7 +85,18 @@ async function send402Challenge(res, options = {}) {
       amountUsd: parseFloat(amountUsd.toFixed(6)),
       btcUsdRate,
       expiresAt: invoice.expiresAt,
-      purchaseUrl: '/api/agent/purchase-credits',
+      creditInfo: {
+        model: 'credit',
+        service: 'pullthatupjamie',
+        message: 'Pay the Lightning invoice to receive credits for pullthatupjamie.ai. Each API call deducts its cost from your balance. You may reuse the same L402 credential across all endpoints until depleted, or pay per query — your choice.',
+        customAmount: `To request a different amount, add ?amountSats=N to any request (min: ${AGENT_MIN_DEPOSIT_SATS}, max: ${AGENT_MAX_DEPOSIT_SATS})`,
+        defaultSats: DEFAULT_CREDIT_PURCHASE_SATS,
+        minSats: AGENT_MIN_DEPOSIT_SATS,
+        maxSats: AGENT_MAX_DEPOSIT_SATS,
+        balanceEndpoint: '/api/agent/balance',
+        responseHeaders: ['X-Credits-Remaining-USD', 'X-Credits-Cost-USD'],
+        pricingMicroUsd: AGENT_PRICING_MICRO_USD
+      },
       ...options.extra
     });
   } catch (err) {
@@ -391,7 +418,7 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
         if (costMicroUsd !== null) {
-          return send402Challenge(res, {
+          return send402Challenge(req, res, {
             detail: 'Authentication required. Pay the Lightning invoice to get access.',
             extra: { code: 'AUTH_REQUIRED' }
           });
@@ -406,6 +433,14 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       // Lightning agent path: deduct USD microdollars from balance per call
       // ═══════════════════════════════════════════════════════════════════════
       if (identity.identifierType === 'prepaid') {
+        if (req.query?.amountSats) {
+          return res.status(400).json({
+            error: 'Cannot combine ?amountSats with an L402 credential',
+            message: 'Remove the ?amountSats query parameter to use your existing credit balance, or remove the Authorization header to request a new invoice for that amount.',
+            code: 'CONFLICTING_PARAMS'
+          });
+        }
+
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
 
         if (costMicroUsd === null) {
@@ -425,7 +460,7 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         });
 
         if (!lightningEntitlement) {
-          return send402Challenge(res, {
+          return send402Challenge(req, res, {
             detail: 'No active credit balance. Pay the invoice to purchase credits.',
             extra: { code: 'NO_BALANCE' }
           });
@@ -434,7 +469,7 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         const remainingMicroUsd = lightningEntitlement.maxUsage - lightningEntitlement.usedCount;
 
         if (remainingMicroUsd < costMicroUsd) {
-          return send402Challenge(res, {
+          return send402Challenge(req, res, {
             detail: 'Insufficient funds. Pay the invoice to top up your balance.',
             extra: {
               code: 'INSUFFICIENT_FUNDS',
@@ -511,7 +546,7 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         // Anonymous users on priced endpoints get a 402 L402 challenge instead of 429
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
         if (identity.tier === TIERS.anonymous && costMicroUsd !== null) {
-          return send402Challenge(res, {
+          return send402Challenge(req, res, {
             detail: 'Free quota exceeded. Pay the Lightning invoice to continue with paid access.',
             extra: {
               code: 'QUOTA_EXCEEDED',

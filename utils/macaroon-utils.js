@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { MacaroonsBuilder, MacaroonsVerifier } = require('macaroons.js');
 
 const LOCATION = 'https://www.pullthatupjamie.ai';
+const MACAROON_TTL_DAYS = 90;
 
 function getMacaroonSecret() {
   const secret = process.env.L402_MACAROON_SECRET;
@@ -38,12 +39,18 @@ function deriveRootKey(paymentHash) {
 /**
  * Mint a new macaroon for an L402 credential.
  * 
+ * Expiry is set to MACAROON_TTL_DAYS from now (not the invoice expiry),
+ * since the credential's useful life spans the entire credit balance,
+ * which outlives the invoice by orders of magnitude.
+ * 
  * @param {string} paymentHash - 64-char hex payment hash (becomes the identifier)
- * @param {Date} expiresAt - Invoice expiry time
  * @returns {{ macaroonBase64: string, paymentHash: string }}
  */
-function mintMacaroon(paymentHash, expiresAt) {
+function mintMacaroon(paymentHash) {
   const rootKey = deriveRootKey(paymentHash);
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + MACAROON_TTL_DAYS);
 
   const macaroon = new MacaroonsBuilder(LOCATION, rootKey, paymentHash)
     .add_first_party_caveat(`service = pullthatupjamie`)

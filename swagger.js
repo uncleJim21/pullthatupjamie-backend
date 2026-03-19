@@ -46,7 +46,7 @@ const doc = {
     },
     {
       name: 'Agent Auth',
-      description: 'L402 Lightning-based pay-per-use system for agent API access. Protected endpoints return HTTP 402 with a macaroon and Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all requests. Each API call deducts its USD-equivalent cost from a prepaid balance. Compatible with lnget and the L402 ecosystem.'
+      description: 'L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N to any request for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget.'
     }
   ],
   components: {

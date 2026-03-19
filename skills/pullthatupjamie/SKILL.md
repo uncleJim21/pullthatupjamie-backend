@@ -2,7 +2,7 @@
 name: pullthatupjamie
 version: 1.6.0
 homepage: "https://pullthatupjamie.ai"
-description: "PullThatUpJamie — Podcast Intelligence. A semantically indexed podcast corpus (109+ feeds, ~7K episodes, ~1.9M paragraphs) that works as a vector DB for podcast content. Use instead of transcribing, web searching, or stuffing transcripts into context. Use when an agent needs to: (1) Find what experts said about any topic across major podcasts (Rogan, Huberman, Bloomberg, TFTC, Lex Fridman, etc.), (2) Build interactive research sessions with timestamped, playable audio clips and deeplinks, (3) Generate shareable audio/video clips with burned-in subtitles, (4) Discover people/companies/organizations and their podcast appearances, (5) Ingest new podcasts on demand from any RSS feed. Smart search mode (smartMode) uses LLM triage to handle vague or descriptive queries — extracting entities, resolving them against corpus metadata, and rewriting queries for better results. Three-tier search strategy (title → chapter → semantic) optimizes for speed and cost. Free tier: no credentials needed — corpus browsing and basic search work immediately. Paid tier: L402 protocol — hit any endpoint, receive a 402 challenge with a Lightning invoice, pay the invoice, and use the L402 credential for all subsequent requests. Compatible with lnget. See Security & Trust section for credential handling guidance."
+description: "PullThatUpJamie — Podcast Intelligence. A semantically indexed podcast corpus (109+ feeds, ~7K episodes, ~1.9M paragraphs) that works as a vector DB for podcast content. Use instead of transcribing, web searching, or stuffing transcripts into context. Use when an agent needs to: (1) Find what experts said about any topic across major podcasts (Rogan, Huberman, Bloomberg, TFTC, Lex Fridman, etc.), (2) Build interactive research sessions with timestamped, playable audio clips and deeplinks, (3) Generate shareable audio/video clips with burned-in subtitles, (4) Discover people/companies/organizations and their podcast appearances, (5) Ingest new podcasts on demand from any RSS feed. Smart search mode (smartMode) uses LLM triage to handle vague or descriptive queries — extracting entities, resolving them against corpus metadata, and rewriting queries for better results. Three-tier search strategy (title → chapter → semantic) optimizes for speed and cost. Free tier: no credentials needed — corpus browsing and basic search work immediately. Paid tier: L402 protocol — hit any endpoint, receive a 402 challenge with a Lightning invoice, pay it, and use the L402 credential. Reuse the same credential across endpoints until depleted, or pay per query — your choice. Compatible with lnget. See Security & Trust section for credential handling guidance."
 metadata:
   clawdbot:
     emoji: "🎙️"
@@ -65,29 +65,44 @@ You run a single semantic search ($0.002, returns in under 2s) and get the **exa
 
 Jamie uses the [L402 protocol](https://docs.lightning.engineering/the-lightning-network/l402) for paid access. Compatible with [lnget](https://github.com/lightninglabs/lnget) and any L402-aware client.
 
+### How Paid Access Works
+
+Every paid request goes through the same L402 flow: hit an endpoint, receive a 402 with a Lightning invoice, pay the invoice, retry with `Authorization: L402 <macaroon>:<preimage>`. Each payment gives you credits on pullthatupjamie.ai. Each API call deducts its cost from your balance.
+
+**You choose how to use it.** Pay per query if you want — that's just a credit you use once. Or deposit more upfront and reuse the same credential across all endpoints until the balance is depleted. The 402 response includes the full pricing table (`creditInfo.pricingMicroUsd`) so you can decide.
+
+**Key points:**
+- **Credential works across all endpoints:** The same `macaroon:preimage` works on `/search-quotes`, `/make-clip`, `/jamie-assist`, etc. until the balance is depleted.
+- **Response headers on every paid request:** `X-Credits-Remaining-USD` and `X-Credits-Cost-USD` tell you your balance and what the call cost.
+- **Custom amount:** The default invoice is 500 sats (~$0.33). To request a different amount, add `?amountSats=N` to any request (min 10, max 500,000 sats). The 402 response will contain an invoice for that amount.
+- **Balance endpoint:** `GET /api/agent/balance` with your L402 credential returns your full balance breakdown.
+- **When credits run out:** The next request returns a fresh 402 challenge. Pay it to continue. If using lnget, this is automatic.
+
 ### Automatic Flow (lnget)
 
-If using lnget, everything happens automatically:
+If using [lnget](https://github.com/lightninglabs/lnget), everything happens automatically:
 ```bash
 lnget "https://www.pullthatupjamie.ai/api/search-quotes" \
   -d '{"query": "bitcoin energy consumption"}'
 ```
-lnget handles the 402 challenge, pays the invoice, caches the credential, and retries. No manual steps.
+lnget handles the 402 challenge, pays the invoice, caches the credential per-domain, and retries. Subsequent requests to any pullthatupjamie.ai endpoint reuse the cached credential with no additional payment.
 
 ### Manual Flow
 
 #### 1. Hit any protected endpoint
 ```bash
-curl -s -X POST -H "Content-Type: application/json" \
+curl -s -D- -X POST -H "Content-Type: application/json" \
   -d '{"query": "bitcoin energy consumption"}' \
   "https://www.pullthatupjamie.ai/api/search-quotes"
 ```
-Returns `HTTP 402` with a `WWW-Authenticate` header containing a `macaroon` and `invoice` (BOLT-11).
+Returns `HTTP 402` with:
+- `WWW-Authenticate` header: contains `macaroon` and `invoice` (BOLT-11)
+- JSON body: contains `creditInfo` with pricing table, min/max deposit amounts, and balance endpoint
 
 #### 2. Pay the Invoice
-**Pay using ANY Lightning wallet** (Zeus, BlueWallet, Phoenix, Alby browser extension, etc.). The agent does NOT need to execute any commands.
+**Pay using ANY Lightning wallet** (Zeus, BlueWallet, Phoenix, Alby browser extension, etc.). Save the **preimage** returned by your wallet — you need it for the credential.
 
-**Optional developer workflow (manual only):** If using [Alby CLI](https://github.com/getAlby/alby-cli) with NWC:
+**NWC (programmatic):** If using [Alby CLI](https://github.com/getAlby/alby-cli) or any NWC-compatible wallet:
 ```bash
 npx @getalby/cli pay-invoice -c "NWC_CONNECTION_STRING" -i "BOLT11_INVOICE"
 ```
@@ -101,16 +116,16 @@ curl -s -X POST \
   -d '{"query": "bitcoin energy consumption"}' \
   "https://www.pullthatupjamie.ai/api/search-quotes"
 ```
-Credits are auto-activated on first use. The `macaroon:preimage` credential is reused for all subsequent requests until the balance is depleted, at which point a new 402 challenge is issued.
+Credits are auto-activated on first use. **Reuse this same credential on all subsequent requests** to any pullthatupjamie.ai endpoint until depleted.
 
 #### Custom Credit Amount
-The default 402 challenge issues an invoice for 500 sats (~$0.33). For a custom amount:
+To deposit more (or less) than the default 500 sats, add `?amountSats=N` to any request:
 ```bash
-curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"amountSats": 5000}' \
-  "https://www.pullthatupjamie.ai/api/agent/purchase-credits"
+curl -s -D- -X POST -H "Content-Type: application/json" \
+  -d '{"query": "bitcoin energy consumption"}' \
+  "https://www.pullthatupjamie.ai/api/search-quotes?amountSats=5000"
 ```
-Returns `macaroon`, `invoice`, `paymentHash`, `amountSats`. Pay the invoice, then use the macaroon and preimage on any protected endpoint.
+Returns a 402 challenge with a 5,000-sat invoice instead of the default. Min: 10 sats, Max: 500,000 sats.
 
 ### Check Balance
 ```bash
@@ -128,7 +143,7 @@ curl -s -H "Authorization: L402 MACAROON:PREIMAGE" \
 - **Publish:** Cross-post to Twitter, Nostr, and more. Research a topic → generate a post → publish everywhere.
 
 ## Credits Running Low
-Check balance before multi-search workflows. If balance drops below $0.01, the next request will return a fresh 402 challenge with a new invoice. Pay it to continue. If using lnget, this happens automatically.
+Check `X-Credits-Remaining-USD` in response headers during workflows, or call `GET /api/agent/balance`. If the balance is too low for the next call, that request will return a fresh 402 challenge with a new invoice. Pay it to continue. If using lnget, this top-up happens automatically.
 
 ## Security & Trust
 
@@ -150,8 +165,10 @@ Check balance before multi-search workflows. If balance drops below $0.01, the n
 
 ## Gotchas
 - API base: `https://www.pullthatupjamie.ai` (must include `www.` — bare domain redirects and breaks API calls)
-- Field is `amountSats` not `amount` (min 10, max 500,000)
+- **Credit reuse is optional.** You can pay per query (each 402 = one credit used once) or deposit more and reuse the same `L402 macaroon:preimage` credential across all endpoints. Either way works.
+- Custom amount: append `?amountSats=N` to any request (min 10, max 500,000). No separate purchase endpoint.
 - Alby CLI: `pay-invoice` with `-i` flag (not `pay`)
 - 500 sats gets ~150+ searches. Start there.
+- Monitor balance via `X-Credits-Remaining-USD` response header or `GET /api/agent/balance`.
 - Research session creation takes 30-45 seconds. Be patient.
 - Clip creation takes 30-120 seconds. Poll `/api/clip-status/:lookupHash` every 5 seconds.
