@@ -1917,6 +1917,55 @@ if (DEBUG_MODE) {
       });
     }
   });
+
+  app.get('/api/test-transcript/:guid', async (req, res) => {
+    const debugPrefix = `[TEST-TRANSCRIPT][${Date.now()}]`;
+    const guid = req.params.guid;
+    
+    console.log(`${debugPrefix} Testing transcript retrieval for GUID: ${guid}`);
+    
+    if (!guid) {
+      console.error(`${debugPrefix} Missing GUID parameter`);
+      return res.status(400).json({ error: 'Missing required parameter: guid' });
+    }
+    
+    try {
+      console.time(`${debugPrefix} SpacesMethod`);
+      console.log(`${debugPrefix} Attempting to retrieve transcript using Spaces method`);
+      
+      const transcriptKey = `${guid}.json`;
+      const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
+        process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
+        transcriptKey
+      );
+      
+      const jsonString = fileBuffer.toString('utf-8');
+      const transcriptData = JSON.parse(jsonString);
+      
+      console.log(`${debugPrefix} Successfully retrieved transcript data`);
+      console.log(`${debugPrefix} Top-level keys: ${Object.keys(transcriptData || {}).join(', ')}`);
+      
+      return res.json({
+        success: true,
+        method: 'spaces',
+        guid,
+        transcript: transcriptData,
+        rawStructure: {
+          hasResults: !!transcriptData.results,
+          hasChannels: !!transcriptData.channels,
+          hasResultsChannels: !!(transcriptData.results && transcriptData.results.channels),
+          topLevelKeys: Object.keys(transcriptData)
+        }
+      });
+    } catch (error) {
+      console.error(`${debugPrefix} Error retrieving transcript data: ${error.message}`);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        guid
+      });
+    }
+  });
 }
 
 
@@ -2347,53 +2396,6 @@ const getTranscriptFromSpaces = async (podGuid) => {
   }
 };
 
-// Now let's add a temporary test endpoint to verify the new transcript access method
-
-// TEMPORARY TEST ENDPOINT - Remove after testing
-app.get('/api/test-transcript/:guid', async (req, res) => {
-  try {
-    const { guid } = req.params;
-    console.log(`TESTING transcript access for GUID: ${guid}`);
-    
-    // Try the new method
-    let transcript = null;
-    let error = null;
-    
-    try {
-      console.time('New-Method-Time');
-      transcript = await getTranscriptFromSpaces(guid);
-      console.timeEnd('New-Method-Time');
-      console.log('SUCCESS: New transcript access method worked!');
-    } catch (err) {
-      error = err;
-      console.error('ERROR: New transcript access method failed:', err.message);
-    }
-    
-    // Return the result
-    if (transcript) {
-      res.json({
-        success: true,
-        message: 'Transcript successfully retrieved using new method',
-        transcript: transcript
-      });
-    } else {
-      res.status(500).json({ 
-        success: false, 
-        error: error?.message || 'Unknown error',
-        guid
-      });
-    }
-  } catch (error) {
-    console.error('Error in test endpoint:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
-
 app.get('/api/clip-details/:lookupHash', async (req, res) => {
   try {
     const { lookupHash } = req.params;
@@ -2757,71 +2759,6 @@ const getWordTimestampsFromFullTranscriptJSON = async (guid, startTime, endTime)
     throw error;
   }
 };
-
-// Add the temporary endpoint for testing transcript retrieval
-app.get('/api/test-transcript/:guid', async (req, res) => {
-  const debugPrefix = `[TEST-TRANSCRIPT][${Date.now()}]`;
-  const guid = req.params.guid;
-  
-  console.log(`${debugPrefix} Testing transcript retrieval for GUID: ${guid}`);
-  
-  if (!guid) {
-    console.error(`${debugPrefix} Missing GUID parameter`);
-    return res.status(400).json({ error: 'Missing required parameter: guid' });
-  }
-  
-  try {
-    console.time(`${debugPrefix} SpacesMethod`);
-    console.log(`${debugPrefix} Attempting to retrieve transcript using Spaces method`);
-    
-    // Get the transcript object without validation
-    let transcriptData;
-    try {
-      // Use transcriptSpacesManager to get raw file
-      const transcriptKey = `${guid}.json`;
-      const fileBuffer = await transcriptSpacesManager.getFileAsBuffer(
-        process.env.TRANSCRIPT_SPACES_BUCKET_NAME,
-        transcriptKey
-      );
-      
-      // Parse the JSON
-      const jsonString = fileBuffer.toString('utf-8');
-      transcriptData = JSON.parse(jsonString);
-      
-      // Log success and return complete data
-      console.log(`${debugPrefix} Successfully retrieved transcript data`);
-      console.log(`${debugPrefix} Top-level keys: ${Object.keys(transcriptData || {}).join(', ')}`);
-      
-      // Return the complete transcript data
-      return res.json({
-        success: true,
-        method: 'spaces',
-        guid,
-        transcript: transcriptData,
-        rawStructure: {
-          hasResults: !!transcriptData.results,
-          hasChannels: !!transcriptData.channels,
-          hasResultsChannels: !!(transcriptData.results && transcriptData.results.channels),
-          topLevelKeys: Object.keys(transcriptData)
-        }
-      });
-    } catch (error) {
-      console.error(`${debugPrefix} Error retrieving transcript data: ${error.message}`);
-      return res.status(500).json({
-        success: false,
-        error: error.message,
-        guid
-      });
-    }
-  } catch (error) {
-    console.error(`${debugPrefix} Outer error in test endpoint: ${error.message}`);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
 
 // ====================================================
 // TEMPORARY TEST ENDPOINTS - REMOVE BEFORE PRODUCTION
