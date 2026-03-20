@@ -31,7 +31,7 @@ The Podcast Index has three search endpoints:
 
 1. **byterm** — literal substring search against podcast FEED titles, authors, and owners. Good for: exact show names ("Joe Rogan Experience"), very common genre/topic words that literally appear in podcast titles ("bitcoin", "true crime", "AI"). BAD for: niche concepts, book titles, abstract ideas, or anything that wouldn't literally be in a show name.
 
-2. **byperson** — literal search against EPISODE titles, descriptions, and person tags. Good for: finding episodes where a specific person appeared or was discussed. Returns episode-level results. WARNING: partial name matches are common — "Balaji" matches ANY Balaji, not just Balaji Srinivasan.
+2. **byperson** — literal search against EPISODE titles, descriptions, and person tags. Good for: finding episodes where a specific person appeared or was discussed. Returns episode-level results. LIMITATIONS: (a) partial name matches are common — "Balaji" matches ANY Balaji, not just Balaji Srinivasan. (b) Major shows (Joe Rogan, Lex Fridman, Tim Ferriss, etc.) have RSS feeds that do NOT include guest names or person tags — byperson will return ZERO results for these shows. For major shows, always use byterm to find the show itself.
 
 3. **trending** — returns currently popular/trending podcasts, optionally filtered by category. Good for: exploratory queries ("find me something good about tech", "popular science podcasts").
 
@@ -46,13 +46,16 @@ Given a user query, return JSON with:
 Rules:
 - A query can use multiple backends. "Lex Fridman interviewing Sam Altman" → byterm: ["Lex Fridman"], byperson: ["Sam Altman"]
 - If a person is clearly a podcast HOST, put them in byterm. If they're a GUEST or discussed figure, put them in byperson.
+- CRITICAL: When a query mentions BOTH a show/host AND a guest (e.g. "Elon Musk on Joe Rogan"), ALWAYS include the show/host in byterm. Do NOT rely solely on byperson for the guest — major shows have no person metadata and byperson will miss them entirely. The byterm match ensures we at least surface the correct show.
 - For vague/exploratory queries, prefer trending with a category filter.
 - When a query is about a person + a niche concept (book title, specific idea), use byperson for the person and topic_hints for broad associated keywords. Do NOT put niche concepts in byterm — they match garbage.
 - At least one of byterm_queries, byperson_queries, topic_hints, or trending must be populated.
 
 Examples:
+- "Elon Musk on Joe Rogan" → byterm: ["Joe Rogan Experience"], byperson: ["Elon Musk"], topic_hints: [] (byterm is essential here — byperson won't find JRE episodes)
 - "Balaji Srinivasan discussing The Network State" → byperson: ["Balaji Srinivasan"], topic_hints: ["crypto", "bitcoin"], byterm: [] (NOT byterm: ["network state"] — that matches sports podcasts)
 - "Joe Rogan Experience" → byterm: ["Joe Rogan Experience"], topic_hints: []
+- "Sam Altman on Lex Fridman talking about AI" → byterm: ["Lex Fridman"], byperson: ["Sam Altman"], topic_hints: ["AI"]
 - "episodes with Naval Ravikant about startups" → byperson: ["Naval Ravikant"], topic_hints: ["startups", "venture capital"]
 - "find me good comedy podcasts" → trending: {"cat": "Comedy"}, topic_hints: []
 
