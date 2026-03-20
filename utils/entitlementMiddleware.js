@@ -463,6 +463,23 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       // Read analytics session ID from header (for server-side event emission)
       const analyticsSessionId = req.headers['x-pulse-session'] || req.headers['x-analytics-session'] || null;
       
+      // ═══════════════════════════════════════════════════════════════════════
+      // L402-first: anonymous users on priced endpoints get an immediate 402
+      // unless they explicitly opt in to the free tier via X-Free-Tier header.
+      // This ensures 402 Index and other L402 verifiers see a proper paywall.
+      // Webapp/browser clients should send X-Free-Tier: true to use free quota.
+      // ═══════════════════════════════════════════════════════════════════════
+      const freeTierRequested = req.headers['x-free-tier'] === 'true';
+      if (identity.tier === TIERS.anonymous && !freeTierRequested) {
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (costMicroUsd !== null) {
+          return send402Challenge(req, res, {
+            detail: 'Payment required. Pay the Lightning invoice to access this endpoint. Add X-Free-Tier: true header to use the free quota instead.',
+            extra: { code: 'PAYMENT_REQUIRED' }
+          });
+        }
+      }
+
       // Check if anonymous is allowed
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
@@ -592,9 +609,11 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
           }
         );
 
-        // Anonymous users on priced endpoints get a 402 L402 challenge instead of 429
+        // Anonymous users on priced endpoints:
+        //   - With X-Free-Tier: true → 429 (webapp expects this for modals/upgrade prompts)
+        //   - Without X-Free-Tier → 402 L402 challenge (agents/L402 verifiers expect this)
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
-        if (identity.tier === TIERS.anonymous && costMicroUsd !== null) {
+        if (identity.tier === TIERS.anonymous && costMicroUsd !== null && !freeTierRequested) {
           return send402Challenge(req, res, {
             detail: 'Free quota exceeded. Pay the Lightning invoice to continue with paid access.',
             extra: {

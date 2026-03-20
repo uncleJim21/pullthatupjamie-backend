@@ -61,7 +61,7 @@ You run a single semantic search ($0.002, returns in under 2s) and get the **exa
 
 ## Auth Flow (L402 Protocol)
 
-**Free tier works with no auth at all** — corpus browsing and IP-based search quota are available immediately. The steps below are only needed for the paid tier.
+**Free tier available.** Corpus browsing (no auth needed) and IP-based search quota are available. To use the free tier on paid endpoints, add the header `X-Free-Tier: true` to your requests. Without this header, paid endpoints return an immediate 402 L402 challenge. The free tier has per-endpoint quotas (e.g., 50 searches/week) — once exhausted, you'll need to pay via L402 to continue.
 
 Jamie uses the [L402 protocol](https://docs.lightning.engineering/the-lightning-network/l402) for paid access. Compatible with [lnget](https://github.com/lightninglabs/lnget) and any L402-aware client.
 
@@ -152,7 +152,7 @@ Check `X-Credits-Remaining-USD` in response headers during workflows, or call `G
 - **Completely optional** — operators can use any Lightning wallet instead
 - **Not installed by this skill** — operators must manually install if desired
 
-**Free tier (no credentials needed):** Corpus browsing (`/api/corpus/*`), basic search (IP-based quota), and viewing shared research sessions all work without any credentials. You can evaluate the entire service before providing any payment info.
+**Free tier:** Corpus browsing (`/api/corpus/*`) works without any headers. For paid endpoints, add `X-Free-Tier: true` to get an IP-based quota allowance (e.g., 50 searches/week). Without this header, paid endpoints return a 402 immediately. You can evaluate the service before providing any payment info.
 
 **Paid tier credentials:** The L402 credential (macaroon + preimage) is a sensitive bearer token. It should be:
 - Stored securely (env vars or encrypted config, not in plaintext logs)
@@ -165,6 +165,7 @@ Check `X-Credits-Remaining-USD` in response headers during workflows, or call `G
 
 ## Gotchas
 - API base: `https://www.pullthatupjamie.ai` (must include `www.` — bare domain redirects and breaks API calls)
+- **Free tier requires `X-Free-Tier: true` header.** Without it, paid endpoints return 402 immediately. Corpus endpoints work without any headers.
 - **Credit reuse is optional.** You can pay per query (each 402 = one credit used once) or deposit more and reuse the same `L402 macaroon:preimage` credential across all endpoints. Either way works.
 - Custom amount: append `?amountSats=N` to any request (min 10, max 500,000). No separate purchase endpoint.
 - Alby CLI: `pay-invoice` with `-i` flag (not `pay`)

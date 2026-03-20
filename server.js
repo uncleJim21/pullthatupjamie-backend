@@ -204,7 +204,17 @@ const corsOptions = {
         'Origin',
         'X-Requested-With',
         'X-Analytics-Session',
-        'X-Pulse-Session'
+        'X-Pulse-Session',
+        'X-Free-Tier'
+    ],
+    exposedHeaders: [
+        'X-Quota-Used',
+        'X-Quota-Max',
+        'X-Quota-Remaining',
+        'X-Quota-Reset',
+        'X-Credits-Remaining-USD',
+        'X-Credits-Cost-USD',
+        'WWW-Authenticate'
     ],
     credentials: true
 };
