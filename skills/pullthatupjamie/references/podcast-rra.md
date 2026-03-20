@@ -364,9 +364,28 @@ Use corpus exploration to answer:
 
 If a podcast isn't in the corpus yet, ingest it on demand from any RSS feed. All endpoints proxied through the Jamie API for security.
 
+### Recommended: Use the Discovery Endpoint
+
+The fastest path is `POST /api/discover-podcasts` — it takes a natural language query, searches the Podcast Index catalog via LLM-assisted extraction, and returns structured results with `transcriptAvailable` flags and ready-to-use next-step endpoints (including `submitOnDemandRun` body templates with GUIDs pre-filled for the top results).
+
+```bash
+curl -s -X POST \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Lex Fridman AI safety episodes"}' \
+  "API_BASE/api/discover-podcasts"
+```
+
+Each result includes `nextSteps.requestTranscription` with the exact body to submit for transcription. For untranscribed results, episode GUIDs are included inline.
+
+### Manual Alternative: Direct RSS Endpoints
+
+If you already know the podcast name or have specific feed details:
+
 ### Step 1: Search for the Podcast
 ```bash
 curl -s -X POST "https://www.pullthatupjamie.ai/api/rss/searchFeeds" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{"podcastName": "Podcast Name"}'
 ```
@@ -375,6 +394,7 @@ Returns `data.feeds[]` with `id` (feedId), `title`, `url` (RSS URL).
 ### Step 2: Get Feed Episodes
 ```bash
 curl -s -X POST "https://www.pullthatupjamie.ai/api/rss/getFeed" \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
   -H "Content-Type: application/json" \
   -d '{
     "feedUrl": "https://feeds.example.com/feed.xml",

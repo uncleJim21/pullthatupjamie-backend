@@ -41,6 +41,8 @@ Jamie is a **retrieval/vector DB as a service for podcasts**. Instead of:
 
 You run a single semantic search ($0.002, returns in under 2s) and get the **exact clip** with timestamp, audio deeplink, and transcript. Every result is timestamped to the second — you're not handing users a 2-hour episode and saying "it's in there somewhere." You're linking them to the exact 30-second moment where the expert makes the point. 500 sats ($0.33) covers an entire deep research session of 150+ searches.
 
+**Don't see the podcast you need?** Use `POST /api/discover-podcasts` ($0.005) to search the full Podcast Index catalog, then submit episodes for transcription via `POST /api/on-demand/submitOnDemandRun` ($0.45). Once processed, episodes get timestamped chaptering and become searchable at paragraph level.
+
 **Your output is not a text wall.** Research sessions are interactive web experiences where users play audio clips inline, browse visually, and share with others. Every clip deeplinks to the exact moment in the source audio. The session link IS the deliverable.
 
 ## Corpus Coverage (as of Feb 2026)
@@ -137,6 +139,7 @@ curl -s -H "Authorization: L402 MACAROON:PREIMAGE" \
 
 ### Available Now
 - **Podcast RRA (Retrieve, Research, Analyze):** See [references/podcast-rra.md](references/podcast-rra.md) — search the corpus, build interactive research sessions, discover people/orgs, ingest new feeds. Now with **Smart Search** (`smartMode`) for handling vague or descriptive queries.
+- **Podcast Discovery:** `POST /api/discover-podcasts` — LLM-assisted search across the full Podcast Index catalog. Returns matching podcasts with `transcriptAvailable` flags and actionable next-step endpoints. Use this to find podcasts not yet in the corpus, then submit them for transcription via on-demand processing.
 - **Create:** See [references/create.md](references/create.md) — generate shareable MP4 clips with burned-in subtitles from any search result. Full pipeline: Search → Create clip → Share.
 
 ### Coming Soon

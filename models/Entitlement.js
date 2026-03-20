@@ -28,6 +28,7 @@ const entitlementSchema = new mongoose.Schema({
       'jamie-assist',      // Promotional content generation
       'ai-analyze',  // Research session AI analysis
       'twitter-post', // Twitter posting (costs ~$0.01/tweet, Nostr is free)
+      'discover-podcasts', // LLM-assisted podcast discovery via Podcast Index
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement

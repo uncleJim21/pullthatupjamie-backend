@@ -68,6 +68,7 @@ const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const corpusRoutes = require('./routes/corpusRoutes');
 const agentRoutes = require('./routes/agentRoutes');
+const discoverRoutes = require('./routes/discoverRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
@@ -1298,7 +1299,19 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
       query,
       results,
       total: results.length,
-      model: "text-embedding-ada-002"
+      model: "text-embedding-ada-002",
+      relatedEndpoints: {
+        discoverPodcasts: {
+          description: 'Search the full Podcast Index catalog for podcasts not yet in our corpus',
+          method: 'POST',
+          url: '/api/discover-podcasts'
+        },
+        requestTranscription: {
+          description: 'Submit untranscribed podcast episodes for transcription, timestamped chaptering, and indexing',
+          method: 'POST',
+          url: '/api/on-demand/submitOnDemandRun'
+        }
+      }
     };
     if (triageResult) {
       response.originalQuery = originalQuery;
@@ -1788,6 +1801,7 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
 }));
 
 app.use('/api', jamieExploreRoutes); // MongoDB-optimized explore endpoints (3D search, hierarchy, etc.)
+app.use('/api', discoverRoutes); // Podcast discovery + RSS proxy endpoints
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
