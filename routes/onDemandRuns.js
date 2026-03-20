@@ -145,6 +145,13 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
             });
         }
 
+        if (identity.identifierType === 'prepaid' && episodes.length > 1) {
+            return res.status(400).json({
+                error: 'Batch limit exceeded',
+                details: 'L402 prepaid access is limited to 1 episode per request. Submit multiple requests for additional episodes.'
+            });
+        }
+
         // Validate each episode has required fields
         for (const episode of episodes) {
             if (!episode.guid || !episode.feedGuid || !episode.feedId) {
