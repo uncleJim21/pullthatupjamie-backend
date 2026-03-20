@@ -23,26 +23,38 @@ const RSS_HEADERS = {
 // ========== LLM Extraction ==========
 
 function buildDiscoveryPrompt() {
-  return `You route podcast discovery queries to the right search backends. The Podcast Index has three search endpoints with DIFFERENT strengths:
+  return `You route podcast discovery queries to the right search backends.
 
-1. **byterm** — searches podcast FEED titles, authors, and owners. Good for: show names ("Joe Rogan Experience"), broad topic keywords that appear in show titles/descriptions ("true crime", "bitcoin", "AI news"). BAD for: finding guest appearances, specific episode content.
+IMPORTANT: All search backends use LITERAL TEXT MATCHING, not semantic search. Only use search terms that would literally appear in podcast titles, episode titles, or person tags.
 
-2. **byperson** — searches EPISODE titles, descriptions, and person tags. Good for: finding episodes where a specific person appeared as guest or was discussed ("Naval Ravikant", "Sam Altman", "Elon Musk"). Returns episode-level results grouped by feed.
+The Podcast Index has three search endpoints:
 
-3. **trending** — returns currently popular/trending podcasts, optionally filtered by category. Good for: exploratory queries with no specific target ("find me something good about tech", "popular science podcasts").
+1. **byterm** — literal substring search against podcast FEED titles, authors, and owners. Good for: exact show names ("Joe Rogan Experience"), very common genre/topic words that literally appear in podcast titles ("bitcoin", "true crime", "AI"). BAD for: niche concepts, book titles, abstract ideas, or anything that wouldn't literally be in a show name.
+
+2. **byperson** — literal search against EPISODE titles, descriptions, and person tags. Good for: finding episodes where a specific person appeared or was discussed. Returns episode-level results. WARNING: partial name matches are common — "Balaji" matches ANY Balaji, not just Balaji Srinivasan.
+
+3. **trending** — returns currently popular/trending podcasts, optionally filtered by category. Good for: exploratory queries ("find me something good about tech", "popular science podcasts").
 
 Given a user query, return JSON with:
 - "intent": one of "show", "person", "topic", "explore", or "compound"
-- "byterm_queries": array of 0-2 search strings for the byterm endpoint (show names or topic keywords that would appear in podcast titles). Keep short (2-4 words). Do NOT include generic words like "podcast" or "episode".
-- "byperson_queries": array of 0-2 person/org names for the byperson endpoint. Only populate if the query mentions a specific person, host, or guest.
-- "trending": object with optional { "cat": "Category", "max": N } if the user wants to browse/explore. null if not applicable. Common categories: Technology, News, Comedy, Business, Science, Health, Society, Education, Sports, Arts.
+- "byterm_queries": array of 0-2 search strings for byterm. Only use for exact show names or very common topic words that literally appear in podcast titles.
+- "byperson_queries": array of 0-2 FULL person names for byperson. ALWAYS use the person's complete name — never abbreviate ("Balaji Srinivasan" not "Balaji S", "Naval Ravikant" not "Naval R").
+- "topic_hints": array of 0-2 broad, popular topic keywords associated with the person/concept that would plausibly appear in podcast show titles. For tech figures, think "crypto", "bitcoin", "AI", "startups". These are used as supplementary searches to cast a wider net.
+- "trending": object with optional { "cat": "Category", "max": N } if the user wants to browse/explore. null otherwise. Categories: Technology, News, Comedy, Business, Science, Health, Society, Education, Sports, Arts.
 - "fetch_episodes": boolean — true if the user wants specific episodes, not just show-level results
 
 Rules:
-- A query can use multiple backends (compound). "Lex Fridman interviewing Sam Altman" → byterm: ["Lex Fridman"], byperson: ["Sam Altman"]
-- If the user mentions a person who is clearly a podcast HOST, put them in byterm (their show name). If they're a GUEST or discussed figure, put them in byperson.
-- For vague/exploratory queries, prefer trending with a category filter over byterm with a guess.
-- At least one of byterm_queries, byperson_queries, or trending must be populated.
+- A query can use multiple backends. "Lex Fridman interviewing Sam Altman" → byterm: ["Lex Fridman"], byperson: ["Sam Altman"]
+- If a person is clearly a podcast HOST, put them in byterm. If they're a GUEST or discussed figure, put them in byperson.
+- For vague/exploratory queries, prefer trending with a category filter.
+- When a query is about a person + a niche concept (book title, specific idea), use byperson for the person and topic_hints for broad associated keywords. Do NOT put niche concepts in byterm — they match garbage.
+- At least one of byterm_queries, byperson_queries, topic_hints, or trending must be populated.
+
+Examples:
+- "Balaji Srinivasan discussing The Network State" → byperson: ["Balaji Srinivasan"], topic_hints: ["crypto", "bitcoin"], byterm: [] (NOT byterm: ["network state"] — that matches sports podcasts)
+- "Joe Rogan Experience" → byterm: ["Joe Rogan Experience"], topic_hints: []
+- "episodes with Naval Ravikant about startups" → byperson: ["Naval Ravikant"], topic_hints: ["startups", "venture capital"]
+- "find me good comedy podcasts" → trending: {"cat": "Comedy"}, topic_hints: []
 
 Return ONLY valid JSON, no markdown or explanation.`;
 }
@@ -59,14 +71,66 @@ async function extractSearchRouting(query) {
     max_tokens: 300
   });
 
-  const parsed = JSON.parse(response.choices[0].message.content);
-  const usage = response.usage || {};
-  parsed._usage = {
-    prompt_tokens: usage.prompt_tokens || 0,
-    completion_tokens: usage.completion_tokens || 0,
-    total_tokens: usage.total_tokens || 0
-  };
-  return parsed;
+  return JSON.parse(response.choices[0].message.content);
+}
+
+// ========== Relevance Filtering ==========
+
+function filterByPersonRelevance(episodes, personQuery) {
+  const tokens = personQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  if (tokens.length <= 1) return episodes;
+
+  return episodes.filter(ep => {
+    const text = [ep.title, ep.description, ep.feedTitle, ep.feedAuthor]
+      .join(' ').toLowerCase();
+    return tokens.every(token => text.includes(token));
+  });
+}
+
+function buildFilterPrompt() {
+  return `You filter podcast search results for relevance. Given the original query and a list of results, return a JSON object with a "keep" array containing the indices (0-based) of results that are plausibly relevant to the query.
+
+Be MODERATE — keep anything that could reasonably be relevant. Only drop results that are clearly false positives (wrong person, completely unrelated topic, wrong language for an English query, etc.).
+
+Return ONLY valid JSON like: {"keep": [0, 2, 4]}`;
+}
+
+async function filterResultsWithLLM(query, results, requestId) {
+  if (results.length === 0) return results;
+
+  const compact = results.map((r, i) => {
+    const ep = r.matchedEpisodes?.[0];
+    const epInfo = ep ? ` | ep: "${ep.title}"` : '';
+    return `${i}. "${r.title}" by ${r.author || 'unknown'}${epInfo}`;
+  }).join('\n');
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: buildFilterPrompt() },
+        { role: 'user', content: `Query: "${query}"\n\nResults:\n${compact}` }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens: 100
+    });
+
+    const parsed = JSON.parse(response.choices[0].message.content);
+    const keepIndices = new Set(parsed.keep || []);
+
+    if (keepIndices.size === 0) {
+      printLog(`[${requestId}] LLM filter kept 0 results — returning all to avoid empty response`);
+      return results;
+    }
+
+    const filtered = results.filter((_, i) => keepIndices.has(i));
+    printLog(`[${requestId}] LLM filter: ${results.length} → ${filtered.length} results`);
+    return filtered;
+  } catch (error) {
+    printLog(`[${requestId}] LLM filter failed, returning unfiltered: ${error.message}`);
+    return results;
+  }
 }
 
 // ========== RSS Extractor Calls ==========
@@ -200,6 +264,7 @@ function buildNextSteps(feed, transcriptAvailable) {
  * POST /api/discover-podcasts
  * LLM-assisted podcast discovery across the Podcast Index catalog.
  * Routes queries to byterm, byperson, and/or trending based on intent.
+ * Applies string-based name filtering + LLM re-ranking to reduce false positives.
  */
 router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.DISCOVER_PODCASTS), async (req, res) => {
   // #swagger.tags = ['Discovery']
@@ -215,7 +280,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
   } */
   const requestId = `DISCOVER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const startTime = Date.now();
-  const timings = { llm: 0, search: 0, episodes: 0, enrichment: 0, total: 0 };
+  const timings = { llm: 0, search: 0, filter: 0, episodes: 0, enrichment: 0, total: 0 };
 
   try {
     const { query, limit = 10 } = req.body;
@@ -229,18 +294,19 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
     printLog(`[${requestId}] ========== DISCOVER REQUEST ==========`);
     printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit}`);
 
-    // Step 1: LLM extracts routing instructions
+    // Step 1: LLM extracts routing instructions + topic hints
     const llmStart = Date.now();
     const routing = await extractSearchRouting(query);
     timings.llm = Date.now() - llmStart;
 
     const bytermQueries = (routing.byterm_queries || []).slice(0, 2);
     const bypersonQueries = (routing.byperson_queries || []).slice(0, 2);
+    const topicHints = (routing.topic_hints || []).slice(0, 2);
     const trendingParams = routing.trending || null;
 
-    printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, trending=${JSON.stringify(trendingParams)}, fetch_episodes=${routing.fetch_episodes}`);
+    printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, topic_hints=${JSON.stringify(topicHints)}, trending=${JSON.stringify(trendingParams)}`);
 
-    const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || trendingParams;
+    const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || topicHints.length > 0 || trendingParams;
     if (!hasAnySearch) {
       return res.status(400).json({
         error: 'Could not determine search strategy from query',
@@ -248,7 +314,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       });
     }
 
-    // Step 2: Fan out to appropriate backends in parallel
+    // Step 2: Fan out ALL searches in parallel (byterm + byperson + topic_hints + trending)
     const searchStart = Date.now();
     const searchPromises = [];
     const searchLabels = [];
@@ -261,6 +327,10 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       searchPromises.push(searchByPerson(person));
       searchLabels.push(`byperson:"${person}"`);
     }
+    for (const hint of topicHints) {
+      searchPromises.push(searchByTerm(hint));
+      searchLabels.push(`topic_hint:"${hint}"`);
+    }
     if (trendingParams) {
       searchPromises.push(fetchTrending(trendingParams));
       searchLabels.push(`trending:${JSON.stringify(trendingParams)}`);
@@ -271,7 +341,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
 
     printLog(`[${requestId}] Search (${timings.search}ms): ${searchLabels.length} backends queried: ${searchLabels.join(', ')}`);
 
-    // Step 3: Normalize and deduplicate results
+    // Step 3: Normalize, name-filter, and deduplicate
     const feedMap = new Map();
     const personEpisodes = [];
     let resultIdx = 0;
@@ -288,21 +358,24 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       printLog(`[${requestId}] byterm "${bytermQueries[i]}": ${feeds.length} feeds`);
     }
 
-    // Process byperson results (episodes → group by feed)
+    // Process byperson results with string-based name filtering
     for (let i = 0; i < bypersonQueries.length; i++) {
-      const episodes = rawResults[resultIdx++] || [];
-      for (const ep of episodes) {
-        const normalized = normalizePersonEpisode(ep);
-        personEpisodes.push(normalized);
+      const rawEpisodes = rawResults[resultIdx++] || [];
+      const normalized = rawEpisodes.map(ep => normalizePersonEpisode(ep));
+      const filtered = filterByPersonRelevance(normalized, bypersonQueries[i]);
 
-        const fid = normalized.feedId;
+      printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${rawEpisodes.length} raw → ${filtered.length} after name filter`);
+
+      for (const ep of filtered) {
+        personEpisodes.push(ep);
+        const fid = ep.feedId;
         if (fid && !feedMap.has(fid)) {
           feedMap.set(fid, {
             feedId: fid,
-            title: normalized.feedTitle,
-            url: normalized.feedUrl,
+            title: ep.feedTitle,
+            url: ep.feedUrl,
             description: '',
-            author: normalized.feedAuthor,
+            author: ep.feedAuthor,
             image: '',
             language: '',
             categories: {},
@@ -310,7 +383,18 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
           });
         }
       }
-      printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${episodes.length} episodes`);
+    }
+
+    // Process topic_hint results (feeds, ranked lower by virtue of being added after byterm/byperson)
+    for (let i = 0; i < topicHints.length; i++) {
+      const feeds = rawResults[resultIdx++] || [];
+      for (const feed of feeds) {
+        const normalized = normalizeFeed(feed);
+        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+          feedMap.set(normalized.feedId, normalized);
+        }
+      }
+      printLog(`[${requestId}] topic_hint "${topicHints[i]}": ${feeds.length} feeds`);
     }
 
     // Process trending results (feeds)
@@ -334,7 +418,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       episodesByFeed.get(ep.feedId).push(ep);
     }
 
-    // Step 4: Transcript availability via JamieVectorMetadata (authoritative source)
+    // Step 4: Transcript availability via JamieVectorMetadata
     const enrichStart = Date.now();
     const feedIds = Array.from(feedMap.keys());
     const episodeGuids = personEpisodes.map(ep => ep.guid).filter(Boolean);
@@ -354,9 +438,9 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
     }
     timings.enrichment = Date.now() - enrichStart;
 
-    printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found (${transcribedFeedDocs.length} feed docs, ${transcribedEpisodeDocs.length} episode docs)`);
+    printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found`);
 
-    // Step 5: Build results with nextSteps and inline episodes
+    // Step 5: Build preliminary results with nextSteps
     let results = Array.from(feedMap.values())
       .slice(0, effectiveLimit)
       .map(feed => {
@@ -372,7 +456,15 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
         };
       });
 
-    // Step 6: Fetch episodes for top untranscribed feeds that don't already have person-matched episodes
+    // Step 6: LLM filter pass — remove obvious false positives
+    if (results.length > 0) {
+      const filterStart = Date.now();
+      results = await filterResultsWithLLM(query, results, requestId);
+      timings.filter = Date.now() - filterStart;
+      printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
+    }
+
+    // Step 7: Fetch episodes for top untranscribed feeds without person-matched episodes
     const shouldFetchEpisodes = routing.fetch_episodes ||
       results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
 
@@ -432,6 +524,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
         intent: routing.intent,
         byterm: bytermQueries,
         byperson: bypersonQueries,
+        topicHints,
         trending: trendingParams
       },
       results,
@@ -441,11 +534,11 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       metadata: {
         llmLatencyMs: timings.llm,
         searchLatencyMs: timings.search,
+        filterLatencyMs: timings.filter,
         episodeFetchLatencyMs: timings.episodes,
         enrichmentLatencyMs: timings.enrichment,
         totalLatencyMs: timings.total,
-        backendsQueried: searchLabels,
-        usage: routing._usage
+        backendsQueried: searchLabels
       },
       relatedEndpoints: {
         searchTranscripts: {
