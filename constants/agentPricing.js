@@ -10,7 +10,7 @@
  */
 
 const AGENT_PRICING_MICRO_USD = {
-  'search-quotes':        2000,    // $0.002 per search (embedding + Pinecone)
+  'search-quotes':        4000,    // $0.002 per search (embedding + Pinecone)
   'search-quotes-3d':     10000,   // $0.01 per 3D search (embedding + UMAP)
   'make-clip':            50000,   // $0.05 per clip (video processing)
   'jamie-assist':         20000,   // $0.02 per assist (LLM call)
