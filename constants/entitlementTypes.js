@@ -12,6 +12,9 @@
  *   /api/on-demand/submitOnDemandRun → submit-on-demand-run
  *   /api/user/twitter/tweet          → twitter-post
  *   /api/user/social/posts (twitter) → twitter-post
+ *   /api/discover-podcasts            → discover-podcasts
+ *   /api/rss/searchFeeds              → discover-podcasts
+ *   /api/rss/getFeed                  → discover-podcasts
  */
 
 const ENTITLEMENT_TYPES = {
@@ -21,7 +24,8 @@ const ENTITLEMENT_TYPES = {
   JAMIE_ASSIST: 'jamie-assist',
   AI_ANALYZE: 'ai-analyze',
   SUBMIT_ON_DEMAND_RUN: 'submit-on-demand-run',
-  TWITTER_POST: 'twitter-post'
+  TWITTER_POST: 'twitter-post',
+  DISCOVER_PODCASTS: 'discover-podcasts'
 };
 
 // Array of all types for iteration

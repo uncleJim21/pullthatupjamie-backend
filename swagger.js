@@ -226,7 +226,8 @@ const ALLOWED_TAGS = new Set([
   'Search',
   'Research Sessions',
   'Create',
-  'Agent Auth'
+  'Agent Auth',
+  'Discovery'
 ]);
 
 swaggerAutogen(outputFile, routes, doc).then(({ success, data }) => {

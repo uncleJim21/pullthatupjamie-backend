@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const axios = require('axios');
 const { checkEntitlementEligibility, consumeEntitlement } = require('../utils/entitlements');
 const jwt = require('jsonwebtoken');
@@ -144,6 +145,13 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
             });
         }
 
+        if (identity.identifierType === 'prepaid' && episodes.length > 1) {
+            return res.status(400).json({
+                error: 'Batch limit exceeded',
+                details: 'L402 prepaid access is limited to 1 episode per request. Submit multiple requests for additional episodes.'
+            });
+        }
+
         // Validate each episode has required fields
         for (const episode of episodes) {
             if (!episode.guid || !episode.feedGuid || !episode.feedId) {
@@ -231,20 +239,37 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
                 }
             );
 
-            // Return success response with the lookupHash and AWS response
+            const feedIds = [...new Set(episodes.map(ep => ep.feedId))];
+
             return res.json({
                 success: true,
                 jobId: lookupHash,
                 totalEpisodes: episodes.length,
                 totalFeeds: result.totalFeeds,
                 message: 'On-demand run submitted successfully',
-                authType: req.authType,
                 entitlementInfo: {
                     remainingRuns: entitlement.remainingUsage,
                     usedThisPeriod: entitlement.usedCount,
                     totalLimit: entitlement.maxUsage
                 },
-                awsResponse: awsResponse.data
+                nextSteps: {
+                    pollJobStatus: {
+                        description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode.',
+                        method: 'GET',
+                        url: `/api/on-demand/getOnDemandJobStatus/${lookupHash}`,
+                        pollIntervalSeconds: 15
+                    },
+                    searchTranscripts: {
+                        description: 'Once job is complete, search the transcribed content with semantic queries',
+                        method: 'POST',
+                        url: '/api/search-quotes',
+                        body: {
+                            query: '...',
+                            feedIds,
+                            smartMode: true
+                        }
+                    }
+                }
             });
         } catch (awsError) {
             console.error('=== AWS API ERROR DETAILS ===');
@@ -295,15 +320,26 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
     }
 });
 
+function formatChapter(doc) {
+    const meta = doc.metadataRaw || {};
+    return {
+        chapterNumber: meta.chapterNumber ?? meta.chapter_number ?? null,
+        headline: meta.headline || null,
+        keywords: meta.keywords || [],
+        summary: meta.summary || null,
+        startTime: meta.startTime ?? meta.start_time ?? doc.start_time ?? null,
+        endTime: meta.endTime ?? meta.end_time ?? doc.end_time ?? null,
+    };
+}
+
 /**
  * GET /api/on-demand/getOnDemandJobStatus/:jobId
- * Get status of an on-demand job
+ * Get status of an on-demand job. When complete, includes chapter data and nextSteps.
  */
 router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
     try {
         const { jobId } = req.params;
 
-        // Validate job ID
         if (!jobId) {
             return res.status(400).json({
                 error: 'Missing job ID',
@@ -311,7 +347,6 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
             });
         }
 
-        // Look up the job in WorkProductV2
         const job = await WorkProductV2.findOne({ lookupHash: jobId });
 
         if (!job) {
@@ -321,10 +356,42 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
             });
         }
 
-        // Return the job status
-        res.json({
+        const isComplete = job.result.jobStatus === 'complete';
+        const episodes = job.result.episodes || [];
+
+        let enrichedEpisodes = episodes;
+        if (isComplete) {
+            const successGuids = episodes
+                .filter(ep => ep.status === 'success')
+                .map(ep => ep.guid);
+
+            if (successGuids.length > 0) {
+                const chapters = await JamieVectorMetadata.find({
+                    type: 'chapter',
+                    guid: { $in: successGuids }
+                })
+                    .select('guid start_time end_time metadataRaw')
+                    .sort({ start_time: 1 })
+                    .lean();
+
+                const chaptersByGuid = {};
+                for (const ch of chapters) {
+                    if (!chaptersByGuid[ch.guid]) chaptersByGuid[ch.guid] = [];
+                    chaptersByGuid[ch.guid].push(formatChapter(ch));
+                }
+
+                enrichedEpisodes = episodes.map(ep => ({
+                    ...ep,
+                    ...(chaptersByGuid[ep.guid] ? { chapters: chaptersByGuid[ep.guid] } : {})
+                }));
+            }
+        }
+
+        const feedIds = [...new Set(episodes.map(ep => ep.feedId).filter(Boolean))];
+
+        const response = {
             success: true,
-            jobId: jobId,
+            jobId,
             status: job.result.jobStatus,
             stats: {
                 totalEpisodes: job.result.totalEpisodes,
@@ -333,13 +400,27 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
                 episodesSkipped: job.result.episodesSkipped,
                 episodesFailed: job.result.episodesFailed
             },
-            episodes: job.result.episodes,
+            episodes: enrichedEpisodes,
             startedAt: job.result.startedAt,
             completedAt: job.result.completedAt,
-            userEmail: job.result.userEmail || null, // Include user email if available
-            clientIp: job.result.clientIp || null, // Include client IP if available
-            authType: job.result.authType || null // Include auth type if available
-        });
+        };
+
+        if (isComplete && feedIds.length > 0) {
+            response.nextSteps = {
+                searchTranscripts: {
+                    description: 'Semantic search across the newly transcribed content with timestamped deeplinks',
+                    method: 'POST',
+                    url: '/api/search-quotes',
+                    body: {
+                        query: '...',
+                        feedIds,
+                        smartMode: true
+                    }
+                }
+            };
+        }
+
+        res.json(response);
     } catch (error) {
         console.error('Error getting job status:', error);
         res.status(500).json({

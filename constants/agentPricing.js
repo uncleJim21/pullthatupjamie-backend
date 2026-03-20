@@ -15,7 +15,8 @@ const AGENT_PRICING_MICRO_USD = {
   'make-clip':            50000,   // $0.05 per clip (video processing)
   'jamie-assist':         20000,   // $0.02 per assist (LLM call)
   'ai-analyze':           20000,   // $0.02 per analysis (LLM call)
-  'submit-on-demand-run': 450000   // $0.45 per on-demand run (heavy processing)
+  'submit-on-demand-run': 450000,  // $0.45 per on-demand run (heavy processing)
+  'discover-podcasts':    5000     // $0.005 per discovery (LLM extraction + Podcast Index search)
 };
 
 // Deposit limits (in sats)
@@ -23,7 +24,7 @@ const AGENT_MIN_DEPOSIT_SATS = 10;        // 10 sats minimum
 const AGENT_MAX_DEPOSIT_SATS = 500000;    // 500,000 sats maximum
 
 // Default amount for inline 402 challenges on protected endpoints
-const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHASE_SATS) || 500;
+const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHASE_SATS) || 1000;
 
 /**
  * Get the microdollar cost for a given entitlement type.
