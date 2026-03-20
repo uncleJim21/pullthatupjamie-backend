@@ -10,3 +10,4 @@ utils/temp.wav
 /sessions
 scripts/seedPodcastFeeds.js
 /dev-helper-scripts
+test/cost-baseline-100.sh

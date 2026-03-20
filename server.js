@@ -204,7 +204,17 @@ const corsOptions = {
         'Origin',
         'X-Requested-With',
         'X-Analytics-Session',
-        'X-Pulse-Session'
+        'X-Pulse-Session',
+        'X-Free-Tier'
+    ],
+    exposedHeaders: [
+        'X-Quota-Used',
+        'X-Quota-Max',
+        'X-Quota-Remaining',
+        'X-Quota-Reset',
+        'X-Credits-Remaining-USD',
+        'X-Credits-Cost-USD',
+        'WWW-Authenticate'
     ],
     credentials: true
 };
@@ -1727,11 +1737,13 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 process.on('uncaughtException', (err) => {
-  console.error("🔥 Uncaught Exception:", err);
+  console.error("🔥 Uncaught Exception:", err?.message, err?.stack);
+  console.error("🔥 Full error object:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error("🚨 Unhandled Promise Rejection:", reason);
+  console.error("🚨 Unhandled Promise Rejection:", reason?.message || reason, reason?.stack);
+  console.error("🚨 Full reason:", JSON.stringify(reason, Object.getOwnPropertyNames(reason || {})));
 });
 
 app.use('/api/podcast-runs', podcastRunHistoryRoutes);
@@ -2089,6 +2101,15 @@ app.listen(PORT, async () => {
       console.log('[BlogIngestion] Cron registered: every 10 minutes');
     } else {
       console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
+    }
+
+    // Warm BTC/USD price cache on startup so L402 challenges work immediately
+    try {
+      const { getBtcUsdRate } = require('./utils/btcPrice');
+      const { rate } = await getBtcUsdRate();
+      console.log(`[btcPrice] Startup cache warmed: $${rate.toFixed(2)}`);
+    } catch (priceErr) {
+      console.warn('[btcPrice] Startup cache warm failed:', priceErr.message, '— L402 challenges will retry on first request');
     }
 
     console.log('All systems initialized successfully');

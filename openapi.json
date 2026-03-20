@@ -41,7 +41,7 @@
     },
     {
       "name": "Agent Auth",
-      "description": "Lightning-based pay-per-use system for agent API access. Pre-pay any amount in sats via Lightning invoice, then each API call deducts its USD-equivalent cost at the current exchange rate. No tiers or discounts — just pay for what you use. The preimage serves as a stateless auth credential. (Not yet implemented — see Issue #63). Future: Nostr-based authentication may be supported as an alternative identity path for agents."
+      "description": "L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N to any request for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget."
     }
   ],
   "paths": {
@@ -696,6 +696,9 @@
                     "example": "any"
                   },
                   "guid": {
+                    "example": "any"
+                  },
+                  "smartMode": {
                     "example": "any"
                   }
                 }
@@ -3473,371 +3476,13 @@
         }
       }
     },
-    "/api/agent/purchase-credits": {
-      "post": {
-        "tags": [
-          "Agent Auth"
-        ],
-        "summary": "Purchase API credits via Lightning invoice",
-        "description": "Request a Lightning invoice to pre-pay for API usage. Specify an amount in sats (10 - 500,000). The sats are converted to USD at the current BTC/USD median rate and become your API balance. Each subsequent API call deducts its USD cost from your balance.",
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "type": "object",
-              "properties": {
-                "amountSats": {
-                  "type": "number",
-                  "example": 5000
-                },
-                "clientId": {
-                  "type": "string",
-                  "example": "optional-for-session-linking"
-                }
-              }
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Lightning invoice generated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "invoice": {
-                      "type": "string",
-                      "example": "lnbc50u1p..."
-                    },
-                    "paymentHash": {
-                      "type": "string",
-                      "example": "abc123def456..."
-                    },
-                    "amountSats": {
-                      "type": "number",
-                      "example": 5000
-                    },
-                    "amountUsd": {
-                      "type": "number",
-                      "example": 5
-                    },
-                    "btcUsdRate": {
-                      "type": "number",
-                      "example": 100000
-                    },
-                    "expiresAt": {
-                      "type": "string",
-                      "example": "2026-02-13T01:00:00.000Z"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "invoice": {
-                      "type": "string",
-                      "example": "lnbc50u1p..."
-                    },
-                    "paymentHash": {
-                      "type": "string",
-                      "example": "abc123def456..."
-                    },
-                    "amountSats": {
-                      "type": "number",
-                      "example": 5000
-                    },
-                    "amountUsd": {
-                      "type": "number",
-                      "example": 5
-                    },
-                    "btcUsdRate": {
-                      "type": "number",
-                      "example": 100000
-                    },
-                    "expiresAt": {
-                      "type": "string",
-                      "example": "2026-02-13T01:00:00.000Z"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid amount",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Invalid amount"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "amountSats must be an integer between 10 and 500000"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Invalid amount"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "amountSats must be an integer between 10 and 500000"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "description": "Lightning services temporarily unavailable (stale BTC price)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Lightning services temporarily unavailable"
-                    },
-                    "code": {
-                      "type": "string",
-                      "example": "LIGHTNING_UNAVAILABLE"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Lightning services temporarily unavailable"
-                    },
-                    "code": {
-                      "type": "string",
-                      "example": "LIGHTNING_UNAVAILABLE"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "amountSats": {
-                    "example": "any"
-                  },
-                  "clientId": {
-                    "example": "any"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/agent/activate-credits": {
-      "post": {
-        "tags": [
-          "Agent Auth"
-        ],
-        "summary": "Activate credits with Lightning preimage",
-        "description": "After paying the Lightning invoice, submit the preimage and paymentHash to activate your USD balance. The preimage becomes your stateless auth credential for subsequent API calls (format: Authorization: preimage:paymentHash).",
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "type": "object",
-              "properties": {
-                "preimage": {
-                  "type": "string",
-                  "example": "abc123..."
-                },
-                "paymentHash": {
-                  "type": "string",
-                  "example": "def456..."
-                }
-              }
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Credits activated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "paymentHash": {
-                      "type": "string",
-                      "example": "def456..."
-                    },
-                    "balanceUsd": {
-                      "type": "number",
-                      "example": 5
-                    },
-                    "balanceUsdMicro": {
-                      "type": "number",
-                      "example": 5000000
-                    },
-                    "clientId": {
-                      "type": "string",
-                      "example": "optional-session-id"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "paymentHash": {
-                      "type": "string",
-                      "example": "def456..."
-                    },
-                    "balanceUsd": {
-                      "type": "number",
-                      "example": 5
-                    },
-                    "balanceUsdMicro": {
-                      "type": "number",
-                      "example": 5000000
-                    },
-                    "clientId": {
-                      "type": "string",
-                      "example": "optional-session-id"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid preimage, paymentHash, or invoice not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Activation failed"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Description of the issue"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Activation failed"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Description of the issue"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "description": "Service Unavailable"
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "preimage": {
-                    "example": "any"
-                  },
-                  "paymentHash": {
-                    "example": "any"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/agent/balance": {
       "get": {
         "tags": [
           "Agent Auth"
         ],
         "summary": "Check remaining balance",
-        "description": "Returns the remaining USD balance for the given agent credential. Requires Authorization header with format preimage:paymentHash.",
+        "description": "Returns the remaining USD balance for the given L402 credential. Requires Authorization header with format: L402 <macaroon>:<preimage>",
         "parameters": [
           {
             "name": "authorization",
@@ -3850,7 +3495,7 @@
             "name": "Authorization",
             "in": "header",
             "required": true,
-            "description": "Agent credential in format preimage:paymentHash",
+            "description": "L402 credential in format: L402 <base64_macaroon>:<hex_preimage>",
             "schema": {
               "type": "string"
             }
@@ -3959,7 +3604,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "example": "Valid Authorization header required (format: preimage:paymentHash)"
+                      "example": "Valid L402 Authorization header required"
                     }
                   },
                   "xml": {
@@ -3977,7 +3622,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "example": "Valid Authorization header required (format: preimage:paymentHash)"
+                      "example": "Valid L402 Authorization header required"
                     }
                   },
                   "xml": {
@@ -4002,11 +3647,11 @@
   },
   "components": {
     "securitySchemes": {
-      "AgentCredential": {
+      "L402Credential": {
         "type": "apiKey",
         "in": "header",
         "name": "Authorization",
-        "description": "Lightning preimage credential in format \"preimage:paymentHash\". Used for agent auth endpoints."
+        "description": "L402 credential in format \"L402 <base64_macaroon>:<hex_preimage>\". Obtained by paying a Lightning invoice from a 402 challenge."
       },
       "BearerJWT": {
         "type": "http",

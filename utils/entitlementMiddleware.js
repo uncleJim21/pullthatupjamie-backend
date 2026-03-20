@@ -7,14 +7,155 @@
 
 const { resolveIdentity, TIERS } = require('./identityResolver');
 const { Entitlement } = require('../models/Entitlement');
+const { AgentInvoice } = require('../models/AgentInvoice');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { emitServerEvent } = require('./analyticsEmitter');
 const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
-const { getAgentCostMicroUsd } = require('../constants/agentPricing');
-const { isLightningAvailable, microUsdToUsd } = require('./btcPrice');
+const { getAgentCostMicroUsd, DEFAULT_CREDIT_PURCHASE_SATS, AGENT_MIN_DEPOSIT_SATS, AGENT_MAX_DEPOSIT_SATS, AGENT_PRICING_MICRO_USD } = require('../constants/agentPricing');
+const { isLightningAvailable, microUsdToUsd, getBtcUsdRate, satsToUsdMicro } = require('./btcPrice');
+const { generateInvoiceForSats } = require('./lightning-utils');
+const { mintMacaroon, buildWwwAuthenticateHeader } = require('./macaroon-utils');
 
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
+
+/**
+ * Generate a 402 Payment Required response with L402 challenge.
+ * Creates a Lightning invoice and macaroon for the agent to pay.
+ * 
+ * Supports optional ?amountSats=N query param for custom credit amounts.
+ * 
+ * @param {object} req - Express request (reads amountSats from query)
+ * @param {object} res - Express response
+ * @param {object} options - Additional context for the response body
+ * @returns {Promise<object>} The response (already sent)
+ */
+async function send402Challenge(req, res, options = {}) {
+  try {
+    console.log('[L402-DEBUG] send402Challenge triggered', {
+      path: req.path,
+      method: req.method,
+      detail: options.detail,
+      code: options.extra?.code
+    });
+
+    console.log('[L402-DEBUG] Checking isLightningAvailable...');
+    if (!isLightningAvailable()) {
+      console.log('[L402-DEBUG] Lightning not available — attempting synchronous price fetch...');
+      try {
+        await getBtcUsdRate();
+      } catch (priceErr) {
+        console.error('[L402-DEBUG] Price fetch failed:', priceErr.message);
+      }
+
+      if (!isLightningAvailable()) {
+        console.log('[L402-DEBUG] Lightning still NOT available after fetch attempt');
+        return res.status(503).json({
+          error: 'Lightning services temporarily unavailable',
+          code: 'LIGHTNING_UNAVAILABLE'
+        });
+      }
+      console.log('[L402-DEBUG] Price fetch succeeded, lightning now available');
+    } else {
+      console.log('[L402-DEBUG] Lightning is available');
+    }
+
+    let amountSats = DEFAULT_CREDIT_PURCHASE_SATS;
+    const requestedAmount = parseInt(req.query?.amountSats, 10);
+    if (!isNaN(requestedAmount)) {
+      if (requestedAmount < AGENT_MIN_DEPOSIT_SATS || requestedAmount > AGENT_MAX_DEPOSIT_SATS) {
+        return res.status(400).json({
+          error: 'Invalid amountSats',
+          message: `amountSats must be between ${AGENT_MIN_DEPOSIT_SATS} and ${AGENT_MAX_DEPOSIT_SATS}`,
+          minSats: AGENT_MIN_DEPOSIT_SATS,
+          maxSats: AGENT_MAX_DEPOSIT_SATS
+        });
+      }
+      amountSats = requestedAmount;
+    }
+
+    console.log('[L402-DEBUG] Fetching BTC/USD rate...');
+    const { rate: btcUsdRate } = await getBtcUsdRate();
+    console.log('[L402-DEBUG] BTC/USD rate:', btcUsdRate);
+
+    const amountUsdMicro = satsToUsdMicro(amountSats);
+    const amountUsd = microUsdToUsd(amountUsdMicro);
+    console.log('[L402-DEBUG] Amount:', { amountSats, amountUsdMicro, amountUsd });
+
+    console.log('[L402-DEBUG] Generating invoice via Alby...', {
+      hasAlbyWalletApiKey: !!process.env.ALBY_WALLET_API_KEY,
+      hasAlbyHubToken: !!process.env.ALBY_HUB_TOKEN
+    });
+    const invoice = await generateInvoiceForSats(amountSats);
+    console.log('[L402-DEBUG] Invoice generated:', {
+      paymentHash: invoice.paymentHash,
+      expiresAt: invoice.expiresAt,
+      prLength: invoice.pr?.length
+    });
+
+    console.log('[L402-DEBUG] Minting macaroon...', {
+      hasL402Secret: !!process.env.L402_MACAROON_SECRET
+    });
+    const { macaroonBase64 } = mintMacaroon(invoice.paymentHash);
+    console.log('[L402-DEBUG] Macaroon minted, length:', macaroonBase64?.length);
+
+    console.log('[L402-DEBUG] Creating AgentInvoice in MongoDB...');
+    await AgentInvoice.create({
+      paymentHash: invoice.paymentHash,
+      invoiceStr: invoice.pr,
+      amountSats,
+      amountUsdMicro,
+      btcUsdRate,
+      clientId: options.clientId || null,
+      status: 'pending',
+      expiresAt: invoice.expiresAt
+    });
+    console.log('[L402-DEBUG] AgentInvoice stored');
+
+    res.setHeader('WWW-Authenticate', buildWwwAuthenticateHeader(macaroonBase64, invoice.pr));
+
+    console.log('[L402-DEBUG] Sending 402 response');
+    return res.status(402).json({
+      type: 'https://pullthatupjamie.ai/l402/payment-required',
+      title: 'Payment Required',
+      status: 402,
+      detail: options.detail || 'Purchase credits to access this endpoint. Pay the Lightning invoice, then retry with Authorization: L402 <macaroon>:<preimage>',
+      macaroon: macaroonBase64,
+      invoice: invoice.pr,
+      paymentHash: invoice.paymentHash,
+      amountSats,
+      amountUsd: parseFloat(amountUsd.toFixed(6)),
+      btcUsdRate,
+      expiresAt: invoice.expiresAt,
+      creditInfo: {
+        model: 'credit',
+        service: 'pullthatupjamie',
+        message: 'Pay the Lightning invoice to receive credits for pullthatupjamie.ai. Each API call deducts its cost from your balance. You may reuse the same L402 credential across all endpoints until depleted, or pay per query — your choice.',
+        customAmount: `To request a different amount, add ?amountSats=N to any request (min: ${AGENT_MIN_DEPOSIT_SATS}, max: ${AGENT_MAX_DEPOSIT_SATS})`,
+        defaultSats: DEFAULT_CREDIT_PURCHASE_SATS,
+        minSats: AGENT_MIN_DEPOSIT_SATS,
+        maxSats: AGENT_MAX_DEPOSIT_SATS,
+        balanceEndpoint: '/api/agent/balance',
+        responseHeaders: ['X-Credits-Remaining-USD', 'X-Credits-Cost-USD'],
+        pricingMicroUsd: AGENT_PRICING_MICRO_USD
+      },
+      ...options.extra
+    });
+  } catch (err) {
+    console.error('[L402-DEBUG] send402Challenge CAUGHT ERROR:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+      code: err.code,
+      response: err.response?.status,
+      responseData: err.response?.data
+    });
+    return res.status(500).json({
+      error: 'Failed to generate payment challenge',
+      code: 'CHALLENGE_ERROR'
+    });
+  }
+}
 
 /**
  * PRODUCTION Quota configurations per tier per entitlement type
@@ -322,8 +463,32 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       // Read analytics session ID from header (for server-side event emission)
       const analyticsSessionId = req.headers['x-pulse-session'] || req.headers['x-analytics-session'] || null;
       
+      // ═══════════════════════════════════════════════════════════════════════
+      // L402-first: anonymous users on priced endpoints get an immediate 402
+      // unless they explicitly opt in to the free tier via X-Free-Tier header.
+      // This ensures 402 Index and other L402 verifiers see a proper paywall.
+      // Webapp/browser clients should send X-Free-Tier: true to use free quota.
+      // ═══════════════════════════════════════════════════════════════════════
+      const freeTierRequested = req.headers['x-free-tier'] === 'true';
+      if (identity.tier === TIERS.anonymous && !freeTierRequested) {
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (costMicroUsd !== null) {
+          return send402Challenge(req, res, {
+            detail: 'Payment required. Pay the Lightning invoice to access this endpoint. Add X-Free-Tier: true header to use the free quota instead.',
+            extra: { code: 'PAYMENT_REQUIRED' }
+          });
+        }
+      }
+
       // Check if anonymous is allowed
       if (!allowAnonymous && identity.tier === TIERS.anonymous) {
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (costMicroUsd !== null) {
+          return send402Challenge(req, res, {
+            detail: 'Authentication required. Pay the Lightning invoice to get access.',
+            extra: { code: 'AUTH_REQUIRED' }
+          });
+        }
         return res.status(401).json({
           error: 'Authentication required',
           code: 'AUTH_REQUIRED'
@@ -334,6 +499,14 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
       // Lightning agent path: deduct USD microdollars from balance per call
       // ═══════════════════════════════════════════════════════════════════════
       if (identity.identifierType === 'prepaid') {
+        if (req.query?.amountSats) {
+          return res.status(400).json({
+            error: 'Cannot combine ?amountSats with an L402 credential',
+            message: 'Remove the ?amountSats query parameter to use your existing credit balance, or remove the Authorization header to request a new invoice for that amount.',
+            code: 'CONFLICTING_PARAMS'
+          });
+        }
+
         const costMicroUsd = getAgentCostMicroUsd(entitlementType);
 
         if (costMicroUsd === null) {
@@ -353,24 +526,22 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
         });
 
         if (!lightningEntitlement) {
-          return res.status(401).json({
-            error: 'No active credit balance',
-            code: 'NO_BALANCE',
-            message: 'Purchase credits at POST /api/agent/purchase-credits'
+          return send402Challenge(req, res, {
+            detail: 'No active credit balance. Pay the invoice to purchase credits.',
+            extra: { code: 'NO_BALANCE' }
           });
         }
 
         const remainingMicroUsd = lightningEntitlement.maxUsage - lightningEntitlement.usedCount;
 
         if (remainingMicroUsd < costMicroUsd) {
-          return res.status(429).json({
-            error: 'Insufficient funds',
-            code: 'INSUFFICIENT_FUNDS',
-            message: 'Your credit balance is too low for this request. Top up at POST /api/agent/purchase-credits',
-            costUsd: parseFloat(microUsdToUsd(costMicroUsd).toFixed(6)),
-            balanceUsd: parseFloat(microUsdToUsd(remainingMicroUsd).toFixed(6)),
-            balanceUsdMicro: remainingMicroUsd,
-            costUsdMicro: costMicroUsd
+          return send402Challenge(req, res, {
+            detail: 'Insufficient funds. Pay the invoice to top up your balance.',
+            extra: {
+              code: 'INSUFFICIENT_FUNDS',
+              costUsd: parseFloat(microUsdToUsd(costMicroUsd).toFixed(6)),
+              balanceUsd: parseFloat(microUsdToUsd(remainingMicroUsd).toFixed(6))
+            }
           });
         }
 
@@ -437,6 +608,22 @@ function createEntitlementMiddleware(entitlementType, options = {}) {
             max: entitlement.maxUsage
           }
         );
+
+        // Anonymous users on priced endpoints:
+        //   - With X-Free-Tier: true → 429 (webapp expects this for modals/upgrade prompts)
+        //   - Without X-Free-Tier → 402 L402 challenge (agents/L402 verifiers expect this)
+        const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+        if (identity.tier === TIERS.anonymous && costMicroUsd !== null && !freeTierRequested) {
+          return send402Challenge(req, res, {
+            detail: 'Free quota exceeded. Pay the Lightning invoice to continue with paid access.',
+            extra: {
+              code: 'QUOTA_EXCEEDED',
+              freeQuotaUsed: entitlement.usedCount,
+              freeQuotaMax: entitlement.maxUsage,
+              resetDate: entitlement.nextResetDate
+            }
+          });
+        }
         
         return res.status(429).json({
           error: 'Quota exceeded',
@@ -619,6 +806,7 @@ module.exports = {
   createEntitlementMiddleware,
   identityMiddleware,
   requireAuth,
+  send402Challenge,
   getQuotaConfig,
   getOrCreateEntitlement,
   checkAllEligibility,
