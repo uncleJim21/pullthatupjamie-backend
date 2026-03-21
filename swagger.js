@@ -37,6 +37,14 @@ const doc = {
       description: 'Semantic search across podcast transcripts using vector embeddings.'
     },
     {
+      name: 'Discovery',
+      description: 'LLM-assisted podcast feed and episode search across 4M+ podcasts via the Podcast Index. Routes natural language queries to the best search backends for people, topics, and shows.'
+    },
+    {
+      name: 'On-Demand Transcription',
+      description: 'Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. Once indexed, content is searchable via the Search endpoints.'
+    },
+    {
       name: 'Research Sessions',
       description: 'Create, retrieve, share, and analyze research sessions — curated collections of podcast clips.'
     },
@@ -227,7 +235,8 @@ const ALLOWED_TAGS = new Set([
   'Research Sessions',
   'Create',
   'Agent Auth',
-  'Discovery'
+  'Discovery',
+  'On-Demand Transcription'
 ]);
 
 swaggerAutogen(outputFile, routes, doc).then(({ success, data }) => {

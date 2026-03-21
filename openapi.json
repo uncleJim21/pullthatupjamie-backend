@@ -32,6 +32,14 @@
       "description": "Semantic search across podcast transcripts using vector embeddings."
     },
     {
+      "name": "Discovery",
+      "description": "LLM-assisted podcast feed and episode search across 4M+ podcasts via the Podcast Index. Routes natural language queries to the best search backends for people, topics, and shows."
+    },
+    {
+      "name": "On-Demand Transcription",
+      "description": "Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. Once indexed, content is searchable via the Search endpoints."
+    },
+    {
       "name": "Research Sessions",
       "description": "Create, retrieve, share, and analyze research sessions — curated collections of podcast clips."
     },
@@ -704,6 +712,641 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/on-demand/submitOnDemandRun": {
+      "post": {
+        "tags": [
+          "On-Demand Transcription"
+        ],
+        "summary": "Submit a podcast episode for transcription, chaptering, and semantic indexing",
+        "description": "Submits a podcast episode for full transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Returns a pollable job status URL. Once indexed, content is searchable via /api/search-quotes. L402 prepaid access limited to 1 episode per request. Use /api/discover-podcasts to find episode GUIDs.\\n\\nA metered free tier is available: send the header `X-Free-Tier: true` to use quota-based access without payment. Anonymous users get 2 transcriptions per week; registered users get 5 per month. Omit the header (or use L402 credentials) for paid access.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "Transcribe latest episode from Bankless"
+                },
+                "parameters": {
+                  "type": "object",
+                  "properties": {}
+                },
+                "episodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "guid": {
+                        "type": "string",
+                        "example": "dd043afd-d7f8-4a96-97aa-a24a743fc219"
+                      },
+                      "feedGuid": {
+                        "type": "string",
+                        "example": "3d510171-b9ab-517c-bbf3-1fd5542479ad"
+                      },
+                      "feedId": {
+                        "type": "string",
+                        "example": "357756"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job submitted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "example": "6b2440adae3f806198eb56c0"
+                    },
+                    "totalEpisodes": {
+                      "type": "number",
+                      "example": 1
+                    },
+                    "totalFeeds": {
+                      "type": "number",
+                      "example": 1
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "On-demand run submitted successfully"
+                    },
+                    "nextSteps": {
+                      "type": "object",
+                      "properties": {
+                        "pollJobStatus": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "GET"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/on-demand/getOnDemandJobStatus/6b2440adae3f806198eb56c0"
+                            },
+                            "pollIntervalSeconds": {
+                              "type": "number",
+                              "example": 15
+                            }
+                          }
+                        },
+                        "searchTranscripts": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Once job is complete, search the transcribed content with semantic queries"
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/search-quotes"
+                            },
+                            "body": {
+                              "type": "object",
+                              "properties": {
+                                "query": {
+                                  "type": "string",
+                                  "example": "..."
+                                },
+                                "feedIds": {
+                                  "type": "array",
+                                  "example": [
+                                    "357756"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "smartMode": {
+                                  "type": "boolean",
+                                  "example": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "example": "6b2440adae3f806198eb56c0"
+                    },
+                    "totalEpisodes": {
+                      "type": "number",
+                      "example": 1
+                    },
+                    "totalFeeds": {
+                      "type": "number",
+                      "example": 1
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "On-demand run submitted successfully"
+                    },
+                    "nextSteps": {
+                      "type": "object",
+                      "properties": {
+                        "pollJobStatus": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "GET"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/on-demand/getOnDemandJobStatus/6b2440adae3f806198eb56c0"
+                            },
+                            "pollIntervalSeconds": {
+                              "type": "number",
+                              "example": 15
+                            }
+                          }
+                        },
+                        "searchTranscripts": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Once job is complete, search the transcribed content with semantic queries"
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/search-quotes"
+                            },
+                            "body": {
+                              "type": "object",
+                              "properties": {
+                                "query": {
+                                  "type": "string",
+                                  "example": "..."
+                                },
+                                "feedIds": {
+                                  "type": "array",
+                                  "example": [
+                                    "357756"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "smartMode": {
+                                  "type": "boolean",
+                                  "example": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error or L402 batch limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment required — returns Lightning invoice"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "example": "any"
+                  },
+                  "parameters": {
+                    "example": "any"
+                  },
+                  "episodes": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/on-demand/getOnDemandJobStatus/{jobId}": {
+      "get": {
+        "tags": [
+          "On-Demand Transcription"
+        ],
+        "summary": "Get transcription job status with chapters on completion",
+        "description": "Returns job status and per-episode progress. When status is \"complete\", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Job ID returned by submitOnDemandRun"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status with optional chapter enrichment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "example": "6b2440adae3f806198eb56c0"
+                    },
+                    "status": {
+                      "type": "string",
+                      "example": "complete"
+                    },
+                    "stats": {
+                      "type": "object",
+                      "properties": {
+                        "totalEpisodes": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "totalFeeds": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesProcessed": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesSkipped": {
+                          "type": "number",
+                          "example": 0
+                        },
+                        "episodesFailed": {
+                          "type": "number",
+                          "example": 0
+                        }
+                      }
+                    },
+                    "episodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "string",
+                            "example": "dd043afd-d7f8-4a96-97aa-a24a743fc219"
+                          },
+                          "feedId": {
+                            "type": "string",
+                            "example": "357756"
+                          },
+                          "status": {
+                            "type": "string",
+                            "example": "success"
+                          },
+                          "chapters": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "chapterNumber": {
+                                  "type": "number",
+                                  "example": 1
+                                },
+                                "headline": {
+                                  "type": "string",
+                                  "example": "SEC and CFTC Developments in Crypto"
+                                },
+                                "keywords": {
+                                  "type": "array",
+                                  "example": [
+                                    "SEC",
+                                    "CFTC",
+                                    "crypto regulations"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "summary": {
+                                  "type": "string",
+                                  "example": "Discussion on SEC and CFTC actions regarding crypto..."
+                                },
+                                "startTime": {
+                                  "type": "number",
+                                  "example": 0
+                                },
+                                "endTime": {
+                                  "type": "number",
+                                  "example": 159.48
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "nextSteps": {
+                      "type": "object",
+                      "properties": {
+                        "searchTranscripts": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Semantic search across the newly transcribed content with timestamped deeplinks"
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/search-quotes"
+                            },
+                            "body": {
+                              "type": "object",
+                              "properties": {
+                                "query": {
+                                  "type": "string",
+                                  "example": "..."
+                                },
+                                "feedIds": {
+                                  "type": "array",
+                                  "example": [
+                                    "357756"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "smartMode": {
+                                  "type": "boolean",
+                                  "example": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "example": "6b2440adae3f806198eb56c0"
+                    },
+                    "status": {
+                      "type": "string",
+                      "example": "complete"
+                    },
+                    "stats": {
+                      "type": "object",
+                      "properties": {
+                        "totalEpisodes": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "totalFeeds": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesProcessed": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesSkipped": {
+                          "type": "number",
+                          "example": 0
+                        },
+                        "episodesFailed": {
+                          "type": "number",
+                          "example": 0
+                        }
+                      }
+                    },
+                    "episodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "string",
+                            "example": "dd043afd-d7f8-4a96-97aa-a24a743fc219"
+                          },
+                          "feedId": {
+                            "type": "string",
+                            "example": "357756"
+                          },
+                          "status": {
+                            "type": "string",
+                            "example": "success"
+                          },
+                          "chapters": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "chapterNumber": {
+                                  "type": "number",
+                                  "example": 1
+                                },
+                                "headline": {
+                                  "type": "string",
+                                  "example": "SEC and CFTC Developments in Crypto"
+                                },
+                                "keywords": {
+                                  "type": "array",
+                                  "example": [
+                                    "SEC",
+                                    "CFTC",
+                                    "crypto regulations"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "summary": {
+                                  "type": "string",
+                                  "example": "Discussion on SEC and CFTC actions regarding crypto..."
+                                },
+                                "startTime": {
+                                  "type": "number",
+                                  "example": 0
+                                },
+                                "endTime": {
+                                  "type": "number",
+                                  "example": 159.48
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "nextSteps": {
+                      "type": "object",
+                      "properties": {
+                        "searchTranscripts": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Semantic search across the newly transcribed content with timestamped deeplinks"
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/search-quotes"
+                            },
+                            "body": {
+                              "type": "object",
+                              "properties": {
+                                "query": {
+                                  "type": "string",
+                                  "example": "..."
+                                },
+                                "feedIds": {
+                                  "type": "array",
+                                  "example": [
+                                    "357756"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "smartMode": {
+                                  "type": "boolean",
+                                  "example": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
           }
         }
       }
@@ -3640,6 +4283,63 @@
           },
           "503": {
             "description": "Service Unavailable"
+          }
+        }
+      }
+    },
+    "/api/discover-podcasts": {
+      "post": {
+        "tags": [
+          "Discovery"
+        ],
+        "summary": "LLM-assisted podcast discovery across the Podcast Index catalog",
+        "description": "Takes a natural language query, classifies intent via LLM, and routes to the appropriate Podcast Index search backends (byterm, byperson, trending). Returns matching podcasts enriched with transcript availability flags and actionable next-step endpoints. Use for deep research, person dossiers, prospecting prep, competitive intelligence, or topic exploration.\\n\\nA metered free tier is available: send the header `X-Free-Tier: true` to use quota-based access without payment. Anonymous users get 10 queries per week; registered users get 30 per month. Omit the header (or use L402 credentials) for paid access.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "example": "bitcoin mining podcasts"
+                },
+                "limit": {
+                  "type": "number",
+                  "example": 10
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "example": "any"
+                  },
+                  "limit": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
           }
         }
       }
