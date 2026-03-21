@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 const SocialPost = require('../models/SocialPost');
 const { authenticateToken } = require('../middleware/authMiddleware');
-const { schedulePosts } = require('../utils/SocialPostService');
+const { schedulePosts, validateSignedEvent, DEFAULT_POST_RELAYS } = require('../utils/SocialPostService');
 const { findUserFromRequest, buildUserFilter } = require('../utils/userLookup');
 const { getOrCreateEntitlement, getQuotaConfig, TIERS } = require('../utils/entitlementMiddleware');
 const { resolveIdentity } = require('../utils/identityResolver');
@@ -18,7 +18,7 @@ const { SERVER_EVENT_TYPES } = require('../constants/analyticsTypes');
  */
 router.post('/posts', authenticateToken, async (req, res) => {
     try {
-        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', platformData, scheduledPostSlotId } = req.body;
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', platformData, scheduledPostSlotId, status } = req.body;
         
         // Validate content - either text or media required
         const hasText = !!(text && String(text).trim().length > 0);
@@ -113,7 +113,8 @@ router.post('/posts', authenticateToken, async (req, res) => {
             platforms,
             timezone,
             platformData,
-            scheduledPostSlotId
+            scheduledPostSlotId,
+            status
         });
         
         res.json({
@@ -130,7 +131,7 @@ router.post('/posts', authenticateToken, async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating user social post:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             error: 'Failed to create social post',
             message: error.message
         });
@@ -317,13 +318,25 @@ router.put('/posts/:postId', authenticateToken, async (req, res) => {
         }
         
         if (platformData) {
-            // Merge platformData (important for adding Nostr signatures to unsigned posts)
-            post.platformData = { ...post.platformData, ...platformData };
-            
-            // If we're adding a Nostr signature to an unsigned post, change status to scheduled
-            if (post.status === 'unsigned' && platformData.nostrSignature) {
-                post.status = 'scheduled';
+            const mergedPlatformData = { ...(post.platformData || {}), ...platformData };
+
+            if (post.platform === 'nostr') {
+                if (mergedPlatformData.signedEvent) {
+                    validateSignedEvent(mergedPlatformData.signedEvent);
+                }
+
+                if (!mergedPlatformData.nostrRelays || mergedPlatformData.nostrRelays.length === 0) {
+                    mergedPlatformData.nostrRelays = [...DEFAULT_POST_RELAYS];
+                }
+
+                // Promote unsigned -> scheduled when signing data is provided
+                if (post.status === 'unsigned' && (platformData.nostrSignature || platformData.signedEvent)) {
+                    post.status = 'scheduled';
+                }
             }
+
+            post.platformData = mergedPlatformData;
+            post.markModified('platformData');
         }
 
         await post.save();
@@ -342,7 +355,7 @@ router.put('/posts/:postId', authenticateToken, async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating user social post:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             error: 'Failed to update post',
             message: error.message
         });

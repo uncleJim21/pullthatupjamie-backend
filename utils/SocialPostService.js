@@ -1,4 +1,14 @@
 const SocialPost = require('../models/SocialPost');
+const { verifyEvent } = require('nostr-tools');
+
+const DEFAULT_POST_RELAYS = [
+    "wss://relay.primal.net",
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.snort.social"
+];
+
+const SIGNED_EVENT_REQUIRED_FIELDS = ['id', 'pubkey', 'created_at', 'kind', 'content', 'sig'];
 
 function assert(condition, message, status = 400) {
     if (!condition) {
@@ -6,6 +16,24 @@ function assert(condition, message, status = 400) {
         err.status = status;
         throw err;
     }
+}
+
+/**
+ * Validates a signedEvent object: structural completeness + cryptographic verification.
+ * Checks NIP-01 required fields, then verifies the event ID hash and Schnorr signature.
+ * @param {Object} signedEvent
+ * @throws {Error} with status 400 if invalid
+ */
+function validateSignedEvent(signedEvent) {
+    assert(signedEvent, 'Missing signedEvent in platformData.');
+
+    const missing = SIGNED_EVENT_REQUIRED_FIELDS.filter(f => signedEvent[f] === undefined || signedEvent[f] === null);
+    assert(missing.length === 0, `Incomplete signedEvent: missing required fields: ${missing.join(', ')}`);
+
+    assert(Array.isArray(signedEvent.tags), 'signedEvent.tags must be an array');
+
+    const isValid = verifyEvent(signedEvent);
+    assert(isValid, 'signedEvent failed cryptographic verification (invalid event ID hash or Schnorr signature). This event will be rejected by Nostr relays.');
 }
 
 /**
@@ -22,6 +50,7 @@ function assert(condition, message, status = 400) {
  * @param {string} [params.timezone='America/Chicago']
  * @param {Object} [params.platformData]
  * @param {string} [params.scheduledPostSlotId]
+ * @param {string} [params.status='unsigned'] - 'unsigned' (default, safe for drafts) or 'scheduled' (requires signedEvent for nostr)
  * @returns {Promise<Array>} created SocialPost documents
  */
 async function schedulePosts(params) {
@@ -34,7 +63,8 @@ async function schedulePosts(params) {
         platforms,
         timezone = 'America/Chicago',
         platformData: inputPlatformData = {},
-        scheduledPostSlotId
+        scheduledPostSlotId,
+        status: requestedStatus = 'unsigned'
     } = params || {};
 
     // Require at least one identifier
@@ -44,6 +74,9 @@ async function schedulePosts(params) {
     assert(hasText || hasMedia, 'Either text or media URL is required');
     assert(scheduledFor, 'Scheduled date/time is required');
     assert(Array.isArray(platforms) && platforms.length > 0, 'At least one platform must be specified');
+
+    const validStatuses = ['unsigned', 'scheduled'];
+    assert(validStatuses.includes(requestedStatus), `Invalid status: ${requestedStatus}. Must be one of: ${validStatuses.join(', ')}`);
 
     const validPlatforms = SocialPost.getPlatformOptions();
     const invalidPlatforms = platforms.filter(p => !validPlatforms.includes(p));
@@ -58,9 +91,22 @@ async function schedulePosts(params) {
             platformData.twitterTokens = inputPlatformData.twitterTokens;
         }
 
+        if (platform === 'nostr') {
+            if (requestedStatus === 'scheduled') {
+                validateSignedEvent(platformData.signedEvent);
+            } else if (platformData.signedEvent) {
+                validateSignedEvent(platformData.signedEvent);
+            }
+
+            if (!platformData.nostrRelays || platformData.nostrRelays.length === 0) {
+                platformData.nostrRelays = [...DEFAULT_POST_RELAYS];
+                console.log(`Defaulting to top 4 relays for Nostr post`);
+            }
+        }
+
         const socialPost = new SocialPost({
-            adminUserId: adminUserId || undefined,  // NEW: Store userId if available
-            adminEmail: adminEmail || undefined,    // Keep for backward compat
+            adminUserId: adminUserId || undefined,
+            adminEmail: adminEmail || undefined,
             platform,
             scheduledFor: scheduledDate,
             timezone,
@@ -69,7 +115,8 @@ async function schedulePosts(params) {
                 text: hasText ? String(text).trim() : '',
                 mediaUrl: hasMedia ? String(mediaUrl) : null
             },
-            platformData
+            platformData,
+            status: requestedStatus
         });
 
         await socialPost.save();
@@ -80,7 +127,10 @@ async function schedulePosts(params) {
 }
 
 module.exports = {
-    schedulePosts
+    schedulePosts,
+    validateSignedEvent,
+    DEFAULT_POST_RELAYS,
+    SIGNED_EVENT_REQUIRED_FIELDS
 };
 
 
