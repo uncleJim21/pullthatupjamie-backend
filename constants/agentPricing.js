@@ -16,7 +16,8 @@ const AGENT_PRICING_MICRO_USD = {
   'jamie-assist':         20000,   // $0.02 per assist (LLM call)
   'ai-analyze':           20000,   // $0.02 per analysis (LLM call)
   'submit-on-demand-run': 450000,  // $0.45 per on-demand run (heavy processing)
-  'discover-podcasts':    5000     // $0.005 per discovery (LLM extraction + Podcast Index search)
+  'discover-podcasts':    5000,    // $0.005 per discovery (LLM extraction + Podcast Index search)
+  'chapter-search':       8000     // $0.008 per chapter search (keyword match across ~70K chapters + episode enrichment)
 };
 
 // Deposit limits (in sats)
