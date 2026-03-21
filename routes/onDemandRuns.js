@@ -145,8 +145,9 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
         nextSteps: {
           pollJobStatus: {
             description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode.',
-            method: 'GET',
-            url: '/api/on-demand/getOnDemandJobStatus/6b2440adae3f806198eb56c0',
+            method: 'POST',
+            url: '/api/on-demand/getOnDemandJobStatus',
+            body: { jobId: '6b2440adae3f806198eb56c0' },
             pollIntervalSeconds: 15
           },
           searchTranscripts: {
@@ -303,8 +304,9 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
                 nextSteps: {
                     pollJobStatus: {
                         description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode.',
-                        method: 'GET',
-                        url: `/api/on-demand/getOnDemandJobStatus/${lookupHash}`,
+                        method: 'POST',
+                        url: '/api/on-demand/getOnDemandJobStatus',
+                        body: { jobId: lookupHash },
                         pollIntervalSeconds: 15
                     },
                     searchTranscripts: {
@@ -381,14 +383,20 @@ function formatChapter(doc) {
 }
 
 /**
- * GET /api/on-demand/getOnDemandJobStatus/:jobId
+ * POST /api/on-demand/getOnDemandJobStatus
  * Get status of an on-demand job. When complete, includes chapter data and nextSteps.
  */
-router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
+router.post('/getOnDemandJobStatus', async (req, res) => {
     // #swagger.tags = ['On-Demand Transcription']
     // #swagger.summary = 'Get transcription job status with chapters on completion'
     // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.'
-    /* #swagger.parameters['jobId'] = { in: 'path', required: true, type: 'string', description: 'Job ID returned by submitOnDemandRun' } */
+    /* #swagger.parameters['body'] = {
+      in: 'body',
+      required: true,
+      schema: {
+        jobId: '6b2440adae3f806198eb56c0'
+      }
+    } */
     /* #swagger.responses[200] = {
       description: 'Job status with optional chapter enrichment',
       schema: {
@@ -424,7 +432,7 @@ router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
       schema: { $ref: '#/components/schemas/Error' }
     } */
     try {
-        const { jobId } = req.params;
+        const { jobId } = req.body;
 
         if (!jobId) {
             return res.status(400).json({
