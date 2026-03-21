@@ -116,8 +116,56 @@ function isPeriodExpired(periodStart, periodLengthDays) {
  * Uses new entitlement middleware for authentication and quota management
  */
 router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN), async (req, res) => {
+    // #swagger.tags = ['On-Demand Transcription']
+    // #swagger.summary = 'Submit a podcast episode for transcription, chaptering, and semantic indexing'
+    // #swagger.description = 'Submits a podcast episode for full transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Returns a pollable job status URL. Once indexed, content is searchable via /api/search-quotes. L402 prepaid access limited to 1 episode per request. Use /api/discover-podcasts to find episode GUIDs.\n\nA metered free tier is available: send the header `X-Free-Tier: true` to use quota-based access without payment. Anonymous users get 2 transcriptions per week; registered users get 5 per month. Omit the header (or use L402 credentials) for paid access.'
+    /* #swagger.parameters['body'] = {
+      in: 'body',
+      required: true,
+      schema: {
+        message: 'Transcribe latest episode from Bankless',
+        parameters: {},
+        episodes: [
+          {
+            guid: 'dd043afd-d7f8-4a96-97aa-a24a743fc219',
+            feedGuid: '3d510171-b9ab-517c-bbf3-1fd5542479ad',
+            feedId: '357756'
+          }
+        ]
+      }
+    } */
+    /* #swagger.responses[200] = {
+      description: 'Job submitted successfully',
+      schema: {
+        success: true,
+        jobId: '6b2440adae3f806198eb56c0',
+        totalEpisodes: 1,
+        totalFeeds: 1,
+        message: 'On-demand run submitted successfully',
+        nextSteps: {
+          pollJobStatus: {
+            description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode.',
+            method: 'GET',
+            url: '/api/on-demand/getOnDemandJobStatus/6b2440adae3f806198eb56c0',
+            pollIntervalSeconds: 15
+          },
+          searchTranscripts: {
+            description: 'Once job is complete, search the transcribed content with semantic queries',
+            method: 'POST',
+            url: '/api/search-quotes',
+            body: { query: '...', feedIds: ['357756'], smartMode: true }
+          }
+        }
+      }
+    } */
+    /* #swagger.responses[400] = {
+      description: 'Validation error or L402 batch limit exceeded',
+      schema: { $ref: '#/components/schemas/Error' }
+    } */
+    /* #swagger.responses[402] = {
+      description: 'Payment required — returns Lightning invoice'
+    } */
     try {
-        // Identity and entitlement already resolved by middleware
         const { identity, entitlement } = req;
 
         const { message, parameters, episodes } = req.body;
@@ -337,6 +385,44 @@ function formatChapter(doc) {
  * Get status of an on-demand job. When complete, includes chapter data and nextSteps.
  */
 router.get('/getOnDemandJobStatus/:jobId', async (req, res) => {
+    // #swagger.tags = ['On-Demand Transcription']
+    // #swagger.summary = 'Get transcription job status with chapters on completion'
+    // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.'
+    /* #swagger.parameters['jobId'] = { in: 'path', required: true, type: 'string', description: 'Job ID returned by submitOnDemandRun' } */
+    /* #swagger.responses[200] = {
+      description: 'Job status with optional chapter enrichment',
+      schema: {
+        success: true,
+        jobId: '6b2440adae3f806198eb56c0',
+        status: 'complete',
+        stats: { totalEpisodes: 1, totalFeeds: 1, episodesProcessed: 1, episodesSkipped: 0, episodesFailed: 0 },
+        episodes: [{
+          guid: 'dd043afd-d7f8-4a96-97aa-a24a743fc219',
+          feedId: '357756',
+          status: 'success',
+          chapters: [{
+            chapterNumber: 1,
+            headline: 'SEC and CFTC Developments in Crypto',
+            keywords: ['SEC', 'CFTC', 'crypto regulations'],
+            summary: 'Discussion on SEC and CFTC actions regarding crypto...',
+            startTime: 0,
+            endTime: 159.48
+          }]
+        }],
+        nextSteps: {
+          searchTranscripts: {
+            description: 'Semantic search across the newly transcribed content with timestamped deeplinks',
+            method: 'POST',
+            url: '/api/search-quotes',
+            body: { query: '...', feedIds: ['357756'], smartMode: true }
+          }
+        }
+      }
+    } */
+    /* #swagger.responses[404] = {
+      description: 'Job not found',
+      schema: { $ref: '#/components/schemas/Error' }
+    } */
     try {
         const { jobId } = req.params;
 

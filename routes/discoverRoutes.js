@@ -272,7 +272,7 @@ function buildNextSteps(feed, transcriptAvailable) {
 router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.DISCOVER_PODCASTS), async (req, res) => {
   // #swagger.tags = ['Discovery']
   // #swagger.summary = 'LLM-assisted podcast discovery across the Podcast Index catalog'
-  // #swagger.description = 'Takes a natural language query, classifies intent, routes to the appropriate Podcast Index search backends (byterm, byperson, trending), and returns matching podcasts enriched with transcript availability flags and actionable next-step endpoints.'
+  // #swagger.description = 'Takes a natural language query, classifies intent via LLM, and routes to the appropriate Podcast Index search backends (byterm, byperson, trending). Returns matching podcasts enriched with transcript availability flags and actionable next-step endpoints. Use for deep research, person dossiers, prospecting prep, competitive intelligence, or topic exploration.\n\nA metered free tier is available: send the header `X-Free-Tier: true` to use quota-based access without payment. Anonymous users get 10 queries per week; registered users get 30 per month. Omit the header (or use L402 credentials) for paid access.'
   /* #swagger.parameters['body'] = {
     in: 'body',
     required: true,
