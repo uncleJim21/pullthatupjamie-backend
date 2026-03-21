@@ -716,6 +716,299 @@
         }
       }
     },
+    "/api/search-chapters": {
+      "post": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Search chapters across the podcast corpus",
+        "description": "Searches chapter metadata (keywords, headline, summary) across the entire corpus. Returns matching chapters with parent episode context. L402 payment required.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "search": {
+                  "type": "string",
+                  "example": "Lightning Network"
+                },
+                "feedIds": {
+                  "type": "array",
+                  "example": [
+                    "1015378"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "limit": {
+                  "type": "number",
+                  "example": 20
+                },
+                "page": {
+                  "type": "number",
+                  "example": 1
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated chapter search results with episode context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "chapter": {
+                            "$ref": "#/components/schemas/Chapter"
+                          },
+                          "episode": {
+                            "type": "object",
+                            "properties": {
+                              "guid": {
+                                "type": "string",
+                                "example": "abc123"
+                              },
+                              "title": {
+                                "type": "string",
+                                "example": "Bitcoin Scaling Solutions"
+                              },
+                              "creator": {
+                                "type": "string",
+                                "example": "Peter McCormack"
+                              },
+                              "publishedDate": {
+                                "type": "string",
+                                "example": "2026-01-15"
+                              },
+                              "feedId": {
+                                "type": "string",
+                                "example": "123456"
+                              },
+                              "imageUrl": {
+                                "type": "string",
+                                "example": "https://..."
+                              },
+                              "listenLink": {
+                                "type": "string",
+                                "example": "https://..."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "search": {
+                          "type": "string",
+                          "example": "Lightning Network"
+                        },
+                        "feedIds": {
+                          "type": "array",
+                          "example": [
+                            "1015378"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "chapter": {
+                            "$ref": "#/components/schemas/Chapter"
+                          },
+                          "episode": {
+                            "type": "object",
+                            "properties": {
+                              "guid": {
+                                "type": "string",
+                                "example": "abc123"
+                              },
+                              "title": {
+                                "type": "string",
+                                "example": "Bitcoin Scaling Solutions"
+                              },
+                              "creator": {
+                                "type": "string",
+                                "example": "Peter McCormack"
+                              },
+                              "publishedDate": {
+                                "type": "string",
+                                "example": "2026-01-15"
+                              },
+                              "feedId": {
+                                "type": "string",
+                                "example": "123456"
+                              },
+                              "imageUrl": {
+                                "type": "string",
+                                "example": "https://..."
+                              },
+                              "listenLink": {
+                                "type": "string",
+                                "example": "https://..."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "query": {
+                      "type": "object",
+                      "properties": {
+                        "search": {
+                          "type": "string",
+                          "example": "Lightning Network"
+                        },
+                        "feedIds": {
+                          "type": "array",
+                          "example": [
+                            "1015378"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing search parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Bad request"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "search is required in request body"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Bad request"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "search is required in request body"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment required (L402)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/L402Challenge"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/L402Challenge"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "search": {
+                    "example": "any"
+                  },
+                  "feedIds": {
+                    "example": "any"
+                  },
+                  "limit": {
+                    "example": "any"
+                  },
+                  "page": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/on-demand/submitOnDemandRun": {
       "post": {
         "tags": [
@@ -3640,284 +3933,6 @@
                   "xml": {
                     "name": "main"
                   }
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/corpus/chapters": {
-      "get": {
-        "tags": [
-          "Corpus Discovery"
-        ],
-        "summary": "Search chapters across the corpus",
-        "description": "Searches chapter metadata (keywords, headline, summary) across the entire corpus. Returns matching chapters with parent episode context. L402 payment required.",
-        "parameters": [
-          {
-            "name": "search",
-            "in": "query",
-            "required": true,
-            "description": "Keyword or phrase to search for",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "feedIds",
-            "in": "query",
-            "items": {
-              "type": "string"
-            },
-            "description": "Filter by feed IDs (optional)",
-            "required": false,
-            "schema": {
-              "type": "array"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Results per page (default: 20, max: 200)",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "name": "page",
-            "in": "query",
-            "description": "Page number (default: 1)",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Paginated chapter search results with episode context",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "chapter": {
-                            "$ref": "#/components/schemas/Chapter"
-                          },
-                          "episode": {
-                            "type": "object",
-                            "properties": {
-                              "guid": {
-                                "type": "string",
-                                "example": "abc123"
-                              },
-                              "title": {
-                                "type": "string",
-                                "example": "Bitcoin Scaling Solutions"
-                              },
-                              "creator": {
-                                "type": "string",
-                                "example": "Peter McCormack"
-                              },
-                              "publishedDate": {
-                                "type": "string",
-                                "example": "2026-01-15"
-                              },
-                              "feedId": {
-                                "type": "string",
-                                "example": "123456"
-                              },
-                              "imageUrl": {
-                                "type": "string",
-                                "example": "https://..."
-                              },
-                              "listenLink": {
-                                "type": "string",
-                                "example": "https://..."
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "pagination": {
-                      "$ref": "#/components/schemas/Pagination"
-                    },
-                    "query": {
-                      "type": "object",
-                      "properties": {
-                        "search": {
-                          "type": "string",
-                          "example": "lightning"
-                        },
-                        "feedIds": {
-                          "type": "array",
-                          "example": [
-                            "123456"
-                          ],
-                          "items": {
-                            "type": "string"
-                          }
-                        }
-                      }
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "chapter": {
-                            "$ref": "#/components/schemas/Chapter"
-                          },
-                          "episode": {
-                            "type": "object",
-                            "properties": {
-                              "guid": {
-                                "type": "string",
-                                "example": "abc123"
-                              },
-                              "title": {
-                                "type": "string",
-                                "example": "Bitcoin Scaling Solutions"
-                              },
-                              "creator": {
-                                "type": "string",
-                                "example": "Peter McCormack"
-                              },
-                              "publishedDate": {
-                                "type": "string",
-                                "example": "2026-01-15"
-                              },
-                              "feedId": {
-                                "type": "string",
-                                "example": "123456"
-                              },
-                              "imageUrl": {
-                                "type": "string",
-                                "example": "https://..."
-                              },
-                              "listenLink": {
-                                "type": "string",
-                                "example": "https://..."
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "pagination": {
-                      "$ref": "#/components/schemas/Pagination"
-                    },
-                    "query": {
-                      "type": "object",
-                      "properties": {
-                        "search": {
-                          "type": "string",
-                          "example": "lightning"
-                        },
-                        "feedIds": {
-                          "type": "array",
-                          "example": [
-                            "123456"
-                          ],
-                          "items": {
-                            "type": "string"
-                          }
-                        }
-                      }
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing search parameter",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Bad request"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "search query parameter is required"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Bad request"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "search query parameter is required"
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "Payment required (L402)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/L402Challenge"
-                }
-              },
-              "application/xml": {
-                "schema": {
-                  "$ref": "#/components/schemas/L402Challenge"
                 }
               }
             }

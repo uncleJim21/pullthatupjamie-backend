@@ -163,7 +163,7 @@ curl -s "API_BASE/api/corpus/feeds/7648986/episodes?search=Berlin&limit=20"
 
 Search is fuzzy — "Berlin" matches "NAG25: Berlin, Germany".
 
-### Chapter Search
+### Chapter Search (Episode-Level)
 
 Get structured topic navigation within an episode:
 
@@ -180,7 +180,29 @@ Returns chapters with:
 
 **Use case:** "What privacy topics are in NAG25?" → get chapters → filter by keywords like "privacy", "encryption", "surveillance".
 
-**Limitation:** No corpus-wide chapter search yet (only episode-level). To search chapters across all episodes, you'd need to iterate through episodes first.
+### Chapter Search (Corpus-Wide, L402)
+
+Search chapter keywords across the entire corpus:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: L402 MACAROON:PREIMAGE" \
+  -H "Content-Type: application/json" \
+  -d '{"search": "Lightning Network", "limit": 20}' \
+  "API_BASE/api/search-chapters"
+```
+
+**Cost:** $0.008 per call. Matches against curated chapter keyword tags using exact match.
+
+**Parameters:**
+- `search` (required) — keyword to match (e.g., "Lightning Network", "privacy", "eCash")
+- `feedIds` (optional) — array of feed IDs to scope results
+- `limit` (default: 20, max: 200) — results per page
+- `page` (default: 1)
+
+**Returns** each result as `{ chapter, episode }` — chapter metadata (headline, keywords, summary, timestamps) paired with the parent episode (title, creator, date, feedId, imageUrl).
+
+**Use case:** "Find all discussions about Lightning Network across every podcast" → returns chapters tagged with that keyword, organized with episode context. No need to iterate episode by episode.
 
 ---
 
