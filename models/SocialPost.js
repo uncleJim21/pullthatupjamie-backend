@@ -56,26 +56,17 @@ const SocialPostSchema = new mongoose.Schema({
     }
   },
   
-  // Platform-specific data
+  // Platform-specific data (Mixed to allow signedEvent and future platform fields)
   platformData: {
-    // Twitter specific
-    twitterPostId: { type: String, required: false },
-    twitterPostUrl: { type: String, required: false },
-    
-    // Nostr specific  
-    nostrEventId: { type: String, required: false },
-    nostrSignature: { type: String, required: false },
-    nostrPubkey: { type: String, required: false },
-    nostrCreatedAt: { type: Number, required: false }, // Unix timestamp used for signing
-    nostrRelays: [{ type: String }],
-    nostrPostUrl: { type: String, required: false } // URL for viewing on Primal
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   },
   
   // Status tracking
   status: {
     type: String,
     enum: ['scheduled', 'processing', 'posted', 'failed', 'cancelled', 'unsigned'],
-    default: 'scheduled',
+    default: 'unsigned',
     index: true
   },
   

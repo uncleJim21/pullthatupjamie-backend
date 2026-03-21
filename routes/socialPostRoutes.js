@@ -3,7 +3,7 @@ const router = express.Router();
 const SocialPost = require('../models/SocialPost');
 const { validatePrivs } = require('../middleware/validate-privs');
 const { serviceHmac } = require('../middleware/hmac');
-const { schedulePosts } = require('../utils/SocialPostService');
+const { schedulePosts, validateSignedEvent, DEFAULT_POST_RELAYS } = require('../utils/SocialPostService');
 
 /**
  * POST /api/social/posts
@@ -12,9 +12,9 @@ const { schedulePosts } = require('../utils/SocialPostService');
  */
 router.post('/posts', validatePrivs, async (req, res) => {
     try {
-        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', scheduledPostSlotId } = req.body;
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', scheduledPostSlotId, status } = req.body;
         const createdPosts = await schedulePosts({
-            adminUserId: req.user.adminUserId,  // NEW: For non-email users
+            adminUserId: req.user.adminUserId,
             adminEmail: req.user.adminEmail,
             text,
             mediaUrl,
@@ -22,7 +22,8 @@ router.post('/posts', validatePrivs, async (req, res) => {
             platforms,
             timezone,
             platformData: req.body.platformData,
-            scheduledPostSlotId
+            scheduledPostSlotId,
+            status
         });
         res.json({
             success: true,
@@ -39,7 +40,7 @@ router.post('/posts', validatePrivs, async (req, res) => {
 
     } catch (error) {
         console.error('Error creating social post:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             error: 'Failed to create social post',
             message: error.message
         });
@@ -108,7 +109,7 @@ router.post('/posts/unsigned', serviceHmac({ requiredScopes: ['svc:social:schedu
 // HMAC-only duplicate endpoint (service-to-service scheduling)
 router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }), async (req, res) => {
     try {
-        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', adminEmail, platformData, scheduledPostSlotId } = req.body;
+        const { text, mediaUrl, scheduledFor, platforms, timezone = 'America/Chicago', adminEmail, platformData, scheduledPostSlotId, status } = req.body;
         // Service caller must provide adminEmail explicitly
         if (!adminEmail) {
             return res.status(400).json({ error: 'adminEmail is required for service scheduling' });
@@ -121,7 +122,8 @@ router.post('/schedule', serviceHmac({ requiredScopes: ['svc:social:schedule'] }
             platforms,
             timezone,
             platformData,
-            scheduledPostSlotId
+            scheduledPostSlotId,
+            status
         });
         res.json({
             success: true,
@@ -339,47 +341,23 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
         // Handle platform-specific data updates and unsigned → scheduled transition
         if (post.platform === 'nostr' && req.body.platformData) {
             const nostrData = req.body.platformData;
-            
-            // Check if this is signing an unsigned post
-            const isSigningUnsignedPost = post.status === 'unsigned' && 
-                nostrData.nostrEventId && nostrData.nostrSignature && 
-                nostrData.nostrPubkey && nostrData.nostrCreatedAt;
-            
-            // Validate required Nostr fields are present for update
-            if (nostrData.nostrEventId && nostrData.nostrSignature && 
-                nostrData.nostrPubkey && nostrData.nostrCreatedAt) {
-                
-                updates.platformData = {
-                    ...post.platformData, // Keep any existing fields
-                    nostrEventId: nostrData.nostrEventId,
-                    nostrSignature: nostrData.nostrSignature,
-                    nostrPubkey: nostrData.nostrPubkey,
-                    nostrCreatedAt: nostrData.nostrCreatedAt,
-                    nostrRelays: nostrData.nostrRelays || post.platformData.nostrRelays,
-                    nostrPostUrl: nostrData.nostrPostUrl,
-                    signedEvent: nostrData.signedEvent // Store the complete signed event
-                };
-                
-                // If signing an unsigned post, change status to scheduled
-                if (isSigningUnsignedPost) {
-                    updates.status = 'scheduled';
-                    console.log(`Converting unsigned post ${post._id} to scheduled status`);
-                }
-                
-            } else if (Object.keys(nostrData).length > 0) {
-                // For unsigned posts, provide more helpful error message
-                if (post.status === 'unsigned') {
-                    return res.status(400).json({
-                        error: 'Incomplete signing data',
-                        message: 'To sign an unsigned Nostr post, all required fields must be provided: nostrEventId, nostrSignature, nostrPubkey, nostrCreatedAt'
-                    });
-                } else {
-                    return res.status(400).json({
-                        error: 'Invalid Nostr data',
-                        message: 'When updating a Nostr post, all required Nostr fields must be provided (eventId, signature, pubkey, createdAt)'
-                    });
-                }
+            const mergedPlatformData = { ...(post.platformData || {}), ...nostrData };
+
+            if (mergedPlatformData.signedEvent) {
+                validateSignedEvent(mergedPlatformData.signedEvent);
             }
+
+            if (!mergedPlatformData.nostrRelays || mergedPlatformData.nostrRelays.length === 0) {
+                mergedPlatformData.nostrRelays = [...DEFAULT_POST_RELAYS];
+            }
+
+            // Promote unsigned -> scheduled when signing data is provided
+            if (post.status === 'unsigned' && (nostrData.nostrSignature || nostrData.signedEvent)) {
+                updates.status = 'scheduled';
+                console.log(`Converting unsigned post ${post._id} to scheduled status`);
+            }
+
+            updates.platformData = mergedPlatformData;
         }
 
         // Update the post
@@ -397,7 +375,7 @@ router.put('/posts/:postId', validatePrivs, async (req, res) => {
 
     } catch (error) {
         console.error('Error updating social post:', error);
-        res.status(500).json({
+        res.status(error.status || 500).json({
             error: 'Failed to update social post',
             message: error.message
         });

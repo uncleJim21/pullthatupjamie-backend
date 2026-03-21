@@ -113,25 +113,30 @@ class SocialPostProcessor {
                 });
                 
             } else if (post.platform === 'nostr') {
-                // Check if we have the required Nostr data
-                if (!post.platformData?.nostrEventId || !post.platformData?.nostrSignature || !post.platformData?.nostrPubkey) {
-                    throw new Error('Missing required Nostr data: eventId, signature, or pubkey');
-                }
-
-                // Use the exact signed event from the frontend - don't reconstruct it
-                // The frontend has already signed the complete event with the correct content
-                const signedEvent = post.platformData.signedEvent || {
-                    id: post.platformData.nostrEventId,
-                    pubkey: post.platformData.nostrPubkey,
-                    created_at: post.platformData.nostrCreatedAt,
+                // Prefer complete signedEvent; fall back to reconstruction for legacy posts
+                const signedEvent = post.platformData?.signedEvent || {
+                    id: post.platformData?.nostrEventId,
+                    pubkey: post.platformData?.nostrPubkey,
+                    created_at: post.platformData?.nostrCreatedAt,
                     kind: 1,
                     tags: [],
                     content: post.content.text,
-                    sig: post.platformData.nostrSignature
+                    sig: post.platformData?.nostrSignature
                 };
 
-                // Use NostrService to post
-                const relays = post.platformData.nostrRelays || this.nostrService.DEFAULT_RELAYS;
+                if (!signedEvent.id || !signedEvent.sig || !signedEvent.pubkey) {
+                    throw new Error(`Missing required Nostr data (eventId, signature, or pubkey) for post ${post._id}`);
+                }
+
+                if (post.platformData?.signedEvent) {
+                    console.log(`Using verified signedEvent for post ${post._id}`);
+                } else {
+                    console.warn(`Post ${post._id} using reconstructed event (legacy). Consider re-signing for reliability.`);
+                }
+
+                const relays = (post.platformData?.nostrRelays && post.platformData.nostrRelays.length > 0)
+                    ? post.platformData.nostrRelays
+                    : this.nostrService.DEFAULT_RELAYS;
                 result = await this.nostrService.postToNostr({ signedEvent, relays });
                 
                 // Check if Nostr posting was actually successful
