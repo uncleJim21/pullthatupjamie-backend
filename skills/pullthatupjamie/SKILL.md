@@ -74,7 +74,7 @@ Every paid request goes through the same L402 flow: hit an endpoint, receive a 4
 **You choose how to use it.** Pay per query if you want — that's just a credit you use once. Or deposit more upfront and reuse the same credential across all endpoints until the balance is depleted. The 402 response includes the full pricing table (`creditInfo.pricingMicroUsd`) so you can decide.
 
 **Key points:**
-- **Credential works across all endpoints:** The same `macaroon:preimage` works on `/search-quotes`, `/make-clip`, `/jamie-assist`, etc. until the balance is depleted.
+- **Credential works across all endpoints:** The same `macaroon:preimage` works on `/search-quotes`, `/search-chapters`, `/make-clip`, `/jamie-assist`, etc. until the balance is depleted.
 - **Response headers on every paid request:** `X-Credits-Remaining-USD` and `X-Credits-Cost-USD` tell you your balance and what the call cost.
 - **Custom amount:** The default invoice is 500 sats (~$0.33). To request a different amount, add `?amountSats=N` to any request (min 10, max 500,000 sats). The 402 response will contain an invoice for that amount.
 - **Balance endpoint:** `GET /api/agent/balance` with your L402 credential returns your full balance breakdown.

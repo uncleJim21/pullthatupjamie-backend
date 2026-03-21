@@ -1329,6 +1329,172 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
   }
 });
 
+app.post('/api/search-chapters', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.CHAPTER_SEARCH), async (req, res) => {
+  // #swagger.tags = ['Search']
+  // #swagger.summary = 'Search chapters across the podcast corpus'
+  // #swagger.description = 'Searches chapter metadata (keywords, headline, summary) across the entire corpus. Returns matching chapters with parent episode context. L402 payment required.'
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      search: 'Lightning Network',
+      feedIds: ['1015378'],
+      limit: 20,
+      page: 1
+    }
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Paginated chapter search results with episode context',
+    schema: {
+      data: [{
+        chapter: { $ref: '#/components/schemas/Chapter' },
+        episode: {
+          guid: 'abc123',
+          title: 'Bitcoin Scaling Solutions',
+          creator: 'Peter McCormack',
+          publishedDate: '2026-01-15',
+          feedId: '123456',
+          imageUrl: 'https://...',
+          listenLink: 'https://...'
+        }
+      }],
+      pagination: { $ref: '#/components/schemas/Pagination' },
+      query: { search: 'Lightning Network', feedIds: ['1015378'] }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Missing search parameter',
+    schema: { error: 'Bad request', message: 'search is required in request body' }
+  } */
+  /* #swagger.responses[402] = {
+    description: 'Payment required (L402)',
+    schema: { $ref: '#/components/schemas/L402Challenge' }
+  } */
+  /* #swagger.responses[500] = {
+    description: 'Server error',
+    schema: { $ref: '#/components/schemas/Error' }
+  } */
+  try {
+    const { search, feedIds = [], limit: rawLimit = 20, page: rawPage = 1 } = req.body;
+
+    if (!search || typeof search !== 'string' || search.trim().length === 0) {
+      return res.status(400).json({
+        error: 'Bad request',
+        message: 'search is required in request body'
+      });
+    }
+
+    const searchTerm = search.trim();
+    const limit = Math.min(Math.max(1, parseInt(rawLimit, 10) || 20), 200);
+    const page = Math.max(1, parseInt(rawPage, 10) || 1);
+    const skip = (page - 1) * limit;
+
+    const lower = searchTerm.toLowerCase();
+    const upper = searchTerm.toUpperCase();
+    const titleCase = searchTerm.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    const firstCap = searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1).toLowerCase();
+    const keywordVariants = [...new Set([searchTerm, lower, upper, titleCase, firstCap])];
+
+    const query = {
+      type: 'chapter',
+      'metadataRaw.keywords': { $in: keywordVariants }
+    };
+
+    const feedIdArray = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
+    if (feedIdArray.length > 0) {
+      query.feedId = { $in: feedIdArray };
+    }
+
+    const totalCount = await JamieVectorMetadata.countDocuments(query);
+
+    const chapters = await JamieVectorMetadata.find(query)
+      .select('pineconeId guid feedId start_time end_time metadataRaw')
+      .sort({ 'metadataRaw.headline': 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const uniqueGuids = [...new Set(chapters.map(c => c.guid).filter(Boolean))];
+    const episodeMap = new Map();
+
+    if (uniqueGuids.length > 0) {
+      const episodes = await JamieVectorMetadata.find({
+        type: 'episode',
+        guid: { $in: uniqueGuids }
+      })
+        .select('guid feedId publishedDate metadataRaw')
+        .lean();
+
+      for (const ep of episodes) {
+        episodeMap.set(ep.guid, ep);
+      }
+    }
+
+    const formatChapterResult = (doc) => {
+      const meta = doc.metadataRaw || {};
+      return {
+        pineconeId: doc.pineconeId,
+        chapterNumber: meta.chapterNumber ?? meta.chapter_number ?? null,
+        headline: meta.headline || null,
+        keywords: meta.keywords || [],
+        summary: meta.summary || null,
+        startTime: meta.startTime ?? meta.start_time ?? doc.start_time ?? null,
+        endTime: meta.endTime ?? meta.end_time ?? doc.end_time ?? null,
+        duration: meta.duration || null
+      };
+    };
+
+    const formatEpisodeContext = (doc) => {
+      const meta = doc.metadataRaw || {};
+      return {
+        guid: doc.guid || meta.guid,
+        title: meta.title || null,
+        creator: meta.creator || null,
+        publishedDate: meta.publishedDate || doc.publishedDate || null,
+        feedId: doc.feedId || meta.feedId,
+        imageUrl: meta.imageUrl || meta.episodeImage || null,
+        listenLink: meta.listenLink || null
+      };
+    };
+
+    const nullEpisode = (chapter) => ({
+      guid: chapter.guid, title: null, creator: null,
+      publishedDate: null, feedId: chapter.feedId,
+      imageUrl: null, listenLink: null
+    });
+
+    const data = chapters.map(chapter => ({
+      chapter: formatChapterResult(chapter),
+      episode: episodeMap.has(chapter.guid)
+        ? formatEpisodeContext(episodeMap.get(chapter.guid))
+        : nullEpisode(chapter)
+    }));
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.json({
+      data,
+      pagination: {
+        page,
+        totalPages,
+        totalCount,
+        limit,
+        hasMore: page < totalPages
+      },
+      query: {
+        search: searchTerm,
+        feedIds: feedIdArray.length > 0 ? feedIdArray : null
+      }
+    });
+  } catch (error) {
+    console.error('[search-chapters] Error:', error);
+    res.status(500).json({
+      error: 'Failed to search chapters',
+      details: error.message
+    });
+  }
+});
+
 app.post('/api/stream-search', async (req, res) => {
   const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
