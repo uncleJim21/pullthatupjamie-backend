@@ -50,7 +50,7 @@ function validateSignedEvent(signedEvent) {
  * @param {string} [params.timezone='America/Chicago']
  * @param {Object} [params.platformData]
  * @param {string} [params.scheduledPostSlotId]
- * @param {string} [params.status='unsigned'] - 'unsigned' (default, safe for drafts) or 'scheduled' (requires signedEvent for nostr)
+ * @param {string} [params.status] - 'scheduled' (default) or 'unsigned' (nostr drafts only). Nostr auto-promotes to scheduled when signedEvent is valid.
  * @returns {Promise<Array>} created SocialPost documents
  */
 async function schedulePosts(params) {
@@ -64,7 +64,7 @@ async function schedulePosts(params) {
         timezone = 'America/Chicago',
         platformData: inputPlatformData = {},
         scheduledPostSlotId,
-        status: requestedStatus = 'unsigned'
+        status: requestedStatus
     } = params || {};
 
     // Require at least one identifier
@@ -75,8 +75,10 @@ async function schedulePosts(params) {
     assert(scheduledFor, 'Scheduled date/time is required');
     assert(Array.isArray(platforms) && platforms.length > 0, 'At least one platform must be specified');
 
-    const validStatuses = ['unsigned', 'scheduled'];
-    assert(validStatuses.includes(requestedStatus), `Invalid status: ${requestedStatus}. Must be one of: ${validStatuses.join(', ')}`);
+    if (requestedStatus) {
+        const validStatuses = ['unsigned', 'scheduled'];
+        assert(validStatuses.includes(requestedStatus), `Invalid status: ${requestedStatus}. Must be one of: ${validStatuses.join(', ')}`);
+    }
 
     const validPlatforms = SocialPost.getPlatformOptions();
     const invalidPlatforms = platforms.filter(p => !validPlatforms.includes(p));
@@ -91,11 +93,16 @@ async function schedulePosts(params) {
             platformData.twitterTokens = inputPlatformData.twitterTokens;
         }
 
+        let effectiveStatus = requestedStatus || 'scheduled';
+
         if (platform === 'nostr') {
-            if (requestedStatus === 'scheduled') {
+            if (platformData.signedEvent) {
                 validateSignedEvent(platformData.signedEvent);
-            } else if (platformData.signedEvent) {
-                validateSignedEvent(platformData.signedEvent);
+                effectiveStatus = requestedStatus || 'scheduled';
+            } else if (effectiveStatus === 'scheduled') {
+                // Nostr post wants to be scheduled but has no signedEvent -- downgrade to unsigned
+                effectiveStatus = 'unsigned';
+                console.log(`Nostr post has no signedEvent, setting status to unsigned`);
             }
 
             if (!platformData.nostrRelays || platformData.nostrRelays.length === 0) {
@@ -116,7 +123,7 @@ async function schedulePosts(params) {
                 mediaUrl: hasMedia ? String(mediaUrl) : null
             },
             platformData,
-            status: requestedStatus
+            status: effectiveStatus
         });
 
         await socialPost.save();

@@ -66,7 +66,7 @@ const SocialPostSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['scheduled', 'processing', 'posted', 'failed', 'cancelled', 'unsigned'],
-    default: 'unsigned',
+    default: 'scheduled',
     index: true
   },
   
