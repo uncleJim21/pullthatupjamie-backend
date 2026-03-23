@@ -262,14 +262,13 @@ class NostrService {
         return new Promise(async (resolve) => {
             let socket = null;
             let resolved = false;
-            let successReceived = false;
             let authSent = false;
             
             try {
                 // Connect to relay
                 socket = await this.connectToRelay(relayUrl, timeout);
                 
-                // Set up timeout for publishing
+                // Hard timeout: if no OK received within the limit, it's a failure
                 const timeoutId = setTimeout(() => {
                     if (!resolved) {
                         resolved = true;
@@ -277,8 +276,8 @@ class NostrService {
                             socket.close();
                         }
                         resolve({ 
-                            success: successReceived, // Use successReceived flag
-                            error: successReceived ? null : `Publish timeout to ${relayUrl}`,
+                            success: false,
+                            error: `Publish timeout (${timeout}ms) - no OK received from ${relayUrl}`,
                             relay: relayUrl 
                         });
                     }
@@ -292,27 +291,29 @@ class NostrService {
                         const data = JSON.parse(msg.data);
                         console.log(`Relay ${relayUrl} response:`, data);
                         
-                        // Handle OK response
+                        // Handle OK response (NIP-01: ["OK", event_id, accepted, message])
                         if (Array.isArray(data) && data[0] === "OK" && data[1] === event.id) {
-                            successReceived = true;
+                            const accepted = data[2] !== false;
+                            const reason = data[3] || '';
+                            
                             resolved = true;
                             clearTimeout(timeoutId);
                             socket.removeEventListener('message', handleMessage);
                             socket.close();
                             
-                            resolve({ 
-                                success: true,
-                                error: null,
-                                relay: relayUrl 
-                            });
+                            if (accepted) {
+                                resolve({ success: true, error: null, relay: relayUrl });
+                            } else {
+                                console.warn(`Relay ${relayUrl} rejected event: ${reason}`);
+                                resolve({ success: false, error: `Rejected: ${reason}`, relay: relayUrl });
+                            }
                         }
                         
-                        // Handle AUTH response
+                        // Handle AUTH challenge
                         else if (Array.isArray(data) && data[0] === "AUTH" && !authSent) {
                             authSent = true;
                             console.log(`Relay ${relayUrl} requires auth, sending challenge response`);
                             
-                            // Send auth challenge response
                             const authEvent = {
                                 kind: 22242,
                                 created_at: Math.floor(Date.now() / 1000),
@@ -321,7 +322,6 @@ class NostrService {
                             };
                             socket.send(JSON.stringify(["AUTH", authEvent]));
                             
-                            // Resend the original event after auth
                             setTimeout(() => {
                                 if (!resolved && socket.readyState === WebSocket.OPEN) {
                                     const publishMessage = JSON.stringify(["EVENT", event]);
@@ -331,17 +331,14 @@ class NostrService {
                             }, 100);
                         }
                         
-                        // Handle NOTICE response (usually errors)
+                        // Handle NOTICE (informational, not a publish confirmation)
                         else if (Array.isArray(data) && data[0] === "NOTICE") {
                             console.warn(`Relay ${relayUrl} notice:`, data[1]);
-                            // Don't fail on notices, some relays send them as info
                         }
                         
-                        // Handle EOSE (end of stored events)
+                        // EOSE is a subscription response, not a publish confirmation -- ignore it
                         else if (Array.isArray(data) && data[0] === "EOSE") {
-                            // Some relays send EOSE to confirm receipt
-                            console.log(`Relay ${relayUrl} sent EOSE, considering as success`);
-                            successReceived = true;
+                            console.log(`Relay ${relayUrl} sent EOSE (not a publish confirmation, ignoring)`);
                         }
                         
                     } catch (error) {
@@ -349,15 +346,14 @@ class NostrService {
                     }
                 };
                 
-                // Handle socket close
-                socket.onclose = (event) => {
-                    console.log(`Relay ${relayUrl} connection closed:`, event.code, event.reason);
+                socket.onclose = (closeEvent) => {
+                    console.log(`Relay ${relayUrl} connection closed:`, closeEvent.code, closeEvent.reason);
                     if (!resolved) {
                         resolved = true;
                         clearTimeout(timeoutId);
                         resolve({ 
-                            success: successReceived,
-                            error: successReceived ? null : `Connection closed: ${event.reason || 'Unknown reason'}`,
+                            success: false,
+                            error: `Connection closed before OK received: ${closeEvent.reason || 'Unknown reason'}`,
                             relay: relayUrl 
                         });
                     }
@@ -369,24 +365,6 @@ class NostrService {
                 const publishMessage = JSON.stringify(["EVENT", event]);
                 console.log(`Sending to relay ${relayUrl}:`, publishMessage);
                 socket.send(publishMessage);
-                
-                // Some relays don't send explicit OK messages
-                // Consider it a success if we can send the message and keep the connection open
-                setTimeout(() => {
-                    if (!resolved && socket.readyState === WebSocket.OPEN) {
-                        console.log(`Relay ${relayUrl}: No explicit OK received, assuming success`);
-                        successReceived = true;
-                        resolved = true;
-                        clearTimeout(timeoutId);
-                        socket.removeEventListener('message', handleMessage);
-                        socket.close();
-                        resolve({ 
-                            success: true, 
-                            error: null,
-                            relay: relayUrl 
-                        });
-                    }
-                }, 2000); // Wait 2 seconds for implicit success
                 
             } catch (error) {
                 console.error(`Error publishing to ${relayUrl}:`, error);
