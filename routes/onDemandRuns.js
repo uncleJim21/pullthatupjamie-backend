@@ -318,7 +318,7 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
                 },
                 nextSteps: {
                     pollJobStatus: {
-                        description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode.',
+                        description: 'Poll until status is "complete". Typical transcription takes 30-120 seconds per episode. If you paid via L402, include the same Authorization header when polling to receive transcript download URLs in the response.',
                         method: 'POST',
                         url: '/api/on-demand/getOnDemandJobStatus',
                         body: { jobId: lookupHash },
@@ -428,7 +428,7 @@ function formatChapter(doc) {
 router.post('/getOnDemandJobStatus', async (req, res) => {
     // #swagger.tags = ['On-Demand Transcription']
     // #swagger.summary = 'Get transcription job status with chapters on completion'
-    // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.\n\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a short-lived (3 hour) pre-signed URL to download the full transcript JSON.'
+    // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required for basic polling — anyone with the jobId can poll.\n\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a relative path to GET /api/on-demand/transcript/{jobId}/{guid} that streams the full transcript JSON through an authenticated proxy. The same L402 credential must be presented to that endpoint.'
     /* #swagger.parameters['body'] = {
       in: 'body',
       required: true,
@@ -456,9 +456,15 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
             startTime: 0,
             endTime: 159.48
           }],
-          transcriptUrl: 'https://cascdr-transcripts.nyc3.digitaloceanspaces.com/dd043afd-...?X-Amz-Signature=...'
+          transcriptUrl: '/api/on-demand/transcript/6b2440adae3f806198eb56c0/dd043afd-d7f8-4a96-97aa-a24a743fc219'
         }],
         nextSteps: {
+          downloadTranscript: {
+            description: 'Download the full transcript JSON for each completed episode. Requires the same L402 credential that paid for the job. The transcriptUrl for each episode is included above when a valid L402 credential is presented.',
+            method: 'GET',
+            url: '/api/on-demand/transcript/{jobId}/{guid}',
+            headers: { Authorization: 'L402 <macaroon>:<preimage>' }
+          },
           searchTranscripts: {
             description: 'Semantic search across the newly transcribed content with timestamped deeplinks',
             method: 'POST',
@@ -567,6 +573,15 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
                     }
                 }
             };
+
+            const hasTranscriptUrls = enrichedEpisodes.some(ep => ep.transcriptUrl);
+            if (hasTranscriptUrls) {
+                response.nextSteps.downloadTranscript = {
+                    description: 'Download the full transcript JSON for each completed episode. Use the transcriptUrl from each episode above. Requires the same L402 credential.',
+                    method: 'GET',
+                    headers: { Authorization: 'L402 <macaroon>:<preimage>' }
+                };
+            }
         }
 
         res.json(response);
