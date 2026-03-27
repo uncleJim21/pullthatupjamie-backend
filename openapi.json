@@ -37,7 +37,7 @@
     },
     {
       "name": "On-Demand Transcription",
-      "description": "Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. Once indexed, content is searchable via the Search endpoints."
+      "description": "Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. L402 payers can also download full transcript JSON files by presenting the same credential when polling job status. Once indexed, content is searchable via the Search endpoints."
     },
     {
       "name": "Research Sessions",
@@ -1092,7 +1092,7 @@
                           "properties": {
                             "description": {
                               "type": "string",
-                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode. If you paid via L402, include the same Authorization header when polling to receive transcript download URLs in the response."
                             },
                             "method": {
                               "type": "string",
@@ -1196,7 +1196,7 @@
                           "properties": {
                             "description": {
                               "type": "string",
-                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode. If you paid via L402, include the same Authorization header when polling to receive transcript download URLs in the response."
                             },
                             "method": {
                               "type": "string",
@@ -1320,7 +1320,7 @@
           "On-Demand Transcription"
         ],
         "summary": "Get transcription job status with chapters on completion",
-        "description": "Returns job status and per-episode progress. When status is \"complete\", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.",
+        "description": "Returns job status and per-episode progress. When status is \"complete\", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required for basic polling — anyone with the jobId can poll.\n\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a relative path to `GET /api/on-demand/transcript/{jobId}/{guid}` that streams the full transcript JSON through an authenticated proxy. The same L402 credential must be presented to that endpoint.",
         "parameters": [
           {
             "name": "body",
@@ -1335,6 +1335,13 @@
                 }
               }
             }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "type": "string",
+            "description": "Optional L402 credential (`L402 <macaroon>:<preimage>`). When present and matching the credential that paid for the job, transcript download URLs are included in each completed episode."
           }
         ],
         "responses": {
@@ -1437,6 +1444,11 @@
                                 }
                               }
                             }
+                          },
+                          "transcriptUrl": {
+                            "type": "string",
+                            "description": "Only present when a valid matching L402 credential is provided in the Authorization header. Relative path to download the full transcript JSON.",
+                            "example": "/api/on-demand/transcript/6b2440adae3f806198eb56c0/dd043afd-d7f8-4a96-97aa-a24a743fc219"
                           }
                         }
                       }
@@ -1444,6 +1456,29 @@
                     "nextSteps": {
                       "type": "object",
                       "properties": {
+                        "downloadTranscript": {
+                          "type": "object",
+                          "description": "Only present when transcriptUrl is included in episodes (i.e. valid L402 credential was provided).",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Download the full transcript JSON for each completed episode. Use the transcriptUrl from each episode above. Requires the same L402 credential."
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "GET"
+                            },
+                            "headers": {
+                              "type": "object",
+                              "properties": {
+                                "Authorization": {
+                                  "type": "string",
+                                  "example": "L402 <macaroon>:<preimage>"
+                                }
+                              }
+                            }
+                          }
+                        },
                         "searchTranscripts": {
                           "type": "object",
                           "properties": {
@@ -1493,152 +1528,7 @@
               },
               "application/xml": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "type": "boolean",
-                      "example": true
-                    },
-                    "jobId": {
-                      "type": "string",
-                      "example": "6b2440adae3f806198eb56c0"
-                    },
-                    "status": {
-                      "type": "string",
-                      "example": "complete"
-                    },
-                    "stats": {
-                      "type": "object",
-                      "properties": {
-                        "totalEpisodes": {
-                          "type": "number",
-                          "example": 1
-                        },
-                        "totalFeeds": {
-                          "type": "number",
-                          "example": 1
-                        },
-                        "episodesProcessed": {
-                          "type": "number",
-                          "example": 1
-                        },
-                        "episodesSkipped": {
-                          "type": "number",
-                          "example": 0
-                        },
-                        "episodesFailed": {
-                          "type": "number",
-                          "example": 0
-                        }
-                      }
-                    },
-                    "episodes": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "guid": {
-                            "type": "string",
-                            "example": "dd043afd-d7f8-4a96-97aa-a24a743fc219"
-                          },
-                          "feedId": {
-                            "type": "string",
-                            "example": "357756"
-                          },
-                          "status": {
-                            "type": "string",
-                            "example": "success"
-                          },
-                          "chapters": {
-                            "type": "array",
-                            "items": {
-                              "type": "object",
-                              "properties": {
-                                "chapterNumber": {
-                                  "type": "number",
-                                  "example": 1
-                                },
-                                "headline": {
-                                  "type": "string",
-                                  "example": "SEC and CFTC Developments in Crypto"
-                                },
-                                "keywords": {
-                                  "type": "array",
-                                  "example": [
-                                    "SEC",
-                                    "CFTC",
-                                    "crypto regulations"
-                                  ],
-                                  "items": {
-                                    "type": "string"
-                                  }
-                                },
-                                "summary": {
-                                  "type": "string",
-                                  "example": "Discussion on SEC and CFTC actions regarding crypto..."
-                                },
-                                "startTime": {
-                                  "type": "number",
-                                  "example": 0
-                                },
-                                "endTime": {
-                                  "type": "number",
-                                  "example": 159.48
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "nextSteps": {
-                      "type": "object",
-                      "properties": {
-                        "searchTranscripts": {
-                          "type": "object",
-                          "properties": {
-                            "description": {
-                              "type": "string",
-                              "example": "Semantic search across the newly transcribed content with timestamped deeplinks"
-                            },
-                            "method": {
-                              "type": "string",
-                              "example": "POST"
-                            },
-                            "url": {
-                              "type": "string",
-                              "example": "/api/search-quotes"
-                            },
-                            "body": {
-                              "type": "object",
-                              "properties": {
-                                "query": {
-                                  "type": "string",
-                                  "example": "..."
-                                },
-                                "feedIds": {
-                                  "type": "array",
-                                  "example": [
-                                    "357756"
-                                  ],
-                                  "items": {
-                                    "type": "string"
-                                  }
-                                },
-                                "smartMode": {
-                                  "type": "boolean",
-                                  "example": true
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  },
-                  "xml": {
-                    "name": "main"
-                  }
+                  "$ref": "#/paths/~1api~1on-demand~1getOnDemandJobStatus/post/responses/200/content/application~1json/schema"
                 }
               }
             }
@@ -1677,6 +1567,132 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/on-demand/transcript/{jobId}/{guid}": {
+      "get": {
+        "tags": [
+          "On-Demand Transcription"
+        ],
+        "summary": "Download full transcript JSON for a transcribed episode",
+        "description": "Streams the full transcript JSON for the given episode through an authenticated proxy. Requires the same L402 credential (`Authorization: L402 <macaroon>:<preimage>`) that was used to pay for the transcription job. The `transcriptUrl` for each episode is returned by `getOnDemandJobStatus` when a valid L402 credential is provided.",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Job ID returned by submitOnDemandRun"
+          },
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Episode GUID"
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "L402 credential (`L402 <macaroon>:<preimage>`) matching the one that paid for the job."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full transcript JSON streamed as a file download",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The full transcript JSON file for the episode. Structure varies by transcript format."
+                }
+              }
+            },
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string",
+                  "example": "attachment; filename=\"dd043afd-d7f8-4a96-97aa-a24a743fc219.json\""
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Size of the transcript file in bytes"
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid L402 credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Unauthorized"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Valid matching L402 credential required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Job was not paid via L402",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "No L402 credential associated with this job"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job or episode not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Episode not found or not yet transcribed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage error while streaming transcript"
+          },
+          "503": {
+            "description": "Transcript storage not available"
+          },
+          "504": {
+            "description": "Stream timed out (stalled for >60 seconds)"
           }
         }
       }

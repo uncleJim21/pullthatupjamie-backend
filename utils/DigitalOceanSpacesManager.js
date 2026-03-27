@@ -132,6 +132,17 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
       throw new Error(`Failed to upload file after ${this.retryOptions.maxRetries} attempts: ${lastError?.message}`);
   }
   
+    async getFileStream(bucketName, fileName) {
+        if (!bucketName || !fileName) {
+            throw new Error('Bucket name and file name are required');
+        }
+
+        const client = this.createClient();
+        const command = new GetObjectCommand({ Bucket: bucketName, Key: fileName });
+        const response = await client.send(command);
+        return { stream: response.Body, contentLength: response.ContentLength };
+    }
+
     async getFileAsBuffer(bucketName, fileName) {
         if (!bucketName || !fileName) {
             throw new Error('Bucket name and file name are required');
@@ -202,6 +213,28 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
       } catch (error) {
         console.error("Error deleting file:", error.message);
         throw new Error(`Failed to delete file: ${error.message}`);
+      }
+    }
+
+    async generatePresignedDownloadUrl(bucketName, key, expiresIn = 900) {
+      const command = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+      });
+
+      try {
+        const client = new S3Client({
+          endpoint: `https://${this.spacesEndpoint}`,
+          region: "us-east-1",
+          credentials: this.credentials,
+          forcePathStyle: true,
+          requestChecksumCalculation: "WHEN_REQUIRED",
+          responseChecksumValidation: "WHEN_REQUIRED",
+        });
+        return await getSignedUrl(client, command, { expiresIn });
+      } catch (error) {
+        console.error("Error generating pre-signed download URL:", error);
+        throw error;
       }
     }
 

@@ -38,7 +38,7 @@ const { verifyPodcastAdminAuto } = require('./utils/podcastAdminAuth');
 const podcastRunHistoryRoutes = require('./routes/podcastRunHistory');
 const podcastPreferencesRoutes = require('./routes/podcastPreferencesRoutes');
 const appPreferencesRoutes = require('./routes/appPreferencesRoutes');
-const onDemandRunsRoutes = require('./routes/onDemandRuns');
+const createOnDemandRoutes = require('./routes/onDemandRuns');
 const adminEntitlementsRoutes = require('./routes/adminEntitlements');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
@@ -1931,7 +1931,7 @@ app.use('/api/user-prefs', podcastPreferencesRoutes);
 // New route path
 app.use('/api/podcast-preferences', podcastPreferencesRoutes);
 app.use('/api/preferences', appPreferencesRoutes);
-app.use('/api/on-demand', onDemandRunsRoutes);
+app.use('/api/on-demand', createOnDemandRoutes({ transcriptSpacesManager }));
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/user/twitter', userTwitterRoutes);
 app.use('/api/user/upload', createUserUploadRoutes({ clipSpacesManager }));
