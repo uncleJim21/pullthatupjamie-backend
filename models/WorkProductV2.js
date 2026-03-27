@@ -27,6 +27,11 @@ const WorkProductV2Schema = new mongoose.Schema({
     default: 'queued',
     required: false,
   },
+  paymentHash: {
+    type: String,
+    required: false,
+    index: true,
+  },
 }, {
   timestamps: true // Add createdAt and updatedAt fields
 });

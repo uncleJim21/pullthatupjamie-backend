@@ -1,5 +1,4 @@
 const express = require('express');
-const router = express.Router();
 const crypto = require('crypto');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
@@ -9,9 +8,21 @@ const jwt = require('jsonwebtoken');
 const { User } = require('../models/shared/UserSchema');
 const { Entitlement } = require('../models/Entitlement');
 const { resolveIdentity } = require('../utils/identityResolver');
+const { parseL402Header, verifyMacaroon } = require('../utils/macaroon-utils');
+const { validatePreimage } = require('../utils/lightning-utils');
 const { getQuotaConfig, TIERS, createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 const { ENTITLEMENT_TYPES, ALL_ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { serviceHmac } = require('../middleware/hmac');
+
+/**
+ * Factory to create on-demand run routes.
+ *
+ * @param {Object} deps
+ * @param {Object} [deps.transcriptSpacesManager] - DigitalOceanSpacesManager for transcript bucket
+ * @returns {express.Router}
+ */
+function createOnDemandRoutes({ transcriptSpacesManager } = {}) {
+const router = express.Router();
 
 /**
  * GET /api/on-demand/checkEligibility
@@ -244,11 +255,15 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
         result.totalFeeds = uniqueFeedIds.size;
 
         // Create a new WorkProductV2 document
-        await WorkProductV2.create({
+        const wpDoc = {
             type: 'on-demand-jamie-episodes',
             lookupHash,
             result
-        });
+        };
+        if (identity.identifierType === 'prepaid') {
+            wpDoc.paymentHash = identity.identifier;
+        }
+        await WorkProductV2.create(wpDoc);
 
         // Prepare the AWS API payload
         const feedGuids = {};
@@ -268,7 +283,7 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
                 onDemand: true,
                 feedGuids,
                 workProductV2LookupHash: lookupHash,
-                overrideExistence: true
+                overrideExistence: false
             }
         };
 
@@ -370,6 +385,30 @@ router.post('/submitOnDemandRun', serviceHmac({ optional: true }), createEntitle
     }
 });
 
+/**
+ * Best-effort extraction of the caller's paymentHash from an L402 Authorization header.
+ * Returns null if the header is absent, malformed, or verification fails.
+ */
+function extractCallerPaymentHash(req) {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (!authHeader) return null;
+
+    const l402 = parseL402Header(authHeader);
+    if (!l402) return null;
+
+    try {
+        const { macaroonBase64, preimage } = l402;
+        const macResult = verifyMacaroon(macaroonBase64);
+        if (!macResult.valid) return null;
+
+        if (!validatePreimage(preimage, macResult.paymentHash)) return null;
+
+        return macResult.paymentHash;
+    } catch {
+        return null;
+    }
+}
+
 function formatChapter(doc) {
     const meta = doc.metadataRaw || {};
     return {
@@ -389,7 +428,7 @@ function formatChapter(doc) {
 router.post('/getOnDemandJobStatus', async (req, res) => {
     // #swagger.tags = ['On-Demand Transcription']
     // #swagger.summary = 'Get transcription job status with chapters on completion'
-    // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.'
+    // #swagger.description = 'Returns job status and per-episode progress. When status is "complete", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required — anyone with the jobId can poll.\n\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a short-lived (3 hour) pre-signed URL to download the full transcript JSON.'
     /* #swagger.parameters['body'] = {
       in: 'body',
       required: true,
@@ -397,8 +436,9 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
         jobId: '6b2440adae3f806198eb56c0'
       }
     } */
+    /* #swagger.parameters['Authorization'] = { in: 'header', required: false, type: 'string', description: 'Optional L402 credential (L402 <macaroon>:<preimage>). When present and matching the credential that paid for the job, transcript download URLs are included.' } */
     /* #swagger.responses[200] = {
-      description: 'Job status with optional chapter enrichment',
+      description: 'Job status with optional chapter enrichment and transcript URLs',
       schema: {
         success: true,
         jobId: '6b2440adae3f806198eb56c0',
@@ -415,7 +455,8 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
             summary: 'Discussion on SEC and CFTC actions regarding crypto...',
             startTime: 0,
             endTime: 159.48
-          }]
+          }],
+          transcriptUrl: 'https://cascdr-transcripts.nyc3.digitaloceanspaces.com/dd043afd-...?X-Amz-Signature=...'
         }],
         nextSteps: {
           searchTranscripts: {
@@ -454,15 +495,16 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
         const episodes = job.result.episodes || [];
 
         let enrichedEpisodes = episodes;
+        const enrichableStatuses = ['success', 'all_skipped', 'skipped'];
         if (isComplete) {
-            const successGuids = episodes
-                .filter(ep => ep.status === 'success')
+            const enrichableGuids = episodes
+                .filter(ep => enrichableStatuses.includes(ep.status))
                 .map(ep => ep.guid);
 
-            if (successGuids.length > 0) {
+            if (enrichableGuids.length > 0) {
                 const chapters = await JamieVectorMetadata.find({
                     type: 'chapter',
-                    guid: { $in: successGuids }
+                    guid: { $in: enrichableGuids }
                 })
                     .select('guid start_time end_time metadataRaw')
                     .sort({ start_time: 1 })
@@ -478,6 +520,19 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
                     ...ep,
                     ...(chaptersByGuid[ep.guid] ? { chapters: chaptersByGuid[ep.guid] } : {})
                 }));
+            }
+
+            // If caller presents the L402 credential that paid for this job,
+            // include proxied transcript download URLs for each enrichable episode.
+            const storedPaymentHash = job.paymentHash;
+            if (storedPaymentHash) {
+                const callerPaymentHash = extractCallerPaymentHash(req);
+                if (callerPaymentHash && callerPaymentHash === storedPaymentHash) {
+                    for (const ep of enrichedEpisodes) {
+                        if (!enrichableStatuses.includes(ep.status)) continue;
+                        ep.transcriptUrl = `/api/on-demand/transcript/${jobId}/${ep.guid}`;
+                    }
+                }
             }
         }
 
@@ -524,4 +579,93 @@ router.post('/getOnDemandJobStatus', async (req, res) => {
     }
 });
 
-module.exports = router; 
+/**
+ * GET /api/on-demand/transcript/:jobId/:guid
+ * Proxy-stream a transcript JSON from Spaces, gated by L402 credential match.
+ */
+router.get('/transcript/:jobId/:guid', async (req, res) => {
+    // #swagger.tags = ['On-Demand Transcription']
+    // #swagger.summary = 'Download full transcript JSON for a transcribed episode'
+    // #swagger.description = 'Streams the full transcript JSON for the given episode. Requires the same L402 credential that was used to pay for the transcription job.'
+    /* #swagger.parameters['jobId'] = { in: 'path', required: true, type: 'string', description: 'Job ID returned by submitOnDemandRun' } */
+    /* #swagger.parameters['guid'] = { in: 'path', required: true, type: 'string', description: 'Episode GUID' } */
+    /* #swagger.parameters['Authorization'] = { in: 'header', required: true, type: 'string', description: 'L402 credential (L402 <macaroon>:<preimage>) matching the one that paid for the job' } */
+    try {
+        const { jobId, guid } = req.params;
+
+        const job = await WorkProductV2.findOne({ lookupHash: jobId }).lean();
+        if (!job) {
+            return res.status(404).json({ error: 'Job not found' });
+        }
+
+        if (!job.paymentHash) {
+            return res.status(403).json({ error: 'No L402 credential associated with this job' });
+        }
+
+        const callerPaymentHash = extractCallerPaymentHash(req);
+        if (!callerPaymentHash || callerPaymentHash !== job.paymentHash) {
+            return res.status(401).json({ error: 'Unauthorized', message: 'Valid matching L402 credential required' });
+        }
+
+        const enrichableStatuses = ['success', 'all_skipped', 'skipped'];
+        const episode = (job.result.episodes || []).find(ep => ep.guid === guid);
+        if (!episode || !enrichableStatuses.includes(episode.status)) {
+            return res.status(404).json({ error: 'Episode not found or not yet transcribed' });
+        }
+
+        if (!transcriptSpacesManager) {
+            return res.status(503).json({ error: 'Transcript storage not available' });
+        }
+
+        const bucket = process.env.TRANSCRIPT_SPACES_BUCKET_NAME;
+        const { stream, contentLength } = await transcriptSpacesManager.getFileStream(bucket, `${guid}.json`);
+
+        const sizeMB = contentLength ? (contentLength / 1024 / 1024).toFixed(2) : 'unknown';
+        console.log(`[transcript-proxy] Streaming ${guid}.json (${sizeMB} MB) for job ${jobId}`);
+
+        const STREAM_TIMEOUT_MS = 60_000;
+        let lastActivity = Date.now();
+        const timeoutCheck = setInterval(() => {
+            if (Date.now() - lastActivity > STREAM_TIMEOUT_MS) {
+                console.error(`[transcript-proxy] Stream stalled for ${guid}.json — aborting`);
+                stream.destroy();
+                clearInterval(timeoutCheck);
+                if (!res.headersSent) {
+                    res.status(504).json({ error: 'Stream timed out' });
+                } else {
+                    res.end();
+                }
+            }
+        }, 10_000);
+
+        stream.on('data', () => { lastActivity = Date.now(); });
+
+        stream.on('error', (err) => {
+            clearInterval(timeoutCheck);
+            console.error(`[transcript-proxy] Stream error for ${guid}.json:`, err.message);
+            if (!res.headersSent) {
+                res.status(502).json({ error: 'Upstream storage error' });
+            } else {
+                res.end();
+            }
+        });
+
+        res.on('close', () => { clearInterval(timeoutCheck); stream.destroy(); });
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${guid}.json"`);
+        if (contentLength) res.setHeader('Content-Length', contentLength);
+        stream.pipe(res);
+    } catch (error) {
+        if (error.message && error.message.includes('not found')) {
+            return res.status(404).json({ error: 'Transcript file not found' });
+        }
+        console.error('[transcript-proxy] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+return router;
+}
+
+module.exports = createOnDemandRoutes;
