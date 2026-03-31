@@ -1178,9 +1178,13 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     description: 'Server error',
     schema: { error: 'Failed to search quotes', details: 'Error message' }
   } */
-  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null, smartMode = false } = req.body;
+  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null, guids: guidsParam = [], smartMode = false } = req.body;
   const originalQuery = query;
-  let guids = guid ? [guid] : [];
+  feedIds = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
+  let guids = [
+    ...(guid ? [guid] : []),
+    ...(Array.isArray(guidsParam) ? guidsParam : [])
+  ];
   limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   

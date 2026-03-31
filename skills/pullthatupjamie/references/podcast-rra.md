@@ -219,13 +219,23 @@ curl -s -X POST \
 ```
 
 ### Parameters
-- `query` — semantic search string
-- `limit` — number of results (default 10)
-- `feedIds` — array of feed IDs to filter by specific podcasts
-- `guid` — filter to a specific episode
-- `minDate` / `maxDate` — date range filter
-- `episodeName` — filter by episode title
-- `smartMode` — `true` to enable LLM-powered query triage (see [Smart Search](#smart-search-smartmode) section)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `query` | `string` | **Yes** | Semantic search string |
+| `limit` | `number` | No | Number of results (default 10, max 50) |
+| `feedIds` | `number[]` | No | Array of feed IDs to filter by specific podcasts. Must be an array: `[123, 456]` |
+| `guid` | `string` | No | Single episode GUID to filter results to one episode |
+| `guids` | `string[]` | No | Array of episode GUIDs to search across multiple specific episodes in one request |
+| `minDate` | `string` | No | ISO date string for minimum publish date filter |
+| `maxDate` | `string` | No | ISO date string for maximum publish date filter |
+| `episodeName` | `string` | No | Filter by exact episode title |
+| `smartMode` | `boolean` | No | `true` to enable LLM-powered query triage (see [Smart Search](#smart-search-smartmode) section) |
+
+> **Common mistakes:**
+> - `episodeGuids` does not exist. Use `guid` (single) or `guids` (array).
+> - `guid` accepts only a string, not an array. For multiple episodes, use `guids`.
+> - `feedId` (singular) does not exist on this endpoint. Use `feedIds` (array).
 
 ### Response Fields
 Each result contains:

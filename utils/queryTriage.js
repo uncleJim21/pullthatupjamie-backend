@@ -285,7 +285,7 @@ async function resolveEntities(classification) {
  *
  * @param {string} query - The user's raw search query
  * @param {object} openai - OpenAI client instance
- * @returns {object} { rewrittenQuery, feedIds, guid, episodeName, minDate, maxDate, triage }
+ * @returns {object} { rewrittenQuery, feedIds, guids, episodeName, minDate, maxDate, triage }
  */
 async function triageQuery(query, openai) {
   const startTime = Date.now();
@@ -308,7 +308,7 @@ async function triageQuery(query, openai) {
       return {
         rewrittenQuery: null,
         feedIds: [],
-        guid: null,
+        guids: [],
         episodeName: null,
         minDate: null,
         maxDate: null,
@@ -376,7 +376,7 @@ async function triageQuery(query, openai) {
     return {
       rewrittenQuery: null,
       feedIds: [],
-      guid: null,
+      guids: [],
       episodeName: null,
       minDate: null,
       maxDate: null,
