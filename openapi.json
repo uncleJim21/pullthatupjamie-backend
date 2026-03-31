@@ -544,6 +544,7 @@
                 },
                 "feedIds": {
                   "type": "array",
+                  "description": "Array of feed IDs to filter results. Must be an array, not a single value.",
                   "example": [
                     "1015378"
                   ],
@@ -569,7 +570,16 @@
                 },
                 "guid": {
                   "type": "string",
+                  "description": "Single episode GUID to filter results. For multiple episodes, use guids instead.",
                   "example": ""
+                },
+                "guids": {
+                  "type": "array",
+                  "description": "Array of episode GUIDs to filter results. Use this to search across multiple specific episodes in one request.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "example": []
                 }
               }
             }
@@ -704,6 +714,9 @@
                     "example": "any"
                   },
                   "guid": {
+                    "example": "any"
+                  },
+                  "guids": {
                     "example": "any"
                   },
                   "smartMode": {

@@ -105,6 +105,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
     query,
     feedIds = [],
     guid = null,
+    guids: guidsParam = [],
     limit = 100,
     minDate = null,
     maxDate = null,
@@ -115,7 +116,11 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
     smartMode = false
   } = req.body;
   const originalQuery = query;
-  let guids = guid ? [guid] : [];
+  feedIds = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
+  let guids = [
+    ...(guid ? [guid] : []),
+    ...(Array.isArray(guidsParam) ? guidsParam : [])
+  ];
   
   printLog(`[${requestId}] ========== 3D SEARCH REQUEST RECEIVED ==========`);
   printLog(`[${requestId}] Raw request body:`, JSON.stringify(req.body));
@@ -726,7 +731,7 @@ router.post('/search-quotes-3d/expand', serviceHmac({ optional: true }), createE
   const requestId = `EXPAND-3D-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const {
     sessionId,
-    queries = [], // Array of { query, feedIds?, guid?, minDate?, maxDate?, episodeName?, limit? }
+    queries = [], // Array of { query, feedIds?, guid?, guids?, minDate?, maxDate?, episodeName?, limit? }
     fastMode = false,
     extractAxisLabels = false
   } = req.body;
@@ -797,16 +802,21 @@ router.post('/search-quotes-3d/expand', serviceHmac({ optional: true }), createE
     const queryResults = [];
 
     for (const querySpec of queries) {
-      const {
+      let {
         query,
         feedIds = [],
         guid = null,
+        guids: guidsParam = [],
         minDate = null,
         maxDate = null,
         episodeName = null,
         limit = 25 // Default per-query limit
       } = querySpec;
-      const guidsForQuery = guid ? [guid] : [];
+      feedIds = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
+      const guidsForQuery = [
+        ...(guid ? [guid] : []),
+        ...(Array.isArray(guidsParam) ? guidsParam : [])
+      ];
 
       const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
       printLog(`[${requestId}] Processing query: "${query}" (limit: ${effectiveLimit})`);

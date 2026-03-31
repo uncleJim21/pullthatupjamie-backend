@@ -48,11 +48,14 @@ Content-Type: application/json
 |-------|------|----------|---------|-------------|
 | `query` | string | **Yes** | - | Search query text |
 | `limit` | integer | No | 100 | Max results to return (1-200) |
-| `feedIds` | array[string] | No | [] | Filter by podcast feed IDs |
+| `feedIds` | array[string] | No | [] | Filter by podcast feed IDs (must be an array) |
+| `guid` | string | No | null | Single episode GUID to filter results |
+| `guids` | array[string] | No | [] | Array of episode GUIDs for multi-episode filtering |
 | `minDate` | string | No | null | Minimum publication date (ISO 8601) |
 | `maxDate` | string | No | null | Maximum publication date (ISO 8601) |
 | `episodeName` | string | No | null | Exact episode name match |
 | `fastMode` | boolean | No | false | Enable fast mode (lower quality, faster) |
+| `smartMode` | boolean | No | false | Enable LLM-powered query triage |
 
 ### Example Request
 
