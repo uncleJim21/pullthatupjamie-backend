@@ -167,7 +167,7 @@ async function send402Challenge(req, res, options = {}) {
 const QUOTA_CONFIG_PRODUCTION = {
   // Search quotes (basic search)
   [ENTITLEMENT_TYPES.SEARCH_QUOTES]: {
-    [TIERS.anonymous]: { maxUsage: 50, periodLengthDays: 7 },    // 100/week
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },    // 100/week
     [TIERS.registered]: { maxUsage: 50, periodLengthDays: 30 },  // 100/month
     [TIERS.subscriber]: { maxUsage: 500, periodLengthDays: 30 },  // 500/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -175,7 +175,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // 3D search (expensive: embeddings + UMAP)
   [ENTITLEMENT_TYPES.SEARCH_QUOTES_3D]: {
-    [TIERS.anonymous]: { maxUsage: 20, periodLengthDays: 7 },     // 20/week
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },     // 20/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -183,7 +183,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // Make clip (video processing)
   [ENTITLEMENT_TYPES.MAKE_CLIP]: {
-    [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },      // 5/week
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },      // 5/week
     [TIERS.registered]: { maxUsage: 10, periodLengthDays: 30 },   // 10/month
     [TIERS.subscriber]: { maxUsage: 50, periodLengthDays: 30 },   // 50/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -191,7 +191,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // Jamie Assist (AI analysis)
   [ENTITLEMENT_TYPES.JAMIE_ASSIST]: {
-    [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },     // 10/week
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -199,7 +199,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // On-demand run (podcast processing)
   [ENTITLEMENT_TYPES.SUBMIT_ON_DEMAND_RUN]: {
-    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },      // 2/week
+    [TIERS.anonymous]: { maxUsage: 1, periodLengthDays: 7 },      // 2/week
     [TIERS.registered]: { maxUsage: 5, periodLengthDays: 30 },    // 5/month
     [TIERS.subscriber]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -207,7 +207,7 @@ const QUOTA_CONFIG_PRODUCTION = {
   
   // Research Analyze (AI analysis of research sessions)
   [ENTITLEMENT_TYPES.AI_ANALYZE]: {
-    [TIERS.anonymous]: { maxUsage: 5, periodLengthDays: 7 },     // 10/week
+    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },     // 10/week
     [TIERS.registered]: { maxUsage: 20, periodLengthDays: 30 },   // 20/month
     [TIERS.subscriber]: { maxUsage: 100, periodLengthDays: 30 },  // 100/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }         // Unlimited
@@ -223,7 +223,7 @@ const QUOTA_CONFIG_PRODUCTION = {
 
   // Podcast discovery (LLM extraction + Podcast Index search)
   [ENTITLEMENT_TYPES.DISCOVER_PODCASTS]: {
-    [TIERS.anonymous]: { maxUsage: 10, periodLengthDays: 7 },      // 10/week
+    [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 7 },      // 10/week
     [TIERS.registered]: { maxUsage: 30, periodLengthDays: 30 },    // 30/month
     [TIERS.subscriber]: { maxUsage: 150, periodLengthDays: 30 },   // 150/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
@@ -231,7 +231,7 @@ const QUOTA_CONFIG_PRODUCTION = {
 
   // Chapter search (keyword search across corpus chapters)
   [ENTITLEMENT_TYPES.CHAPTER_SEARCH]: {
-    [TIERS.anonymous]: { maxUsage: 30, periodLengthDays: 7 },      // 30/week
+    [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 7 },      // 30/week
     [TIERS.registered]: { maxUsage: 50, periodLengthDays: 30 },    // 50/month
     [TIERS.subscriber]: { maxUsage: 200, periodLengthDays: 30 },   // 200/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
