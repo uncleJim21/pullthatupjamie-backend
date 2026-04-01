@@ -197,6 +197,7 @@ async function fetchEpisodesForFeed(feedId) {
 function normalizeFeed(raw) {
   return {
     feedId: String(raw.id || raw.feedId || ''),
+    feedGuid: raw.podcastGuid || null,
     title: raw.title || raw.feedTitle || '',
     url: raw.url || raw.feedUrl || '',
     description: raw.description || '',
@@ -218,6 +219,7 @@ function normalizePersonEpisode(item) {
       : null,
     duration: item.duration || null,
     feedId: String(item.feedId || ''),
+    feedGuid: item.podcastGuid || null,
     feedTitle: item.feedTitle || '',
     feedUrl: item.feedUrl || '',
     feedAuthor: item.feedAuthor || ''
@@ -241,7 +243,7 @@ function buildNextSteps(feed, transcriptAvailable) {
     };
   }
 
-  return {
+  const steps = {
     requestTranscription: {
       description: 'Submit episodes for transcription, timestamped chaptering, and semantic indexing',
       method: 'POST',
@@ -249,16 +251,21 @@ function buildNextSteps(feed, transcriptAvailable) {
       bodyTemplate: {
         message: `Transcribe episodes from ${feed.title || 'podcast'}`,
         parameters: {},
-        episodes: [{ guid: '<episodeGUID>', feedGuid: '<feedGuid>', feedId: String(feed.feedId) }]
+        episodes: [{ guid: '<episodeGUID>', feedGuid: feed.feedGuid || '<feedGuid>', feedId: String(feed.feedId) }]
       }
-    },
-    getEpisodes: {
-      description: 'Fetch episode list with GUIDs needed for transcription',
+    }
+  };
+
+  if (!feed.feedGuid) {
+    steps.getEpisodes = {
+      description: 'Fetch episode list with GUIDs needed for transcription (includes feedGuid)',
       method: 'POST',
       url: '/api/rss/getFeed',
       body: { feedUrl: feed.url, feedId: String(feed.feedId), limit: 25 }
-    }
-  };
+    };
+  }
+
+  return steps;
 }
 
 // ========== Main Endpoint ==========
@@ -375,6 +382,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
         if (fid && !feedMap.has(fid)) {
           feedMap.set(fid, {
             feedId: fid,
+            feedGuid: ep.podcastGuid || null,
             title: ep.feedTitle,
             url: ep.feedUrl,
             description: '',
@@ -489,7 +497,9 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
           const feedResult = results.find(r => r.feedId === feedsToFetch[i].feedId);
 
           if (feedResult && episodes.length > 0) {
-            feedResult.feedGuid = feedGuid;
+            if (!feedResult.feedGuid && feedGuid) {
+              feedResult.feedGuid = feedGuid;
+            }
             feedResult.episodes = episodes.slice(0, 10).map(ep => ({
               guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
               title: ep.itemTitle || ep.title || 'Untitled',
@@ -497,7 +507,7 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
                 ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
                 : null,
               duration: ep.length || ep.duration || null,
-              feedGuid: feedGuid,
+              feedGuid: feedResult.feedGuid,
               feedId: feedResult.feedId
             }));
 
