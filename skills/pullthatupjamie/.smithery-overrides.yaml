@@ -1,0 +1,28 @@
+# Smithery/agentskills.io overrides for SKILL.md
+#
+# Applied by scripts/skills/build-smithery.js to produce
+# dist/smithery/pullthatupjamie/SKILL.md — a spec-compliant version
+# of the source skill for Smithery registry submission.
+#
+# The source SKILL.md (this directory) is the ClawHub source of truth.
+# Smithery reads from dist/smithery/pullthatupjamie/ via gitUrl.
+
+license: "Proprietary"
+
+compatibility: >-
+  Requires internet access to https://www.pullthatupjamie.ai.
+  Free tier works immediately with no credentials.
+  Paid tier requires a Lightning-compatible wallet (Zeus, BlueWallet, Phoenix, Alby, etc.)
+  for L402 payments. lnget handles payment flow automatically.
+
+# Source description exceeds the 1024-char agentskills.io limit — this replaces it.
+description: >-
+  PullThatUpJamie — Podcast Intelligence. Semantically indexed corpus: 109+ feeds,
+  ~7K episodes, ~1.9M paragraphs. Use when agents need to: (1) find what experts said
+  across major podcasts (Rogan, Huberman, Bloomberg, TFTC, Lex Fridman, etc.),
+  (2) build interactive research sessions with timestamped playable audio clips,
+  (3) generate shareable MP4 clips with burned-in subtitles, (4) discover people/orgs
+  and podcast appearances, (5) ingest new feeds on demand. Smart search (smartMode):
+  LLM triage for vague queries — entity extraction, corpus metadata resolution, query
+  rewriting. Three-tier strategy: title → chapter → semantic. Free tier: no credentials
+  needed. Paid tier via L402 Lightning: 500 sats (~$0.33) covers 150+ searches. lnget compatible.

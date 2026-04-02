@@ -10,7 +10,10 @@
     "setup-subtitle-test": "node setup-subtitle-test.js",
     "test-subtitles": "node test-subtitles.js",
     "test-server-subtitles": "node test-server-subtitles.js",
-    "generate-openapi": "node swagger.js"
+    "generate-openapi": "node swagger.js",
+    "skills:build": "node scripts/skills/build-smithery.js && node scripts/skills/build-clawhub-zip.js",
+    "skills:build:smithery": "node scripts/skills/build-smithery.js",
+    "skills:build:clawhub": "node scripts/skills/build-clawhub-zip.js"
   },
   "author": "uj21",
   "license": "ISC",
@@ -51,5 +54,9 @@
     "wav": "^1.0.2",
     "web-streams-polyfill": "^4.0.0",
     "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1",
+    "js-yaml": "^4.1.1"
   }
 }

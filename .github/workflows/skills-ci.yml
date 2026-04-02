@@ -1,0 +1,142 @@
+name: Skills CI/CD
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "skills/**"
+      - "scripts/skills/**"
+      - ".github/workflows/skills-ci.yml"
+  pull_request:
+    paths:
+      - "skills/**"
+      - "scripts/skills/**"
+      - ".github/workflows/skills-ci.yml"
+
+jobs:
+  validate-and-build:
+    name: Validate & Build Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to commit dist/smithery/ back to repo
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install project dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Install skills-ref CLI
+        run: |
+          if npm install -g skills-ref 2>/dev/null; then
+            echo "SKILLS_REF_AVAILABLE=true" >> $GITHUB_ENV
+          else
+            echo "SKILLS_REF_AVAILABLE=false" >> $GITHUB_ENV
+            echo "⚠️ skills-ref not found on npm — validation steps will be skipped"
+          fi
+
+      # ── Step 1: Validate source SKILL.md (ClawHub format) ────────────────
+      # Source may have ClawHub extensions that fail strict spec validation — non-blocking.
+      - name: "[Source] Validate against agentskills.io spec"
+        id: validate-source
+        run: |
+          if [ "$SKILLS_REF_AVAILABLE" = "true" ]; then
+            echo "### Source SKILL.md Validation" >> $GITHUB_STEP_SUMMARY
+            skills-ref validate ./skills/pullthatupjamie 2>&1 | tee -a $GITHUB_STEP_SUMMARY \
+              && echo "✅ Source: valid" \
+              || echo "⚠️ Source has spec issues (expected — ClawHub extensions present)"
+          else
+            echo "⚠️ Skipping source validation (skills-ref unavailable)"
+          fi
+        continue-on-error: true
+
+      # ── Step 2: Build Smithery-compliant dist ─────────────────────────────
+      - name: "[Smithery] Build dist from source"
+        run: node scripts/skills/build-smithery.js
+
+      # ── Step 3: Validate Smithery dist (strict — blocks CI on failure) ────
+      - name: "[Smithery] Validate dist against agentskills.io spec"
+        run: |
+          if [ "$SKILLS_REF_AVAILABLE" = "true" ]; then
+            echo "### Smithery dist/ Validation" >> $GITHUB_STEP_SUMMARY
+            skills-ref validate ./dist/smithery/pullthatupjamie 2>&1 | tee -a $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Skipping dist validation (skills-ref unavailable)"
+          fi
+
+      # ── Step 4: Build ClawHub zip ─────────────────────────────────────────
+      - name: "[ClawHub] Build zip"
+        run: node scripts/skills/build-clawhub-zip.js
+
+      # ── Step 5: Upload artifacts ──────────────────────────────────────────
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-builds-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+      # ── Step 6: Commit dist/smithery/ back to repo (master push only) ─────
+      # Smithery's gitUrl points to this committed path.
+      # Uses [skip ci] to prevent an infinite workflow loop.
+      - name: Commit dist/smithery/ to repo
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/smithery/
+          if git diff --cached --quiet; then
+            echo "No changes to dist/smithery/ — skipping commit"
+          else
+            git commit -m "ci: update dist/smithery from build [skip ci]"
+            git push
+          fi
+
+      # ── Step 7: Print submission URLs ─────────────────────────────────────
+      - name: Print submission URLs
+        run: |
+          VERSION=$(node -e "const m=require('./skills/pullthatupjamie/_meta.json'); console.log(m.version)")
+          REPO="uncleJim21/pullthatupjamie-backend"
+          BRANCH="master"
+          GIT_URL="https://github.com/${REPO}/tree/${BRANCH}/dist/smithery/pullthatupjamie"
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+
+          ---
+
+          ## Skill Build: v${VERSION}
+
+          ### Smithery
+
+          Submit once (or on each new version) using your Smithery API key:
+
+          \`\`\`bash
+          curl -X PUT "https://api.smithery.ai/skills/\${SMITHERY_NAMESPACE}/pullthatupjamie" \\
+            -H "Authorization: Bearer \${SMITHERY_API_KEY}" \\
+            -H "Content-Type: application/json" \\
+            -d '{"gitUrl": "${GIT_URL}"}'
+          \`\`\`
+
+          **Skill URL after registration:**
+          \`https://smithery.ai/skills/\${SMITHERY_NAMESPACE}/pullthatupjamie\`
+
+          **gitUrl (what you pass to Smithery):**
+          \`${GIT_URL}\`
+
+          ---
+
+          ### ClawHub
+
+          Download the \`skill-builds\` artifact from this run and upload the zip:
+          - File: \`dist/clawhub/pullthatupjamie-v${VERSION}.zip\`
+          - Upload at: https://clawhub.ai/publish
+
+          EOF
