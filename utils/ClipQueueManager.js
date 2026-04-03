@@ -1,7 +1,7 @@
 // ClipQueueManager.js
 const { EventEmitter } = require('events');
 const { WorkProductV2 } = require('../models/WorkProductV2');
-const QueueJob = require('../models/QueueJob');
+const QueueJob = require('../models/QueueDOJob');
 const { v4: uuidv4 } = require('uuid');
 const { DEBUG_MODE, printLog } = require('../constants');
 
@@ -14,24 +14,10 @@ class ClipQueueManager extends EventEmitter {
         
         // Instance identification
         this.instanceId = uuidv4();
-        this.activeWorkers = 0;
-        
-        // Timing configuration
-        this.jobTimeout = 10 * 60 * 1000; // 10 minutes
-        this.heartbeatInterval = 30 * 1000; // 30 seconds
-        this.pollInterval = 5 * 1000; // 5 seconds
+    
         
         console.log(`[INFO] ClipQueueManager initialized with instanceId: ${this.instanceId}`);
-        
-        // Start background processes
-        if(!DEBUG_MODE) {
-            this.startHeartbeat();
-            this.startJobPoller();
-            this.reclaimOrphanedJobs();
-        }
-        else{
-            printLog(`[INFO] DEBUG_MODE is enabled, skipping heartbeat and job poller`);
-        }
+
     }
 
     // ✅ GUARANTEED TRANSFER: Add job to persistent database queue
@@ -52,6 +38,7 @@ class ClipQueueManager extends EventEmitter {
                         { lookupHash },
                         { 
                             status: 'queued',
+                            jobType: 'clip-processing',
                             attempts: 0,
                             lastError: null,
                             queuedAt: new Date()
@@ -63,6 +50,7 @@ class ClipQueueManager extends EventEmitter {
                 await QueueJob.create({
                     lookupHash,
                     clipData,
+                    jobType: 'clip-processing',
                     timestamps,
                     subtitles,
                     status: 'queued',
@@ -77,17 +65,6 @@ class ClipQueueManager extends EventEmitter {
             console.error(`[ERROR] Failed to enqueue job ${lookupHash}:`, error);
             throw error;
         }
-    }
-
-    // ✅ GUARANTEED TRANSFER: Poll database for available jobs
-    async startJobPoller() {
-        setInterval(async () => {
-            if (this.activeWorkers < this.maxConcurrent) {
-                await this.claimAndProcessNextJob();
-            }
-        }, this.pollInterval);
-        
-        console.log(`[INFO] Job poller started - checking every ${this.pollInterval/1000}s`);
     }
 
     // ✅ GUARANTEED TRANSFER: Atomic job claiming with MongoDB transactions
@@ -427,23 +404,6 @@ class ClipQueueManager extends EventEmitter {
             // Re-throw the original error for the retry logic
             throw error;
         }
-    }
-
-    // ✅ GUARANTEED TRANSFER: Heartbeat to prove instance is alive
-    startHeartbeat() {
-        setInterval(async () => {
-            try {
-                // Update heartbeat for all jobs owned by this instance
-                await QueueJob.updateMany(
-                    { instanceId: this.instanceId, status: 'processing' },
-                    { heartbeatAt: new Date() }
-                );
-            } catch (error) {
-                console.error('[ERROR] Heartbeat update failed:', error);
-            }
-        }, this.heartbeatInterval);
-        
-        console.log(`[INFO] Heartbeat started - updating every ${this.heartbeatInterval/1000}s`);
     }
 
     // ✅ GUARANTEED TRANSFER: Reclaim jobs from dead instances
