@@ -88,6 +88,7 @@ function formatAsStructured(result) {
     sessionId: result.sessionId,
     iterationsUsed: result.iterationsUsed,
     workflowType: result.workflowType,
+    summary: result.summary || null,
     results: {
       clips,
       chapters,
@@ -156,6 +157,7 @@ function formatAsText(result) {
     sessionId: result.sessionId,
     iterationsUsed: result.iterationsUsed,
     workflowType: result.workflowType,
+    summary: result.summary || null,
     text: lines.join('\n'),
     cost: result.cost,
     latencyMs: result.latencyMs,
@@ -178,6 +180,7 @@ function formatAsAudio(result) {
     status: result.status,
     sessionId: result.sessionId,
     iterationsUsed: result.iterationsUsed,
+    summary: result.summary || null,
     clips: audioClips,
     cost: result.cost,
     latencyMs: result.latencyMs,

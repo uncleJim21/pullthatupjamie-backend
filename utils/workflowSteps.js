@@ -135,26 +135,56 @@ async function stepSearchChapters({ search, feedIds = [], limit = 20, page = 1 }
     const firstCap = searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1).toLowerCase();
     const keywordVariants = [...new Set([searchTerm, lower, upper, titleCase, firstCap])];
 
-    const query = {
+    const feedIdArray = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
+    const feedFilter = feedIdArray.length > 0 ? { feedId: { $in: feedIdArray } } : {};
+
+    // Phase 1: exact keyword match
+    const keywordQuery = {
       type: 'chapter',
-      'metadataRaw.keywords': { $in: keywordVariants }
+      'metadataRaw.keywords': { $in: keywordVariants },
+      ...feedFilter,
     };
 
-    const feedIdArray = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
-    if (feedIdArray.length > 0) {
-      query.feedId = { $in: feedIdArray };
-    }
-
     const skip = (page - 1) * limit;
-    const [totalCount, chapters] = await Promise.all([
-      JamieVectorMetadata.countDocuments(query),
-      JamieVectorMetadata.find(query)
+    let [totalCount, chapters] = await Promise.all([
+      JamieVectorMetadata.countDocuments(keywordQuery),
+      JamieVectorMetadata.find(keywordQuery)
         .select('pineconeId guid feedId start_time end_time metadataRaw')
         .sort({ 'metadataRaw.headline': 1 })
         .skip(skip)
         .limit(limit)
         .lean()
     ]);
+
+    // Phase 2: if keyword match returned nothing, fall back to regex on headline + summary
+    if (chapters.length === 0) {
+      const words = searchTerm.split(/\s+/).filter(w => w.length > 2);
+      if (words.length > 0) {
+        const regexPattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        const regex = new RegExp(regexPattern, 'i');
+
+        const regexQuery = {
+          type: 'chapter',
+          $or: [
+            { 'metadataRaw.headline': regex },
+            { 'metadataRaw.summary': regex },
+          ],
+          ...feedFilter,
+        };
+
+        printLog(`${debugPrefix} Keyword match returned 0, falling back to headline/summary regex: /${regexPattern}/i`);
+
+        [totalCount, chapters] = await Promise.all([
+          JamieVectorMetadata.countDocuments(regexQuery),
+          JamieVectorMetadata.find(regexQuery)
+            .select('pineconeId guid feedId start_time end_time metadataRaw')
+            .sort({ 'metadataRaw.headline': 1 })
+            .skip(skip)
+            .limit(limit)
+            .lean()
+        ]);
+      }
+    }
 
     const uniqueGuids = [...new Set(chapters.map(c => c.guid).filter(Boolean))];
     const episodeMap = new Map();

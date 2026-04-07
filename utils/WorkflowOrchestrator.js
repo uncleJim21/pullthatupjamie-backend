@@ -9,6 +9,8 @@ const WORKFLOW_MODELS = {
   taskParser:  { provider: 'openai', model: 'gpt-4o-mini' },
   planner:     { provider: 'openai', model: 'gpt-4o-mini' }, // upgrade to gpt-5.2 when available
   evaluator:   { provider: 'openai', model: 'gpt-4o-mini' },
+  synthesizer: { provider: 'openai', model: 'gpt-4o-mini' },
+  synthesizerPremium: { provider: 'openai', model: 'gpt-4o' },
 };
 
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -22,8 +24,14 @@ function buildPlannerSystemPrompt(workflowType, initialParams) {
 
 Today's date is ${today}.
 
-## Available Steps
-${availableSteps.map(s => `- "${s}"`).join('\n')}
+## Available Steps — What Each One Actually Searches
+
+- "search-quotes": **Semantic vector search** across all transcribed podcast content in Pinecone. This is the primary way to find what people said about a topic. It searches the actual transcript text using embeddings — it finds relevant quotes even when exact keywords don't match. THIS IS YOUR MOST POWERFUL TOOL.
+- "search-chapters": Searches chapter metadata (headlines, keywords, summaries) in MongoDB. Uses keyword/regex matching on chapter titles and tags — NOT semantic. Good for finding structured segments but may miss content that isn't explicitly tagged. Use short keyword phrases, not full sentences.
+- "discover-podcasts": Searches the **external** Podcast Index for podcasts by topic. Returns feeds that MAY OR MAY NOT be transcribed in our system. Useful for enriching results with related shows the user might not know about, or finding new sources when existing transcripts are thin.
+- "person-lookup": Finds episodes where a specific person appeared as a guest. Returns episode metadata.
+- "submit-on-demand": Submits episodes for transcription (requires approval). Only needed for content that isn't yet transcribed.
+- "poll-on-demand": Polls the status of a transcription job.
 
 ## Workflow Context
 - Workflow type: ${workflowType}
@@ -31,19 +39,27 @@ ${availableSteps.map(s => `- "${s}"`).join('\n')}
 
 ## Canonical Workflow Patterns
 
-**deep_topic_research**: Start with search-chapters (broad survey), then search-quotes (drill into specific episodes). If no results, try discover-podcasts.
+**deep_topic_research**: Start with search-quotes (semantic search across existing transcripts — this is where most content lives). Optionally follow up with search-chapters for structured segments. discover-podcasts can enrich results with related shows, but is not a substitute for search-quotes.
 
-**person_dossier**: Start with person-lookup to find episodes, then search-quotes with the discovered guids to find what they said.
+**person_dossier**: Start with person-lookup to find episodes, then search-quotes scoped to the discovered guids to find what they said.
 
 **discover_index_search**: Start with discover-podcasts, check transcript availability. If untranscribed, use submit-on-demand (requires approval). Then search-quotes on newly available content.
 
-**competitive_intelligence**: Use search-chapters with date filtering, then search-quotes for different time periods, compare results.
+**competitive_intelligence**: Start with search-quotes for the topic, optionally use search-chapters with date filtering, then search-quotes for different time periods to compare.
 
-**open_ended**: Combine approaches — start with search-chapters or search-quotes, refine based on results.
+**open_ended**: Start with search-quotes (always try this first), then refine with search-chapters or other steps based on results.
+
+## Critical Rules
+- **ALWAYS try search-quotes before discover-podcasts.** We have a large corpus of transcribed content. search-quotes must be attempted before assuming we don't have content on a topic.
+- **search-chapters returning 0 does NOT mean we have no content on the topic.** Chapters use keyword matching and may miss content that search-quotes (semantic) would find. Always try search-quotes next.
+- **Never submit-on-demand if search-quotes already returned useful results.** Transcription requests are expensive and slow. Only propose transcription when search-quotes returned 0 or near-0 results AND the user's query genuinely requires content we don't have yet.
+- discover-podcasts is fine to run alongside or after search-quotes to enrich results with related shows. But discovered feeds should NOT trigger submit-on-demand unless the user specifically asked for new/untranscribed content.
+- For search-chapters, use short keywords (1-3 words), not full phrases.
 
 ## Self-Healing Rules
-- If a step returns 0 results, try a different approach (broaden query, remove filters, try discovery).
-- If search-quotes returns low similarity scores (avg < 0.3), relax filters or rewrite the query.
+- If search-chapters returns 0 results, try search-quotes with a semantic query (required before any other fallback).
+- If search-quotes returns 0 or very low similarity (avg < 0.3), try rephrasing the query or broadening terms.
+- If BOTH search-quotes AND search-chapters return 0, try discover-podcasts to find relevant feeds. Only propose submit-on-demand if the user's query specifically needs content from those discovered feeds.
 - If person-lookup finds 0 episodes, try broader name variants or discover-podcasts for the person.
 - After 3 consecutive steps with poor results, stop and return what you have.
 - Never repeat the exact same step with the exact same parameters.
@@ -154,6 +170,92 @@ What should I do next?`;
  * @param {string} [options.ownerId] - Owner identity for session persistence
  * @returns {object} Final workflow result
  */
+async function synthesizeResults({ task, workflowType, allResults, accumulatedResults, openai, premium = true }) {
+  const debugPrefix = '[WORKFLOW-SYNTH]';
+  const model = premium ? WORKFLOW_MODELS.synthesizerPremium.model : WORKFLOW_MODELS.synthesizer.model;
+
+  const resultsContext = allResults.slice(0, MAX_RESULTS_IN_CONTEXT).map(r => {
+    if (r._sourceStep === 'search-quotes') {
+      return {
+        type: 'quote',
+        text: (r.quote || '').substring(0, 300),
+        speaker: r.creator || null,
+        episode: r.episode || null,
+        date: r.date || null,
+        similarity: r.similarity || null,
+      };
+    } else if (r._sourceStep === 'person-lookup') {
+      return {
+        type: 'appearance',
+        title: r.title || '',
+        creator: r.creator || null,
+        date: r.publishedDate || null,
+        guest: r.matchedGuest || null,
+      };
+    } else if (r._sourceStep === 'search-chapters') {
+      return {
+        type: 'chapter',
+        headline: r.headline || null,
+        summary: (r.summary || '').substring(0, 200),
+        episode: r.episode || null,
+      };
+    } else if (r._sourceStep === 'discover-podcasts') {
+      return {
+        type: 'podcast',
+        title: r.title || '',
+        author: r.author || '',
+        transcribed: r.transcriptAvailable || false,
+      };
+    }
+    return { type: r._sourceStep, summary: JSON.stringify(r).substring(0, 200) };
+  });
+
+  const stepsUsed = accumulatedResults.map(s => `${s.stepType} (${s.quality?.resultCount || 0} results)`).join(' → ');
+
+  const systemPrompt = `You are a research analyst summarizing podcast research results. Write a concise, informative overview that directly answers the user's question.
+
+Guidelines:
+- Lead with the answer — don't start with "Based on the results" or "Here's what I found"
+- Mention specific podcast names, episode titles, dates, and speakers by name
+- Identify key themes and narratives across appearances
+- If the data shows a chronological arc or evolving viewpoint, highlight it
+- Keep it to 2-4 short paragraphs
+- Use a natural, editorial tone — like a knowledgeable colleague briefing you
+- Do NOT use bullet points or lists; write in prose`;
+
+  const userMessage = `User's question: "${task}"
+
+Workflow type: ${workflowType}
+Steps executed: ${stepsUsed}
+
+Research data:
+${JSON.stringify(resultsContext, null, 2)}
+
+Write a summary that answers the user's question.`;
+
+  try {
+    printLog(`${debugPrefix} Synthesizing with ${model} (premium=${premium})`);
+
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.4,
+      max_tokens: 800,
+    });
+
+    const summary = response.choices[0].message.content?.trim() || '';
+    printLog(`${debugPrefix} Summary generated: ${summary.length} chars`);
+    return summary;
+
+  } catch (error) {
+    printLog(`${debugPrefix} Synthesis failed (${model}): ${error.message}`);
+    return null;
+  }
+}
+
 async function runWorkflow({
   task,
   maxIterations = DEFAULT_MAX_ITERATIONS,
@@ -163,6 +265,7 @@ async function runWorkflow({
   emitEvent = () => {},
   sessionId = null,
   ownerId = null,
+  premium = true,
 }) {
   const debugPrefix = '[WORKFLOW]';
   const startTime = Date.now();
@@ -403,6 +506,19 @@ async function runWorkflow({
 
   // Workflow complete
   const allResults = collectAllResults(accumulatedResults);
+
+  // Synthesize a human-readable summary
+  emitEvent('status', { message: 'Synthesizing overview...' });
+
+  const summary = await synthesizeResults({
+    task,
+    workflowType,
+    allResults,
+    accumulatedResults,
+    openai,
+    premium,
+  });
+
   const latencyMs = Date.now() - startTime;
 
   // Credit-back calculation
@@ -429,6 +545,7 @@ async function runWorkflow({
     sessionId,
     iterationsUsed: iterationCount,
     workflowType,
+    summary: summary || null,
     results: allResults,
     accumulatedSteps: accumulatedResults.map(s => ({
       stepType: s.stepType,

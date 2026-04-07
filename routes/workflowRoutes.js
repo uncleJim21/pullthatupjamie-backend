@@ -35,6 +35,7 @@ function createWorkflowRoutes({ openai }) {
           maxIterations = 10,
           outputFormat = 'structured',
           context = {},
+          premium = true,
         } = req.body;
 
         if (!task || typeof task !== 'string' || task.trim().length === 0) {
@@ -86,6 +87,7 @@ function createWorkflowRoutes({ openai }) {
             openai,
             emitEvent,
             ownerId,
+            premium,
           });
 
           // Send final formatted result
@@ -104,6 +106,7 @@ function createWorkflowRoutes({ openai }) {
             openai,
             emitEvent: () => {},
             ownerId,
+            premium,
           });
 
           if (rawResult.status === 'approval_required') {
