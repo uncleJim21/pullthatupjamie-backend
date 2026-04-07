@@ -16,6 +16,7 @@
  *   /api/rss/searchFeeds              → discover-podcasts
  *   /api/rss/getFeed                  → discover-podcasts
  *   /api/corpus/chapters              → chapter-search
+ *   /api/chat/workflow                 → workflow
  */
 
 const ENTITLEMENT_TYPES = {
@@ -27,7 +28,8 @@ const ENTITLEMENT_TYPES = {
   SUBMIT_ON_DEMAND_RUN: 'submit-on-demand-run',
   TWITTER_POST: 'twitter-post',
   DISCOVER_PODCASTS: 'discover-podcasts',
-  CHAPTER_SEARCH: 'chapter-search'
+  CHAPTER_SEARCH: 'chapter-search',
+  WORKFLOW: 'workflow'
 };
 
 // Array of all types for iteration

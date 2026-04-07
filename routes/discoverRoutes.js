@@ -655,3 +655,17 @@ router.post('/rss/getFeed', serviceHmac({ optional: true }), createEntitlementMi
 });
 
 module.exports = router;
+
+// Export internal functions for direct use by workflow orchestrator
+module.exports.discoverInternal = {
+  extractSearchRouting,
+  searchByTerm,
+  searchByPerson,
+  fetchTrending,
+  fetchEpisodesForFeed,
+  filterResultsWithLLM,
+  filterByPersonRelevance,
+  normalizeFeed,
+  normalizePersonEpisode,
+  buildNextSteps,
+};

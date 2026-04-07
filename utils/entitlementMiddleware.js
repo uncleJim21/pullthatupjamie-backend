@@ -235,6 +235,14 @@ const QUOTA_CONFIG_PRODUCTION = {
     [TIERS.registered]: { maxUsage: 50, periodLengthDays: 30 },    // 50/month
     [TIERS.subscriber]: { maxUsage: 200, periodLengthDays: 30 },   // 200/month
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
+  },
+
+  // Workflow (iterative research orchestrator, $0.10 per invocation)
+  [ENTITLEMENT_TYPES.WORKFLOW]: {
+    [TIERS.anonymous]: { maxUsage: 1, periodLengthDays: 7 },       // 1/week
+    [TIERS.registered]: { maxUsage: 10, periodLengthDays: 30 },    // 10/month
+    [TIERS.subscriber]: { maxUsage: 50, periodLengthDays: 30 },    // 50/month
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
   }
 };
 
@@ -295,6 +303,12 @@ const QUOTA_CONFIG_DEBUG = {
   },
   [ENTITLEMENT_TYPES.CHAPTER_SEARCH]: {
     [TIERS.anonymous]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
+    [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
+    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }
+  },
+  [ENTITLEMENT_TYPES.WORKFLOW]: {
+    [TIERS.anonymous]: { maxUsage: 1, periodLengthDays: 1 },
     [TIERS.registered]: { maxUsage: 3, periodLengthDays: 1 },
     [TIERS.subscriber]: { maxUsage: 5, periodLengthDays: 1 },
     [TIERS.admin]: { maxUsage: -1, periodLengthDays: 1 }

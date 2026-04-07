@@ -389,4 +389,4 @@ async function triageQuery(query, openai) {
   }
 }
 
-module.exports = { triageQuery, loadFeedCache, loadKeywordCache };
+module.exports = { triageQuery, loadFeedCache, loadKeywordCache, fuzzyMatchFeed };
