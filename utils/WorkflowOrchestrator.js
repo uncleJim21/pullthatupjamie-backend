@@ -16,6 +16,17 @@ const WORKFLOW_MODELS = {
 const DEFAULT_MAX_ITERATIONS = 10;
 const MAX_RESULTS_IN_CONTEXT = 15;
 
+// OpenAI pricing per 1M tokens (USD)
+const OPENAI_PRICING = {
+  'gpt-4o-mini': { input: 0.15, output: 0.60 },
+  'gpt-4o':      { input: 2.50, output: 10.00 },
+};
+
+function estimateLlmCost(model, inputTokens, outputTokens) {
+  const pricing = OPENAI_PRICING[model] || OPENAI_PRICING['gpt-4o-mini'];
+  return (inputTokens * pricing.input / 1_000_000) + (outputTokens * pricing.output / 1_000_000);
+}
+
 function buildPlannerSystemPrompt(workflowType, initialParams) {
   const availableSteps = Object.keys(STEP_REGISTRY).filter(s => s !== 'make-clip');
   const today = new Date().toISOString().split('T')[0];
@@ -147,12 +158,18 @@ What should I do next?`;
     });
 
     const plan = JSON.parse(response.choices[0].message.content);
-    printLog(`${debugPrefix} action=${plan.action}, step=${plan.stepType}, reason="${plan.reasoning}"`);
+    const usage = response.usage || {};
+    plan._usage = {
+      model: WORKFLOW_MODELS.planner.model,
+      input_tokens: usage.prompt_tokens || 0,
+      output_tokens: usage.completion_tokens || 0,
+    };
+    printLog(`${debugPrefix} action=${plan.action}, step=${plan.stepType}, reason="${plan.reasoning}" (${usage.total_tokens || 0} tokens)`);
     return plan;
 
   } catch (error) {
     printLog(`${debugPrefix} ERROR: ${error.message}`);
-    return { action: 'finish', reasoning: `Planner error: ${error.message}`, shouldFinish: true };
+    return { action: 'finish', reasoning: `Planner error: ${error.message}`, shouldFinish: true, _usage: { model: WORKFLOW_MODELS.planner.model, input_tokens: 0, output_tokens: 0 } };
   }
 }
 
@@ -271,6 +288,7 @@ Write a summary that answers the user's question, embedding {{clip:<pineconeId>}
     });
 
     let summary = response.choices[0].message.content?.trim() || '';
+    const usage = response.usage || {};
 
     // Normalize clip/episode tokens onto their own lines.
     // LLMs often place them inline at end of sentences — this ensures
@@ -279,12 +297,15 @@ Write a summary that answers the user's question, embedding {{clip:<pineconeId>}
     summary = summary.replace(/\n{3,}/g, '\n\n');
     summary = summary.trim();
 
-    printLog(`${debugPrefix} Summary generated: ${summary.length} chars`);
-    return summary;
+    printLog(`${debugPrefix} Summary generated: ${summary.length} chars (${usage.total_tokens || 0} tokens)`);
+    return {
+      text: summary,
+      _usage: { model, input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 },
+    };
 
   } catch (error) {
     printLog(`${debugPrefix} Synthesis failed (${model}): ${error.message}`);
-    return null;
+    return { text: null, _usage: { model, input_tokens: 0, output_tokens: 0 } };
   }
 }
 
@@ -308,6 +329,7 @@ async function runWorkflow({
   let accumulatedResults = [];
   let iterationCount = 0;
   let preApprovedActions = new Set(context.preApprovedActions || []);
+  const llmCalls = [];
 
   // Resume from approval gate
   if (sessionId) {
@@ -402,6 +424,12 @@ async function runWorkflow({
     workflowType = parsed.workflowType;
     initialParams = parsed.initialParams;
 
+    // Track task parser LLM cost
+    if (parsed._meta?.usage) {
+      const u = parsed._meta.usage;
+      llmCalls.push({ role: 'taskParser', model: 'gpt-4o-mini', input_tokens: u.prompt_tokens || 0, output_tokens: u.completion_tokens || 0 });
+    }
+
     printLog(`${debugPrefix} New workflow ${sessionId}: type=${workflowType}, confidence=${parsed.confidence}`);
     emitEvent('status', {
       message: `Starting ${workflowType.replace(/_/g, ' ')} workflow...`,
@@ -437,6 +465,10 @@ async function runWorkflow({
       iterationCount,
       openai,
     });
+
+    if (plan._usage) {
+      llmCalls.push({ role: 'planner', ...plan._usage });
+    }
 
     if (plan.action === 'finish' || plan.shouldFinish) {
       printLog(`${debugPrefix} Planner decided to finish: ${plan.reasoning}`);
@@ -542,7 +574,7 @@ async function runWorkflow({
   // Synthesize a human-readable summary
   emitEvent('status', { message: 'Synthesizing overview...' });
 
-  const summary = await synthesizeResults({
+  const synthResult = await synthesizeResults({
     task,
     workflowType,
     allResults,
@@ -550,6 +582,13 @@ async function runWorkflow({
     openai,
     premium,
   });
+  const summary = synthResult.text;
+  if (synthResult._usage) {
+    llmCalls.push({ role: 'synthesizer', ...synthResult._usage });
+  }
+
+  // Compute total LLM cost estimate
+  const totalLlmCost = llmCalls.reduce((sum, c) => sum + estimateLlmCost(c.model, c.input_tokens, c.output_tokens), 0);
 
   const latencyMs = Date.now() - startTime;
 
@@ -588,6 +627,16 @@ async function runWorkflow({
       charged: 100000,
       creditBack,
       net: 100000 - creditBack,
+    },
+    llmCosts: {
+      calls: llmCalls.map(c => ({
+        role: c.role,
+        model: c.model,
+        inputTokens: c.input_tokens,
+        outputTokens: c.output_tokens,
+        estimatedCost: parseFloat(estimateLlmCost(c.model, c.input_tokens, c.output_tokens).toFixed(6)),
+      })),
+      totalEstimatedCost: parseFloat(totalLlmCost.toFixed(6)),
     },
     latencyMs,
   };

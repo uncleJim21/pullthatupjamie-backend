@@ -17,8 +17,10 @@
  *   node tests/agent-comparison.js [--query N]
  */
 
+require('dotenv').config();
+
 const JAMIE_URL = process.env.JAMIE_URL || 'http://localhost:4132';
-const JWT = process.env.TEST_JWT || '';
+const JWT = process.env.JWT_TEST_TOKEN || process.env.TEST_JWT || '';
 
 const TEST_QUERIES = [
   {
@@ -102,7 +104,7 @@ async function runWorkflowQuery(task) {
     toolOrder,
     iterationsUsed: resultEvent?.data?.iterationsUsed || 0,
     cost: resultEvent?.data?.cost || {},
-    tokens: { input: '~5K (estimated)', output: '~1K (estimated)' },
+    llmCosts: resultEvent?.data?.llmCosts || null,
     statusMessages: statusEvents.map(e => e.data?.message).filter(Boolean),
     hasClipTokens: (resultEvent?.data?.summary || '').includes('{{clip:'),
   };
@@ -158,7 +160,9 @@ async function main() {
 
   console.log('\n╔══════════════════════════════════════════════════════════╗');
   console.log('║         Jamie Agent vs Workflow Comparison Test         ║');
-  console.log('╚══════════════════════════════════════════════════════════╝\n');
+  console.log('╚══════════════════════════════════════════════════════════╝');
+  console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[31mNOT SET — workflow will hit quota limits\x1b[0m'}`);
+  console.log();
 
   for (const q of queries) {
     console.log(`━━━ ${q.name} ━━━`);
@@ -178,16 +182,25 @@ async function main() {
     console.log('│ Metric              │ Workflow (gpt-4o-mini)     │ Agent (Claude Sonnet)      │');
     console.log('├─────────────────────┼────────────────────────────┼────────────────────────────┤');
 
+    // Build cost strings
+    const wfLlmCost = wf.llmCosts?.totalEstimatedCost;
+    const wfBillingCost = wf.cost?.net ? (wf.cost.net / 1_000_000) : null;
+    const agLlmCost = ag.cost?.claude;
+    const agGwCost = ag.cost?.gateway;
+
+    const wfLlmDetail = (wf.llmCosts?.calls || []).map(c => `${c.role}(${c.model}): $${c.estimatedCost.toFixed(5)}`).join(', ') || '?';
+    const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
+
     const rows = [
       ['Latency', `${wf.latencyMs || '?'}ms`, `${ag.latencyMs || '?'}ms`],
       ['Tool order', truncate((wf.toolOrder || []).join(' → '), 26), truncate((ag.toolOrder || []).join(' → '), 26)],
       ['Iterations/Rounds', `${wf.iterationsUsed || '?'} iterations`, `${ag.rounds || '?'} rounds`],
       ['Summary length', `${(wf.summary || '').length} chars`, `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
       ['{{clip:}} tokens', wf.hasClipTokens ? 'Yes' : 'No', ag.hasClipTokens ? 'Yes' : 'No'],
-      ['Cost (Claude/OpenAI)', formatCost(wf.cost), `$${ag.cost?.claude?.toFixed(4) || '?'}`],
-      ['Cost (gateway/API)', wf.cost?.net ? `$${(wf.cost.net / 1_000_000).toFixed(4)}` : '?', `$${ag.cost?.gateway?.toFixed(4) || '?'}`],
-      ['Cost (total)', wf.cost?.net ? `$${(wf.cost.net / 1_000_000).toFixed(4)}` : '?', `$${ag.cost?.total?.toFixed(4) || '?'}`],
-      ['Tokens', typeof wf.tokens === 'object' ? wf.tokens.input : '?', `${ag.tokens?.input || '?'}in / ${ag.tokens?.output || '?'}out`],
+      ['LLM cost', wfLlmCost != null ? `$${wfLlmCost.toFixed(5)}` : '?', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
+      ['Billing cost', wfBillingCost != null ? `$${wfBillingCost.toFixed(4)}` : '?', agGwCost != null ? `$${agGwCost.toFixed(4)}` : '?'],
+      ['Total infra cost', wfLlmCost != null ? `$${wfLlmCost.toFixed(5)}` : '?', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
+      ['Tokens', agLlmDetail === '?' ? '?' : 'see breakdown', agLlmDetail],
     ];
 
     for (const [label, val1, val2] of rows) {
@@ -195,6 +208,19 @@ async function main() {
     }
 
     console.log('└─────────────────────┴────────────────────────────┴────────────────────────────┘');
+
+    // LLM cost breakdown
+    if (wf.llmCosts?.calls?.length) {
+      console.log('\n  Workflow LLM breakdown:');
+      for (const c of wf.llmCosts.calls) {
+        console.log(`    ${c.role.padEnd(12)} ${c.model.padEnd(14)} ${String(c.inputTokens).padStart(6)}in ${String(c.outputTokens).padStart(6)}out  $${c.estimatedCost.toFixed(6)}`);
+      }
+      console.log(`    ${'TOTAL'.padEnd(12)} ${' '.repeat(14)} ${' '.repeat(15)}  $${wf.llmCosts.totalEstimatedCost.toFixed(6)}`);
+    }
+    if (ag.tokens?.input) {
+      console.log('\n  Agent LLM breakdown:');
+      console.log(`    claude-sonnet-4-6  ${String(ag.tokens.input).padStart(6)}in ${String(ag.tokens.output).padStart(6)}out  $${(ag.cost?.claude || 0).toFixed(6)}`);
+    }
 
     // Print summaries
     console.log('\n--- Workflow Summary (first 300 chars) ---');

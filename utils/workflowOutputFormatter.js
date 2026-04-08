@@ -99,6 +99,7 @@ function formatAsStructured(result) {
     },
     steps: result.accumulatedSteps || [],
     cost: result.cost,
+    llmCosts: result.llmCosts || null,
     latencyMs: result.latencyMs,
   };
 }
@@ -161,6 +162,7 @@ function formatAsText(result) {
     summary: result.summary || null,
     text: lines.join('\n'),
     cost: result.cost,
+    llmCosts: result.llmCosts || null,
     latencyMs: result.latencyMs,
   };
 }
@@ -184,6 +186,7 @@ function formatAsAudio(result) {
     summary: result.summary || null,
     clips: audioClips,
     cost: result.cost,
+    llmCosts: result.llmCosts || null,
     latencyMs: result.latencyMs,
   };
 }
