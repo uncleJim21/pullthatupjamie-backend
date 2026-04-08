@@ -70,6 +70,7 @@ const corpusRoutes = require('./routes/corpusRoutes');
 const agentRoutes = require('./routes/agentRoutes');
 const discoverRoutes = require('./routes/discoverRoutes');
 const createWorkflowRoutes = require('./routes/workflowRoutes');
+const createAgentChatRoutes = require('./routes/agentChatRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
@@ -1955,6 +1956,7 @@ app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after fron
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
 app.use('/api/chat', createWorkflowRoutes({ openai })); // Iterative workflow orchestrator (Issue #workflow)
+app.use('/api/chat', createAgentChatRoutes()); // Claude agent POC (compare with workflow)
 
 // OpenAPI spec and Swagger UI
 const openapiSpec = require('./openapi.json');
