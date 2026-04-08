@@ -35,6 +35,7 @@ function formatAsStructured(result) {
         text: item.quote || '',
         speaker: item.creator || null,
         podcast: item.episode || null,
+        episodeImage: item.episodeImage || null,
         timestamp: item.timeContext?.start_time || null,
         date: item.date || null,
         similarity: item.similarity || null,

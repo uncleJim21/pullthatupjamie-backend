@@ -178,6 +178,7 @@ async function synthesizeResults({ task, workflowType, allResults, accumulatedRe
     if (r._sourceStep === 'search-quotes') {
       return {
         type: 'quote',
+        pineconeId: r.pineconeId || null,
         text: (r.quote || '').substring(0, 300),
         speaker: r.creator || null,
         episode: r.episode || null,
@@ -187,6 +188,7 @@ async function synthesizeResults({ task, workflowType, allResults, accumulatedRe
     } else if (r._sourceStep === 'person-lookup') {
       return {
         type: 'appearance',
+        guid: r.guid || null,
         title: r.title || '',
         creator: r.creator || null,
         date: r.publishedDate || null,
@@ -195,6 +197,7 @@ async function synthesizeResults({ task, workflowType, allResults, accumulatedRe
     } else if (r._sourceStep === 'search-chapters') {
       return {
         type: 'chapter',
+        guid: r.guid || null,
         headline: r.headline || null,
         summary: (r.summary || '').substring(0, 200),
         episode: r.episode || null,
@@ -212,6 +215,10 @@ async function synthesizeResults({ task, workflowType, allResults, accumulatedRe
 
   const stepsUsed = accumulatedResults.map(s => `${s.stepType} (${s.quality?.resultCount || 0} results)`).join(' → ');
 
+  const availablePineconeIds = resultsContext
+    .filter(r => r.type === 'quote' && r.pineconeId)
+    .map(r => r.pineconeId);
+
   const systemPrompt = `You are a research analyst summarizing podcast research results. Write a concise, informative overview that directly answers the user's question.
 
 Guidelines:
@@ -221,7 +228,24 @@ Guidelines:
 - If the data shows a chronological arc or evolving viewpoint, highlight it
 - Keep it to 2-4 short paragraphs
 - Use a natural, editorial tone — like a knowledgeable colleague briefing you
-- Do NOT use bullet points or lists; write in prose`;
+- Do NOT use bullet points or lists; write in prose
+
+## Inline clip references
+
+When you reference or cite a specific quote in your summary, insert a {{clip:<pineconeId>}} token on its own line immediately after the paragraph that references it. This allows the frontend to render an interactive audio player at that point in the text.
+
+Rules:
+- ONLY use pineconeIds from this list: ${JSON.stringify(availablePineconeIds)}
+- Place tokens on their own line between paragraphs, never inline within a sentence
+- You do not need to cite every clip — only the most relevant 2-5 that strengthen the narrative
+- The summary must still read coherently if all tokens are removed
+- For chapter or episode references (non-quote results), you may use {{episode:<guid>}} if a guid is available
+
+Example:
+Graham Hancock discusses how his early work was dismissed by mainstream archaeology, but public reception told a different story:
+{{clip:46acbea2-c4cb-458f-aec4-d95006dec5ab_p294}}
+Years later, the narrative shifted as physical evidence began to support his theories:
+{{clip:4e3d2547-4bec-40ce-8c09-10bc3f8426f3_p211}}`;
 
   const userMessage = `User's question: "${task}"
 
@@ -231,7 +255,7 @@ Steps executed: ${stepsUsed}
 Research data:
 ${JSON.stringify(resultsContext, null, 2)}
 
-Write a summary that answers the user's question.`;
+Write a summary that answers the user's question, embedding {{clip:<pineconeId>}} tokens where appropriate.`;
 
   try {
     printLog(`${debugPrefix} Synthesizing with ${model} (premium=${premium})`);
@@ -246,7 +270,15 @@ Write a summary that answers the user's question.`;
       max_tokens: 800,
     });
 
-    const summary = response.choices[0].message.content?.trim() || '';
+    let summary = response.choices[0].message.content?.trim() || '';
+
+    // Normalize clip/episode tokens onto their own lines.
+    // LLMs often place them inline at end of sentences — this ensures
+    // the frontend parser can reliably split on them.
+    summary = summary.replace(/\s*({{(?:clip|episode|chapter):[^}]+}})[\t ]*/g, '\n$1\n');
+    summary = summary.replace(/\n{3,}/g, '\n\n');
+    summary = summary.trim();
+
     printLog(`${debugPrefix} Summary generated: ${summary.length} chars`);
     return summary;
 
