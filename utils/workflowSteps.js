@@ -3,6 +3,7 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const WorkProductV2 = require('../models/WorkProductV2');
 const { findSimilarDiscussions } = require('../agent-tools/pineconeTools');
 const { discoverInternal } = require('../routes/discoverRoutes');
+const { triageQuery } = require('./queryTriage');
 
 const BASE_URL = process.env.FRONTEND_URL || 'https://www.pullthatupjamie.ai';
 
@@ -29,26 +30,68 @@ function buildMiniPlayer(result) {
   };
 }
 
+// ========== Intro/Outro + Substance Filter ==========
+
+const MIN_SEQUENCE_INDEX = 3;   // skip first 3 paragraphs (host intros)
+const MIN_WORD_COUNT = 15;      // skip very short paragraphs (greetings, transitions)
+
+function extractSequence(pineconeId) {
+  const match = pineconeId && pineconeId.match(/_p(\d+)$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function isFluffParagraph(pineconeId, metadata) {
+  const seq = extractSequence(pineconeId);
+  if (seq !== null && seq < MIN_SEQUENCE_INDEX) return true;
+  const numWords = metadata.num_words || 0;
+  if (numWords > 0 && numWords < MIN_WORD_COUNT) return true;
+  return false;
+}
+
 // ========== Step: Search Quotes (Semantic Vector Search) ==========
 
-async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, minDate = null, maxDate = null, openai }) {
+const META_QUERY_PATTERN = /\b(find|show me|give me|overview|appearances?|talking about|said about|recap|summary|dossier|history of|last \d+)\b/i;
+
+async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, minDate = null, maxDate = null, targetPerson = null, openai, smartMode = true }) {
   const debugPrefix = '[STEP:search-quotes]';
   const startTime = Date.now();
 
   try {
-    printLog(`${debugPrefix} query="${query}", feedIds=${feedIds.length}, guids=${guids.length}, limit=${limit}`);
+    let effectiveQuery = query;
+
+    if (smartMode && META_QUERY_PATTERN.test(query)) {
+      try {
+        const triageStart = Date.now();
+        const triage = await triageQuery(query, openai);
+        const triageMs = Date.now() - triageStart;
+        if (triage.rewrittenQuery && triage.rewrittenQuery !== query) {
+          printLog(`${debugPrefix} smartMode rewrite (${triageMs}ms): "${query}" → "${triage.rewrittenQuery}"`);
+          effectiveQuery = triage.rewrittenQuery;
+          if (!minDate && triage.minDate) minDate = triage.minDate;
+          if (!maxDate && triage.maxDate) maxDate = triage.maxDate;
+        } else {
+          printLog(`${debugPrefix} smartMode: no rewrite needed (${triageMs}ms)`);
+        }
+      } catch (triageErr) {
+        printLog(`${debugPrefix} smartMode triage failed (non-fatal): ${triageErr.message}`);
+      }
+    }
+
+    printLog(`${debugPrefix} query="${effectiveQuery}", feedIds=${feedIds.length}, guids=${guids.length}, limit=${limit}${targetPerson ? `, targetPerson="${targetPerson}"` : ''}`);
 
     const embeddingResponse = await openai.embeddings.create({
       model: 'text-embedding-ada-002',
-      input: query
+      input: effectiveQuery
     });
     const embedding = embeddingResponse.data[0].embedding;
+
+    const overFetchLimit = Math.min(limit * 3, 30);
 
     const minimalResults = await findSimilarDiscussions({
       embedding,
       feedIds,
       guids,
-      limit,
+      limit: overFetchLimit,
       query,
       minDate,
       maxDate,
@@ -64,9 +107,23 @@ async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, m
     const metadataMap = new Map();
     metadataDocs.forEach(doc => metadataMap.set(doc.pineconeId, doc.metadataRaw));
 
-    const results = minimalResults.map(r => {
+    // If targetPerson is set, look up which episodes have that person as a guest
+    let guestEpisodeGuids = null;
+    if (targetPerson) {
+      const escapedName = targetPerson.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const guestEpisodes = await JamieVectorMetadata.find({
+        type: 'episode',
+        'metadataRaw.guests': { $regex: escapedName, $options: 'i' },
+      }).select('guid').lean();
+      guestEpisodeGuids = new Set(guestEpisodes.map(e => e.guid));
+      printLog(`${debugPrefix} targetPerson="${targetPerson}": found ${guestEpisodeGuids.size} guest episodes`);
+    }
+
+    let results = minimalResults.map(r => {
       const metadata = metadataMap.get(r.id);
       if (!metadata) return null;
+
+      if (isFluffParagraph(r.id, metadata)) return null;
 
       return {
         pineconeId: r.id,
@@ -85,11 +142,27 @@ async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, m
         },
         guid: metadata.guid || null,
         feedId: metadata.feedId || null,
+        _isGuestEpisode: guestEpisodeGuids ? guestEpisodeGuids.has(metadata.guid) : null,
       };
     }).filter(Boolean);
 
+    const preFilterCount = results.length;
+
+    // If targeting a person, boost results from episodes where they are a confirmed guest
+    if (guestEpisodeGuids && guestEpisodeGuids.size > 0) {
+      const guestResults = results.filter(r => r._isGuestEpisode);
+      const otherResults = results.filter(r => !r._isGuestEpisode);
+      results = [...guestResults, ...otherResults];
+      printLog(`${debugPrefix} Person filter: ${guestResults.length} guest-episode clips boosted, ${otherResults.length} others`);
+    }
+
+    results = results.slice(0, limit);
+
+    // Strip internal field before returning
+    results.forEach(r => delete r._isGuestEpisode);
+
     const latencyMs = Date.now() - startTime;
-    printLog(`${debugPrefix} complete (${latencyMs}ms): ${results.length} results`);
+    printLog(`${debugPrefix} complete (${latencyMs}ms): ${results.length} results (${preFilterCount - results.length} filtered)`);
 
     const avgSimilarity = results.length > 0
       ? results.reduce((sum, r) => sum + r.similarity, 0) / results.length
@@ -101,7 +174,7 @@ async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, m
         ...r,
         miniPlayer: buildMiniPlayer(r),
       })),
-      metadata: { latencyMs, query, feedIds, guids, limit },
+      metadata: { latencyMs, query: effectiveQuery, originalQuery: query !== effectiveQuery ? query : undefined, feedIds, guids, limit, targetPerson },
       quality: {
         resultCount: results.length,
         avgSimilarity: parseFloat(avgSimilarity.toFixed(4)),
@@ -412,8 +485,19 @@ async function stepPersonLookup({ personName, personVariants = [] }) {
     const guids = episodes.map(e => e._id).filter(Boolean);
     const feedIds = [...new Set(episodes.map(e => e.feedId).filter(Boolean))];
 
+    // Check if this person is primarily a host/creator (not just a guest)
+    const creatorEpisodes = await JamieVectorMetadata.find({
+      type: 'episode',
+      'metadataRaw.creator': { $regex: variantRegex, $options: 'i' }
+    }).select('feedId').limit(10).lean();
+
+    const creatorFeedIds = [...new Set(creatorEpisodes.map(e => e.feedId).filter(Boolean))];
+    const creatorEpisodeCount = creatorEpisodes.length >= 10 ? '10+' : creatorEpisodes.length;
+    const primaryRole = (creatorFeedIds.length > 0 && creatorEpisodes.length > episodes.length)
+      ? 'host' : 'guest';
+
     const latencyMs = Date.now() - startTime;
-    printLog(`${debugPrefix} complete (${latencyMs}ms): ${episodes.length} episodes across ${feedIds.length} feeds`);
+    printLog(`${debugPrefix} complete (${latencyMs}ms): ${episodes.length} guest episodes, ${creatorEpisodeCount} creator episodes, primaryRole=${primaryRole}`);
 
     return {
       stepType: 'person-lookup',
@@ -425,11 +509,14 @@ async function stepPersonLookup({ personName, personVariants = [] }) {
         publishedDate: e.publishedDate,
         matchedGuest: e.matchedGuest,
       })),
-      metadata: { latencyMs, personName, variantsUsed: nameVariants, guids, feedIds },
+      metadata: {
+        latencyMs, personName, variantsUsed: nameVariants, guids, feedIds,
+        creatorFeedIds, primaryRole,
+      },
       quality: {
         resultCount: episodes.length,
         feedCount: feedIds.length,
-        hasResults: episodes.length > 0,
+        hasResults: episodes.length > 0 || creatorFeedIds.length > 0,
       },
     };
   } catch (error) {
@@ -573,6 +660,85 @@ async function stepPollOnDemandStatus({ jobId, maxPollMs = 120000, intervalMs = 
   }
 }
 
+// ========== Step: List Episode Chapters (Direct Fetch) ==========
+
+async function stepListEpisodeChapters({ guids = [], feedIds = [], limit = 50 }) {
+  const debugPrefix = '[STEP:list-episode-chapters]';
+  const startTime = Date.now();
+
+  try {
+    if (guids.length === 0 && feedIds.length === 0) {
+      printLog(`${debugPrefix} No guids or feedIds provided`);
+      return {
+        stepType: 'list-episode-chapters',
+        results: [],
+        metadata: { latencyMs: 0 },
+        quality: { resultCount: 0, hasResults: false },
+      };
+    }
+
+    const filter = { type: 'chapter' };
+    if (guids.length > 0) filter.guid = { $in: guids };
+    else if (feedIds.length > 0) filter.feedId = { $in: feedIds.map(String) };
+
+    printLog(`${debugPrefix} fetching chapters for ${guids.length} guids, ${feedIds.length} feedIds`);
+
+    const chapters = await JamieVectorMetadata.find(filter)
+      .select('pineconeId guid feedId start_time end_time metadataRaw')
+      .sort({ guid: 1, start_time: 1 })
+      .limit(limit)
+      .lean();
+
+    const uniqueGuids = [...new Set(chapters.map(c => c.guid).filter(Boolean))];
+    const episodeMap = new Map();
+    if (uniqueGuids.length > 0) {
+      const episodes = await JamieVectorMetadata.find({
+        type: 'episode', guid: { $in: uniqueGuids }
+      }).select('guid metadataRaw.title metadataRaw.creator').lean();
+      for (const ep of episodes) {
+        episodeMap.set(ep.guid, ep.metadataRaw);
+      }
+    }
+
+    const results = chapters.map(c => {
+      const meta = c.metadataRaw || {};
+      const epMeta = episodeMap.get(c.guid) || {};
+      return {
+        guid: c.guid,
+        episodeTitle: epMeta.title || null,
+        creator: epMeta.creator || null,
+        headline: meta.headline || null,
+        summary: meta.summary || null,
+        keywords: meta.keywords || [],
+        startTime: meta.startTime ?? meta.start_time ?? c.start_time ?? null,
+        endTime: meta.endTime ?? meta.end_time ?? c.end_time ?? null,
+      };
+    });
+
+    const latencyMs = Date.now() - startTime;
+    printLog(`${debugPrefix} complete (${latencyMs}ms): ${results.length} chapters across ${uniqueGuids.length} episodes`);
+
+    return {
+      stepType: 'list-episode-chapters',
+      results,
+      metadata: { latencyMs, guids, feedIds, episodeCount: uniqueGuids.length },
+      quality: {
+        resultCount: results.length,
+        episodeCount: uniqueGuids.length,
+        hasResults: results.length > 0,
+      },
+    };
+  } catch (error) {
+    printLog(`${debugPrefix} ERROR: ${error.message}`);
+    return {
+      stepType: 'list-episode-chapters',
+      results: [],
+      metadata: { latencyMs: Date.now() - startTime, error: error.message },
+      quality: { resultCount: 0, episodeCount: 0, hasResults: false },
+    };
+  }
+}
+
 // ========== Step: Make Clip (STUB — future dev) ==========
 
 async function stepMakeClip({ clipId, timestamps }) {
@@ -592,6 +758,7 @@ const STEP_REGISTRY = {
   'search-chapters': stepSearchChapters,
   'discover-podcasts': stepDiscoverPodcasts,
   'person-lookup': stepPersonLookup,
+  'list-episode-chapters': stepListEpisodeChapters,
   'submit-on-demand': stepSubmitOnDemand,
   'poll-on-demand': stepPollOnDemandStatus,
   'make-clip': stepMakeClip,
@@ -617,9 +784,14 @@ module.exports = {
   stepSearchChapters,
   stepDiscoverPodcasts,
   stepPersonLookup,
+  stepListEpisodeChapters,
   stepSubmitOnDemand,
   stepPollOnDemandStatus,
   stepMakeClip,
   buildShareUrl,
   buildMiniPlayer,
+  extractSequence,
+  isFluffParagraph,
+  MIN_SEQUENCE_INDEX,
+  MIN_WORD_COUNT,
 };

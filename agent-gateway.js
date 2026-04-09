@@ -13,6 +13,10 @@
 
 const express = require('express');
 const { printLog } = require('./constants.js');
+const OpenAI = require('openai');
+const { rerankClips } = require('./utils/clipReranker');
+
+const openai = new OpenAI();
 
 const app = express();
 app.use(express.json());
@@ -22,8 +26,9 @@ const GATEWAY_PORT = parseInt(process.env.AGENT_GATEWAY_PORT || '3456', 10);
 const GATEWAY_API_KEY = process.env.AGENT_GATEWAY_KEY || 'jamie_agent_poc_key';
 
 const TOOL_COSTS = {
-  'search-quotes':        0.004,
-  'search-chapters':      0.004,
+  'search-quotes':           0.004,
+  'search-chapters':         0.004,
+  'list-episode-chapters':   0.002,
   'discover-podcasts':    0.005,
   'find-person':          0.001,
   'get-person-episodes':  0.001,
@@ -114,10 +119,38 @@ app.use((req, res, next) => {
 });
 
 const RESULT_HARD_CAP = 20;
+const MIN_SEQUENCE_INDEX = 3;
+const MIN_WORD_COUNT = 15;
 
 function clampLimit(requested, defaultVal = 5) {
   const limit = requested || defaultVal;
   return Math.min(Math.max(1, limit), RESULT_HARD_CAP);
+}
+
+function extractSequenceFromId(pineconeId) {
+  const match = pineconeId && pineconeId.match(/_p(\d+)$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function filterFluffResults(data) {
+  if (!data.results || !Array.isArray(data.results)) return data;
+
+  const before = data.results.length;
+  data.results = data.results.filter(r => {
+    const id = r.shareLink || r.shareUrl || '';
+    const seq = extractSequenceFromId(id);
+    if (seq !== null && seq < MIN_SEQUENCE_INDEX) return false;
+    const numWords = r.additionalFields?.num_words || 0;
+    if (numWords > 0 && numWords < MIN_WORD_COUNT) return false;
+    const text = r.quote || '';
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    if (wordCount > 0 && wordCount < MIN_WORD_COUNT) return false;
+    return true;
+  });
+  if (data.results.length < before) {
+    printLog(`[GATEWAY] Fluff filter: removed ${before - data.results.length} intro/short clips`);
+  }
+  return data;
 }
 
 function truncateResults(data) {
@@ -168,14 +201,32 @@ async function proxyToJamie(method, path, body, headers = {}) {
 app.post('/api/search-quotes', async (req, res) => {
   const { query, guid, guids, feedIds, limit, minDate, maxDate } = req.body;
   const clampedLimit = clampLimit(limit, 5);
+  const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
   const start = Date.now();
 
   try {
-    printLog(`[GATEWAY] search-quotes: query="${query}", limit=${clampedLimit} (requested=${limit || 'default'})`);
+    printLog(`[GATEWAY] search-quotes: query="${query}", limit=${clampedLimit} (requested=${limit || 'default'}, fetching=${overFetchLimit}), smartMode=true`);
     const data = await proxyToJamie('POST', '/api/search-quotes', {
-      query, guid, guids, feedIds, limit: clampedLimit, minDate, maxDate,
+      query, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
     });
+    filterFluffResults(data);
+
+    if (data.results && data.results.length > 2) {
+      const clips = data.results.map(r => ({
+        quote: r.quote,
+        creator: r.creator || r.episode,
+        episode: r.episode,
+      }));
+      const reranked = await rerankClips({ query, clips, openai });
+      if (reranked.clips.length > 0) {
+        const rerankTexts = new Set(reranked.clips.map(c => c.quote));
+        data.results = data.results.filter(r => rerankTexts.has(r.quote));
+        printLog(`[GATEWAY] Reranker: ${clips.length} → ${data.results.length} clips`);
+      }
+    }
+
     truncateResults(data);
+    if (data.results) data.results = data.results.slice(0, clampedLimit);
     printLog(`[GATEWAY] search-quotes: ${data.results?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {
@@ -229,9 +280,10 @@ app.post('/api/find-person', async (req, res) => {
   try {
     printLog(`[GATEWAY] find-person: name="${name}"`);
     const data = await proxyToJamie('GET', `/api/corpus/people?search=${encodeURIComponent(name)}&limit=${RESULT_HARD_CAP}`);
-    truncateResults(data);
-    printLog(`[GATEWAY] find-person: ${data.people?.length || 0} results (${Date.now() - start}ms)`);
-    res.json(data);
+    const normalized = { people: data.data || [], pagination: data.pagination, query: data.query };
+    truncateResults(normalized);
+    printLog(`[GATEWAY] find-person: ${normalized.people?.length || 0} results (${Date.now() - start}ms)`);
+    res.json(normalized);
   } catch (err) {
     printLog(`[GATEWAY] find-person ERROR: ${err.message}`);
     res.status(502).json({ error: err.message });
@@ -248,11 +300,36 @@ app.post('/api/get-person-episodes', async (req, res) => {
     const data = await proxyToJamie('POST', '/api/corpus/people/episodes', {
       name, limit: clampedLimit,
     });
-    truncateResults(data);
-    printLog(`[GATEWAY] get-person-episodes: ${data.episodes?.length || 0} results (${Date.now() - start}ms)`);
-    res.json(data);
+    const normalized = { episodes: data.data || [], pagination: data.pagination, query: data.query };
+    truncateResults(normalized);
+    printLog(`[GATEWAY] get-person-episodes: ${normalized.episodes?.length || 0} results (${Date.now() - start}ms)`);
+    res.json(normalized);
   } catch (err) {
     printLog(`[GATEWAY] get-person-episodes ERROR: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- List Episode Chapters (direct fetch, no search) ---
+
+app.post('/api/list-episode-chapters', async (req, res) => {
+  const { guids, feedIds, limit } = req.body;
+  const start = Date.now();
+
+  try {
+    const queryParams = new URLSearchParams();
+    if (guids && guids.length > 0) queryParams.set('guids', guids.join(','));
+    if (feedIds && feedIds.length > 0) queryParams.set('feedIds', feedIds.join(','));
+    if (limit) queryParams.set('limit', Math.min(limit, RESULT_HARD_CAP * 2));
+
+    printLog(`[GATEWAY] list-episode-chapters: guids=${guids?.length || 0}, feedIds=${feedIds?.length || 0}`);
+    const data = await proxyToJamie('GET', `/api/corpus/chapters?${queryParams.toString()}`);
+    const chapters = data.data || data.chapters || data || [];
+    const normalized = { chapters: Array.isArray(chapters) ? chapters : [] };
+    printLog(`[GATEWAY] list-episode-chapters: ${normalized.chapters.length} chapters (${Date.now() - start}ms)`);
+    res.json(normalized);
+  } catch (err) {
+    printLog(`[GATEWAY] list-episode-chapters ERROR: ${err.message}`);
     res.status(502).json({ error: err.message });
   }
 });

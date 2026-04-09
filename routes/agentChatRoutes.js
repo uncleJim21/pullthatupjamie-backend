@@ -41,11 +41,12 @@ let anthropicKeyValid = false;
 
 // Map tool names to gateway endpoints
 const TOOL_ENDPOINT_MAP = {
-  search_quotes:        '/api/search-quotes',
-  search_chapters:      '/api/search-chapters',
-  discover_podcasts:    '/api/discover-podcasts',
-  find_person:          '/api/find-person',
-  get_person_episodes:  '/api/get-person-episodes',
+  search_quotes:          '/api/search-quotes',
+  search_chapters:        '/api/search-chapters',
+  discover_podcasts:      '/api/discover-podcasts',
+  find_person:            '/api/find-person',
+  get_person_episodes:    '/api/get-person-episodes',
+  list_episode_chapters:  '/api/list-episode-chapters',
 };
 
 async function callToolViaGateway(toolName, toolInput, sessionId) {
@@ -147,16 +148,22 @@ function createAgentChatRoutes() {
         const assistantContent = response.content;
         messages.push({ role: 'assistant', content: assistantContent });
 
-        // Emit any text blocks
+        const isFinalResponse = response.stop_reason !== 'tool_use';
+
+        // Only emit text blocks from the final response (after all tool calls)
         for (const block of assistantContent) {
           if (block.type === 'text') {
-            console.log(`[${requestId}] Emitting text block (${block.text.length} chars): "${block.text.substring(0, 120)}..."`);
-            emit('text', { text: block.text });
+            if (isFinalResponse) {
+              console.log(`[${requestId}] Emitting final text block (${block.text.length} chars): "${block.text.substring(0, 120)}..."`);
+              emit('text', { text: block.text });
+            } else {
+              console.log(`[${requestId}] Suppressing intermediate text (${block.text.length} chars): "${block.text.substring(0, 80)}..."`);
+            }
           }
         }
 
         // If Claude is done (no tool use), break
-        if (response.stop_reason !== 'tool_use') {
+        if (isFinalResponse) {
           console.log(`[${requestId}] stop_reason="${response.stop_reason}" — breaking loop`);
           break;
         }

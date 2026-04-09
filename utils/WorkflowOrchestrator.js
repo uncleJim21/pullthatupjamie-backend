@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { printLog } = require('../constants.js');
 const { parseWorkflowTask, WORKFLOW_TYPES } = require('./workflowTaskParser');
 const { executeStep, REQUIRES_APPROVAL, STEP_REGISTRY } = require('./workflowSteps');
+const { rerankClips } = require('./clipReranker');
 const WorkflowSession = require('../models/WorkflowSession');
 const { WORKFLOW_CREDIT_BACK_MICRO_USD, WORKFLOW_CREDIT_BACK_MAX_ITERATIONS } = require('../constants/agentPricing');
 
@@ -40,7 +41,22 @@ Today's date is ${today}.
 - "search-quotes": **Semantic vector search** across all transcribed podcast content in Pinecone. This is the primary way to find what people said about a topic. It searches the actual transcript text using embeddings — it finds relevant quotes even when exact keywords don't match. THIS IS YOUR MOST POWERFUL TOOL.
 - "search-chapters": Searches chapter metadata (headlines, keywords, summaries) in MongoDB. Uses keyword/regex matching on chapter titles and tags — NOT semantic. Good for finding structured segments but may miss content that isn't explicitly tagged. Use short keyword phrases, not full sentences.
 - "discover-podcasts": Searches the **external** Podcast Index for podcasts by topic. Returns feeds that MAY OR MAY NOT be transcribed in our system. Useful for enriching results with related shows the user might not know about, or finding new sources when existing transcripts are thin.
-- "person-lookup": Finds episodes where a specific person appeared as a guest. Returns episode metadata.
+- "person-lookup": Finds episodes where a specific person appeared as a guest. Returns episode metadata plus primaryRole ("guest" or "host") and creatorFeedIds if they are a podcast host.
+- "list-episode-chapters": Fetches ALL chapters for given episode GUIDs or feedIds. No keyword search — this directly retrieves the chapter table of contents for specific episodes. Use this AFTER person-lookup to see what topics were discussed in each episode, then use those chapter titles/keywords to craft targeted search-quotes queries.
+
+## CRITICAL: Crafting search-quotes queries
+
+The "query" parameter for search-quotes is embedded and compared against actual transcript text. NEVER pass meta-language like "find Luke Gromen's overview" or "give me appearances" — those match clips where someone says "Luke" by name (intros, outros) rather than substantive content.
+
+Instead, construct queries that describe the TOPICS the person discussed:
+- BAD: "Luke Gromen recent appearances overview"
+- GOOD: "debt spiral AI deflation sovereign bonds economic cycle"
+- BAD: "Roger Penrose talking about physics"
+- GOOD: "black hole singularity quantum gravity event horizon"
+
+When you have chapter headlines from list-episode-chapters, use them directly:
+- If chapters say "Debt, AI, and Economic Implications" and "Job Loss and Economic Preparedness", your search-quotes query should be "debt AI economic implications job loss preparedness"
+- Combine 2-3 chapter headlines into one topical query for best results
 - "submit-on-demand": Submits episodes for transcription (requires approval). Only needed for content that isn't yet transcribed.
 - "poll-on-demand": Polls the status of a transcription job.
 
@@ -50,9 +66,9 @@ Today's date is ${today}.
 
 ## Canonical Workflow Patterns
 
-**deep_topic_research**: Start with search-quotes (semantic search across existing transcripts — this is where most content lives). Optionally follow up with search-chapters for structured segments. discover-podcasts can enrich results with related shows, but is not a substitute for search-quotes.
+**deep_topic_research**: Start with search-quotes (semantic search across existing transcripts — this is where most content lives). Optionally follow up with search-chapters for structured segments. discover-podcasts can enrich results with related shows, but is not a substitute for search-quotes. **If the query names a specific expert or person** (e.g. "What has Penrose said about X?"), always do person-lookup FIRST to get their episode GUIDs, then scope search-quotes to those GUIDs. This ensures you get clips of the person speaking, not others discussing them.
 
-**person_dossier**: Start with person-lookup to find episodes, then search-quotes scoped to the discovered guids to find what they said.
+**person_dossier**: Start with person-lookup to find episodes. Then use list-episode-chapters on the discovered GUIDs to see what topics were discussed. Use the chapter headlines/keywords to craft targeted search-quotes queries scoped to those GUIDs. ALWAYS pass the discovered GUIDs to search-quotes — never search the full corpus without scoping when a person is the focus.
 
 **discover_index_search**: Start with discover-podcasts, check transcript availability. If untranscribed, use submit-on-demand (requires approval). Then search-quotes on newly available content.
 
@@ -66,6 +82,8 @@ Today's date is ${today}.
 - **Never submit-on-demand if search-quotes already returned useful results.** Transcription requests are expensive and slow. Only propose transcription when search-quotes returned 0 or near-0 results AND the user's query genuinely requires content we don't have yet.
 - discover-podcasts is fine to run alongside or after search-quotes to enrich results with related shows. But discovered feeds should NOT trigger submit-on-demand unless the user specifically asked for new/untranscribed content.
 - For search-chapters, use short keywords (1-3 words), not full phrases.
+- **PERSON-SCOPING RULE**: If the query asks what a specific person said, thinks, or believes, you MUST do person-lookup first regardless of workflow type. Then pass the returned GUIDs to search-quotes. Without this scoping, search-quotes may return clips of OTHER people discussing the target person rather than the person themselves speaking. This is a critical quality issue.
+- **HOST DETECTION**: After person-lookup, check the primaryRole in the results. If primaryRole is "host", the person is a podcast creator (e.g. Joe Rogan, Lex Fridman). In this case, use the creatorFeedIds (not the guest GUIDs) when calling search-quotes — this searches THEIR show. Guest GUIDs only cover episodes where they appeared on OTHER shows, which misses all their own content.
 
 ## Self-Healing Rules
 - If search-chapters returns 0 results, try search-quotes with a semantic query (required before any other fallback).
@@ -88,6 +106,7 @@ For step params, use these shapes:
 - search-chapters: { "search": "...", "feedIds": [], "limit": 20 }
 - discover-podcasts: { "query": "...", "limit": 10 }
 - person-lookup: { "personName": "...", "personVariants": ["...", "..."] }
+- list-episode-chapters: { "guids": ["..."], "feedIds": ["..."], "limit": 50 }
 - submit-on-demand: { "episodes": [{ "guid": "...", "feedGuid": "...", "feedId": "..." }] }
 - poll-on-demand: { "jobId": "..." }
 
@@ -112,12 +131,23 @@ function summarizeResults(accumulatedResults) {
         `"${r.headline || 'untitled'}" (${r.episode?.title || 'unknown'})`
       );
       lines.push(`${type}: ${count} results (${step.quality?.totalCount} total). Top: ${topResults.join('; ')}`);
-    } else if (type === 'person-lookup' && step.results?.length > 0) {
-      lines.push(`${type}: Found ${count} episodes across ${step.quality?.feedCount} feeds.`);
+    } else if (type === 'person-lookup') {
+      const primaryRole = step.metadata?.primaryRole || 'guest';
+      const creatorFeedIds = step.metadata?.creatorFeedIds || [];
+      lines.push(`${type}: Found ${count} guest episodes across ${step.quality?.feedCount} feeds. primaryRole: ${primaryRole}.`);
+      if (primaryRole === 'host' && creatorFeedIds.length > 0) {
+        lines.push(`  ⚠ This person is primarily a HOST/CREATOR. Use feedIds=[${creatorFeedIds.join(',')}] for search-quotes to search their show.`);
+      }
       const guids = step.metadata?.guids?.slice(0, 5) || [];
-      if (guids.length > 0) lines.push(`  Episode GUIDs available: ${guids.join(', ')}`);
+      if (guids.length > 0) lines.push(`  Guest episode GUIDs: ${guids.join(', ')}`);
       const feedIds = step.metadata?.feedIds || [];
-      if (feedIds.length > 0) lines.push(`  Feed IDs: ${feedIds.join(', ')}`);
+      if (feedIds.length > 0) lines.push(`  Guest feed IDs: ${feedIds.join(', ')}`);
+      if (creatorFeedIds.length > 0) lines.push(`  Creator feed IDs: ${creatorFeedIds.join(', ')}`);
+    } else if (type === 'list-episode-chapters' && step.results?.length > 0) {
+      const topChapters = step.results.slice(0, 5).map(r =>
+        `"${r.headline || 'untitled'}" (${r.episodeTitle || 'unknown'})`
+      );
+      lines.push(`${type}: ${count} chapters across ${step.quality?.episodeCount} episodes. Topics: ${topChapters.join('; ')}`);
     } else if (type === 'discover-podcasts' && step.results?.length > 0) {
       const feeds = step.results.slice(0, 3).map(r =>
         `"${r.title}" (${r.transcriptAvailable ? 'transcribed' : 'not transcribed'})`
@@ -191,12 +221,21 @@ async function synthesizeResults({ task, workflowType, allResults, accumulatedRe
   const debugPrefix = '[WORKFLOW-SYNTH]';
   const model = premium ? WORKFLOW_MODELS.synthesizerPremium.model : WORKFLOW_MODELS.synthesizer.model;
 
+  const quoteCount = allResults.filter(r => r._sourceStep === 'search-quotes').length;
+  if (allResults.length === 0 || quoteCount === 0) {
+    printLog(`${debugPrefix} No clips available (${allResults.length} total results, ${quoteCount} quotes) — skipping synthesis`);
+    return {
+      text: 'I was not able to find specific podcast clips matching this query in our corpus. Try rephrasing your search or broadening the topic.',
+      _usage: { model, input_tokens: 0, output_tokens: 0 },
+    };
+  }
+
   const resultsContext = allResults.slice(0, MAX_RESULTS_IN_CONTEXT).map(r => {
     if (r._sourceStep === 'search-quotes') {
       return {
         type: 'quote',
         pineconeId: r.pineconeId || null,
-        text: (r.quote || '').substring(0, 300),
+        text: (r.quote || '').substring(0, 500),
         speaker: r.creator || null,
         episode: r.episode || null,
         date: r.date || null,
@@ -246,6 +285,14 @@ Guidelines:
 - Keep it to 2-4 short paragraphs
 - Use a natural, editorial tone — like a knowledgeable colleague briefing you
 - Do NOT use bullet points or lists; write in prose
+
+## Inline verbatim quotes
+
+When a clip contains an insightful, singular, or highly relevant statement, embed it as a verbatim inline quote (using quotation marks and attributing the speaker). For example:
+
+As Gromen explained on What Bitcoin Did: "The US is essentially in a debt spiral where the interest payments alone exceed what they can service..."
+
+This adds credibility and lets the reader hear the person's actual voice. Prefer direct quotes over paraphrasing when the wording itself is impactful.
 
 ## Inline clip references
 
@@ -536,6 +583,16 @@ async function runWorkflow({
       ...stepParams,
       openai,
     });
+
+    // Re-rank search-quotes results with a lightweight LLM pass
+    if (stepType === 'search-quotes' && stepResult.results?.length > 2) {
+      const rerankResult = await rerankClips({ query: task, clips: stepResult.results, openai });
+      stepResult.results = rerankResult.clips;
+      stepResult.quality.resultCount = rerankResult.clips.length;
+      if (rerankResult.usage.input_tokens > 0) {
+        llmCalls.push({ role: 'reranker', ...rerankResult.usage });
+      }
+    }
 
     accumulatedResults.push(stepResult);
     iterationCount++;

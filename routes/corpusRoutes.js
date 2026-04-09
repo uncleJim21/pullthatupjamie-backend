@@ -837,6 +837,42 @@ router.get('/episodes/:guid/chapters', async (req, res) => {
   }
 });
 
+/**
+ * GET /chapters
+ * Batch fetch chapters for multiple episodes by GUIDs or feedIds
+ *
+ * Query params:
+ *   - guids: comma-separated episode GUIDs
+ *   - feedIds: comma-separated feed IDs
+ *   - limit (default: 100, max: 200)
+ */
+router.get('/chapters', async (req, res) => {
+  try {
+    const { guids, feedIds, limit: rawLimit } = req.query;
+    const limit = Math.min(parseInt(rawLimit) || 100, 200);
+
+    const filter = { type: 'chapter' };
+    if (guids) {
+      filter.guid = { $in: guids.split(',').map(g => g.trim()).filter(Boolean) };
+    } else if (feedIds) {
+      filter.feedId = { $in: feedIds.split(',').map(f => f.trim()).filter(Boolean) };
+    } else {
+      return res.status(400).json({ error: 'Provide guids or feedIds query parameter' });
+    }
+
+    const chapters = await JamieVectorMetadata.find(filter)
+      .select('pineconeId guid feedId start_time end_time metadataRaw')
+      .sort({ guid: 1, start_time: 1 })
+      .limit(limit)
+      .lean();
+
+    res.json({ data: chapters.map(formatChapter) });
+  } catch (error) {
+    console.error('[corpusRoutes] Error fetching batch chapters:', error);
+    res.status(500).json({ error: 'Failed to fetch chapters', details: error.message });
+  }
+});
+
 // =============================================================================
 // TOPICS ENDPOINT
 // =============================================================================
