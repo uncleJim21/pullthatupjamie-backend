@@ -113,10 +113,12 @@ async function runWorkflowQuery(task) {
 async function runAgentQuery(task) {
   const start = Date.now();
 
+  const agentModel = process.env.AGENT_MODEL || 'fast';
+
   const resp = await fetch(`${JAMIE_URL}/api/chat/agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: task }),
+    body: JSON.stringify({ message: task, model: agentModel }),
   });
 
   const raw = await resp.text();
@@ -129,13 +131,14 @@ async function runAgentQuery(task) {
   const doneEvent = events.find(e => e.event === 'done');
 
   const fullText = textEvents.map(e => e.data?.text || '').join('');
+  const modelLabel = doneEvent?.data?.model || agentModel;
   const toolOrder = toolCallEvents.map(e => {
     const matchingResult = toolResultEvents.find(r => r.data?.tool === e.data?.tool && r.data?.round === e.data?.round);
     return `${e.data.tool}(${matchingResult?.data?.resultCount ?? '?'} results)`;
   });
 
   return {
-    engine: 'agent (Claude Sonnet 4.5)',
+    engine: `agent (${modelLabel})`,
     latencyMs,
     summary: fullText.substring(0, 500) + (fullText.length > 500 ? '...' : ''),
     fullSummaryLength: fullText.length,
@@ -178,8 +181,9 @@ async function main() {
     const ag = agentResult.status === 'fulfilled' ? agentResult.value : { engine: 'agent', error: agentResult.reason?.message };
 
     // Print comparison table
+    const agentLabel = ag.engine || 'Agent';
     console.log('┌─────────────────────┬────────────────────────────┬────────────────────────────┐');
-    console.log('│ Metric              │ Workflow (gpt-4o-mini)     │ Agent (Claude Sonnet)      │');
+    console.log(`│ Metric              │ Workflow (gpt-4o-mini)     │ ${pad(agentLabel, 26)} │`);
     console.log('├─────────────────────┼────────────────────────────┼────────────────────────────┤');
 
     // Build cost strings
@@ -218,8 +222,9 @@ async function main() {
       console.log(`    ${'TOTAL'.padEnd(12)} ${' '.repeat(14)} ${' '.repeat(15)}  $${wf.llmCosts.totalEstimatedCost.toFixed(6)}`);
     }
     if (ag.tokens?.input) {
+      const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || 'claude';
       console.log('\n  Agent LLM breakdown:');
-      console.log(`    claude-sonnet-4-6  ${String(ag.tokens.input).padStart(6)}in ${String(ag.tokens.output).padStart(6)}out  $${(ag.cost?.claude || 0).toFixed(6)}`);
+      console.log(`    ${agModelName.padEnd(22)} ${String(ag.tokens.input).padStart(6)}in ${String(ag.tokens.output).padStart(6)}out  $${(ag.cost?.claude || 0).toFixed(6)}`);
     }
 
     // Print summaries

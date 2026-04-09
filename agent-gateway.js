@@ -113,6 +113,29 @@ app.use((req, res, next) => {
   next();
 });
 
+const RESULT_HARD_CAP = 20;
+
+function clampLimit(requested, defaultVal = 5) {
+  const limit = requested || defaultVal;
+  return Math.min(Math.max(1, limit), RESULT_HARD_CAP);
+}
+
+function truncateResults(data) {
+  if (data.results && data.results.length > RESULT_HARD_CAP) {
+    data.results = data.results.slice(0, RESULT_HARD_CAP);
+  }
+  if (data.chapters && data.chapters.length > RESULT_HARD_CAP) {
+    data.chapters = data.chapters.slice(0, RESULT_HARD_CAP);
+  }
+  if (data.episodes && data.episodes.length > RESULT_HARD_CAP) {
+    data.episodes = data.episodes.slice(0, RESULT_HARD_CAP);
+  }
+  if (data.people && data.people.length > RESULT_HARD_CAP) {
+    data.people = data.people.slice(0, RESULT_HARD_CAP);
+  }
+  return data;
+}
+
 // --- Proxy helper ---
 async function proxyToJamie(method, path, body, headers = {}) {
   const url = `${JAMIE_API_BASE}${path}`;
@@ -143,14 +166,16 @@ async function proxyToJamie(method, path, body, headers = {}) {
 // ==================================================================
 
 app.post('/api/search-quotes', async (req, res) => {
-  const { query, guid, guids, feedIds, limit = 10, minDate, maxDate } = req.body;
+  const { query, guid, guids, feedIds, limit, minDate, maxDate } = req.body;
+  const clampedLimit = clampLimit(limit, 5);
   const start = Date.now();
 
   try {
-    printLog(`[GATEWAY] search-quotes: query="${query}", limit=${limit}`);
+    printLog(`[GATEWAY] search-quotes: query="${query}", limit=${clampedLimit} (requested=${limit || 'default'})`);
     const data = await proxyToJamie('POST', '/api/search-quotes', {
-      query, guid, guids, feedIds, limit, minDate, maxDate,
+      query, guid, guids, feedIds, limit: clampedLimit, minDate, maxDate,
     });
+    truncateResults(data);
     printLog(`[GATEWAY] search-quotes: ${data.results?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {
@@ -160,14 +185,16 @@ app.post('/api/search-quotes', async (req, res) => {
 });
 
 app.post('/api/search-chapters', async (req, res) => {
-  const { search, feedIds, limit = 20, page = 1 } = req.body;
+  const { search, feedIds, limit, page = 1 } = req.body;
+  const clampedLimit = clampLimit(limit, 5);
   const start = Date.now();
 
   try {
-    printLog(`[GATEWAY] search-chapters: search="${search}", limit=${limit}`);
+    printLog(`[GATEWAY] search-chapters: search="${search}", limit=${clampedLimit} (requested=${limit || 'default'})`);
     const data = await proxyToJamie('POST', '/api/search-chapters', {
-      search, feedIds, limit, page,
+      search, feedIds, limit: clampedLimit, page,
     });
+    truncateResults(data);
     printLog(`[GATEWAY] search-chapters: ${data.chapters?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {
@@ -177,14 +204,16 @@ app.post('/api/search-chapters', async (req, res) => {
 });
 
 app.post('/api/discover-podcasts', async (req, res) => {
-  const { query, limit = 10 } = req.body;
+  const { query, limit } = req.body;
+  const clampedLimit = clampLimit(limit, 5);
   const start = Date.now();
 
   try {
-    printLog(`[GATEWAY] discover-podcasts: query="${query}", limit=${limit}`);
+    printLog(`[GATEWAY] discover-podcasts: query="${query}", limit=${clampedLimit} (requested=${limit || 'default'})`);
     const data = await proxyToJamie('POST', '/api/discover-podcasts', {
-      query, limit,
+      query, limit: clampedLimit,
     });
+    truncateResults(data);
     printLog(`[GATEWAY] discover-podcasts: ${data.results?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {
@@ -199,7 +228,8 @@ app.post('/api/find-person', async (req, res) => {
 
   try {
     printLog(`[GATEWAY] find-person: name="${name}"`);
-    const data = await proxyToJamie('GET', `/api/corpus/people?search=${encodeURIComponent(name)}&limit=20`);
+    const data = await proxyToJamie('GET', `/api/corpus/people?search=${encodeURIComponent(name)}&limit=${RESULT_HARD_CAP}`);
+    truncateResults(data);
     printLog(`[GATEWAY] find-person: ${data.people?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {
@@ -209,14 +239,16 @@ app.post('/api/find-person', async (req, res) => {
 });
 
 app.post('/api/get-person-episodes', async (req, res) => {
-  const { name, limit = 20 } = req.body;
+  const { name, limit } = req.body;
+  const clampedLimit = clampLimit(limit, 5);
   const start = Date.now();
 
   try {
-    printLog(`[GATEWAY] get-person-episodes: name="${name}", limit=${limit}`);
+    printLog(`[GATEWAY] get-person-episodes: name="${name}", limit=${clampedLimit} (requested=${limit || 'default'})`);
     const data = await proxyToJamie('POST', '/api/corpus/people/episodes', {
-      name, limit,
+      name, limit: clampedLimit,
     });
+    truncateResults(data);
     printLog(`[GATEWAY] get-person-episodes: ${data.episodes?.length || 0} results (${Date.now() - start}ms)`);
     res.json(data);
   } catch (err) {

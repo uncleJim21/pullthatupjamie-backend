@@ -5,8 +5,13 @@ const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
 
 const GATEWAY_URL = process.env.AGENT_GATEWAY_URL || 'http://localhost:3456';
 const GATEWAY_KEY = process.env.AGENT_GATEWAY_KEY || 'jamie_agent_poc_key';
-const MODEL = 'claude-sonnet-4-6';
 const MAX_TOOL_ROUNDS = 10;
+
+const AGENT_MODELS = {
+  fast:    { id: 'claude-haiku-4-5-20251001', inputPer1M: 1.00, outputPer1M: 5.00, label: 'Haiku 4.5' },
+  quality: { id: 'claude-sonnet-4-6',         inputPer1M: 3.00, outputPer1M: 15.00, label: 'Sonnet 4.6' },
+};
+const DEFAULT_AGENT_MODEL = 'fast';
 
 let anthropic;
 let anthropicKeyValid = false;
@@ -73,10 +78,12 @@ function createAgentChatRoutes() {
    * POST /agent
    * Send a message to the Claude-powered agent. Streams SSE back.
    *
-   * Body: { message: string, sessionId?: string }
+   * Body: { message: string, sessionId?: string, model?: "fast"|"quality" }
    */
   router.post('/agent', async (req, res) => {
     const { message } = req.body;
+    const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
+    const modelConfig = AGENT_MODELS[modelKey];
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestId = `AGENT-${sessionId.slice(-8)}`;
     const startTime = Date.now();
@@ -89,7 +96,7 @@ function createAgentChatRoutes() {
       return res.status(503).json({ error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' });
     }
 
-    printLog(`[${requestId}] POST /api/chat/agent — "${message.substring(0, 100)}"`);
+    printLog(`[${requestId}] POST /api/chat/agent — model=${modelConfig.label}, "${message.substring(0, 100)}"`);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -121,9 +128,9 @@ function createAgentChatRoutes() {
         round++;
         console.log(`[${requestId}] === ROUND ${round} START === (aborted=${aborted})`);
 
-        console.log(`[${requestId}] Calling Claude API (model=${MODEL}, messages=${messages.length})...`);
+        console.log(`[${requestId}] Calling Claude API (model=${modelConfig.id}, messages=${messages.length})...`);
         const response = await anthropic.messages.create({
-          model: MODEL,
+          model: modelConfig.id,
           max_tokens: 4096,
           system: SYSTEM_PROMPT,
           messages,
@@ -210,17 +217,17 @@ function createAgentChatRoutes() {
 
       const latencyMs = Date.now() - startTime;
 
-      // Estimate cost (Sonnet 4.5 pricing: $3/1M input, $15/1M output)
-      const claudeCost = (totalInputTokens * 3 / 1_000_000) + (totalOutputTokens * 15 / 1_000_000);
+      const claudeCost = (totalInputTokens * modelConfig.inputPer1M / 1_000_000) + (totalOutputTokens * modelConfig.outputPer1M / 1_000_000);
       const gatewayCost = toolCalls.reduce((sum, tc) => {
         const costs = { search_quotes: 0.004, search_chapters: 0.004, discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001 };
         return sum + (costs[tc.name] || 0);
       }, 0);
 
-      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${totalInputTokens}+${totalOutputTokens} tokens, ${latencyMs}ms`);
+      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${totalInputTokens}+${totalOutputTokens} tokens, $${claudeCost.toFixed(4)} LLM, ${latencyMs}ms`);
 
       emit('done', {
         sessionId,
+        model: modelConfig.label,
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
         tokens: { input: totalInputTokens, output: totalOutputTokens },

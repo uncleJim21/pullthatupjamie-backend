@@ -38,6 +38,14 @@ const SYSTEM_PROMPT = `You are Jamie, an expert podcast research assistant. You 
 4. For person queries, start with find_person or get_person_episodes, then use search_quotes scoped to the discovered episode GUIDs.
 5. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
 
+## Token stewardship
+
+Every result you request becomes input tokens on the next round. Be economical:
+- **Default to limit 5** for all tools. 5 high-relevance results are almost always sufficient.
+- Only increase the limit (up to the hard cap of 20) when you have a specific reason — e.g. a person appeared on 12 shows and the user asked for all of them, or the first 5 results had low relevance and you need broader coverage.
+- Prefer making a second, more targeted search over requesting a large batch. Two calls of 5 results each (with different queries) are usually better than one call of 15.
+- When you have enough material to write a good answer, stop searching.
+
 ## Response format
 
 - Write a concise, editorial-style overview (2-4 paragraphs) that directly answers the user's question.
@@ -59,7 +67,7 @@ const TOOL_DEFINITIONS = [
         guid:    { type: 'string', description: 'Filter to a single episode GUID' },
         guids:   { type: 'array', items: { type: 'string' }, description: 'Filter to multiple episode GUIDs' },
         feedIds: { type: 'array', items: { type: 'string' }, description: 'Filter to specific podcast feed IDs' },
-        limit:   { type: 'number', description: 'Max results (default 10)' },
+        limit:   { type: 'number', description: 'Max results (default 5, hard cap 20). Start with 5 — only increase if you need broader coverage.' },
         minDate: { type: 'string', description: 'ISO date string — only episodes after this date' },
         maxDate: { type: 'string', description: 'ISO date string — only episodes before this date' },
       },
@@ -74,7 +82,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         search:  { type: 'string', description: 'Keyword search term (1-3 words work best)' },
         feedIds: { type: 'array', items: { type: 'string' }, description: 'Filter to specific feed IDs' },
-        limit:   { type: 'number', description: 'Max results (default 20)' },
+        limit:   { type: 'number', description: 'Max results (default 5, hard cap 20)' },
       },
       required: ['search'],
     },
@@ -86,7 +94,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Topic or keywords to search for' },
-        limit: { type: 'number', description: 'Max results (default 10)' },
+        limit: { type: 'number', description: 'Max results (default 5, hard cap 20)' },
       },
       required: ['query'],
     },
@@ -109,7 +117,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         name:  { type: 'string', description: 'Person name' },
-        limit: { type: 'number', description: 'Max episodes (default 20)' },
+        limit: { type: 'number', description: 'Max episodes (default 5, hard cap 20)' },
       },
       required: ['name'],
     },
