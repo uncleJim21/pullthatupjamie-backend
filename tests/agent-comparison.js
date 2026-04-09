@@ -14,9 +14,11 @@
  *   - Agent gateway running on :3456  (node agent-gateway.js)
  *
  * Usage:
- *   node tests/agent-comparison.js [--query N] [--save]
+ *   node tests/agent-comparison.js [--query N] [--save] [--agent-only] ["custom query 1" "custom query 2" ...]
  *
- * --save writes full output to tests/output/<timestamp>.md (gitignored)
+ * --save        writes full output to tests/output/<timestamp>.md (gitignored)
+ * --agent-only  skip the workflow engine, only run the Claude agent
+ * Positional args (quoted strings) override the built-in TEST_QUERIES list
  */
 
 const fs = require('fs');
@@ -219,21 +221,32 @@ async function runAgentQuery(task) {
 // ===== Main =====
 
 async function main() {
-  const queryIndex = process.argv.includes('--query')
-    ? parseInt(process.argv[process.argv.indexOf('--query') + 1], 10) - 1
+  const args = process.argv.slice(2);
+  const shouldSave = args.includes('--save');
+  const agentOnly = args.includes('--agent-only');
+
+  const queryIndex = args.includes('--query')
+    ? parseInt(args[args.indexOf('--query') + 1], 10) - 1
     : null;
 
-  const queries = queryIndex !== null && queryIndex >= 0 && queryIndex < TEST_QUERIES.length
-    ? [TEST_QUERIES[queryIndex]]
-    : TEST_QUERIES;
+  const positionalQueries = args.filter(a => !a.startsWith('--') && !(args[args.indexOf(a) - 1] === '--query'));
+  
+  let queries;
+  if (positionalQueries.length > 0) {
+    queries = positionalQueries.map((q, i) => ({ name: `Custom #${i + 1}`, task: q }));
+  } else if (queryIndex !== null && queryIndex >= 0 && queryIndex < TEST_QUERIES.length) {
+    queries = [TEST_QUERIES[queryIndex]];
+  } else {
+    queries = TEST_QUERIES;
+  }
 
-  const shouldSave = process.argv.includes('--save');
   const allResults = [];
 
   console.log('\n╔══════════════════════════════════════════════════════════╗');
   console.log('║         Jamie Agent vs Workflow Comparison Test         ║');
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[31mNOT SET — workflow will hit quota limits\x1b[0m'}`);
+  if (agentOnly) console.log('  Mode: \x1b[36mAgent-only\x1b[0m (skipping workflow)');
   if (shouldSave) console.log('  Saving full output to tests/output/');
   console.log();
 
@@ -241,14 +254,19 @@ async function main() {
     console.log(`━━━ ${q.name} ━━━`);
     console.log(`Query: "${q.task}"\n`);
 
-    // Run both in parallel
-    const [workflowResult, agentResult] = await Promise.allSettled([
-      runWorkflowQuery(q.task),
-      runAgentQuery(q.task),
-    ]);
-
-    const wf = workflowResult.status === 'fulfilled' ? workflowResult.value : { engine: 'workflow', error: workflowResult.reason?.message };
-    const ag = agentResult.status === 'fulfilled' ? agentResult.value : { engine: 'agent', error: agentResult.reason?.message };
+    let wf, ag;
+    if (agentOnly) {
+      const agentResult = await runAgentQuery(q.task).catch(err => ({ engine: 'agent', error: err.message }));
+      wf = { engine: 'workflow (skipped)', summary: '(skipped)', latencyMs: 0, toolOrder: [], iterationsUsed: 0, cost: {}, llmCosts: null, hasClipTokens: false };
+      ag = agentResult;
+    } else {
+      const [workflowResult, agentResult] = await Promise.allSettled([
+        runWorkflowQuery(q.task),
+        runAgentQuery(q.task),
+      ]);
+      wf = workflowResult.status === 'fulfilled' ? workflowResult.value : { engine: 'workflow', error: workflowResult.reason?.message };
+      ag = agentResult.status === 'fulfilled' ? agentResult.value : { engine: 'agent', error: agentResult.reason?.message };
+    }
 
     // Print comparison table
     const agentLabel = ag.engine || 'Agent';

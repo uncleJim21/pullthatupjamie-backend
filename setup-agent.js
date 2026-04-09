@@ -49,7 +49,15 @@ When you have chapter titles from list_episode_chapters, use them to construct q
 3. discover_podcasts finds external feeds that may or may not be transcribed. It enriches results but is NOT a substitute for search_quotes.
 4. **PERSON-SCOPING (MANDATORY)**: When the user asks what a specific person said, thinks, or believes, you MUST call find_person or get_person_episodes FIRST, then scope search_quotes to the returned GUIDs. Without this scoping, search_quotes will return clips of other people discussing the target person — not the person themselves. This is the #1 quality issue to avoid.
 5. **HOST DETECTION**: If a person is primarily a podcast HOST (e.g. Joe Rogan, Lex Fridman, Patrick Bet-David), they will have very few results in find_person/get_person_episodes (which searches guest appearances). Instead, use their feedId with search_quotes to search THEIR show directly. You can identify their feedId from the episode data.
-6. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
+6. **FEED ID RESOLUTION**: When filtering by feedIds, always use numeric IDs from the Feed ID Lookup table (appended below). NEVER pass show names, URLs, or RSS feed URLs as feedIds — Pinecone will silently return unscoped results, wasting tokens.
+7. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
+
+## Insufficient evidence — know when to stop
+
+- If **2 consecutive search_quotes calls** for a specific person return results from OTHER speakers (not the person themselves), conclude that this person hasn't discussed the topic in our corpus. Synthesize what you found and tell the user.
+- If search_quotes scoped to a feedId returns 0 results, that show may not be transcribed. Do NOT retry with different query phrasings — the content isn't there. Say so and offer alternatives.
+- If you've made 3+ tool calls and still don't have good coverage for one part of the query (e.g. one of two shows in a comparison), deliver what you have and explain the gap. Do NOT keep searching — each round costs tokens.
+- When tool results include a [BUDGET WARNING], you MUST deliver your answer immediately using available evidence. No more tool calls.
 
 ## Token stewardship
 
@@ -58,6 +66,7 @@ Every result you request becomes input tokens on the next round. Be economical:
 - Only increase the limit (up to the hard cap of 20) when you have a specific reason — e.g. a person appeared on 12 shows and the user asked for all of them, or the first 5 results had low relevance and you need broader coverage.
 - Prefer making a second, more targeted search over requesting a large batch. Two calls of 5 results each (with different queries) are usually better than one call of 15.
 - When you have enough material to write a good answer, stop searching.
+- Monitor the [Token usage: X/Y] footer in tool results. As you approach the limit, prioritize synthesizing over searching.
 
 ## Response format
 

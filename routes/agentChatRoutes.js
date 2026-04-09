@@ -2,10 +2,40 @@ const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { printLog } = require('../constants.js');
 const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
 const GATEWAY_URL = process.env.AGENT_GATEWAY_URL || 'http://localhost:3456';
 const GATEWAY_KEY = process.env.AGENT_GATEWAY_KEY || 'jamie_agent_poc_key';
 const MAX_TOOL_ROUNDS = 10;
+const TOKEN_BUDGET_SOFT = 12000;
+
+// --- Fix 1: Dynamic feed lookup table ---
+let feedLookupTable = null;
+let feedLookupPromptSection = '';
+
+async function buildFeedLookup() {
+  if (feedLookupTable) return;
+  try {
+    const feeds = await JamieVectorMetadata.find({ type: 'feed' })
+      .select('feedId metadataRaw.title')
+      .sort({ 'metadataRaw.title': 1 })
+      .lean();
+
+    feedLookupTable = {};
+    const lines = [];
+    for (const f of feeds) {
+      const title = f.metadataRaw?.title || 'Unknown';
+      const fid = String(f.feedId);
+      feedLookupTable[title.toLowerCase()] = fid;
+      lines.push(`${fid}: ${title}`);
+    }
+    feedLookupPromptSection = `\n\n## Feed ID Lookup\n\nWhen filtering search_quotes by feedIds, you MUST use numeric feed IDs — not show names or URLs. Here is the complete list:\n\n${lines.join('\n')}\n\nIf the user mentions a show name, look it up here. When a person IS a host (e.g. Joe Rogan → The Joe Rogan Experience), use their show's feedId directly with search_quotes instead of find_person.`;
+    printLog(`[AGENT] Feed lookup table built: ${feeds.length} feeds`);
+  } catch (err) {
+    printLog(`[AGENT] Feed lookup build failed (non-fatal): ${err.message}`);
+    feedLookupPromptSection = '';
+  }
+}
 
 const AGENT_MODELS = {
   fast:    { id: 'claude-haiku-4-5-20251001', inputPer1M: 1.00, outputPer1M: 5.00, label: 'Haiku 4.5' },
@@ -116,7 +146,10 @@ function createAgentChatRoutes() {
     res.on('close', () => { aborted = true; });
 
     try {
+      await buildFeedLookup();
       emit('status', { message: 'Analyzing your request...', sessionId });
+
+      const effectiveSystemPrompt = SYSTEM_PROMPT + feedLookupPromptSection;
 
       const messages = [{ role: 'user', content: message }];
       let toolCalls = [];
@@ -133,7 +166,7 @@ function createAgentChatRoutes() {
         const response = await anthropic.messages.create({
           model: modelConfig.id,
           max_tokens: 4096,
-          system: SYSTEM_PROMPT,
+          system: effectiveSystemPrompt,
           messages,
           tools: TOOL_DEFINITIONS,
         });
@@ -209,10 +242,15 @@ function createAgentChatRoutes() {
             latencyMs: toolLatency,
           });
 
+          const budgetUsed = totalInputTokens + totalOutputTokens;
+          const budgetNote = budgetUsed > TOKEN_BUDGET_SOFT
+            ? `\n\n[BUDGET WARNING: ${budgetUsed} tokens used of ~${TOKEN_BUDGET_SOFT} soft limit. Deliver your best answer now with available evidence.]`
+            : `\n\n[Token usage: ${budgetUsed}/${TOKEN_BUDGET_SOFT}]`;
+
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolUse.id,
-            content: JSON.stringify(result),
+            content: JSON.stringify(result) + budgetNote,
           });
         }
 
@@ -226,7 +264,7 @@ function createAgentChatRoutes() {
 
       const claudeCost = (totalInputTokens * modelConfig.inputPer1M / 1_000_000) + (totalOutputTokens * modelConfig.outputPer1M / 1_000_000);
       const gatewayCost = toolCalls.reduce((sum, tc) => {
-        const costs = { search_quotes: 0.004, search_chapters: 0.004, discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001 };
+        const costs = { search_quotes: 0.004, search_chapters: 0.004, list_episode_chapters: 0.002, discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001 };
         return sum + (costs[tc.name] || 0);
       }, 0);
 
