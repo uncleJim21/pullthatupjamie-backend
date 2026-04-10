@@ -2,14 +2,13 @@ const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { printLog } = require('../constants.js');
 const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
+const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
-const GATEWAY_URL = process.env.AGENT_GATEWAY_URL || 'http://localhost:3456';
-const GATEWAY_KEY = process.env.AGENT_GATEWAY_KEY || 'jamie_agent_poc_key';
 const MAX_TOOL_ROUNDS = 10;
 const TOKEN_BUDGET_SOFT = 12000;
 
-// --- Fix 1: Dynamic feed lookup table ---
+// --- Dynamic feed lookup table ---
 let feedLookupTable = null;
 let feedLookupPromptSection = '';
 
@@ -46,7 +45,6 @@ const DEFAULT_AGENT_MODEL = 'fast';
 let anthropic;
 let anthropicKeyValid = false;
 
-// Validate API key at startup via read-only /v1/models endpoint (zero tokens)
 (async () => {
   try {
     anthropic = new Anthropic();
@@ -61,54 +59,13 @@ let anthropicKeyValid = false;
       console.log('\x1b[32m%s\x1b[0m', '[AGENT] ✔ Anthropic API key validated successfully');
     } else {
       const body = await resp.text();
-      console.log('\x1b[31m%s\x1b[0m', `[AGENT] ✘ Anthropic API key invalid (${resp.status}). /api/chat/agent will not work.`);
+      console.log('\x1b[31m%s\x1b[0m', `[AGENT] ✘ Anthropic API key invalid (${resp.status}). Agent routes will not work.`);
       printLog(`[AGENT] Detail: ${body.substring(0, 200)}`);
     }
   } catch (err) {
-    console.log('\x1b[33m%s\x1b[0m', `[AGENT] ⚠ Could not reach Anthropic API: ${err.message}. /api/chat/agent may not work.`);
+    console.log('\x1b[33m%s\x1b[0m', `[AGENT] ⚠ Could not reach Anthropic API: ${err.message}. Agent routes may not work.`);
   }
 })();
-
-// Map tool names to gateway endpoints (null = handled locally, not proxied)
-const TOOL_ENDPOINT_MAP = {
-  search_quotes:            '/api/search-quotes',
-  search_chapters:          '/api/search-chapters',
-  discover_podcasts:        '/api/discover-podcasts',
-  find_person:              '/api/find-person',
-  get_person_episodes:      '/api/get-person-episodes',
-  list_episode_chapters:    '/api/list-episode-chapters',
-  get_episode:              '/api/get-episode',
-  get_feed:                 '/api/get-feed',
-  get_feed_episodes:        '/api/get-feed-episodes',
-  get_adjacent_paragraphs:  '/api/get-adjacent-paragraphs',
-  suggest_action:           null,
-};
-
-async function callToolViaGateway(toolName, toolInput, sessionId) {
-  const endpoint = TOOL_ENDPOINT_MAP[toolName];
-  if (endpoint === undefined) {
-    return { error: `Unknown tool: ${toolName}` };
-  }
-  if (endpoint === null) {
-    return { error: `Tool ${toolName} is handled locally, not via gateway` };
-  }
-
-  const resp = await fetch(`${GATEWAY_URL}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GATEWAY_KEY}`,
-      'X-Session-ID': sessionId,
-    },
-    body: JSON.stringify(toolInput),
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return { error: `Gateway ${resp.status}: ${text}` };
-  }
-  return resp.json();
-}
 
 function handleSuggestAction(toolInput, emit) {
   const { type, reason, ...params } = toolInput;
@@ -116,17 +73,93 @@ function handleSuggestAction(toolInput, emit) {
   return { acknowledged: true, message: `Action "${type}" suggested to user. Continue your response — the user will decide whether to approve.` };
 }
 
-function createAgentChatRoutes() {
+/**
+ * Consume a streaming Claude response, emitting text_delta SSE events for
+ * final (non-tool-use) rounds. Returns a shape compatible with the
+ * non-streaming messages.create() response.
+ */
+async function consumeStream(stream, { emit, aborted, requestId }) {
+  const contentBlocks = [];
+  let stopReason = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  let currentBlockType = null;
+  let currentBlockText = '';
+  let currentToolInput = '';
+  let currentToolId = '';
+  let currentToolName = '';
+  let hasToolUse = false;
+
+  for await (const event of stream) {
+    if (aborted()) break;
+
+    switch (event.type) {
+      case 'message_start':
+        inputTokens = event.message?.usage?.input_tokens || 0;
+        break;
+
+      case 'content_block_start':
+        currentBlockType = event.content_block.type;
+        currentBlockText = '';
+        currentToolInput = '';
+        if (currentBlockType === 'tool_use') {
+          hasToolUse = true;
+          currentToolId = event.content_block.id;
+          currentToolName = event.content_block.name;
+        }
+        break;
+
+      case 'content_block_delta':
+        if (event.delta.type === 'text_delta') {
+          currentBlockText += event.delta.text;
+          if (!hasToolUse && !aborted()) {
+            emit('text_delta', { text: event.delta.text });
+          }
+        } else if (event.delta.type === 'input_json_delta') {
+          currentToolInput += event.delta.partial_json;
+        }
+        break;
+
+      case 'content_block_stop':
+        if (currentBlockType === 'text') {
+          contentBlocks.push({ type: 'text', text: currentBlockText });
+        } else if (currentBlockType === 'tool_use') {
+          let parsedInput = {};
+          try { parsedInput = JSON.parse(currentToolInput); } catch { /* empty input */ }
+          contentBlocks.push({
+            type: 'tool_use',
+            id: currentToolId,
+            name: currentToolName,
+            input: parsedInput,
+          });
+        }
+        currentBlockType = null;
+        break;
+
+      case 'message_delta':
+        stopReason = event.delta?.stop_reason || stopReason;
+        outputTokens = event.usage?.output_tokens || outputTokens;
+        break;
+    }
+  }
+
+  return {
+    content: contentBlocks,
+    stop_reason: stopReason,
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  };
+}
+
+/**
+ * @param {object} deps
+ * @param {object} deps.openai - OpenAI client (for clip reranker)
+ */
+function createAgentChatRoutes({ openai } = {}) {
   const router = express.Router();
 
-  /**
-   * POST /agent
-   * Send a message to the Claude-powered agent. Streams SSE back.
-   *
-   * Body: { message: string, sessionId?: string, model?: "fast"|"quality" }
-   */
-  router.post('/agent', async (req, res) => {
-    const { message } = req.body;
+  async function handleAgentChat(req, res) {
+    const message = req.body.message || req.body.task;
     const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
     const modelConfig = AGENT_MODELS[modelKey];
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -134,14 +167,14 @@ function createAgentChatRoutes() {
     const startTime = Date.now();
 
     if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'message is required' });
+      return res.status(400).json({ error: 'message (or task) is required' });
     }
 
     if (!anthropicKeyValid) {
       return res.status(503).json({ error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' });
     }
 
-    printLog(`[${requestId}] POST /api/chat/agent — model=${modelConfig.label}, "${message.substring(0, 100)}"`);
+    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, "${message.substring(0, 100)}"`);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -156,8 +189,9 @@ function createAgentChatRoutes() {
       } catch (e) { /* client disconnected */ }
     };
 
-    let aborted = false;
-    res.on('close', () => { aborted = true; });
+    let _aborted = false;
+    res.on('close', () => { _aborted = true; });
+    const aborted = () => _aborted;
 
     try {
       await buildFeedLookup();
@@ -170,20 +204,27 @@ function createAgentChatRoutes() {
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
       let round = 0;
+      let hasExecutedTools = false;
 
-      // Claude tool-use loop
-      while (round < MAX_TOOL_ROUNDS && !aborted) {
+      while (round < MAX_TOOL_ROUNDS && !_aborted) {
         round++;
-        console.log(`[${requestId}] === ROUND ${round} START === (aborted=${aborted})`);
+        console.log(`[${requestId}] === ROUND ${round} START ===`);
 
-        console.log(`[${requestId}] Calling Claude API (model=${modelConfig.id}, messages=${messages.length})...`);
-        const response = await anthropic.messages.create({
+        if (hasExecutedTools) {
+          emit('status', { message: 'Composing your answer...', sessionId });
+        }
+
+        console.log(`[${requestId}] Calling Claude API streaming (model=${modelConfig.id}, messages=${messages.length})...`);
+        const stream = await anthropic.messages.create({
           model: modelConfig.id,
           max_tokens: 4096,
           system: effectiveSystemPrompt,
           messages,
           tools: TOOL_DEFINITIONS,
+          stream: true,
         });
+
+        const response = await consumeStream(stream, { emit, aborted, requestId });
 
         console.log(`[${requestId}] Claude response: stop_reason="${response.stop_reason}", content_blocks=${response.content.length}, types=[${response.content.map(b => b.type).join(',')}]`);
         console.log(`[${requestId}] Tokens this round: input=${response.usage?.input_tokens}, output=${response.usage?.output_tokens}`);
@@ -191,33 +232,30 @@ function createAgentChatRoutes() {
         totalInputTokens  += response.usage?.input_tokens || 0;
         totalOutputTokens += response.usage?.output_tokens || 0;
 
-        // Process response content blocks
         const assistantContent = response.content;
         messages.push({ role: 'assistant', content: assistantContent });
 
         const isFinalResponse = response.stop_reason !== 'tool_use';
 
-        // Only emit text blocks from the final response (after all tool calls)
-        for (const block of assistantContent) {
-          if (block.type === 'text') {
-            if (isFinalResponse) {
-              console.log(`[${requestId}] Emitting final text block (${block.text.length} chars): "${block.text.substring(0, 120)}..."`);
-              emit('text', { text: block.text });
-            } else {
-              console.log(`[${requestId}] Suppressing intermediate text (${block.text.length} chars): "${block.text.substring(0, 80)}..."`);
-            }
-          }
-        }
-
-        // If Claude is done (no tool use), break
         if (isFinalResponse) {
-          console.log(`[${requestId}] stop_reason="${response.stop_reason}" — breaking loop`);
+          const fullText = assistantContent
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('');
+          console.log(`[${requestId}] Final text streamed (${fullText.length} chars)`);
+          emit('text_done', { text: fullText });
           break;
         }
 
-        // Execute tool calls
+        // Suppress any intermediate text that was streamed (shouldn't happen with our prompt)
+        const intermediateText = assistantContent.filter(b => b.type === 'text').map(b => b.text).join('');
+        if (intermediateText.length > 0) {
+          console.log(`[${requestId}] Intermediate text suppressed (${intermediateText.length} chars): "${intermediateText.substring(0, 80)}..."`);
+        }
+
         const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
         console.log(`[${requestId}] ${toolUseBlocks.length} tool_use blocks to execute`);
+        hasExecutedTools = true;
         const toolResults = [];
 
         for (const toolUse of toolUseBlocks) {
@@ -232,7 +270,7 @@ function createAgentChatRoutes() {
 
           const result = toolUse.name === 'suggest_action'
             ? handleSuggestAction(toolUse.input, emit)
-            : await callToolViaGateway(toolUse.name, toolUse.input, sessionId);
+            : await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
           const toolLatency = Date.now() - toolStart;
 
           const resultCount = result.results?.length
@@ -271,24 +309,16 @@ function createAgentChatRoutes() {
           });
         }
 
-        console.log(`[${requestId}] Pushing ${toolResults.length} tool results to messages. Total messages now: ${messages.length + 1}`);
+        console.log(`[${requestId}] Pushing ${toolResults.length} tool results to messages`);
         messages.push({ role: 'user', content: toolResults });
-        console.log(`[${requestId}] === ROUND ${round} END === looping back (aborted=${aborted})`);
+        console.log(`[${requestId}] === ROUND ${round} END ===`);
       }
-      console.log(`[${requestId}] === LOOP EXITED === round=${round}, aborted=${aborted}`);
+      console.log(`[${requestId}] === LOOP EXITED === round=${round}`);
 
       const latencyMs = Date.now() - startTime;
 
       const claudeCost = (totalInputTokens * modelConfig.inputPer1M / 1_000_000) + (totalOutputTokens * modelConfig.outputPer1M / 1_000_000);
-      const gatewayCost = toolCalls.reduce((sum, tc) => {
-        const costs = {
-          search_quotes: 0.004, search_chapters: 0.004, list_episode_chapters: 0.002,
-          discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001,
-          get_episode: 0.001, get_feed: 0.001, get_feed_episodes: 0.001,
-          get_adjacent_paragraphs: 0.001, suggest_action: 0,
-        };
-        return sum + (costs[tc.name] || 0);
-      }, 0);
+      const toolCost = toolCalls.reduce((sum, tc) => sum + (TOOL_COSTS[tc.name] || 0), 0);
 
       printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${totalInputTokens}+${totalOutputTokens} tokens, $${claudeCost.toFixed(4)} LLM, ${latencyMs}ms`);
 
@@ -300,8 +330,8 @@ function createAgentChatRoutes() {
         tokens: { input: totalInputTokens, output: totalOutputTokens },
         cost: {
           claude: parseFloat(claudeCost.toFixed(6)),
-          gateway: parseFloat(gatewayCost.toFixed(4)),
-          total: parseFloat((claudeCost + gatewayCost).toFixed(6)),
+          tools: parseFloat(toolCost.toFixed(4)),
+          total: parseFloat((claudeCost + toolCost).toFixed(6)),
         },
         latencyMs,
       });
@@ -314,7 +344,10 @@ function createAgentChatRoutes() {
       emit('error', { error: error.message });
       res.end();
     }
-  });
+  }
+
+  router.post('/agent', handleAgentChat);
+  router.post('/workflow', handleAgentChat);
 
   return router;
 }

@@ -1,23 +1,19 @@
 #!/usr/bin/env node
 
 /**
- * Agent Comparison Test
+ * Agent Benchmark Test
  *
- * Sends the same queries to both:
- *   1. POST /api/chat/workflow  (hand-rolled orchestrator, gpt-4o-mini planner)
- *   2. POST /api/chat/agent    (Claude Sonnet tool-use loop)
- *
- * Compares: quality, tool ordering, cost, latency.
+ * Sends queries to the Claude agent at POST /api/chat/workflow and
+ * measures quality, tool ordering, cost, and latency.
  *
  * Prerequisites:
- *   - Jamie API running on :4132     (nodemon server.js)
- *   - Agent gateway running on :3456  (node agent-gateway.js)
+ *   - Jamie API running on :4132 (nodemon server.js)
+ *   - No separate gateway needed (inlined)
  *
  * Usage:
- *   node tests/agent-comparison.js [--query N] [--cohort cohortN] [--save] [--agent-only] ["custom query 1" ...]
+ *   node tests/agent-comparison.js [--query N] [--cohort cohortN] [--save] ["custom query 1" ...]
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
- * --agent-only     skip the workflow engine, only run the Claude agent
  * --cohort cohortN only run queries from the specified cohort (cohort1, cohort2, cohort3)
  * --query N        run a single query by 1-based index
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
@@ -95,60 +91,17 @@ function parseSSE(raw) {
   return events;
 }
 
-async function runWorkflowQuery(task) {
-  const start = Date.now();
-  const headers = { 'Content-Type': 'application/json' };
-  if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
-  else headers['X-Free-Tier'] = 'true';
-
-  const resp = await fetch(`${JAMIE_URL}/api/chat/workflow`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      task,
-      maxIterations: 3,
-      outputFormat: 'streaming',
-      premium: true,
-    }),
-  });
-
-  const raw = await resp.text();
-  const latencyMs = Date.now() - start;
-  const events = parseSSE(raw);
-
-  const resultEvent = events.find(e => e.event === 'result' && e.data?.summary);
-  const doneEvent = events.find(e => e.event === 'done');
-  const iterationEvents = events.filter(e => e.event === 'iteration');
-  const statusEvents = events.filter(e => e.event === 'status');
-
-  const toolOrder = iterationEvents
-    .filter(e => e.data?.status === 'running' || e.data?.status === 'complete')
-    .map(e => `${e.data.step}(${e.data.status === 'complete' ? e.data.resultCount + ' results' : 'running'})`)
-    .filter((v, i, a) => a.indexOf(v) === i);
-
-  return {
-    engine: 'workflow (gpt-4o-mini planner)',
-    latencyMs,
-    summary: resultEvent?.data?.summary || '(no summary)',
-    clipCount: resultEvent?.data?.results?.clips?.length || 0,
-    personEpisodeCount: resultEvent?.data?.results?.personEpisodes?.length || 0,
-    toolOrder,
-    iterationsUsed: resultEvent?.data?.iterationsUsed || 0,
-    cost: resultEvent?.data?.cost || {},
-    llmCosts: resultEvent?.data?.llmCosts || null,
-    statusMessages: statusEvents.map(e => e.data?.message).filter(Boolean),
-    hasClipTokens: (resultEvent?.data?.summary || '').includes('{{clip:'),
-  };
-}
-
 async function runAgentQuery(task) {
   const start = Date.now();
 
   const agentModel = process.env.AGENT_MODEL || 'fast';
 
-  const resp = await fetch(`${JAMIE_URL}/api/chat/agent`, {
+  const headers = { 'Content-Type': 'application/json' };
+  if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
+
+  const resp = await fetch(`${JAMIE_URL}/api/chat/workflow`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ message: task, model: agentModel }),
   });
 
@@ -156,12 +109,13 @@ async function runAgentQuery(task) {
   const latencyMs = Date.now() - start;
   const events = parseSSE(raw);
 
-  const textEvents = events.filter(e => e.event === 'text');
+  const textDoneEvent = events.find(e => e.event === 'text_done');
+  const textDeltaEvents = events.filter(e => e.event === 'text_delta');
   const toolCallEvents = events.filter(e => e.event === 'tool_call');
   const toolResultEvents = events.filter(e => e.event === 'tool_result');
   const doneEvent = events.find(e => e.event === 'done');
 
-  const fullText = textEvents.map(e => e.data?.text || '').join('');
+  const fullText = textDoneEvent?.data?.text || textDeltaEvents.map(e => e.data?.text || '').join('');
   const modelLabel = doneEvent?.data?.model || agentModel;
   const toolOrder = toolCallEvents.map(e => {
     const matchingResult = toolResultEvents.find(r => r.data?.tool === e.data?.tool && r.data?.round === e.data?.round);
@@ -186,7 +140,6 @@ async function runAgentQuery(task) {
 async function main() {
   const args = process.argv.slice(2);
   const shouldSave = args.includes('--save');
-  const agentOnly = args.includes('--agent-only');
 
   const cohortFilter = args.includes('--cohort')
     ? args[args.indexOf('--cohort') + 1]
@@ -218,10 +171,9 @@ async function main() {
   const allResults = [];
 
   console.log('\n╔══════════════════════════════════════════════════════════╗');
-  console.log('║         Jamie Agent vs Workflow Comparison Test         ║');
+  console.log('║              Jamie Agent Benchmark Test                 ║');
   console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[31mNOT SET — workflow will hit quota limits\x1b[0m'}`);
-  if (agentOnly) console.log('  Mode: \x1b[36mAgent-only\x1b[0m (skipping workflow)');
+  console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[33mNOT SET\x1b[0m'}`);
   if (cohortFilter) console.log(`  Cohort: \x1b[33m${cohortFilter}\x1b[0m (${queries.length} queries)`);
   if (shouldSave) console.log('  Saving full output to tests/output/');
   console.log();
@@ -230,79 +182,48 @@ async function main() {
     console.log(`━━━ ${q.name} ━━━`);
     console.log(`Query: "${q.task}"\n`);
 
-    let wf, ag;
-    if (agentOnly) {
-      const agentResult = await runAgentQuery(q.task).catch(err => ({ engine: 'agent', error: err.message }));
-      wf = { engine: 'workflow (skipped)', summary: '(skipped)', latencyMs: 0, toolOrder: [], iterationsUsed: 0, cost: {}, llmCosts: null, hasClipTokens: false };
-      ag = agentResult;
-    } else {
-      const [workflowResult, agentResult] = await Promise.allSettled([
-        runWorkflowQuery(q.task),
-        runAgentQuery(q.task),
-      ]);
-      wf = workflowResult.status === 'fulfilled' ? workflowResult.value : { engine: 'workflow', error: workflowResult.reason?.message };
-      ag = agentResult.status === 'fulfilled' ? agentResult.value : { engine: 'agent', error: agentResult.reason?.message };
-    }
+    const ag = await runAgentQuery(q.task).catch(err => ({ engine: 'agent', error: err.message }));
 
-    // Print comparison table
     const agentLabel = ag.engine || 'Agent';
-    console.log('┌─────────────────────┬────────────────────────────┬────────────────────────────┐');
-    console.log(`│ Metric              │ Workflow (gpt-4o-mini)     │ ${pad(agentLabel, 26)} │`);
-    console.log('├─────────────────────┼────────────────────────────┼────────────────────────────┤');
-
-    // Build cost strings
-    const wfLlmCost = wf.llmCosts?.totalEstimatedCost;
-    const wfBillingCost = wf.cost?.net ? (wf.cost.net / 1_000_000) : null;
     const agLlmCost = ag.cost?.claude;
-    const agGwCost = ag.cost?.gateway;
-
-    const wfLlmDetail = (wf.llmCosts?.calls || []).map(c => `${c.role}(${c.model}): $${c.estimatedCost.toFixed(5)}`).join(', ') || '?';
+    const agToolCost = ag.cost?.tools;
     const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
 
+    console.log('┌─────────────────────┬────────────────────────────┐');
+    console.log(`│ Metric              │ ${pad(agentLabel, 26)} │`);
+    console.log('├─────────────────────┼────────────────────────────┤');
+
     const rows = [
-      ['Latency', `${wf.latencyMs || '?'}ms`, `${ag.latencyMs || '?'}ms`],
-      ['Tool order', truncate((wf.toolOrder || []).join(' → '), 26), truncate((ag.toolOrder || []).join(' → '), 26)],
-      ['Iterations/Rounds', `${wf.iterationsUsed || '?'} iterations`, `${ag.rounds || '?'} rounds`],
-      ['Summary length', `${(wf.summary || '').length} chars`, `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
-      ['{{clip:}} tokens', wf.hasClipTokens ? 'Yes' : 'No', ag.hasClipTokens ? 'Yes' : 'No'],
-      ['LLM cost', wfLlmCost != null ? `$${wfLlmCost.toFixed(5)}` : '?', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
-      ['Billing cost', wfBillingCost != null ? `$${wfBillingCost.toFixed(4)}` : '?', agGwCost != null ? `$${agGwCost.toFixed(4)}` : '?'],
-      ['Total infra cost', wfLlmCost != null ? `$${wfLlmCost.toFixed(5)}` : '?', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
-      ['Tokens', agLlmDetail === '?' ? '?' : 'see breakdown', agLlmDetail],
+      ['Latency', `${ag.latencyMs || '?'}ms`],
+      ['Tool order', truncate((ag.toolOrder || []).join(' → '), 26)],
+      ['Rounds', `${ag.rounds || '?'}`],
+      ['Summary length', `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
+      ['{{clip:}} tokens', ag.hasClipTokens ? 'Yes' : 'No'],
+      ['LLM cost', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
+      ['Tool cost', agToolCost != null ? `$${agToolCost.toFixed(4)}` : '?'],
+      ['Total cost', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
+      ['Tokens', agLlmDetail],
     ];
 
-    for (const [label, val1, val2] of rows) {
-      console.log(`│ ${pad(label, 19)} │ ${pad(val1, 26)} │ ${pad(val2, 26)} │`);
+    for (const [label, val] of rows) {
+      console.log(`│ ${pad(label, 19)} │ ${pad(val, 26)} │`);
     }
 
-    console.log('└─────────────────────┴────────────────────────────┴────────────────────────────┘');
+    console.log('└─────────────────────┴────────────────────────────┘');
 
-    // LLM cost breakdown
-    if (wf.llmCosts?.calls?.length) {
-      console.log('\n  Workflow LLM breakdown:');
-      for (const c of wf.llmCosts.calls) {
-        console.log(`    ${c.role.padEnd(12)} ${c.model.padEnd(14)} ${String(c.inputTokens).padStart(6)}in ${String(c.outputTokens).padStart(6)}out  $${c.estimatedCost.toFixed(6)}`);
-      }
-      console.log(`    ${'TOTAL'.padEnd(12)} ${' '.repeat(14)} ${' '.repeat(15)}  $${wf.llmCosts.totalEstimatedCost.toFixed(6)}`);
-    }
     if (ag.tokens?.input) {
       const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || 'claude';
-      console.log('\n  Agent LLM breakdown:');
-      console.log(`    ${agModelName.padEnd(22)} ${String(ag.tokens.input).padStart(6)}in ${String(ag.tokens.output).padStart(6)}out  $${(ag.cost?.claude || 0).toFixed(6)}`);
+      console.log(`\n  LLM: ${agModelName} — ${ag.tokens.input}in/${ag.tokens.output}out — $${(ag.cost?.claude || 0).toFixed(6)}`);
     }
 
-    // Print summaries
-    console.log('\n--- Workflow Summary (first 300 chars) ---');
-    console.log((wf.summary || wf.error || '(none)').substring(0, 300));
-    console.log('\n--- Agent Summary (first 300 chars) ---');
+    console.log('\n--- Summary (first 300 chars) ---');
     console.log((ag.summary || ag.error || '(none)').substring(0, 300));
 
-    if (wf.error) console.log(`\nWorkflow ERROR: ${wf.error}`);
-    if (ag.error) console.log(`\nAgent ERROR: ${ag.error}`);
+    if (ag.error) console.log(`\nERROR: ${ag.error}`);
 
     console.log('\n');
 
-    allResults.push({ query: q, wf, ag });
+    allResults.push({ query: q, ag });
   }
 
   if (shouldSave && allResults.length > 0) {
@@ -314,42 +235,32 @@ async function main() {
     const filename = `comparison-${ts}.md`;
     const filepath = path.join(outputDir, filename);
 
-    let md = `# Agent vs Workflow Comparison\n\n`;
+    let md = `# Agent Benchmark\n\n`;
     md += `**Date:** ${new Date().toISOString()}\n`;
-    md += `**Agent model:** ${agModel}\n\n`;
+    md += `**Agent model:** ${agModel}\n`;
+    md += `**Endpoint:** POST /api/chat/workflow\n\n`;
 
-    for (const { query, wf, ag } of allResults) {
+    for (const { query, ag } of allResults) {
       md += `---\n\n## ${query.name}${query.cohort ? ` [${query.cohort}]` : ''}\n\n`;
       md += `**Query:** "${query.task}"\n\n`;
 
-      md += `| Metric | Workflow | Agent |\n|--------|---------|-------|\n`;
-      md += `| Latency | ${wf.latencyMs || '?'}ms | ${ag.latencyMs || '?'}ms |\n`;
-      md += `| Iterations/Rounds | ${wf.iterationsUsed || '?'} | ${ag.rounds || '?'} |\n`;
-      md += `| Summary length | ${(wf.summary || '').length} chars | ${ag.fullSummaryLength || 0} chars |\n`;
-      md += `| {{clip:}} tokens | ${wf.hasClipTokens ? 'Yes' : 'No'} | ${ag.hasClipTokens ? 'Yes' : 'No'} |\n`;
-      md += `| LLM cost | $${(wf.llmCosts?.totalEstimatedCost || 0).toFixed(5)} | $${(ag.cost?.claude || 0).toFixed(5)} |\n`;
-      md += `| Total cost | $${(wf.llmCosts?.totalEstimatedCost || 0).toFixed(5)} | $${(ag.cost?.total || 0).toFixed(5)} |\n`;
-      md += `| Tool order | ${(wf.toolOrder || []).join(' → ') || '(none)'} | ${(ag.toolOrder || []).join(' → ') || '(none)'} |\n\n`;
+      md += `| Metric | Value |\n|--------|-------|\n`;
+      md += `| Latency | ${ag.latencyMs || '?'}ms |\n`;
+      md += `| Rounds | ${ag.rounds || '?'} |\n`;
+      md += `| Summary length | ${ag.fullSummaryLength || 0} chars |\n`;
+      md += `| {{clip:}} tokens | ${ag.hasClipTokens ? 'Yes' : 'No'} |\n`;
+      md += `| LLM cost | $${(ag.cost?.claude || 0).toFixed(5)} |\n`;
+      md += `| Tool cost | $${(ag.cost?.tools || 0).toFixed(4)} |\n`;
+      md += `| Total cost | $${(ag.cost?.total || 0).toFixed(5)} |\n`;
+      md += `| Tokens | ${ag.tokens?.input || '?'}in / ${ag.tokens?.output || '?'}out |\n`;
+      md += `| Tool order | ${(ag.toolOrder || []).join(' → ') || '(none)'} |\n\n`;
 
-      if (wf.llmCosts?.calls?.length) {
-        md += `### Workflow LLM Breakdown\n\n`;
-        md += `| Role | Model | Input | Output | Cost |\n|------|-------|-------|--------|------|\n`;
-        for (const c of wf.llmCosts.calls) {
-          md += `| ${c.role} | ${c.model} | ${c.inputTokens} | ${c.outputTokens} | $${c.estimatedCost.toFixed(6)} |\n`;
-        }
-        md += `| **TOTAL** | | | | **$${wf.llmCosts.totalEstimatedCost.toFixed(6)}** |\n\n`;
-      }
-
-      md += `### Workflow Summary\n\n${wf.summary || wf.error || '(none)'}\n\n`;
-      md += `### Agent Summary\n\n${ag.summary || ag.error || '(none)'}\n\n`;
+      md += `### Summary\n\n${ag.summary || ag.error || '(none)'}\n\n`;
     }
 
-    // Append aggregate statistics
     md += `---\n\n## Aggregate Statistics\n\n`;
 
-    const wfCosts = allResults.map(r => r.wf.llmCosts?.totalEstimatedCost).filter(c => c != null && c > 0);
     const agCosts = allResults.map(r => r.ag.cost?.total).filter(c => c != null && c > 0);
-    const wfLatencies = allResults.map(r => r.wf.latencyMs).filter(Boolean);
     const agLatencies = allResults.map(r => r.ag.latencyMs).filter(Boolean);
 
     const avg = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -362,29 +273,27 @@ async function main() {
     const max = arr => arr.length ? Math.max(...arr) : 0;
 
     md += `### Cost Analysis (n=${allResults.length} queries)\n\n`;
-    md += `| Metric | Workflow | Agent |\n|--------|---------|-------|\n`;
-    md += `| Queries with cost data | ${wfCosts.length} | ${agCosts.length} |\n`;
-    md += `| Mean cost | $${avg(wfCosts).toFixed(5)} | $${avg(agCosts).toFixed(5)} |\n`;
-    md += `| Std deviation | $${stddev(wfCosts).toFixed(5)} | $${stddev(agCosts).toFixed(5)} |\n`;
-    md += `| Min cost | $${min(wfCosts).toFixed(5)} | $${min(agCosts).toFixed(5)} |\n`;
-    md += `| Max cost | $${max(wfCosts).toFixed(5)} | $${max(agCosts).toFixed(5)} |\n`;
-    md += `| Total spend | $${wfCosts.reduce((a, b) => a + b, 0).toFixed(5)} | $${agCosts.reduce((a, b) => a + b, 0).toFixed(5)} |\n\n`;
+    md += `| Metric | Value |\n|--------|-------|\n`;
+    md += `| Queries with cost data | ${agCosts.length} |\n`;
+    md += `| Mean cost | $${avg(agCosts).toFixed(5)} |\n`;
+    md += `| Std deviation | $${stddev(agCosts).toFixed(5)} |\n`;
+    md += `| Min cost | $${min(agCosts).toFixed(5)} |\n`;
+    md += `| Max cost | $${max(agCosts).toFixed(5)} |\n`;
+    md += `| Total spend | $${agCosts.reduce((a, b) => a + b, 0).toFixed(5)} |\n\n`;
 
     md += `### Latency Analysis\n\n`;
-    md += `| Metric | Workflow | Agent |\n|--------|---------|-------|\n`;
-    md += `| Mean latency | ${avg(wfLatencies).toFixed(0)}ms | ${avg(agLatencies).toFixed(0)}ms |\n`;
-    md += `| Std deviation | ${stddev(wfLatencies).toFixed(0)}ms | ${stddev(agLatencies).toFixed(0)}ms |\n`;
-    md += `| Min latency | ${min(wfLatencies)}ms | ${min(agLatencies)}ms |\n`;
-    md += `| Max latency | ${max(wfLatencies)}ms | ${max(agLatencies)}ms |\n\n`;
+    md += `| Metric | Value |\n|--------|-------|\n`;
+    md += `| Mean latency | ${avg(agLatencies).toFixed(0)}ms |\n`;
+    md += `| Std deviation | ${stddev(agLatencies).toFixed(0)}ms |\n`;
+    md += `| Min latency | ${min(agLatencies)}ms |\n`;
+    md += `| Max latency | ${max(agLatencies)}ms |\n\n`;
 
     md += `### Quality Summary\n\n`;
-    const wfClipTokens = allResults.filter(r => r.wf.hasClipTokens).length;
     const agClipTokens = allResults.filter(r => r.ag.hasClipTokens).length;
-    const wfHasSummary = allResults.filter(r => (r.wf.summary || '').length > 50).length;
     const agHasSummary = allResults.filter(r => (r.ag.summary || '').length > 50).length;
-    md += `| Metric | Workflow | Agent |\n|--------|---------|-------|\n`;
-    md += `| Produced summary (>50 chars) | ${wfHasSummary}/${allResults.length} | ${agHasSummary}/${allResults.length} |\n`;
-    md += `| Included {{clip:}} tokens | ${wfClipTokens}/${allResults.length} | ${agClipTokens}/${allResults.length} |\n`;
+    md += `| Metric | Value |\n|--------|-------|\n`;
+    md += `| Produced summary (>50 chars) | ${agHasSummary}/${allResults.length} |\n`;
+    md += `| Included {{clip:}} tokens | ${agClipTokens}/${allResults.length} |\n`;
 
     fs.writeFileSync(filepath, md);
     console.log(`\x1b[32m✔ Full output saved to ${filepath}\x1b[0m\n`);
@@ -398,12 +307,6 @@ function pad(str, len) {
 
 function truncate(str, len) {
   return str.length > len ? str.substring(0, len - 1) + '…' : str;
-}
-
-function formatCost(cost) {
-  if (!cost) return '?';
-  if (cost.net !== undefined) return `$${(cost.net / 1_000_000).toFixed(4)}`;
-  return '?';
 }
 
 main().catch(err => {

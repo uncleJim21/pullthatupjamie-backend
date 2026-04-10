@@ -15,9 +15,6 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 
-const GATEWAY_URL = process.env.AGENT_GATEWAY_URL || 'http://localhost:3456';
-const GATEWAY_KEY = process.env.AGENT_GATEWAY_KEY || 'jamie_agent_poc_key';
-
 // ===== System prompt — mirrors lessons from WorkflowOrchestrator =====
 
 const SYSTEM_PROMPT = `You are Jamie, an expert podcast research assistant. You search a corpus of 174+ podcasts, 9,500+ episodes, and 2.3M+ transcript paragraphs.
@@ -269,46 +266,13 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. Check gateway health
-  console.log('\n2. Checking Agent Gateway...');
-  try {
-    const resp = await fetch(`${GATEWAY_URL}/health`);
-    const data = await resp.json();
-    console.log(`   Gateway OK — status: ${data.status}, uptime: ${data.uptime?.toFixed(1)}s`);
-  } catch (err) {
-    console.error(`   Gateway ERROR: ${err.message}`);
-    console.error('   Make sure agent-gateway.js is running: node agent-gateway.js');
-    process.exit(1);
-  }
-
-  // 3. Test a tool call through the gateway
-  console.log('\n3. Testing search_quotes through gateway...');
-  try {
-    const resp = await fetch(`${GATEWAY_URL}/api/search-quotes`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GATEWAY_KEY}`,
-        'X-Session-ID': 'setup-test',
-      },
-      body: JSON.stringify({ query: 'Bitcoin', limit: 2 }),
-    });
-    const data = await resp.json();
-    const count = data.results?.length || 0;
-    console.log(`   Gateway → Jamie API OK — ${count} results returned`);
-  } catch (err) {
-    console.error(`   Gateway tool call ERROR: ${err.message}`);
-  }
-
-  // 4. Print config summary
-  console.log('\n4. Configuration summary:\n');
-  console.log(`   GATEWAY_URL:  ${GATEWAY_URL}`);
-  console.log(`   GATEWAY_KEY:  ${GATEWAY_KEY}`);
-  console.log(`   MODEL:        claude-sonnet-4-5-20250514`);
-  console.log(`   TOOLS:        ${TOOL_DEFINITIONS.map(t => t.name).join(', ')}`);
+  // 2. Print config summary
+  console.log('\n2. Configuration summary:\n');
+  console.log(`   TOOLS:         ${TOOL_DEFINITIONS.map(t => t.name).join(', ')}`);
   console.log(`   SYSTEM_PROMPT: ${SYSTEM_PROMPT.length} chars`);
+  console.log(`   NOTE:          Gateway is now inlined — no separate process needed.`);
 
-  console.log('\n=== Setup complete. Start the chat route to test interactively. ===\n');
+  console.log('\n=== Setup complete. Start the server to test interactively. ===\n');
 }
 
 // Only run smoke test when executed directly (not when imported)
@@ -319,4 +283,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { SYSTEM_PROMPT, TOOL_DEFINITIONS, GATEWAY_URL, GATEWAY_KEY };
+module.exports = { SYSTEM_PROMPT, TOOL_DEFINITIONS };
