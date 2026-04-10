@@ -270,7 +270,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
           const result = toolUse.name === 'suggest_action'
             ? handleSuggestAction(toolUse.input, emit)
-            : await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
+            : await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, authHeader: req.headers.authorization });
           const toolLatency = Date.now() - toolStart;
 
           const resultCount = result.results?.length

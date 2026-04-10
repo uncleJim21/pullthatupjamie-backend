@@ -104,17 +104,19 @@ function truncateResults(data) {
 
 // --- Internal loopback fetch to the Jamie API (same process) ---
 
-async function fetchJamie(method, path, body) {
+async function fetchJamie(method, path, body, { authHeader } = {}) {
   const url = `${JAMIE_API_BASE}${path}`;
-  const opts = {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(process.env.JWT_TEST_TOKEN
-        ? { 'Authorization': `Bearer ${process.env.JWT_TEST_TOKEN}` }
-        : { 'X-Free-Tier': 'true' }),
-    },
-  };
+  const headers = { 'Content-Type': 'application/json' };
+
+  if (authHeader) {
+    headers['Authorization'] = authHeader;
+  } else if (process.env.JWT_TEST_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.JWT_TEST_TOKEN}`;
+  } else {
+    headers['X-Free-Tier'] = 'true';
+  }
+
+  const opts = { method, headers };
   if (body && method !== 'GET') {
     opts.body = JSON.stringify(body);
   }
@@ -129,7 +131,7 @@ async function fetchJamie(method, path, body) {
 
 // --- Per-tool dispatch ---
 
-async function handleSearchQuotes(input, openai) {
+async function handleSearchQuotes(input, { openai, authHeader }) {
   const { query, guid, guids, feedIds, limit, minDate, maxDate } = input;
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
@@ -137,7 +139,7 @@ async function handleSearchQuotes(input, openai) {
   printLog(`[TOOL] search_quotes: query="${query}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
   const data = await fetchJamie('POST', '/api/search-quotes', {
     query, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
-  });
+  }, { authHeader });
   filterFluffResults(data);
 
   if (data.results && data.results.length > 2 && openai) {
@@ -160,50 +162,50 @@ async function handleSearchQuotes(input, openai) {
   return data;
 }
 
-async function handleSearchChapters(input) {
+async function handleSearchChapters(input, { authHeader }) {
   const { search, feedIds, limit, page = 1 } = input;
   const clampedLimit = clampLimit(limit, 5);
 
   printLog(`[TOOL] search_chapters: search="${search}", limit=${clampedLimit}`);
   const data = await fetchJamie('POST', '/api/search-chapters', {
     search, feedIds, limit: clampedLimit, page,
-  });
+  }, { authHeader });
   truncateResults(data);
   printLog(`[TOOL] search_chapters: ${data.chapters?.length || 0} results`);
   return data;
 }
 
-async function handleDiscoverPodcasts(input) {
+async function handleDiscoverPodcasts(input, { authHeader }) {
   const { query, limit } = input;
   const clampedLimit = clampLimit(limit, 5);
 
   printLog(`[TOOL] discover_podcasts: query="${query}", limit=${clampedLimit}`);
   const data = await fetchJamie('POST', '/api/discover-podcasts', {
     query, limit: clampedLimit,
-  });
+  }, { authHeader });
   truncateResults(data);
   printLog(`[TOOL] discover_podcasts: ${data.results?.length || 0} results`);
   return data;
 }
 
-async function handleFindPerson(input) {
+async function handleFindPerson(input, { authHeader }) {
   const { name } = input;
   printLog(`[TOOL] find_person: name="${name}"`);
-  const data = await fetchJamie('GET', `/api/corpus/people?search=${encodeURIComponent(name)}&limit=${RESULT_HARD_CAP}`);
+  const data = await fetchJamie('GET', `/api/corpus/people?search=${encodeURIComponent(name)}&limit=${RESULT_HARD_CAP}`, null, { authHeader });
   const normalized = { people: data.data || [], pagination: data.pagination, query: data.query };
   truncateResults(normalized);
   printLog(`[TOOL] find_person: ${normalized.people?.length || 0} results`);
   return normalized;
 }
 
-async function handleGetPersonEpisodes(input) {
+async function handleGetPersonEpisodes(input, { authHeader }) {
   const { name, limit, verbose } = input;
   const clampedLimit = clampLimit(limit, 5);
 
   printLog(`[TOOL] get_person_episodes: name="${name}", limit=${clampedLimit}`);
   const data = await fetchJamie('POST', '/api/corpus/people/episodes', {
     name, limit: clampedLimit,
-  });
+  }, { authHeader });
   const normalized = { episodes: data.data || [], pagination: data.pagination, query: data.query };
   truncateResults(normalized);
   if (!verbose && normalized.episodes) {
@@ -213,7 +215,7 @@ async function handleGetPersonEpisodes(input) {
   return normalized;
 }
 
-async function handleListEpisodeChapters(input) {
+async function handleListEpisodeChapters(input, { authHeader }) {
   const { guids, feedIds, limit } = input;
   const queryParams = new URLSearchParams();
   if (guids && guids.length > 0) queryParams.set('guids', guids.join(','));
@@ -221,32 +223,32 @@ async function handleListEpisodeChapters(input) {
   if (limit) queryParams.set('limit', Math.min(limit, RESULT_HARD_CAP * 2));
 
   printLog(`[TOOL] list_episode_chapters: guids=${guids?.length || 0}, feedIds=${feedIds?.length || 0}`);
-  const data = await fetchJamie('GET', `/api/corpus/chapters?${queryParams.toString()}`);
+  const data = await fetchJamie('GET', `/api/corpus/chapters?${queryParams.toString()}`, null, { authHeader });
   const chapters = data.data || data.chapters || data || [];
   const normalized = { chapters: Array.isArray(chapters) ? chapters : [] };
   printLog(`[TOOL] list_episode_chapters: ${normalized.chapters.length} chapters`);
   return normalized;
 }
 
-async function handleGetEpisode(input) {
+async function handleGetEpisode(input, { authHeader }) {
   const { guid } = input;
   printLog(`[TOOL] get_episode: guid="${guid}"`);
-  const data = await fetchJamie('GET', `/api/corpus/episodes/${encodeURIComponent(guid)}`);
+  const data = await fetchJamie('GET', `/api/corpus/episodes/${encodeURIComponent(guid)}`, null, { authHeader });
   const normalized = { episode: data.data || data };
   printLog(`[TOOL] get_episode: ${normalized.episode?.title || 'found'}`);
   return normalized;
 }
 
-async function handleGetFeed(input) {
+async function handleGetFeed(input, { authHeader }) {
   const { feedId } = input;
   printLog(`[TOOL] get_feed: feedId="${feedId}"`);
-  const data = await fetchJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}`);
+  const data = await fetchJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}`, null, { authHeader });
   const normalized = { feed: data.data || data };
   printLog(`[TOOL] get_feed: ${normalized.feed?.title || 'found'}`);
   return normalized;
 }
 
-async function handleGetFeedEpisodes(input) {
+async function handleGetFeedEpisodes(input, { authHeader }) {
   const { feedId, limit, minDate, maxDate, verbose } = input;
   const clampedLimit = clampLimit(limit, 10);
 
@@ -255,7 +257,7 @@ async function handleGetFeedEpisodes(input) {
   if (maxDate) queryParams.set('maxDate', maxDate);
 
   printLog(`[TOOL] get_feed_episodes: feedId="${feedId}", limit=${clampedLimit}`);
-  const data = await fetchJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}/episodes?${queryParams.toString()}`);
+  const data = await fetchJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}/episodes?${queryParams.toString()}`, null, { authHeader });
   const normalized = { episodes: data.data || [], pagination: data.pagination };
   truncateResults(normalized);
   if (!verbose && normalized.episodes) {
@@ -265,12 +267,12 @@ async function handleGetFeedEpisodes(input) {
   return normalized;
 }
 
-async function handleGetAdjacentParagraphs(input) {
+async function handleGetAdjacentParagraphs(input, { authHeader }) {
   const { paragraphId, windowSize } = input;
   const clampedWindow = Math.min(Math.max(1, windowSize || 3), 10);
 
   printLog(`[TOOL] get_adjacent_paragraphs: id="${paragraphId}", window=${clampedWindow}`);
-  const data = await fetchJamie('GET', `/api/adjacent-paragraphs/${encodeURIComponent(paragraphId)}?windowSize=${clampedWindow}`);
+  const data = await fetchJamie('GET', `/api/adjacent-paragraphs/${encodeURIComponent(paragraphId)}?windowSize=${clampedWindow}`, null, { authHeader });
   const normalized = {
     before: data.before || [],
     current: data.current || null,
@@ -304,7 +306,7 @@ const TOOL_DISPATCH = {
  * @param {string} opts.sessionId - Session ID for rate limiting
  * @returns {Promise<object>} Tool result
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, authHeader }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
@@ -331,7 +333,7 @@ async function executeAgentTool(toolName, toolInput, { openai, sessionId }) {
   session.toolCalls++;
   session.cost += toolCost;
 
-  return handler(toolInput, openai);
+  return handler(toolInput, { openai, authHeader });
 }
 
 module.exports = { executeAgentTool, TOOL_COSTS };
