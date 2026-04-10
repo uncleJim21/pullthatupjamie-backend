@@ -14,10 +14,12 @@
  *   - Agent gateway running on :3456  (node agent-gateway.js)
  *
  * Usage:
- *   node tests/agent-comparison.js [--query N] [--save] [--agent-only] ["custom query 1" "custom query 2" ...]
+ *   node tests/agent-comparison.js [--query N] [--cohort cohortN] [--save] [--agent-only] ["custom query 1" ...]
  *
- * --save        writes full output to tests/output/<timestamp>.md (gitignored)
- * --agent-only  skip the workflow engine, only run the Claude agent
+ * --save           writes full output to tests/output/<timestamp>.md (gitignored)
+ * --agent-only     skip the workflow engine, only run the Claude agent
+ * --cohort cohortN only run queries from the specified cohort (cohort1, cohort2, cohort3)
+ * --query N        run a single query by 1-based index
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
  */
 
@@ -29,80 +31,41 @@ const JAMIE_URL = process.env.JAMIE_URL || 'http://localhost:4132';
 const JWT = process.env.JWT_TEST_TOKEN || process.env.TEST_JWT || '';
 
 const TEST_QUERIES = [
-  // --- Original 6 ---
-  {
-    name: 'Person Dossier',
-    task: "find Luke Gromen's last 5 appearances and give me a high level overview",
-  },
-  {
-    name: 'Topic Research',
-    task: 'find me key quotes on the privacy properties of the Lightning Network',
-  },
-  {
-    name: 'Current Events',
-    task: 'What are podcasters saying about AI regulation this month',
-  },
-  {
-    name: 'Precise Search',
-    task: 'Find Joe Rogan talking about stoned ape theory',
-  },
-  {
-    name: 'Expert Insights',
-    task: 'Find Roger Penrose talking in depth about the physics of black holes',
-  },
-  {
-    name: 'Expert Insights #2',
-    task: 'Find a history expert talking about Russia in the Soviet era',
-  },
-  // --- New scenarios: cross-genre, diverse feeds ---
-  {
-    name: 'Finance Deep Dive',
-    task: 'What is the bull case for gold right now? Find specific arguments from macro analysts.',
-  },
-  {
-    name: 'True Crime',
-    task: 'Find the most chilling story covered on Casefile or Darknet Diaries about social engineering',
-  },
-  {
-    name: 'Health & Science',
-    task: 'What has Andrew Huberman said about the effects of cold exposure on the immune system?',
-  },
-  {
-    name: 'Geopolitics',
-    task: 'Find discussions about the BRICS alliance challenging dollar hegemony',
-  },
-  {
-    name: 'Tech / AI',
-    task: 'What are the best arguments for and against open source AI models?',
-  },
-  {
-    name: 'Host as Subject',
-    task: "What is Scott Galloway's take on big tech monopolies?",
-  },
-  {
-    name: 'Niche Bitcoin',
-    task: 'Explain the tradeoffs of coinjoin vs payjoin for Bitcoin privacy',
-  },
-  {
-    name: 'Historical',
-    task: 'Find Dan Carlin or a similar host talking about the fall of the Roman Republic',
-  },
-  {
-    name: 'Philosophy',
-    task: 'What do podcast philosophers say about whether free will is an illusion?',
-  },
-  {
-    name: 'Cross-Show Comparison',
-    task: 'Compare what Breaking Points and All-In have said about tariffs this year',
-  },
-  {
-    name: 'Specific Episode Recall',
-    task: 'Find the Lex Fridman episode with a guest talking about consciousness and quantum mechanics',
-  },
-  {
-    name: 'Obscure Topic',
-    task: 'Has anyone on EconTalk or Conversations with Tyler discussed the economics of space colonization?',
-  },
+  // --- Cohort 1: Original core scenarios ---
+  { name: 'Person Dossier',     cohort: 'cohort1', task: "find Luke Gromen's last 5 appearances and give me a high level overview" },
+  { name: 'Topic Research',     cohort: 'cohort1', task: 'find me key quotes on the privacy properties of the Lightning Network' },
+  { name: 'Current Events',     cohort: 'cohort1', task: 'What are podcasters saying about AI regulation this month' },
+  { name: 'Precise Search',     cohort: 'cohort1', task: 'Find Joe Rogan talking about stoned ape theory' },
+  { name: 'Expert Insights',    cohort: 'cohort1', task: 'Find Roger Penrose talking in depth about the physics of black holes' },
+  { name: 'Expert Insights #2', cohort: 'cohort1', task: 'Find a history expert talking about Russia in the Soviet era' },
+
+  // --- Cohort 2: Cross-genre diversity ---
+  { name: 'Finance Deep Dive',       cohort: 'cohort2', task: 'What is the bull case for gold right now? Find specific arguments from macro analysts.' },
+  { name: 'True Crime',              cohort: 'cohort2', task: 'Find the most chilling story covered on Casefile or Darknet Diaries about social engineering' },
+  { name: 'Health & Science',        cohort: 'cohort2', task: 'What has Andrew Huberman said about the effects of cold exposure on the immune system?' },
+  { name: 'Geopolitics',             cohort: 'cohort2', task: 'Find discussions about the BRICS alliance challenging dollar hegemony' },
+  { name: 'Tech / AI',               cohort: 'cohort2', task: 'What are the best arguments for and against open source AI models?' },
+  { name: 'Host as Subject',         cohort: 'cohort2', task: "What is Scott Galloway's take on big tech monopolies?" },
+  { name: 'Niche Bitcoin',           cohort: 'cohort2', task: 'Explain the tradeoffs of coinjoin vs payjoin for Bitcoin privacy' },
+  { name: 'Historical',              cohort: 'cohort2', task: 'Find Dan Carlin or a similar host talking about the fall of the Roman Republic' },
+  { name: 'Philosophy',              cohort: 'cohort2', task: 'What do podcast philosophers say about whether free will is an illusion?' },
+  { name: 'Cross-Show Comparison',   cohort: 'cohort2', task: 'Compare what Breaking Points and All-In have said about tariffs this year' },
+  { name: 'Specific Episode Recall', cohort: 'cohort2', task: 'Find the Lex Fridman episode with a guest talking about consciousness and quantum mechanics' },
+  { name: 'Obscure Topic',           cohort: 'cohort2', task: 'Has anyone on EconTalk or Conversations with Tyler discussed the economics of space colonization?' },
+
+  // --- Cohort 3: Edge cases, multi-step, and broader feed coverage ---
+  { name: 'Comedian Deep Cut',       cohort: 'cohort3', task: 'Find the funniest story a comedian has told on Kill Tony or Flagrant' },
+  { name: 'Founder Interview',       cohort: 'cohort3', task: "What did the Anduril founder say about defense tech on Lex Fridman's show?" },
+  { name: 'Diet Wars',               cohort: 'cohort3', task: 'What do podcasters say about carnivore vs vegan diets? Find the strongest arguments on each side.' },
+  { name: 'Narrative History',        cohort: 'cohort3', task: 'Find a detailed retelling of the Cuban Missile Crisis from a history podcast' },
+  { name: 'Investor Thesis',         cohort: 'cohort3', task: "What is Chamath Palihapitiya's current investment thesis? Find his own words." },
+  { name: 'Music & Culture',         cohort: 'cohort3', task: 'Has anyone discussed the cultural impact of hip hop on American politics?' },
+  { name: 'Multi-Guest Debate',      cohort: 'cohort3', task: 'Find a podcast episode where multiple guests debated immigration policy' },
+  { name: 'Science Explainer',       cohort: 'cohort3', task: 'Find someone explaining CRISPR gene editing in plain language on a science podcast' },
+  { name: 'Contrarian Take',         cohort: 'cohort3', task: 'Find the most controversial or contrarian opinion expressed on the All-In podcast this year' },
+  { name: 'Sports Analytics',        cohort: 'cohort3', task: 'Has anyone discussed how data analytics is changing basketball strategy?' },
+  { name: 'Book Deep Dive',          cohort: 'cohort3', task: 'Find in-depth discussion of "The Changing World Order" by Ray Dalio across podcasts' },
+  { name: 'Whistleblower',           cohort: 'cohort3', task: 'Find podcast coverage of the David Grusch UFO whistleblower testimony' },
 ];
 
 // ===== Helpers =====
@@ -225,17 +188,29 @@ async function main() {
   const shouldSave = args.includes('--save');
   const agentOnly = args.includes('--agent-only');
 
+  const cohortFilter = args.includes('--cohort')
+    ? args[args.indexOf('--cohort') + 1]
+    : null;
+
   const queryIndex = args.includes('--query')
     ? parseInt(args[args.indexOf('--query') + 1], 10) - 1
     : null;
 
-  const positionalQueries = args.filter(a => !a.startsWith('--') && !(args[args.indexOf(a) - 1] === '--query'));
+  const flagArgs = new Set(['--query', '--cohort']);
+  const positionalQueries = args.filter(a => !a.startsWith('--') && !flagArgs.has(args[args.indexOf(a) - 1]));
   
   let queries;
   if (positionalQueries.length > 0) {
-    queries = positionalQueries.map((q, i) => ({ name: `Custom #${i + 1}`, task: q }));
+    queries = positionalQueries.map((q, i) => ({ name: `Custom #${i + 1}`, cohort: 'custom', task: q }));
   } else if (queryIndex !== null && queryIndex >= 0 && queryIndex < TEST_QUERIES.length) {
     queries = [TEST_QUERIES[queryIndex]];
+  } else if (cohortFilter) {
+    queries = TEST_QUERIES.filter(q => q.cohort === cohortFilter);
+    if (queries.length === 0) {
+      const cohorts = [...new Set(TEST_QUERIES.map(q => q.cohort))];
+      console.error(`No queries in cohort "${cohortFilter}". Available: ${cohorts.join(', ')}`);
+      process.exit(1);
+    }
   } else {
     queries = TEST_QUERIES;
   }
@@ -247,6 +222,7 @@ async function main() {
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[31mNOT SET — workflow will hit quota limits\x1b[0m'}`);
   if (agentOnly) console.log('  Mode: \x1b[36mAgent-only\x1b[0m (skipping workflow)');
+  if (cohortFilter) console.log(`  Cohort: \x1b[33m${cohortFilter}\x1b[0m (${queries.length} queries)`);
   if (shouldSave) console.log('  Saving full output to tests/output/');
   console.log();
 
@@ -343,7 +319,7 @@ async function main() {
     md += `**Agent model:** ${agModel}\n\n`;
 
     for (const { query, wf, ag } of allResults) {
-      md += `---\n\n## ${query.name}\n\n`;
+      md += `---\n\n## ${query.name}${query.cohort ? ` [${query.cohort}]` : ''}\n\n`;
       md += `**Query:** "${query.task}"\n\n`;
 
       md += `| Metric | Workflow | Agent |\n|--------|---------|-------|\n`;
