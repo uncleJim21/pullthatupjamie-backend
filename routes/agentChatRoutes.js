@@ -69,20 +69,28 @@ let anthropicKeyValid = false;
   }
 })();
 
-// Map tool names to gateway endpoints
+// Map tool names to gateway endpoints (null = handled locally, not proxied)
 const TOOL_ENDPOINT_MAP = {
-  search_quotes:          '/api/search-quotes',
-  search_chapters:        '/api/search-chapters',
-  discover_podcasts:      '/api/discover-podcasts',
-  find_person:            '/api/find-person',
-  get_person_episodes:    '/api/get-person-episodes',
-  list_episode_chapters:  '/api/list-episode-chapters',
+  search_quotes:            '/api/search-quotes',
+  search_chapters:          '/api/search-chapters',
+  discover_podcasts:        '/api/discover-podcasts',
+  find_person:              '/api/find-person',
+  get_person_episodes:      '/api/get-person-episodes',
+  list_episode_chapters:    '/api/list-episode-chapters',
+  get_episode:              '/api/get-episode',
+  get_feed:                 '/api/get-feed',
+  get_feed_episodes:        '/api/get-feed-episodes',
+  get_adjacent_paragraphs:  '/api/get-adjacent-paragraphs',
+  suggest_action:           null,
 };
 
 async function callToolViaGateway(toolName, toolInput, sessionId) {
   const endpoint = TOOL_ENDPOINT_MAP[toolName];
-  if (!endpoint) {
+  if (endpoint === undefined) {
     return { error: `Unknown tool: ${toolName}` };
+  }
+  if (endpoint === null) {
+    return { error: `Tool ${toolName} is handled locally, not via gateway` };
   }
 
   const resp = await fetch(`${GATEWAY_URL}${endpoint}`, {
@@ -100,6 +108,12 @@ async function callToolViaGateway(toolName, toolInput, sessionId) {
     return { error: `Gateway ${resp.status}: ${text}` };
   }
   return resp.json();
+}
+
+function handleSuggestAction(toolInput, emit) {
+  const { type, reason, ...params } = toolInput;
+  emit('suggested_action', { type, reason, ...params });
+  return { acknowledged: true, message: `Action "${type}" suggested to user. Continue your response — the user will decide whether to approve.` };
 }
 
 function createAgentChatRoutes() {
@@ -216,13 +230,16 @@ function createAgentChatRoutes() {
             round,
           });
 
-          const result = await callToolViaGateway(toolUse.name, toolUse.input, sessionId);
+          const result = toolUse.name === 'suggest_action'
+            ? handleSuggestAction(toolUse.input, emit)
+            : await callToolViaGateway(toolUse.name, toolUse.input, sessionId);
           const toolLatency = Date.now() - toolStart;
 
           const resultCount = result.results?.length
             || result.episodes?.length
             || result.people?.length
             || result.chapters?.length
+            || (result.before?.length != null ? result.before.length + (result.current ? 1 : 0) + (result.after?.length || 0) : 0)
             || 0;
 
           const resultSize = JSON.stringify(result).length;
@@ -264,7 +281,12 @@ function createAgentChatRoutes() {
 
       const claudeCost = (totalInputTokens * modelConfig.inputPer1M / 1_000_000) + (totalOutputTokens * modelConfig.outputPer1M / 1_000_000);
       const gatewayCost = toolCalls.reduce((sum, tc) => {
-        const costs = { search_quotes: 0.004, search_chapters: 0.004, list_episode_chapters: 0.002, discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001 };
+        const costs = {
+          search_quotes: 0.004, search_chapters: 0.004, list_episode_chapters: 0.002,
+          discover_podcasts: 0.005, find_person: 0.001, get_person_episodes: 0.001,
+          get_episode: 0.001, get_feed: 0.001, get_feed_episodes: 0.001,
+          get_adjacent_paragraphs: 0.001, suggest_action: 0,
+        };
         return sum + (costs[tc.name] || 0);
       }, 0);
 

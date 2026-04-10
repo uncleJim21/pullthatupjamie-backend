@@ -29,9 +29,13 @@ const TOOL_COSTS = {
   'search-quotes':           0.004,
   'search-chapters':         0.004,
   'list-episode-chapters':   0.002,
-  'discover-podcasts':    0.005,
-  'find-person':          0.001,
-  'get-person-episodes':  0.001,
+  'discover-podcasts':       0.005,
+  'find-person':             0.001,
+  'get-person-episodes':     0.001,
+  'get-episode':             0.001,
+  'get-feed':                0.001,
+  'get-feed-episodes':       0.001,
+  'get-adjacent-paragraphs': 0.001,
 };
 
 const LIMITS = {
@@ -121,6 +125,19 @@ app.use((req, res, next) => {
 const RESULT_HARD_CAP = 20;
 const MIN_SEQUENCE_INDEX = 3;
 const MIN_WORD_COUNT = 15;
+
+const SLIM_EPISODE_FIELDS = new Set([
+  'title', 'guid', 'feedId', 'publishedDate', 'creator',
+  'guests', 'duration', 'episodeCount', 'matchedGuest',
+]);
+
+function slimEpisode(ep) {
+  const slim = {};
+  for (const key of SLIM_EPISODE_FIELDS) {
+    if (ep[key] !== undefined) slim[key] = ep[key];
+  }
+  return slim;
+}
 
 function clampLimit(requested, defaultVal = 5) {
   const limit = requested || defaultVal;
@@ -291,7 +308,7 @@ app.post('/api/find-person', async (req, res) => {
 });
 
 app.post('/api/get-person-episodes', async (req, res) => {
-  const { name, limit } = req.body;
+  const { name, limit, verbose } = req.body;
   const clampedLimit = clampLimit(limit, 5);
   const start = Date.now();
 
@@ -302,7 +319,10 @@ app.post('/api/get-person-episodes', async (req, res) => {
     });
     const normalized = { episodes: data.data || [], pagination: data.pagination, query: data.query };
     truncateResults(normalized);
-    printLog(`[GATEWAY] get-person-episodes: ${normalized.episodes?.length || 0} results (${Date.now() - start}ms)`);
+    if (!verbose && normalized.episodes) {
+      normalized.episodes = normalized.episodes.map(slimEpisode);
+    }
+    printLog(`[GATEWAY] get-person-episodes: ${normalized.episodes?.length || 0} results, slim=${!verbose} (${Date.now() - start}ms)`);
     res.json(normalized);
   } catch (err) {
     printLog(`[GATEWAY] get-person-episodes ERROR: ${err.message}`);
@@ -330,6 +350,93 @@ app.post('/api/list-episode-chapters', async (req, res) => {
     res.json(normalized);
   } catch (err) {
     printLog(`[GATEWAY] list-episode-chapters ERROR: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Get Episode by GUID ---
+
+app.post('/api/get-episode', async (req, res) => {
+  const { guid } = req.body;
+  const start = Date.now();
+
+  try {
+    printLog(`[GATEWAY] get-episode: guid="${guid}"`);
+    const data = await proxyToJamie('GET', `/api/corpus/episodes/${encodeURIComponent(guid)}`);
+    const normalized = { episode: data.data || data };
+    printLog(`[GATEWAY] get-episode: ${normalized.episode?.title || 'found'} (${Date.now() - start}ms)`);
+    res.json(normalized);
+  } catch (err) {
+    printLog(`[GATEWAY] get-episode ERROR: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Get Feed by ID ---
+
+app.post('/api/get-feed', async (req, res) => {
+  const { feedId } = req.body;
+  const start = Date.now();
+
+  try {
+    printLog(`[GATEWAY] get-feed: feedId="${feedId}"`);
+    const data = await proxyToJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}`);
+    const normalized = { feed: data.data || data };
+    printLog(`[GATEWAY] get-feed: ${normalized.feed?.title || 'found'} (${Date.now() - start}ms)`);
+    res.json(normalized);
+  } catch (err) {
+    printLog(`[GATEWAY] get-feed ERROR: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Get Feed Episodes ---
+
+app.post('/api/get-feed-episodes', async (req, res) => {
+  const { feedId, limit, minDate, maxDate, verbose } = req.body;
+  const clampedLimit = clampLimit(limit, 10);
+  const start = Date.now();
+
+  try {
+    const queryParams = new URLSearchParams({ limit: clampedLimit });
+    if (minDate) queryParams.set('minDate', minDate);
+    if (maxDate) queryParams.set('maxDate', maxDate);
+
+    printLog(`[GATEWAY] get-feed-episodes: feedId="${feedId}", limit=${clampedLimit}`);
+    const data = await proxyToJamie('GET', `/api/corpus/feeds/${encodeURIComponent(feedId)}/episodes?${queryParams.toString()}`);
+    const normalized = { episodes: data.data || [], pagination: data.pagination };
+    truncateResults(normalized);
+    if (!verbose && normalized.episodes) {
+      normalized.episodes = normalized.episodes.map(slimEpisode);
+    }
+    printLog(`[GATEWAY] get-feed-episodes: ${normalized.episodes?.length || 0} episodes, slim=${!verbose} (${Date.now() - start}ms)`);
+    res.json(normalized);
+  } catch (err) {
+    printLog(`[GATEWAY] get-feed-episodes ERROR: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Get Adjacent Paragraphs (context expansion) ---
+
+app.post('/api/get-adjacent-paragraphs', async (req, res) => {
+  const { paragraphId, windowSize } = req.body;
+  const clampedWindow = Math.min(Math.max(1, windowSize || 3), 10);
+  const start = Date.now();
+
+  try {
+    printLog(`[GATEWAY] get-adjacent-paragraphs: id="${paragraphId}", window=${clampedWindow}`);
+    const data = await proxyToJamie('GET', `/api/adjacent-paragraphs/${encodeURIComponent(paragraphId)}?windowSize=${clampedWindow}`);
+    const normalized = {
+      before: data.before || [],
+      current: data.current || null,
+      after: data.after || [],
+    };
+    const totalCount = normalized.before.length + (normalized.current ? 1 : 0) + normalized.after.length;
+    printLog(`[GATEWAY] get-adjacent-paragraphs: ${totalCount} paragraphs (${Date.now() - start}ms)`);
+    res.json(normalized);
+  } catch (err) {
+    printLog(`[GATEWAY] get-adjacent-paragraphs ERROR: ${err.message}`);
     res.status(502).json({ error: err.message });
   }
 });

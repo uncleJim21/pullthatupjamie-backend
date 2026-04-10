@@ -30,6 +30,11 @@ const SYSTEM_PROMPT = `You are Jamie, an expert podcast research assistant. You 
 - **find_person**: Looks up a person in our corpus by name.
 - **get_person_episodes**: Gets all episodes featuring a specific person.
 - **list_episode_chapters**: Fetches ALL chapters (table of contents) for specific episodes. Use after find_person/get_person_episodes to see what topics were covered, then craft targeted search_quotes queries from the chapter headlines.
+- **get_episode**: Fetch full metadata for a single episode by GUID. Use when you need episode details (title, date, guests, artwork) beyond what search_quotes returns.
+- **get_feed**: Fetch metadata for a podcast feed by ID. Use to confirm feed names or get artwork URLs.
+- **get_feed_episodes**: List episodes for a feed with optional date filtering. Use for "what has this show covered recently?" or browsing a feed's catalog.
+- **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId.
+- **suggest_action**: Suggest an action that requires user approval. Does NOT execute the action — it presents a card to the user. Use for expensive operations like transcription requests or clip creation.
 
 ## CRITICAL: Crafting search_quotes queries
 
@@ -59,6 +64,15 @@ When you have chapter titles from list_episode_chapters, use them to construct q
 - If you've made 3+ tool calls and still don't have good coverage for one part of the query (e.g. one of two shows in a comparison), deliver what you have and explain the gap. Do NOT keep searching — each round costs tokens.
 - When tool results include a [BUDGET WARNING], you MUST deliver your answer immediately using available evidence. No more tool calls.
 
+## When to use suggest_action
+
+Use suggest_action to recommend expensive operations the user can approve:
+
+- **submit-on-demand**: When discover_podcasts finds relevant episodes that are NOT yet transcribed and the user would benefit from having them. Include the episode guid, feedGuid, feedId, and episodeTitle. Do NOT suggest transcription for content you haven't verified is missing — only when a search has come up empty and discover_podcasts found relevant untranscribed episodes.
+- **create-clip**: (Future) When the user explicitly wants a shareable clip created from a specific quote. Include the pineconeId.
+
+After calling suggest_action, continue your response normally with whatever evidence you DO have. The suggestion is presented to the user as an optional card — don't block on it or treat it as a failure.
+
 ## Token stewardship
 
 Every result you request becomes input tokens on the next round. Be economical:
@@ -67,6 +81,7 @@ Every result you request becomes input tokens on the next round. Be economical:
 - Prefer making a second, more targeted search over requesting a large batch. Two calls of 5 results each (with different queries) are usually better than one call of 15.
 - When you have enough material to write a good answer, stop searching.
 - Monitor the [Token usage: X/Y] footer in tool results. As you approach the limit, prioritize synthesizing over searching.
+- get_feed_episodes and get_person_episodes return slim metadata by default (title, date, GUID, guests). Pass verbose: true only when you specifically need full episode descriptions.
 
 ## Response format
 
@@ -137,12 +152,13 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_person_episodes',
-    description: 'Get all episodes featuring a specific person (as guest or creator). Returns episode titles, dates, GUIDs, and feed IDs.',
+    description: 'Get all episodes featuring a specific person (as guest or creator). Returns slim metadata by default (title, date, GUID, guests).',
     input_schema: {
       type: 'object',
       properties: {
-        name:  { type: 'string', description: 'Person name' },
-        limit: { type: 'number', description: 'Max episodes (default 5, hard cap 20)' },
+        name:    { type: 'string', description: 'Person name' },
+        limit:   { type: 'number', description: 'Max episodes (default 5, hard cap 20)' },
+        verbose: { type: 'boolean', description: 'Return full episode metadata including descriptions (default: false, slim mode)' },
       },
       required: ['name'],
     },
@@ -157,6 +173,72 @@ const TOOL_DEFINITIONS = [
         feedIds: { type: 'array', items: { type: 'string' }, description: 'Feed IDs to fetch chapters for (alternative to guids)' },
         limit:   { type: 'number', description: 'Max chapters to return (default 50)' },
       },
+    },
+  },
+  {
+    name: 'get_episode',
+    description: 'Fetch full metadata for a specific episode by GUID. Returns title, date, guests, feed info, artwork, and transcript availability. Use when you have a GUID from search results and need more context.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        guid: { type: 'string', description: 'Episode GUID' },
+      },
+      required: ['guid'],
+    },
+  },
+  {
+    name: 'get_feed',
+    description: 'Fetch metadata for a specific podcast feed by feed ID. Returns feed name, episode count, artwork, and description. Use to confirm feed details or get artwork URLs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        feedId: { type: 'string', description: 'Numeric feed ID' },
+      },
+      required: ['feedId'],
+    },
+  },
+  {
+    name: 'get_feed_episodes',
+    description: 'List episodes for a specific podcast feed with optional date filtering. Use for "what has show X covered recently?" queries or to browse a feed\'s catalog. Returns slim metadata by default (title, date, GUID, guests).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        feedId:  { type: 'string', description: 'Numeric feed ID' },
+        limit:   { type: 'number', description: 'Max episodes to return (default 10, hard cap 20)' },
+        minDate: { type: 'string', description: 'ISO date — only episodes after this date' },
+        maxDate: { type: 'string', description: 'ISO date — only episodes before this date' },
+        verbose: { type: 'boolean', description: 'Return full episode metadata including descriptions (default: false, slim mode)' },
+      },
+      required: ['feedId'],
+    },
+  },
+  {
+    name: 'get_adjacent_paragraphs',
+    description: 'Expand context around a specific paragraph/quote by fetching neighboring paragraphs. Use when a search_quotes result looks promising but you need more surrounding context to verify relevance or extract a longer passage.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        paragraphId: { type: 'string', description: 'The shareLink value from search_quotes results (e.g. "6ca3439e-ab84-11f0-a852-bb68f3a0109c_p112")' },
+        windowSize:  { type: 'number', description: 'Number of paragraphs before and after to fetch (default 3, max 10)' },
+      },
+      required: ['paragraphId'],
+    },
+  },
+  {
+    name: 'suggest_action',
+    description: 'Suggest an action that requires user approval (e.g. transcribing an episode, creating a clip). This does NOT execute the action — it presents the suggestion to the user. Use when discover_podcasts finds relevant untranscribed episodes, or when you want to recommend clip creation.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type:         { type: 'string', enum: ['submit-on-demand', 'create-clip'], description: 'Action type' },
+        reason:       { type: 'string', description: 'Brief explanation of why this action would help the user' },
+        episodeTitle: { type: 'string', description: 'Episode title (for submit-on-demand)' },
+        guid:         { type: 'string', description: 'Episode GUID (for submit-on-demand)' },
+        feedGuid:     { type: 'string', description: 'Feed GUID (for submit-on-demand)' },
+        feedId:       { type: 'string', description: 'Feed ID (for submit-on-demand)' },
+        pineconeId:   { type: 'string', description: 'Pinecone ID of the clip (for create-clip)' },
+      },
+      required: ['type', 'reason'],
     },
   },
 ];
