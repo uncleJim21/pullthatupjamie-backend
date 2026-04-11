@@ -226,8 +226,10 @@ function normalizePersonEpisode(item) {
   };
 }
 
-function buildNextSteps(feed, transcriptAvailable) {
-  if (transcriptAvailable) {
+function buildNextSteps(feed, transcriptAvailable, matchedEpisodes) {
+  const untranscribedEpisodes = (matchedEpisodes || []).filter(ep => !ep.transcriptAvailable);
+
+  if (transcriptAvailable && untranscribedEpisodes.length === 0) {
     return {
       searchTranscript: {
         description: 'Semantic search across this podcast\'s transcripts with timestamped deeplinks',
@@ -239,6 +241,32 @@ function buildNextSteps(feed, transcriptAvailable) {
         description: 'Get timestamped chapters for a specific episode',
         method: 'GET',
         url: '/api/episode-with-chapters/:guid'
+      }
+    };
+  }
+
+  if (transcriptAvailable && untranscribedEpisodes.length > 0) {
+    return {
+      searchTranscript: {
+        description: 'Semantic search across this podcast\'s existing transcripts',
+        method: 'POST',
+        url: '/api/search-quotes',
+        body: { query: '...', feedIds: [feed.feedId], smartMode: true }
+      },
+      requestTranscription: {
+        description: `${untranscribedEpisodes.length} matched episode(s) on this feed are NOT yet transcribed`,
+        method: 'POST',
+        url: '/api/on-demand/submitOnDemandRun',
+        bodyTemplate: {
+          message: `Transcribe episodes from ${feed.title || 'podcast'}`,
+          parameters: {},
+          episodes: untranscribedEpisodes.map(ep => ({
+            guid: ep.guid,
+            feedGuid: ep.feedGuid || feed.feedGuid || '<feedGuid>',
+            feedId: String(feed.feedId),
+            title: ep.title,
+          }))
+        }
       }
     };
   }
@@ -413,24 +441,31 @@ async function discoverPodcasts({ query, limit = 10 }) {
   ]);
 
   const transcribedFeedIds = new Set(transcribedFeedDocs.map(f => String(f.feedId)));
+  const transcribedEpisodeGuids = new Set(transcribedEpisodeDocs.map(ep => ep.guid));
   for (const ep of transcribedEpisodeDocs) {
     if (ep.feedId) transcribedFeedIds.add(String(ep.feedId));
   }
   timings.enrichment = Date.now() - enrichStart;
 
-  printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found`);
+  printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds, ${transcribedEpisodeGuids.size} transcribed episodes found`);
 
   let results = Array.from(feedMap.values())
     .slice(0, effectiveLimit)
     .map(feed => {
-      const transcriptAvailable = transcribedFeedIds.has(feed.feedId);
-      const matchedEpisodes = episodesByFeed.get(feed.feedId) || null;
+      const feedTranscribed = transcribedFeedIds.has(feed.feedId);
+      const rawEpisodes = episodesByFeed.get(feed.feedId) || null;
+      const matchedEpisodes = rawEpisodes
+        ? rawEpisodes.slice(0, 10).map(ep => ({
+            ...ep,
+            transcriptAvailable: !!(ep.guid && transcribedEpisodeGuids.has(ep.guid)),
+          }))
+        : null;
       return {
         ...feed,
-        transcriptAvailable,
-        matchedEpisodes: matchedEpisodes ? matchedEpisodes.slice(0, 10) : null,
+        transcriptAvailable: feedTranscribed,
+        matchedEpisodes,
         episodes: null,
-        nextSteps: buildNextSteps(feed, transcriptAvailable),
+        nextSteps: buildNextSteps(feed, feedTranscribed, matchedEpisodes),
       };
     });
 
@@ -488,7 +523,8 @@ async function discoverPodcasts({ query, limit = 10 }) {
   timings.total = Date.now() - startTime;
 
   printLog(`[${requestId}] ========== DISCOVER COMPLETE (${timings.total}ms) ==========`);
-  printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed, ${results.filter(r => !r.transcriptAvailable).length} untranscribed)`);
+  const untranscribedEpCount = results.reduce((n, r) => n + (r.matchedEpisodes || []).filter(ep => !ep.transcriptAvailable).length, 0);
+  printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed feeds, ${results.filter(r => !r.transcriptAvailable).length} untranscribed feeds, ${untranscribedEpCount} untranscribed matched episodes)`);
 
   return {
     query,
