@@ -14,6 +14,7 @@ const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const corpusService = require('../services/corpusService');
 
 // =============================================================================
 // RATE LIMITING - Permissive but present
@@ -642,20 +643,9 @@ router.get('/feeds/:feedId', async (req, res) => {
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { feedId } = req.params;
-    
-    const feed = await JamieVectorMetadata.findOne({ 
-      type: 'feed', 
-      feedId: feedId 
-    })
-      .select('feedId metadataRaw')
-      .lean();
-    
-    if (!feed) {
-      return res.status(404).json({ error: 'Feed not found', feedId });
-    }
-    
-    res.json({ data: formatFeed(feed) });
+    const result = await corpusService.getFeed({ feedId: req.params.feedId });
+    if (!result) return res.status(404).json({ error: 'Feed not found', feedId: req.params.feedId });
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching feed:', error);
     res.status(500).json({ error: 'Failed to fetch feed', details: error.message });
@@ -695,42 +685,15 @@ router.get('/feeds/:feedId/episodes', async (req, res) => {
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { feedId } = req.params;
-    const { limit, page, skip } = getPaginationParams(req.query);
-    const { sort = 'newest', minDate, maxDate } = req.query;
-    
-    // Build query
-    const query = { type: 'episode', feedId: feedId };
-    
-    // Date filters
-    if (minDate || maxDate) {
-      query.publishedTimestamp = {};
-      if (minDate) {
-        query.publishedTimestamp.$gte = new Date(minDate).getTime();
-      }
-      if (maxDate) {
-        query.publishedTimestamp.$lte = new Date(maxDate).getTime();
-      }
-    }
-    
-    // Get total count
-    const totalCount = await JamieVectorMetadata.countDocuments(query);
-    
-    // Sort direction
-    const sortDir = sort === 'oldest' ? 1 : -1;
-    
-    // Fetch episodes
-    const episodes = await JamieVectorMetadata.find(query)
-      .select('guid feedId publishedDate publishedTimestamp metadataRaw')
-      .sort({ publishedTimestamp: sortDir })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-    
-    res.json({
-      data: episodes.map(formatEpisode),
-      pagination: buildPagination(page, limit, totalCount)
+    const result = await corpusService.getFeedEpisodes({
+      feedId: req.params.feedId,
+      limit: req.query.limit,
+      page: req.query.page,
+      sort: req.query.sort,
+      minDate: req.query.minDate,
+      maxDate: req.query.maxDate,
     });
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching episodes:', error);
     res.status(500).json({ error: 'Failed to fetch episodes', details: error.message });
@@ -763,20 +726,9 @@ router.get('/episodes/:guid', async (req, res) => {
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { guid } = req.params;
-    
-    const episode = await JamieVectorMetadata.findOne({ 
-      type: 'episode', 
-      guid: guid 
-    })
-      .select('guid feedId publishedDate publishedTimestamp metadataRaw')
-      .lean();
-    
-    if (!episode) {
-      return res.status(404).json({ error: 'Episode not found', guid });
-    }
-    
-    res.json({ data: formatEpisode(episode) });
+    const result = await corpusService.getEpisode({ guid: req.params.guid });
+    if (!result) return res.status(404).json({ error: 'Episode not found', guid: req.params.guid });
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching episode:', error);
     res.status(500).json({ error: 'Failed to fetch episode', details: error.message });
@@ -848,25 +800,13 @@ router.get('/episodes/:guid/chapters', async (req, res) => {
  */
 router.get('/chapters', async (req, res) => {
   try {
-    const { guids, feedIds, limit: rawLimit } = req.query;
-    const limit = Math.min(parseInt(rawLimit) || 100, 200);
-
-    const filter = { type: 'chapter' };
-    if (guids) {
-      filter.guid = { $in: guids.split(',').map(g => g.trim()).filter(Boolean) };
-    } else if (feedIds) {
-      filter.feedId = { $in: feedIds.split(',').map(f => f.trim()).filter(Boolean) };
-    } else {
-      return res.status(400).json({ error: 'Provide guids or feedIds query parameter' });
-    }
-
-    const chapters = await JamieVectorMetadata.find(filter)
-      .select('pineconeId guid feedId start_time end_time metadataRaw')
-      .sort({ guid: 1, start_time: 1 })
-      .limit(limit)
-      .lean();
-
-    res.json({ data: chapters.map(formatChapter) });
+    const result = await corpusService.listChapters({
+      guids: req.query.guids,
+      feedIds: req.query.feedIds,
+      limit: req.query.limit,
+    });
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching batch chapters:', error);
     res.status(500).json({ error: 'Failed to fetch chapters', details: error.message });
@@ -1011,149 +951,8 @@ router.get('/people', async (req, res) => {
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { guestsOnly, search, feedId } = req.query;
-    const { limit, page, skip } = getPaginationParams(req.query);
-    const excludeCreators = guestsOnly === 'true' || guestsOnly === true;
-
-    // We'll run two aggregations in parallel: one for guests, one for creators (if not excluded)
-    const pipelines = [];
-
-    // --- Guest aggregation pipeline ---
-    const guestMatchStage = { 
-      type: 'episode', 
-      'metadataRaw.guests': { $exists: true, $ne: [] } 
-    };
-    if (feedId) {
-      guestMatchStage.feedId = feedId;
-    }
-
-    const guestPipeline = [
-      { $match: guestMatchStage },
-      { $unwind: '$metadataRaw.guests' },
-      // Apply search filter if provided
-      ...(search ? [{
-        $match: {
-          'metadataRaw.guests': { $regex: search, $options: 'i' }
-        }
-      }] : []),
-      {
-        $group: {
-          _id: { $toLower: '$metadataRaw.guests' },
-          name: { $first: '$metadataRaw.guests' }, // Keep original casing
-          appearances: { $sum: 1 },
-          feeds: { $addToSet: { feedId: '$feedId', title: '$metadataRaw.feedTitle' } },
-          recentEpisodes: {
-            $push: {
-              guid: '$guid',
-              title: '$metadataRaw.title',
-              publishedDate: '$metadataRaw.publishedDate',
-              publishedTimestamp: '$publishedTimestamp'
-            }
-          }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          name: 1,
-          role: { $literal: 'guest' },
-          appearances: 1,
-          feeds: { $slice: ['$feeds', 5] },
-          recentEpisodes: {
-            $slice: [
-              { $sortArray: { input: '$recentEpisodes', sortBy: { publishedTimestamp: -1 } } },
-              3
-            ]
-          }
-        }
-      }
-    ];
-    pipelines.push(JamieVectorMetadata.aggregate(guestPipeline));
-
-    // --- Creator aggregation pipeline (if not guestsOnly) ---
-    if (!excludeCreators) {
-      const creatorMatchStage = { 
-        type: 'episode', 
-        'metadataRaw.creator': { $exists: true, $ne: null, $ne: '' } 
-      };
-      if (feedId) {
-        creatorMatchStage.feedId = feedId;
-      }
-
-      const creatorPipeline = [
-        { $match: creatorMatchStage },
-        // Apply search filter if provided
-        ...(search ? [{
-          $match: {
-            'metadataRaw.creator': { $regex: search, $options: 'i' }
-          }
-        }] : []),
-        {
-          $group: {
-            _id: { $toLower: '$metadataRaw.creator' },
-            name: { $first: '$metadataRaw.creator' },
-            appearances: { $sum: 1 },
-            feeds: { $addToSet: { feedId: '$feedId', title: '$metadataRaw.feedTitle' } },
-            recentEpisodes: {
-              $push: {
-                guid: '$guid',
-                title: '$metadataRaw.title',
-                publishedDate: '$metadataRaw.publishedDate',
-                publishedTimestamp: '$publishedTimestamp'
-              }
-            }
-          }
-        },
-        {
-          $project: {
-            _id: 0,
-            name: 1,
-            role: { $literal: 'creator' },
-            appearances: 1,
-            feeds: { $slice: ['$feeds', 5] },
-            recentEpisodes: {
-              $slice: [
-                { $sortArray: { input: '$recentEpisodes', sortBy: { publishedTimestamp: -1 } } },
-                3
-              ]
-            }
-          }
-        }
-      ];
-      pipelines.push(JamieVectorMetadata.aggregate(creatorPipeline));
-    }
-
-    // Run pipelines in parallel
-    const results = await Promise.all(pipelines);
-    
-    // Merge results
-    let allPeople = results.flat();
-
-    // Clean up null feeds and episodes
-    allPeople = allPeople.map(person => ({
-      ...person,
-      feeds: (person.feeds || []).filter(f => f.feedId && f.title),
-      recentEpisodes: (person.recentEpisodes || [])
-        .filter(e => e.guid && e.title)
-        .map(e => ({ guid: e.guid, title: e.title, publishedDate: e.publishedDate }))
-    }));
-
-    // Sort by appearances descending
-    allPeople.sort((a, b) => b.appearances - a.appearances);
-
-    // Apply pagination
-    const totalCount = allPeople.length;
-    const paginatedPeople = allPeople.slice(skip, skip + limit);
-
-    res.json({
-      data: paginatedPeople,
-      pagination: buildPagination(page, limit, totalCount),
-      query: {
-        guestsOnly: excludeCreators,
-        search: search || null,
-        feedId: feedId || null
-      }
-    });
+    const result = await corpusService.findPeople(req.query);
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching people:', error);
     res.status(500).json({ error: 'Failed to fetch people', details: error.message });
@@ -1212,89 +1011,9 @@ router.post('/people/episodes', async (req, res) => {
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { name, guestsOnly = false, feedId } = req.body;
-    
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      return res.status(400).json({ 
-        error: 'Bad request', 
-        message: 'name is required in request body' 
-      });
-    }
-
-    const { limit, page, skip } = getPaginationParams(req.body);
-    const searchName = name.trim();
-    const excludeCreators = guestsOnly === true || guestsOnly === 'true';
-
-    // Build query conditions
-    const orConditions = [];
-
-    // Match as guest
-    orConditions.push({
-      'metadataRaw.guests': { $regex: `^${searchName}$`, $options: 'i' }
-    });
-
-    // Match as creator (unless guestsOnly)
-    if (!excludeCreators) {
-      orConditions.push({
-        'metadataRaw.creator': { $regex: `^${searchName}$`, $options: 'i' }
-      });
-    }
-
-    const query = {
-      type: 'episode',
-      $or: orConditions
-    };
-
-    if (feedId) {
-      query.feedId = feedId;
-    }
-
-    // Get total count
-    const totalCount = await JamieVectorMetadata.countDocuments(query);
-
-    // Fetch episodes
-    const episodes = await JamieVectorMetadata.find(query)
-      .select('guid feedId publishedDate publishedTimestamp metadataRaw')
-      .sort({ publishedTimestamp: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    // Format response with role information
-    const formattedEpisodes = episodes.map(doc => {
-      const meta = doc.metadataRaw || {};
-      const guests = (meta.guests || []).map(g => g.toLowerCase());
-      const creator = (meta.creator || '').toLowerCase();
-      const searchLower = searchName.toLowerCase();
-
-      let role = 'unknown';
-      if (guests.includes(searchLower)) {
-        role = 'guest';
-      } else if (creator === searchLower) {
-        role = 'creator';
-      }
-
-      return {
-        guid: doc.guid || meta.guid,
-        title: meta.title || null,
-        feedId: doc.feedId || meta.feedId,
-        feedTitle: meta.feedTitle || null,
-        publishedDate: meta.publishedDate || doc.publishedDate || null,
-        role,
-        imageUrl: meta.imageUrl || meta.episodeImage || null,
-        duration: meta.duration || null
-      };
-    });
-
-    res.json({
-      data: formattedEpisodes,
-      pagination: buildPagination(page, limit, totalCount),
-      query: {
-        name: searchName,
-        guestsOnly: excludeCreators,
-        feedId: feedId || null
-      }
-    });
+    const result = await corpusService.getPersonEpisodes(req.body);
+    if (result.status) return res.status(result.status).json(result);
+    res.json(result);
   } catch (error) {
     console.error('[corpusRoutes] Error fetching episodes by person:', error);
     res.status(500).json({ error: 'Failed to fetch episodes', details: error.message });

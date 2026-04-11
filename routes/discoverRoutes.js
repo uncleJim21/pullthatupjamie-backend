@@ -268,14 +268,267 @@ function buildNextSteps(feed, transcriptAvailable) {
   return steps;
 }
 
-// ========== Main Endpoint ==========
+// ========== Core discover logic (shared by HTTP route and agent tool handler) ==========
 
-/**
- * POST /api/discover-podcasts
- * LLM-assisted podcast discovery across the Podcast Index catalog.
- * Routes queries to byterm, byperson, and/or trending based on intent.
- * Applies string-based name filtering + LLM re-ranking to reduce false positives.
- */
+async function discoverPodcasts({ query, limit = 10 }) {
+  if (!query || typeof query !== 'string') {
+    return { error: 'query is required and must be a string', status: 400 };
+  }
+
+  const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
+  const requestId = `DISCOVER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const startTime = Date.now();
+  const timings = { llm: 0, search: 0, filter: 0, episodes: 0, enrichment: 0, total: 0 };
+
+  printLog(`[${requestId}] ========== DISCOVER REQUEST ==========`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit}`);
+
+  const llmStart = Date.now();
+  const routing = await extractSearchRouting(query);
+  timings.llm = Date.now() - llmStart;
+
+  const bytermQueries = (routing.byterm_queries || []).slice(0, 2);
+  const bypersonQueries = (routing.byperson_queries || []).slice(0, 2);
+  const topicHints = (routing.topic_hints || []).slice(0, 2);
+  const trendingParams = routing.trending || null;
+
+  printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, topic_hints=${JSON.stringify(topicHints)}, trending=${JSON.stringify(trendingParams)}`);
+
+  const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || topicHints.length > 0 || trendingParams;
+  if (!hasAnySearch) {
+    return {
+      error: 'Could not determine search strategy from query',
+      detail: 'Try being more specific about the podcast name, topic, or person you\'re looking for',
+      status: 400,
+    };
+  }
+
+  const searchStart = Date.now();
+  const searchPromises = [];
+  const searchLabels = [];
+
+  for (const term of bytermQueries) {
+    searchPromises.push(searchByTerm(term));
+    searchLabels.push(`byterm:"${term}"`);
+  }
+  for (const person of bypersonQueries) {
+    searchPromises.push(searchByPerson(person));
+    searchLabels.push(`byperson:"${person}"`);
+  }
+  for (const hint of topicHints) {
+    searchPromises.push(searchByTerm(hint));
+    searchLabels.push(`topic_hint:"${hint}"`);
+  }
+  if (trendingParams) {
+    searchPromises.push(fetchTrending(trendingParams));
+    searchLabels.push(`trending:${JSON.stringify(trendingParams)}`);
+  }
+
+  const rawResults = await Promise.all(searchPromises);
+  timings.search = Date.now() - searchStart;
+
+  printLog(`[${requestId}] Search (${timings.search}ms): ${searchLabels.length} backends queried: ${searchLabels.join(', ')}`);
+
+  const feedMap = new Map();
+  const personEpisodes = [];
+  let resultIdx = 0;
+
+  for (let i = 0; i < bytermQueries.length; i++) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] byterm "${bytermQueries[i]}": ${feeds.length} feeds`);
+  }
+
+  for (let i = 0; i < bypersonQueries.length; i++) {
+    const rawEpisodes = rawResults[resultIdx++] || [];
+    const normalized = rawEpisodes.map(ep => normalizePersonEpisode(ep));
+    const filtered = filterByPersonRelevance(normalized, bypersonQueries[i]);
+
+    printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${rawEpisodes.length} raw → ${filtered.length} after name filter`);
+
+    for (const ep of filtered) {
+      personEpisodes.push(ep);
+      const fid = ep.feedId;
+      if (fid && !feedMap.has(fid)) {
+        feedMap.set(fid, {
+          feedId: fid,
+          feedGuid: ep.podcastGuid || null,
+          title: ep.feedTitle,
+          url: ep.feedUrl,
+          description: '',
+          author: ep.feedAuthor,
+          image: '',
+          language: '',
+          categories: {},
+          trendScore: null,
+        });
+      }
+    }
+  }
+
+  for (let i = 0; i < topicHints.length; i++) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] topic_hint "${topicHints[i]}": ${feeds.length} feeds`);
+  }
+
+  if (trendingParams) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] trending: ${feeds.length} feeds`);
+  }
+
+  const episodesByFeed = new Map();
+  for (const ep of personEpisodes) {
+    if (!episodesByFeed.has(ep.feedId)) episodesByFeed.set(ep.feedId, []);
+    episodesByFeed.get(ep.feedId).push(ep);
+  }
+
+  const enrichStart = Date.now();
+  const feedIds = Array.from(feedMap.keys());
+  const episodeGuids = personEpisodes.map(ep => ep.guid).filter(Boolean);
+
+  const [transcribedFeedDocs, transcribedEpisodeDocs] = await Promise.all([
+    feedIds.length > 0
+      ? JamieVectorMetadata.find({ type: 'feed', feedId: { $in: feedIds } }).select('feedId').lean()
+      : [],
+    episodeGuids.length > 0
+      ? JamieVectorMetadata.find({ type: 'episode', guid: { $in: episodeGuids } }).select('guid feedId').lean()
+      : [],
+  ]);
+
+  const transcribedFeedIds = new Set(transcribedFeedDocs.map(f => String(f.feedId)));
+  for (const ep of transcribedEpisodeDocs) {
+    if (ep.feedId) transcribedFeedIds.add(String(ep.feedId));
+  }
+  timings.enrichment = Date.now() - enrichStart;
+
+  printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found`);
+
+  let results = Array.from(feedMap.values())
+    .slice(0, effectiveLimit)
+    .map(feed => {
+      const transcriptAvailable = transcribedFeedIds.has(feed.feedId);
+      const matchedEpisodes = episodesByFeed.get(feed.feedId) || null;
+      return {
+        ...feed,
+        transcriptAvailable,
+        matchedEpisodes: matchedEpisodes ? matchedEpisodes.slice(0, 10) : null,
+        episodes: null,
+        nextSteps: buildNextSteps(feed, transcriptAvailable),
+      };
+    });
+
+  if (results.length > 0) {
+    const filterStart = Date.now();
+    results = await filterResultsWithLLM(query, results, requestId);
+    timings.filter = Date.now() - filterStart;
+    printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
+  }
+
+  const shouldFetchEpisodes = routing.fetch_episodes ||
+    results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
+
+  if (shouldFetchEpisodes) {
+    const feedsToFetch = results
+      .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
+      .slice(0, MAX_EPISODE_FETCH_FEEDS);
+
+    if (feedsToFetch.length > 0) {
+      const episodeStart = Date.now();
+      const episodeResults = await Promise.all(
+        feedsToFetch.map(f => fetchEpisodesForFeed(f.feedId))
+      );
+      timings.episodes = Date.now() - episodeStart;
+
+      for (let i = 0; i < feedsToFetch.length; i++) {
+        const { feedInfo, episodes } = episodeResults[i];
+        const feedGuid = feedInfo?.feedGuid || feedInfo?.podcastGuid || null;
+        const feedResult = results.find(r => r.feedId === feedsToFetch[i].feedId);
+
+        if (feedResult && episodes.length > 0) {
+          if (!feedResult.feedGuid && feedGuid) feedResult.feedGuid = feedGuid;
+          feedResult.episodes = episodes.slice(0, 10).map(ep => ({
+            guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
+            title: ep.itemTitle || ep.title || 'Untitled',
+            date: ep.publishedDate
+              ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
+              : null,
+            duration: ep.length || ep.duration || null,
+            feedGuid: feedResult.feedGuid,
+            feedId: feedResult.feedId,
+          }));
+
+          if (feedResult.nextSteps.requestTranscription) {
+            feedResult.nextSteps.requestTranscription.bodyTemplate.episodes =
+              feedResult.episodes.map(ep => ({ guid: ep.guid, feedGuid: ep.feedGuid, feedId: ep.feedId }));
+          }
+        }
+      }
+
+      printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${feedsToFetch.length} feeds`);
+    }
+  }
+
+  timings.total = Date.now() - startTime;
+
+  printLog(`[${requestId}] ========== DISCOVER COMPLETE (${timings.total}ms) ==========`);
+  printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed, ${results.filter(r => !r.transcriptAvailable).length} untranscribed)`);
+
+  return {
+    query,
+    routing: {
+      intent: routing.intent,
+      byterm: bytermQueries,
+      byperson: bypersonQueries,
+      topicHints,
+      trending: trendingParams,
+    },
+    results,
+    total: results.length,
+    transcribedCount: results.filter(r => r.transcriptAvailable).length,
+    untranscribedCount: results.filter(r => !r.transcriptAvailable).length,
+    metadata: {
+      llmLatencyMs: timings.llm,
+      searchLatencyMs: timings.search,
+      filterLatencyMs: timings.filter,
+      episodeFetchLatencyMs: timings.episodes,
+      enrichmentLatencyMs: timings.enrichment,
+      totalLatencyMs: timings.total,
+      backendsQueried: searchLabels,
+    },
+    relatedEndpoints: {
+      searchTranscripts: {
+        description: 'Semantic search across transcribed podcast content with timestamped deeplinks',
+        method: 'POST',
+        url: '/api/search-quotes',
+      },
+      submitTranscription: {
+        description: 'Submit episodes for transcription, timestamped chaptering, and semantic indexing',
+        method: 'POST',
+        url: '/api/on-demand/submitOnDemandRun',
+      },
+    },
+  };
+}
+
+// ========== HTTP Route (thin wrapper) ==========
+
 router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.DISCOVER_PODCASTS), async (req, res) => {
   // #swagger.tags = ['Discovery']
   // #swagger.summary = 'LLM-assisted podcast discovery across the Podcast Index catalog'
@@ -288,295 +541,16 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       limit: 10
     }
   } */
-  const requestId = `DISCOVER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const startTime = Date.now();
-  const timings = { llm: 0, search: 0, filter: 0, episodes: 0, enrichment: 0, total: 0 };
-
   try {
-    const { query, limit = 10 } = req.body;
-
-    if (!query || typeof query !== 'string') {
-      return res.status(400).json({ error: 'query is required and must be a string' });
+    const result = await discoverPodcasts(req.body);
+    if (result.status) {
+      return res.status(result.status).json(result);
     }
-
-    const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
-
-    printLog(`[${requestId}] ========== DISCOVER REQUEST ==========`);
-    printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit}`);
-
-    // Step 1: LLM extracts routing instructions + topic hints
-    const llmStart = Date.now();
-    const routing = await extractSearchRouting(query);
-    timings.llm = Date.now() - llmStart;
-
-    const bytermQueries = (routing.byterm_queries || []).slice(0, 2);
-    const bypersonQueries = (routing.byperson_queries || []).slice(0, 2);
-    const topicHints = (routing.topic_hints || []).slice(0, 2);
-    const trendingParams = routing.trending || null;
-
-    printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, topic_hints=${JSON.stringify(topicHints)}, trending=${JSON.stringify(trendingParams)}`);
-
-    const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || topicHints.length > 0 || trendingParams;
-    if (!hasAnySearch) {
-      return res.status(400).json({
-        error: 'Could not determine search strategy from query',
-        detail: 'Try being more specific about the podcast name, topic, or person you\'re looking for'
-      });
-    }
-
-    // Step 2: Fan out ALL searches in parallel (byterm + byperson + topic_hints + trending)
-    const searchStart = Date.now();
-    const searchPromises = [];
-    const searchLabels = [];
-
-    for (const term of bytermQueries) {
-      searchPromises.push(searchByTerm(term));
-      searchLabels.push(`byterm:"${term}"`);
-    }
-    for (const person of bypersonQueries) {
-      searchPromises.push(searchByPerson(person));
-      searchLabels.push(`byperson:"${person}"`);
-    }
-    for (const hint of topicHints) {
-      searchPromises.push(searchByTerm(hint));
-      searchLabels.push(`topic_hint:"${hint}"`);
-    }
-    if (trendingParams) {
-      searchPromises.push(fetchTrending(trendingParams));
-      searchLabels.push(`trending:${JSON.stringify(trendingParams)}`);
-    }
-
-    const rawResults = await Promise.all(searchPromises);
-    timings.search = Date.now() - searchStart;
-
-    printLog(`[${requestId}] Search (${timings.search}ms): ${searchLabels.length} backends queried: ${searchLabels.join(', ')}`);
-
-    // Step 3: Normalize, name-filter, and deduplicate
-    const feedMap = new Map();
-    const personEpisodes = [];
-    let resultIdx = 0;
-
-    // Process byterm results (feeds)
-    for (let i = 0; i < bytermQueries.length; i++) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] byterm "${bytermQueries[i]}": ${feeds.length} feeds`);
-    }
-
-    // Process byperson results with string-based name filtering
-    for (let i = 0; i < bypersonQueries.length; i++) {
-      const rawEpisodes = rawResults[resultIdx++] || [];
-      const normalized = rawEpisodes.map(ep => normalizePersonEpisode(ep));
-      const filtered = filterByPersonRelevance(normalized, bypersonQueries[i]);
-
-      printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${rawEpisodes.length} raw → ${filtered.length} after name filter`);
-
-      for (const ep of filtered) {
-        personEpisodes.push(ep);
-        const fid = ep.feedId;
-        if (fid && !feedMap.has(fid)) {
-          feedMap.set(fid, {
-            feedId: fid,
-            feedGuid: ep.podcastGuid || null,
-            title: ep.feedTitle,
-            url: ep.feedUrl,
-            description: '',
-            author: ep.feedAuthor,
-            image: '',
-            language: '',
-            categories: {},
-            trendScore: null
-          });
-        }
-      }
-    }
-
-    // Process topic_hint results (feeds, ranked lower by virtue of being added after byterm/byperson)
-    for (let i = 0; i < topicHints.length; i++) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] topic_hint "${topicHints[i]}": ${feeds.length} feeds`);
-    }
-
-    // Process trending results (feeds)
-    if (trendingParams) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] trending: ${feeds.length} feeds`);
-    }
-
-    // Group person episodes by feedId for inline attachment
-    const episodesByFeed = new Map();
-    for (const ep of personEpisodes) {
-      if (!episodesByFeed.has(ep.feedId)) {
-        episodesByFeed.set(ep.feedId, []);
-      }
-      episodesByFeed.get(ep.feedId).push(ep);
-    }
-
-    // Step 4: Transcript availability via JamieVectorMetadata
-    const enrichStart = Date.now();
-    const feedIds = Array.from(feedMap.keys());
-    const episodeGuids = personEpisodes.map(ep => ep.guid).filter(Boolean);
-
-    const [transcribedFeedDocs, transcribedEpisodeDocs] = await Promise.all([
-      feedIds.length > 0
-        ? JamieVectorMetadata.find({ type: 'feed', feedId: { $in: feedIds } }).select('feedId').lean()
-        : [],
-      episodeGuids.length > 0
-        ? JamieVectorMetadata.find({ type: 'episode', guid: { $in: episodeGuids } }).select('guid feedId').lean()
-        : []
-    ]);
-
-    const transcribedFeedIds = new Set(transcribedFeedDocs.map(f => String(f.feedId)));
-    for (const ep of transcribedEpisodeDocs) {
-      if (ep.feedId) transcribedFeedIds.add(String(ep.feedId));
-    }
-    timings.enrichment = Date.now() - enrichStart;
-
-    printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found`);
-
-    // Step 5: Build preliminary results with nextSteps
-    let results = Array.from(feedMap.values())
-      .slice(0, effectiveLimit)
-      .map(feed => {
-        const transcriptAvailable = transcribedFeedIds.has(feed.feedId);
-        const matchedEpisodes = episodesByFeed.get(feed.feedId) || null;
-
-        return {
-          ...feed,
-          transcriptAvailable,
-          matchedEpisodes: matchedEpisodes ? matchedEpisodes.slice(0, 10) : null,
-          episodes: null,
-          nextSteps: buildNextSteps(feed, transcriptAvailable)
-        };
-      });
-
-    // Step 6: LLM filter pass — remove obvious false positives
-    if (results.length > 0) {
-      const filterStart = Date.now();
-      results = await filterResultsWithLLM(query, results, requestId);
-      timings.filter = Date.now() - filterStart;
-      printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
-    }
-
-    // Step 7: Fetch episodes for top untranscribed feeds without person-matched episodes
-    const shouldFetchEpisodes = routing.fetch_episodes ||
-      results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
-
-    if (shouldFetchEpisodes) {
-      const feedsToFetch = results
-        .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
-        .slice(0, MAX_EPISODE_FETCH_FEEDS);
-
-      if (feedsToFetch.length > 0) {
-        const episodeStart = Date.now();
-        const episodeResults = await Promise.all(
-          feedsToFetch.map(f => fetchEpisodesForFeed(f.feedId))
-        );
-        timings.episodes = Date.now() - episodeStart;
-
-        for (let i = 0; i < feedsToFetch.length; i++) {
-          const { feedInfo, episodes } = episodeResults[i];
-          const feedGuid = feedInfo?.feedGuid || feedInfo?.podcastGuid || null;
-          const feedResult = results.find(r => r.feedId === feedsToFetch[i].feedId);
-
-          if (feedResult && episodes.length > 0) {
-            if (!feedResult.feedGuid && feedGuid) {
-              feedResult.feedGuid = feedGuid;
-            }
-            feedResult.episodes = episodes.slice(0, 10).map(ep => ({
-              guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
-              title: ep.itemTitle || ep.title || 'Untitled',
-              date: ep.publishedDate
-                ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
-                : null,
-              duration: ep.length || ep.duration || null,
-              feedGuid: feedResult.feedGuid,
-              feedId: feedResult.feedId
-            }));
-
-            if (feedResult.nextSteps.requestTranscription) {
-              feedResult.nextSteps.requestTranscription.bodyTemplate.episodes =
-                feedResult.episodes.map(ep => ({
-                  guid: ep.guid,
-                  feedGuid: ep.feedGuid,
-                  feedId: ep.feedId
-                }));
-            }
-          }
-        }
-
-        printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${feedsToFetch.length} feeds`);
-      }
-    }
-
-    timings.total = Date.now() - startTime;
-
-    printLog(`[${requestId}] ========== DISCOVER COMPLETE (${timings.total}ms) ==========`);
-    printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed, ${results.filter(r => !r.transcriptAvailable).length} untranscribed)`);
-
-    res.json({
-      query,
-      routing: {
-        intent: routing.intent,
-        byterm: bytermQueries,
-        byperson: bypersonQueries,
-        topicHints,
-        trending: trendingParams
-      },
-      results,
-      total: results.length,
-      transcribedCount: results.filter(r => r.transcriptAvailable).length,
-      untranscribedCount: results.filter(r => !r.transcriptAvailable).length,
-      metadata: {
-        llmLatencyMs: timings.llm,
-        searchLatencyMs: timings.search,
-        filterLatencyMs: timings.filter,
-        episodeFetchLatencyMs: timings.episodes,
-        enrichmentLatencyMs: timings.enrichment,
-        totalLatencyMs: timings.total,
-        backendsQueried: searchLabels
-      },
-      relatedEndpoints: {
-        searchTranscripts: {
-          description: 'Semantic search across transcribed podcast content with timestamped deeplinks',
-          method: 'POST',
-          url: '/api/search-quotes'
-        },
-        submitTranscription: {
-          description: 'Submit episodes for transcription, timestamped chaptering, and semantic indexing',
-          method: 'POST',
-          url: '/api/on-demand/submitOnDemandRun'
-        }
-      }
-    });
-
+    res.json(result);
   } catch (error) {
-    timings.total = Date.now() - startTime;
-    printLog(`[${requestId}] ✗ Error (${timings.total}ms): ${error.message}`);
-    console.error(`[${requestId}] Stack:`, error.stack);
-
-    res.status(500).json({
-      error: 'Discovery failed',
-      detail: error.message,
-      requestId
-    });
+    printLog(`[DISCOVER] Error: ${error.message}`);
+    console.error('[DISCOVER] Stack:', error.stack);
+    res.status(500).json({ error: 'Discovery failed', detail: error.message });
   }
 });
 
@@ -655,6 +629,8 @@ router.post('/rss/getFeed', serviceHmac({ optional: true }), createEntitlementMi
 });
 
 module.exports = router;
+
+module.exports.discoverPodcasts = discoverPodcasts;
 
 // Export internal functions for direct use by workflow orchestrator
 module.exports.discoverInternal = {
