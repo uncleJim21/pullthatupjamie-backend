@@ -1,9 +1,27 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
+const fs = require('fs');
+const path = require('path');
 const { printLog } = require('../constants.js');
 const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+
+const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
+try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
+
+function writeAgentLog(requestId, sessionId, logData) {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `${ts}_${requestId}.json`;
+    fs.writeFileSync(
+      path.join(AGENT_LOG_DIR, filename),
+      JSON.stringify(logData, null, 2),
+    );
+  } catch (err) {
+    printLog(`[AGENT-LOG] Failed to write log: ${err.message}`);
+  }
+}
 
 const MAX_TOOL_ROUNDS = 10;
 const TOKEN_BUDGET_SOFT = 12000;
@@ -205,6 +223,12 @@ function createAgentChatRoutes({ openai } = {}) {
       let totalOutputTokens = 0;
       let round = 0;
       let hasExecutedTools = false;
+      const agentLog = {
+        requestId, sessionId, model: modelConfig.label,
+        query: message, startedAt: new Date().toISOString(),
+        rounds: [],
+        finalText: null, error: null,
+      };
 
       while (round < MAX_TOOL_ROUNDS && !_aborted) {
         round++;
@@ -243,6 +267,8 @@ function createAgentChatRoutes({ openai } = {}) {
             .map(b => b.text)
             .join('');
           console.log(`[${requestId}] Final text streamed (${fullText.length} chars)`);
+          agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
+          agentLog.finalText = fullText;
           emit('text_done', { text: fullText });
           break;
         }
@@ -309,6 +335,18 @@ function createAgentChatRoutes({ openai } = {}) {
           });
         }
 
+        agentLog.rounds.push({
+          round,
+          type: 'tool_use',
+          tokens: response.usage,
+          tools: toolUseBlocks.map((tu, i) => ({
+            name: tu.name,
+            input: tu.input,
+            resultCount: toolCalls[toolCalls.length - toolUseBlocks.length + i]?.resultCount,
+            latencyMs: toolCalls[toolCalls.length - toolUseBlocks.length + i]?.latencyMs,
+          })),
+        });
+
         console.log(`[${requestId}] Pushing ${toolResults.length} tool results to messages`);
         messages.push({ role: 'user', content: toolResults });
         console.log(`[${requestId}] === ROUND ${round} END ===`);
@@ -321,6 +359,16 @@ function createAgentChatRoutes({ openai } = {}) {
       const toolCost = toolCalls.reduce((sum, tc) => sum + (TOOL_COSTS[tc.name] || 0), 0);
 
       printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${totalInputTokens}+${totalOutputTokens} tokens, $${claudeCost.toFixed(4)} LLM, ${latencyMs}ms`);
+
+      agentLog.completedAt = new Date().toISOString();
+      agentLog.summary = {
+        rounds: round,
+        toolCalls: toolCalls.map(tc => ({ name: tc.name, input: tc.input, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
+        tokens: { input: totalInputTokens, output: totalOutputTokens },
+        cost: { claude: parseFloat(claudeCost.toFixed(6)), tools: parseFloat(toolCost.toFixed(4)), total: parseFloat((claudeCost + toolCost).toFixed(6)) },
+        latencyMs,
+      };
+      writeAgentLog(requestId, sessionId, agentLog);
 
       emit('done', {
         sessionId,
@@ -341,6 +389,9 @@ function createAgentChatRoutes({ openai } = {}) {
     } catch (error) {
       printLog(`[${requestId}] ERROR: ${error.message}`);
       console.error(`[${requestId}] Stack:`, error.stack);
+      agentLog.error = error.message;
+      agentLog.completedAt = new Date().toISOString();
+      writeAgentLog(requestId, sessionId, agentLog);
       emit('error', { error: error.message });
       res.end();
     }

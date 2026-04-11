@@ -15,6 +15,7 @@ test/cost-baseline-100.sh
 
 # Test comparison output
 tests/output/
+logs/
 
 # Skills build artifacts — ClawHub zips are CI artifacts, not committed
 dist/clawhub/
