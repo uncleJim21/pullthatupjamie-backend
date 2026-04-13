@@ -1704,7 +1704,12 @@ app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after fron
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
 // app.use('/api/chat', createWorkflowRoutes({ openai })); // Shelved — replaced by Claude agent
-app.use('/api/chat', createAgentChatRoutes({ openai })); // Claude agent handles both /chat/agent and /chat/workflow
+const agentChatRouter = createAgentChatRoutes({ openai });
+app.use('/api/chat', agentChatRouter); // Claude agent handles /chat/agent and /chat/workflow (frontend, no entitlement gate)
+app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
+  req.url = '/agent';
+  agentChatRouter(req, res, next);
+}); // L402-protected pull endpoint — public API
 
 // OpenAPI spec and Swagger UI
 const openapiSpec = require('./openapi.json');
