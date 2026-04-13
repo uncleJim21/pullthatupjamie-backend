@@ -62,6 +62,7 @@ const TEST_QUERIES = [
   { name: 'Sports Analytics',        cohort: 'cohort3', task: 'Has anyone discussed how data analytics is changing basketball strategy?' },
   { name: 'Book Deep Dive',          cohort: 'cohort3', task: 'Find in-depth discussion of "The Changing World Order" by Ray Dalio across podcasts' },
   { name: 'Whistleblower',           cohort: 'cohort3', task: 'Find podcast coverage of the David Grusch UFO whistleblower testimony' },
+  {name: 'Specific Point from Memory',            cohort: 'cohort3', task: 'mike rowe talking about how the human brain corrects for safety measures like helmets and takes more risk under those conditions'}
 ];
 
 // ===== Helpers =====

@@ -303,6 +303,8 @@ function createAgentChatRoutes({ openai } = {}) {
             || result.episodes?.length
             || result.people?.length
             || result.chapters?.length
+            || (result.episode ? 1 : 0)
+            || (result.feed ? 1 : 0)
             || (result.before?.length != null ? result.before.length + (result.current ? 1 : 0) + (result.after?.length || 0) : 0)
             || 0;
 
