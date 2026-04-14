@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { printLog } = require('../constants.js');
 const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
+const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
@@ -60,6 +61,7 @@ const AGENT_MODELS = {
   quality: { id: 'claude-sonnet-4-6',         inputPer1M: 3.00, outputPer1M: 15.00, label: 'Sonnet 4.6' },
 };
 const DEFAULT_AGENT_MODEL = 'fast';
+const CLASSIFIER_MODEL = AGENT_MODELS.fast.id;
 
 let anthropic;
 let anthropicKeyValid = false;
@@ -85,6 +87,36 @@ let anthropicKeyValid = false;
     console.log('\x1b[33m%s\x1b[0m', `[AGENT] ⚠ Could not reach Anthropic API: ${err.message}. Agent routes may not work.`);
   }
 })();
+
+async function classifyIntent(message, history) {
+  try {
+    const userContext = history.length > 0
+      ? `Previous messages:\n${history.map(m => `${m.role}: ${m.content}`).join('\n')}\n\nCurrent message: ${message}`
+      : message;
+
+    const resp = await anthropic.messages.create({
+      model: CLASSIFIER_MODEL,
+      max_tokens: 30,
+      system: CLASSIFIER_PROMPT,
+      messages: [{ role: 'user', content: userContext }],
+    });
+
+    const text = (resp.content[0]?.text || '').trim();
+    const match = text.match(/"intent"\s*:\s*"(\w+)"/);
+    const intent = match ? match[1] : null;
+
+    if (intent && VALID_INTENTS.includes(intent)) {
+      printLog(`[TRIAGE] Classified intent: "${intent}" (tokens: ${resp.usage?.input_tokens}+${resp.usage?.output_tokens})`);
+      return { intent, classifierTokens: resp.usage };
+    }
+
+    printLog(`[TRIAGE] Unknown intent "${intent}" from response "${text}", falling back to ${DEFAULT_INTENT}`);
+    return { intent: DEFAULT_INTENT, classifierTokens: resp.usage };
+  } catch (err) {
+    printLog(`[TRIAGE] Classifier failed: ${err.message}, falling back to ${DEFAULT_INTENT}`);
+    return { intent: DEFAULT_INTENT, classifierTokens: null };
+  }
+}
 
 function sanitizeSuggestAction(toolInput) {
   const clean = { ...toolInput };
@@ -234,6 +266,8 @@ function createAgentChatRoutes({ openai } = {}) {
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestId = `AGENT-${sessionId.slice(-8)}`;
     const startTime = Date.now();
+    const bypassTriage = req.body.bypassTriage === true;
+    const triageEnabled = process.env.AGENT_TRIAGE_ENABLED !== 'false';
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
@@ -271,9 +305,23 @@ function createAgentChatRoutes({ openai } = {}) {
 
     try {
       await buildFeedLookup();
-      emit('status', { message: 'Analyzing your request...', sessionId });
 
-      const effectiveSystemPrompt = SYSTEM_PROMPT + feedLookupPromptSection;
+      let intent = DEFAULT_INTENT;
+      let classifierTokens = null;
+      if (triageEnabled && !bypassTriage) {
+        const result = await classifyIntent(message, history);
+        intent = result.intent;
+        classifierTokens = result.classifierTokens;
+      } else {
+        printLog(`[${requestId}] Triage bypassed (enabled=${triageEnabled}, bypassTriage=${bypassTriage})`);
+      }
+
+      const profile = PROFILES[intent];
+      const effectiveSystemPrompt = profile.buildPrompt() + feedLookupPromptSection;
+      const effectiveTools = profile.tools();
+
+      emit('status', { message: 'Analyzing your request...', sessionId, intent });
+      printLog(`[${requestId}] Intent: ${intent}, tools: ${effectiveTools.map(t => t.name).join(', ')}`);
 
       const messages = [...history, { role: 'user', content: message }];
       let toolCalls = [];
@@ -282,8 +330,9 @@ function createAgentChatRoutes({ openai } = {}) {
       let round = 0;
       let hasExecutedTools = false;
       const agentLog = {
-        requestId, sessionId, model: modelConfig.label,
+        requestId, sessionId, model: modelConfig.label, intent,
         query: message, startedAt: new Date().toISOString(),
+        classifierTokens,
         rounds: [],
         finalText: null, error: null,
       };
@@ -302,7 +351,7 @@ function createAgentChatRoutes({ openai } = {}) {
           max_tokens: 4096,
           system: effectiveSystemPrompt,
           messages,
-          tools: TOOL_DEFINITIONS,
+          tools: effectiveTools,
           stream: true,
         });
 
@@ -352,9 +401,17 @@ function createAgentChatRoutes({ openai } = {}) {
             round,
           });
 
-          const result = toolUse.name === 'suggest_action'
-            ? handleSuggestAction(toolUse.input, emit)
-            : await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
+          let result;
+          if (toolUse.name === 'suggest_action') {
+            result = handleSuggestAction(toolUse.input, emit);
+          } else if (toolUse.name === 'create_research_session') {
+            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req });
+            if (result.sessionId && result.url) {
+              emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
+            }
+          } else {
+            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
+          }
           const toolLatency = Date.now() - toolStart;
 
           const resultCount = result.results?.length
@@ -363,6 +420,7 @@ function createAgentChatRoutes({ openai } = {}) {
             || result.chapters?.length
             || (result.episode ? 1 : 0)
             || (result.feed ? 1 : 0)
+            || (result.sessionId ? result.itemCount || 1 : 0)
             || (result.before?.length != null ? result.before.length + (result.current ? 1 : 0) + (result.after?.length || 0) : 0)
             || 0;
 
@@ -433,6 +491,7 @@ function createAgentChatRoutes({ openai } = {}) {
       emit('done', {
         sessionId,
         model: modelConfig.label,
+        intent,
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
         tokens: { input: totalInputTokens, output: totalOutputTokens },

@@ -19,19 +19,22 @@ const {
   listChapters, findPeople, getPersonEpisodes,
 } = require('../services/corpusService');
 const { getAdjacentParagraphs } = require('../agent-tools/pineconeTools.js');
+const { createResearchSessionDirect } = require('../services/researchSessionService');
+const { resolveOwner } = require('../utils/resolveOwner');
 
 const TOOL_COSTS = {
-  search_quotes:           0.004,
-  search_chapters:         0.004,
-  list_episode_chapters:   0.002,
-  discover_podcasts:       0.005,
-  find_person:             0.001,
-  get_person_episodes:     0.001,
-  get_episode:             0.001,
-  get_feed:                0.001,
-  get_feed_episodes:       0.001,
-  get_adjacent_paragraphs: 0.001,
-  suggest_action:          0,
+  search_quotes:              0.004,
+  search_chapters:            0.004,
+  list_episode_chapters:      0.002,
+  discover_podcasts:          0.005,
+  find_person:                0.001,
+  get_person_episodes:        0.001,
+  get_episode:                0.001,
+  get_feed:                   0.001,
+  get_feed_episodes:          0.001,
+  get_adjacent_paragraphs:    0.001,
+  create_research_session:    0.002,
+  suggest_action:             0,
 };
 
 const LIMITS = {
@@ -250,17 +253,46 @@ async function handleGetAdjacentParagraphs(input) {
   return normalized;
 }
 
+async function handleCreateResearchSession(input, { req }) {
+  const { pineconeIds, title } = input;
+  printLog(`[TOOL] create_research_session: ${pineconeIds?.length || 0} clips, title="${title || 'auto'}"`);
+
+  let userId = null;
+  let clientId = null;
+  if (req) {
+    try {
+      const owner = await resolveOwner(req);
+      if (owner) {
+        userId = owner.userId;
+        clientId = owner.clientId;
+      }
+    } catch (err) {
+      printLog(`[TOOL] create_research_session: owner resolution failed: ${err.message}`);
+    }
+  }
+
+  try {
+    const result = await createResearchSessionDirect({ pineconeIds, title, userId, clientId });
+    printLog(`[TOOL] create_research_session: created ${result.sessionId} (${result.itemCount} items)`);
+    return result;
+  } catch (err) {
+    printLog(`[TOOL] create_research_session: failed: ${err.message}`);
+    return { error: err.message };
+  }
+}
+
 const TOOL_DISPATCH = {
-  search_quotes:           handleSearchQuotes,
-  search_chapters:         handleSearchChapters,
-  discover_podcasts:       handleDiscoverPodcasts,
-  find_person:             handleFindPerson,
-  get_person_episodes:     handleGetPersonEpisodes,
-  list_episode_chapters:   handleListEpisodeChapters,
-  get_episode:             handleGetEpisode,
-  get_feed:                handleGetFeed,
-  get_feed_episodes:       handleGetFeedEpisodes,
-  get_adjacent_paragraphs: handleGetAdjacentParagraphs,
+  search_quotes:              handleSearchQuotes,
+  search_chapters:            handleSearchChapters,
+  discover_podcasts:          handleDiscoverPodcasts,
+  find_person:                handleFindPerson,
+  get_person_episodes:        handleGetPersonEpisodes,
+  list_episode_chapters:      handleListEpisodeChapters,
+  get_episode:                handleGetEpisode,
+  get_feed:                   handleGetFeed,
+  get_feed_episodes:          handleGetFeedEpisodes,
+  get_adjacent_paragraphs:    handleGetAdjacentParagraphs,
+  create_research_session:    handleCreateResearchSession,
 };
 
 /**
@@ -272,7 +304,7 @@ const TOOL_DISPATCH = {
  * @param {object} opts.openai - OpenAI client (for embeddings + reranker)
  * @param {string} opts.sessionId - Session ID for rate limiting
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, req }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
@@ -299,7 +331,7 @@ async function executeAgentTool(toolName, toolInput, { openai, sessionId }) {
   session.toolCalls++;
   session.cost += toolCost;
 
-  return handler(toolInput, { openai });
+  return handler(toolInput, { openai, req });
 }
 
 module.exports = { executeAgentTool, TOOL_COSTS };
