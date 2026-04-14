@@ -176,7 +176,7 @@ async function fetchTrending(params) {
   }
 }
 
-async function fetchEpisodesForFeed(feedId) {
+async function fetchEpisodesForFeed(feedId, feedUrl) {
   try {
     const response = await axios.post(`${RSS_EXTRACTOR_BASE}/getPodcastByFeedId`, {
       feedId: String(feedId),
@@ -185,9 +185,24 @@ async function fetchEpisodesForFeed(feedId) {
     const data = response.data;
     const feedInfo = data?.episodes?.feedInfo || data?.feedInfo || {};
     const episodes = data?.episodes?.episodes || data?.episodes || [];
-    return { feedInfo, episodes };
+    if (episodes.length > 0) return { feedInfo, episodes };
   } catch (error) {
     printLog(`[DISCOVER] getPodcastByFeedId failed for feedId ${feedId}: ${error.message}`);
+  }
+
+  if (!feedUrl) return { feedInfo: {}, episodes: [] };
+
+  try {
+    const response = await axios.post(`${RSS_EXTRACTOR_BASE}/getFeed`, {
+      feedUrl, feedId: String(feedId), limit: 10
+    }, { headers: RSS_HEADERS, timeout: RSS_TIMEOUT_MS });
+    const data = response.data;
+    const feedInfo = data?.feedInfo || {};
+    const inner = data?.episodes;
+    const episodes = inner?.episodes || (Array.isArray(inner) ? inner : []);
+    return { feedInfo, episodes };
+  } catch (error) {
+    printLog(`[DISCOVER] getFeed fallback failed for feedId ${feedId}: ${error.message}`);
     return { feedInfo: {}, episodes: [] };
   }
 }
@@ -476,47 +491,91 @@ async function discoverPodcasts({ query, limit = 10 }) {
     printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
   }
 
-  const shouldFetchEpisodes = routing.fetch_episodes ||
-    results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
+  const hasBypersonQuery = bypersonQueries.length > 0;
+  const needsUntranscribedFetch = results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
+  const needsTranscribedGapFetch = hasBypersonQuery &&
+    results.some(r => r.transcriptAvailable && !r.matchedEpisodes);
+  const shouldFetchEpisodes = routing.fetch_episodes || needsUntranscribedFetch || needsTranscribedGapFetch;
 
   if (shouldFetchEpisodes) {
-    const feedsToFetch = results
+    const untranscribedToFetch = results
       .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
       .slice(0, MAX_EPISODE_FETCH_FEEDS);
 
-    if (feedsToFetch.length > 0) {
+    const transcribedGapToFetch = hasBypersonQuery
+      ? results
+          .filter(r => r.transcriptAvailable && !r.matchedEpisodes)
+          .slice(0, MAX_EPISODE_FETCH_FEEDS)
+      : [];
+
+    const allToFetch = [...untranscribedToFetch, ...transcribedGapToFetch];
+
+    if (allToFetch.length > 0) {
       const episodeStart = Date.now();
       const episodeResults = await Promise.all(
-        feedsToFetch.map(f => fetchEpisodesForFeed(f.feedId))
+        allToFetch.map(f => fetchEpisodesForFeed(f.feedId, f.url))
       );
       timings.episodes = Date.now() - episodeStart;
 
-      for (let i = 0; i < feedsToFetch.length; i++) {
+      // Collect all fetched episode GUIDs for a second enrichment pass
+      // (the initial transcribedEpisodeGuids only covers personEpisodes)
+      const allFetchedGuids = [];
+      const normalizedByIndex = [];
+      for (let i = 0; i < allToFetch.length; i++) {
         const { feedInfo, episodes } = episodeResults[i];
         const feedGuid = feedInfo?.feedGuid || feedInfo?.podcastGuid || null;
-        const feedResult = results.find(r => r.feedId === feedsToFetch[i].feedId);
+        const feedResult = results.find(r => r.feedId === allToFetch[i].feedId);
+        if (!feedResult || episodes.length === 0) { normalizedByIndex.push(null); continue; }
+        if (!feedResult.feedGuid && feedGuid) feedResult.feedGuid = feedGuid;
 
-        if (feedResult && episodes.length > 0) {
-          if (!feedResult.feedGuid && feedGuid) feedResult.feedGuid = feedGuid;
-          feedResult.episodes = episodes.slice(0, 10).map(ep => ({
-            guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
-            title: ep.itemTitle || ep.title || 'Untitled',
-            date: ep.publishedDate
-              ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
-              : null,
-            duration: ep.length || ep.duration || null,
-            feedGuid: feedResult.feedGuid,
-            feedId: feedResult.feedId,
+        const normalizedEpisodes = episodes.slice(0, 10).map(ep => ({
+          guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
+          title: ep.itemTitle || ep.title || 'Untitled',
+          date: ep.publishedDate
+            ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
+            : null,
+          duration: ep.length || ep.duration || null,
+          feedGuid: feedResult.feedGuid,
+          feedId: feedResult.feedId,
+        }));
+        normalizedByIndex.push(normalizedEpisodes);
+        for (const ep of normalizedEpisodes) {
+          if (ep.guid) allFetchedGuids.push(ep.guid);
+        }
+      }
+
+      // Second enrichment: check which fetched episodes are already transcribed
+      const fetchedTranscribedGuids = new Set();
+      if (allFetchedGuids.length > 0) {
+        const docs = await JamieVectorMetadata.find({
+          type: 'episode', guid: { $in: allFetchedGuids }
+        }).select('guid').lean();
+        for (const d of docs) fetchedTranscribedGuids.add(d.guid);
+      }
+
+      for (let i = 0; i < allToFetch.length; i++) {
+        const normalizedEpisodes = normalizedByIndex[i];
+        if (!normalizedEpisodes) continue;
+        const feedResult = results.find(r => r.feedId === allToFetch[i].feedId);
+        if (!feedResult) continue;
+
+        if (feedResult.transcriptAvailable) {
+          const stampedEpisodes = normalizedEpisodes.map(ep => ({
+            ...ep,
+            transcriptAvailable: !!(ep.guid && fetchedTranscribedGuids.has(ep.guid)),
           }));
-
+          feedResult.matchedEpisodes = stampedEpisodes;
+          feedResult.nextSteps = buildNextSteps(feedResult, true, stampedEpisodes);
+        } else {
+          feedResult.episodes = normalizedEpisodes;
           if (feedResult.nextSteps.requestTranscription) {
             feedResult.nextSteps.requestTranscription.bodyTemplate.episodes =
-              feedResult.episodes.map(ep => ({ guid: ep.guid, feedGuid: ep.feedGuid, feedId: ep.feedId }));
+              normalizedEpisodes.map(ep => ({ guid: ep.guid, feedGuid: ep.feedGuid, feedId: ep.feedId }));
           }
         }
       }
 
-      printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${feedsToFetch.length} feeds`);
+      printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${allToFetch.length} feeds (${untranscribedToFetch.length} untranscribed, ${transcribedGapToFetch.length} transcribed-gap)`);
     }
   }
 
