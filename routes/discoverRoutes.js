@@ -237,7 +237,10 @@ function normalizePersonEpisode(item) {
     feedGuid: item.podcastGuid || null,
     feedTitle: item.feedTitle || '',
     feedUrl: item.feedUrl || '',
-    feedAuthor: item.feedAuthor || ''
+    feedAuthor: item.feedAuthor || '',
+    image: item.image || item.feedImage || '',
+    enclosureUrl: item.enclosureUrl || '',
+    link: item.link || '',
   };
 }
 
@@ -537,6 +540,9 @@ async function discoverPodcasts({ query, limit = 10 }) {
           duration: ep.length || ep.duration || null,
           feedGuid: feedResult.feedGuid,
           feedId: feedResult.feedId,
+          image: ep.image || ep.feedImage || ep.artwork || '',
+          enclosureUrl: ep.enclosureUrl || '',
+          link: ep.link || '',
         }));
         normalizedByIndex.push(normalizedEpisodes);
         for (const ep of normalizedEpisodes) {

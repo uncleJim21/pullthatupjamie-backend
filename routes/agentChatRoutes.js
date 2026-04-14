@@ -86,8 +86,58 @@ let anthropicKeyValid = false;
   }
 })();
 
+function sanitizeSuggestAction(toolInput) {
+  const clean = { ...toolInput };
+
+  // Haiku sometimes embeds XML parameter tags inside JSON string values.
+  // Scan every string field: extract any <parameter name="key">value</parameter> or
+  // </key>\n<parameter name="key">value patterns and hoist them to top-level keys.
+  const xmlParamRe = /<\/?[\w]+>?\s*<parameter\s+name="(\w+)">([\s\S]*?)(?:<\/parameter>|$)/g;
+  for (const [field, val] of Object.entries(clean)) {
+    if (typeof val !== 'string') continue;
+    let match;
+    let stripped = val;
+    while ((match = xmlParamRe.exec(val)) !== null) {
+      const [fullMatch, extractedKey, extractedVal] = match;
+      if (!clean[extractedKey]) {
+        clean[extractedKey] = extractedVal.trim();
+      }
+      stripped = stripped.replace(fullMatch, '');
+    }
+    // Also handle the simpler </field>\n<parameter name="key">value (no closing tag)
+    const simpleRe = /<\/\w+>\s*<parameter\s+name="(\w+)">([\s\S]*)/;
+    const simpleMatch = stripped.match(simpleRe);
+    if (simpleMatch) {
+      const [fullMatch, extractedKey, extractedVal] = simpleMatch;
+      if (!clean[extractedKey]) {
+        clean[extractedKey] = extractedVal.replace(/<\/parameter>\s*$/, '').trim();
+      }
+      stripped = stripped.replace(fullMatch, '');
+    }
+    if (stripped !== val) {
+      clean[field] = stripped.trim();
+    }
+  }
+
+  // If image is still missing, check all string values for an image URL
+  if (!clean.image) {
+    for (const [field, val] of Object.entries(clean)) {
+      if (typeof val !== 'string' || field === 'image') continue;
+      const urlMatch = val.match(/(https?:\/\/\S+\.(?:jpg|jpeg|png|gif|webp)\S*)/i);
+      if (urlMatch) {
+        clean.image = urlMatch[1];
+        clean[field] = val.replace(urlMatch[0], '').replace(/<[^>]*>/g, '').trim();
+        break;
+      }
+    }
+  }
+
+  return clean;
+}
+
 function handleSuggestAction(toolInput, emit) {
-  const { type, reason, ...params } = toolInput;
+  const sanitized = sanitizeSuggestAction(toolInput);
+  const { type, reason, ...params } = sanitized;
   emit('suggested_action', { type, reason, ...params });
   return { acknowledged: true, message: `Action "${type}" suggested to user. Continue your response — the user will decide whether to approve.` };
 }

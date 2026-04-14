@@ -57,7 +57,7 @@ When you have chapter titles from list_episode_chapters, use them to construct q
    - User: "What did Palmer Luckey say on Lex Fridman?" → find_person returns JRE episode
    - WRONG: search_quotes on Lex feedId to "confirm" Palmer isn't there ← WASTES TOKENS
    - WRONG: Write final text with "I can check if Lex has it" ← NEVER DO THIS
-   - RIGHT: In ONE round, call search_quotes(guids: [JRE GUID]) + discover_podcasts("Palmer Luckey Lex Fridman") + suggest_action({ type: "submit-on-demand", reason: "...", feedId: "745287" }) + suggest_action({ type: "direct-query", label: "Search JRE for Palmer Luckey", endpoint: "/api/search-quotes", body: { query: "defense tech", guids: [JRE GUID], limit: 5 }, reason: "Pre-built search for more Palmer Luckey quotes" }) → THEN write final text
+   - RIGHT: In ONE round, call search_quotes(guids: [JRE GUID]) + discover_podcasts("Palmer Luckey Lex Fridman") + suggest_action({ type: "submit-on-demand", reason: "...", guid: "ep-guid", feedGuid: "fg", feedId: "745287", episodeTitle: "...", image: "https://..." }) + suggest_action({ type: "direct-query", label: "Search JRE for Palmer Luckey", endpoint: "/api/search-quotes", body: { query: "defense tech", guids: [JRE GUID], limit: 5 }, reason: "Pre-built search for more Palmer Luckey quotes" }) → THEN write final text
 
 ## Insufficient evidence — know when to stop (and when to upsell)
 
@@ -88,7 +88,7 @@ IMPORTANT: Even when discover_podcasts returns a feed as fully transcribed with 
 
 Use suggest_action to recommend operations the user can approve. Call it as a tool call, NOT as text. Do NOT write "I can check" or "would you like me to." Batch suggest_action in the SAME tool-use round as discover_podcasts and your final search_quotes call to minimize rounds and cost.
 
-- **submit-on-demand**: When discover_podcasts finds relevant episodes that are NOT yet transcribed and the user would benefit from having them. Include the episode guid, feedGuid, feedId, and episodeTitle from the nextSteps.requestTranscription data. Triggers:
+- **submit-on-demand**: When discover_podcasts finds relevant episodes that are NOT yet transcribed and the user would benefit from having them. ALWAYS include ALL of these fields from the matchedEpisodes data: guid, feedGuid, feedId, episodeTitle, and image (artwork URL). The frontend uses image for a thumbnail card. Triggers:
   - Search returned 0 results and discover found untranscribed content
   - Search returned results from a DIFFERENT source than the user asked about (gap in their intended show)
   - discover_podcasts returned a transcribed feed but with untranscribed matchedEpisodes (nextSteps.requestTranscription present) — this means the feed is indexed but the SPECIFIC episode the user wants is not
@@ -266,6 +266,7 @@ const TOOL_DEFINITIONS = [
         guid:         { type: 'string', description: 'Episode GUID (for submit-on-demand)' },
         feedGuid:     { type: 'string', description: 'Feed GUID (for submit-on-demand)' },
         feedId:       { type: 'string', description: 'Feed ID (for submit-on-demand)' },
+        image:        { type: 'string', description: 'Episode artwork URL (for submit-on-demand). Copy directly from the matchedEpisodes image field.' },
         pineconeId:   { type: 'string', description: 'Pinecone ID of the clip (for create-clip)' },
         endpoint:     { type: 'string', description: 'API endpoint path for direct-query (e.g. "/api/search-quotes")' },
         method:       { type: 'string', enum: ['GET', 'POST'], description: 'HTTP method for direct-query (default POST)' },
