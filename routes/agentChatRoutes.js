@@ -25,6 +25,7 @@ function writeAgentLog(requestId, sessionId, logData) {
 
 const MAX_TOOL_ROUNDS = 10;
 const TOKEN_BUDGET_SOFT = 12000;
+const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
 // --- Dynamic feed lookup table ---
 let feedLookupTable = null;
@@ -192,7 +193,14 @@ function createAgentChatRoutes({ openai } = {}) {
       return res.status(503).json({ error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' });
     }
 
-    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, "${message.substring(0, 100)}"`);
+    const rawHistory = req.body.history || [];
+    const history = Array.isArray(rawHistory)
+      ? rawHistory
+          .filter(m => m && typeof m.content === 'string' && ['user', 'assistant'].includes(m.role))
+          .slice(-MAX_HISTORY_MESSAGES)
+      : [];
+
+    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, "${message.substring(0, 100)}"`);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -217,7 +225,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
       const effectiveSystemPrompt = SYSTEM_PROMPT + feedLookupPromptSection;
 
-      const messages = [{ role: 'user', content: message }];
+      const messages = [...history, { role: 'user', content: message }];
       let toolCalls = [];
       let totalInputTokens = 0;
       let totalOutputTokens = 0;

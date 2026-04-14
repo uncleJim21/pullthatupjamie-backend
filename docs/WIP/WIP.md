@@ -4,13 +4,22 @@ Ephemeral backlog for tracking cross-session work. New chat threads should check
 
 ## Active
 
-- [ ] Frontend: handle `suggested_action` SSE event to render transcription upsell cards in the chat UI
+- [ ] Frontend: handle `suggested_action` SSE event — render `submit-on-demand` as upsell cards, `direct-query` as one-tap search cards, `follow-up-message` as chat chips
+
+## Recently Implemented (pending frontend integration)
+
+- [x] **Multi-turn conversation support.** Decision: client-side history, chat-only (user msg + assistant final text — no tool results). Cap: 2 prior turns (4 history messages). Works for both human and agent-to-agent callers. Frontend sends `history: [{ role, content }]` in request body. Backend validates, caps, and prepends to messages array. Cost: ~$0.003/request added on Haiku — negligible.
+- [x] **Suggested follow-up actions (3 types via `suggest_action` tool):**
+  - `submit-on-demand` — Upsell transcription (existing, unchanged)
+  - `direct-query` — Agent pre-builds a fully structured API request from context it already resolved (GUIDs, feed IDs, query terms). Frontend renders a card, user taps, frontend fires the request directly. No agent round-trip, ~$0.002 instead of $0.10. Schema: `{ type, reason, label, endpoint, method, body }`
+  - `follow-up-message` — Pre-filled chat message for follow-ups needing LLM reasoning. Schema: `{ type, reason, label, message }`. Frontend renders as a tappable chip that sends the message as the next turn (uses multi-turn).
+- [x] Agent prompt updated: MUST emit `direct-query` or `follow-up-message` alongside `submit-on-demand` when correcting user assumptions. No dead-end corrections.
 
 ## Parked
 
 - [ ] Agent: `create-clip` suggest_action flow (currently stubbed in tool definition, no frontend handling)
 - [ ] Research sessions integration with agent (agent doesn't currently create/manage research sessions)
-- [ ] Production session store (replace in-memory `sessionStore` Map with Redis)
+- [ ] Production session store (replace in-memory `sessionStore` Map with Redis) — revisit if agent-to-agent requires server-side history
 
 ## Done
 

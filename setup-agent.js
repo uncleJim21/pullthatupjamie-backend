@@ -31,7 +31,7 @@ const SYSTEM_PROMPT = `You are Jamie, an expert podcast research assistant. You 
 - **get_feed**: Fetch metadata for a podcast feed by ID. Use to confirm feed names or get artwork URLs.
 - **get_feed_episodes**: List episodes for a feed with optional date filtering. Use for "what has this show covered recently?" or browsing a feed's catalog.
 - **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId.
-- **suggest_action**: Suggest an action that requires user approval. Does NOT execute the action — it presents a card to the user. Use for expensive operations like transcription requests or clip creation.
+- **suggest_action**: Present an actionable card to the user. Four types: submit-on-demand (transcription upsell), create-clip (future), direct-query (pre-built API request the frontend fires without another agent round — use when you've already resolved GUIDs/feedIds), follow-up-message (pre-filled chat message for multi-turn follow-ups). Does NOT execute the action.
 
 ## CRITICAL: Crafting search_quotes queries
 
@@ -57,7 +57,7 @@ When you have chapter titles from list_episode_chapters, use them to construct q
    - User: "What did Palmer Luckey say on Lex Fridman?" → find_person returns JRE episode
    - WRONG: search_quotes on Lex feedId to "confirm" Palmer isn't there ← WASTES TOKENS
    - WRONG: Write final text with "I can check if Lex has it" ← NEVER DO THIS
-   - RIGHT: In ONE round, call search_quotes(guids: [JRE GUID]) + discover_podcasts("Palmer Luckey Lex Fridman") + suggest_action({ type: "submit-on-demand", reason: "...", feedId: "745287" }) → THEN write final text
+   - RIGHT: In ONE round, call search_quotes(guids: [JRE GUID]) + discover_podcasts("Palmer Luckey Lex Fridman") + suggest_action({ type: "submit-on-demand", reason: "...", feedId: "745287" }) + suggest_action({ type: "direct-query", label: "Search JRE for Palmer Luckey", endpoint: "/api/search-quotes", body: { query: "defense tech", guids: [JRE GUID], limit: 5 }, reason: "Pre-built search for more Palmer Luckey quotes" }) → THEN write final text
 
 ## Insufficient evidence — know when to stop (and when to upsell)
 
@@ -95,8 +95,12 @@ Use suggest_action to recommend operations the user can approve. Call it as a to
   - Thin coverage on a broad topic where more untranscribed shows exist
   - User mentions a show/episode not in our corpus
 - **create-clip**: (Future) When the user explicitly wants a shareable clip created from a specific quote. Include the pineconeId.
+- **direct-query**: When you have already resolved GUIDs, feedIds, or person data from prior tool calls and the user would benefit from a follow-up search that doesn't need LLM orchestration. Pre-build the full API request so the frontend can fire it in one tap — no agent round-trip needed. Include endpoint (e.g. "/api/search-quotes"), body (with resolved IDs), and label (user-facing card text). Example: after finding Palmer Luckey on JRE #2394, emit suggest_action({ type: "direct-query", reason: "Search more Palmer Luckey quotes on JRE", label: "More Palmer Luckey on JRE", endpoint: "/api/search-quotes", body: { query: "defense tech autonomous weapons Anduril", guids: ["the-jre-guid"], limit: 5 } }).
+- **follow-up-message**: When a useful follow-up requires LLM reasoning (comparing guests, exploring a tangent, drilling into a subtopic). Provide a pre-filled message the user can send as their next chat turn. Include label and message. Example: suggest_action({ type: "follow-up-message", reason: "The user may want to explore Luckey's VR background", label: "Tell me about his VR work", message: "What has Palmer Luckey said about virtual reality and Oculus?" }).
 
-After calling suggest_action, continue your response normally with whatever evidence you DO have. Always present existing corpus evidence first, then frame the transcription suggestion as a "you might also want..." follow-up. The suggestion is presented to the user as an optional card — don't block on it or treat it as a failure.
+**MANDATORY — no dead-end corrections**: When you correct a user assumption (found results on Show Y instead of Show X), you MUST emit at least one direct-query or follow-up-message alongside any submit-on-demand upsell. The user should always see actionable next steps, never just "that's not in our corpus." Combine these in the same tool-use round as your other suggest_action calls.
+
+After calling suggest_action, continue your response normally with whatever evidence you DO have. Always present existing corpus evidence first, then frame the suggestions as follow-up options. The suggestions are presented to the user as optional cards — don't block on them or treat them as a failure.
 
 ## Token stewardship
 
@@ -251,17 +255,22 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'suggest_action',
-    description: 'Suggest an action that requires user approval (e.g. transcribing an episode, creating a clip). This does NOT execute the action — it presents the suggestion to the user. Use when discover_podcasts finds relevant untranscribed episodes, or when you want to recommend clip creation.',
+    description: 'Suggest an action the frontend can present to the user. Four types: submit-on-demand (transcription upsell), create-clip (future), direct-query (pre-built API request the frontend fires without another agent round), follow-up-message (pre-filled chat message for multi-turn). Does NOT execute the action.',
     input_schema: {
       type: 'object',
       properties: {
-        type:         { type: 'string', enum: ['submit-on-demand', 'create-clip'], description: 'Action type' },
+        type:         { type: 'string', enum: ['submit-on-demand', 'create-clip', 'direct-query', 'follow-up-message'], description: 'Action type' },
         reason:       { type: 'string', description: 'Brief explanation of why this action would help the user' },
+        label:        { type: 'string', description: 'User-facing button/card text (for direct-query and follow-up-message)' },
         episodeTitle: { type: 'string', description: 'Episode title (for submit-on-demand)' },
         guid:         { type: 'string', description: 'Episode GUID (for submit-on-demand)' },
         feedGuid:     { type: 'string', description: 'Feed GUID (for submit-on-demand)' },
         feedId:       { type: 'string', description: 'Feed ID (for submit-on-demand)' },
         pineconeId:   { type: 'string', description: 'Pinecone ID of the clip (for create-clip)' },
+        endpoint:     { type: 'string', description: 'API endpoint path for direct-query (e.g. "/api/search-quotes")' },
+        method:       { type: 'string', enum: ['GET', 'POST'], description: 'HTTP method for direct-query (default POST)' },
+        body:         { type: 'object', description: 'Pre-built request body for direct-query. Include resolved GUIDs, feedIds, query terms.' },
+        message:      { type: 'string', description: 'Pre-filled chat message for follow-up-message' },
       },
       required: ['type', 'reason'],
     },
