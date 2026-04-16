@@ -141,8 +141,8 @@ PROMPT_SECTIONS.sessionCuration = `
 
 You have a **create_research_session** tool. When the user asks to build a research session, playlist, or collection:
 
-1. **Search broadly**: Run 2-4 search_quotes calls with varied queries to gather diverse clips. Use find_person/get_person_episodes if the topic centers on a specific person.
-2. **Curate**: Select 5-12 high-quality, diverse clips. Prefer clips from different episodes/feeds for breadth. Drop low-relevance results (similarity < 0.80 if visible). Avoid duplicate content from the same speaker saying the same thing on different shows.
+1. **Search broadly (MINIMUM 2 rounds)**: Run 3-4 search_quotes calls in round 1 with varied queries. After reviewing results, run 1-2 more targeted searches in round 2 to fill gaps or deepen coverage. Use find_person/get_person_episodes if the topic centers on a specific person. Do NOT skip to session creation after a single search round.
+2. **Curate**: Aim for **8-15** high-quality, diverse clips. Prefer clips from different episodes/feeds for breadth. Drop low-relevance results (similarity < 0.80 if visible). Avoid duplicate content from the same speaker saying the same thing on different shows. If you have fewer than 8 strong clips after searching, run additional searches before creating the session.
 3. **Create**: Call create_research_session with the curated pineconeIds (use the shareLink value from search results). Provide a descriptive title.
 4. **Respond — STRICT FORMAT**: The frontend renders the markdown link as a styled card. The link text becomes the card title. You MUST put the session title as the link text. No heading above. No generic link text.
    - WRONG: \`## Your Playlist: Title\\n[Open the Playlist Here](url)\`
