@@ -27,11 +27,11 @@ PROMPT_SECTIONS.searchTools = `
 - **search_quotes**: Semantic vector search across all transcribed podcast content (Pinecone). This is your MOST POWERFUL tool — it finds relevant quotes even when exact keywords don't match. Always try this first for any topic query.
 - **search_chapters**: Keyword/regex search on chapter metadata (headlines, keywords, summaries). Good for structured segments but may miss content that search_quotes would find. Use short keyword phrases (1-3 words), not full sentences.
 - **discover_podcasts**: Searches the external Podcast Index (4M+ feeds) for podcasts by topic. Useful for finding shows the user might not know about. Does NOT search our transcribed corpus.
-- **find_person**: Looks up a person in our corpus by name.
+- **find_person**: Looks up a person in our corpus by name. Returns guest/creator appearances AND hostedFeeds — feeds where the person is a known host/owner. Each hosted feed includes feedId, feedType (interview/solo/panel/null), and hosts. Use hostedFeeds to split your search strategy (see SPLIT SEARCH STRATEGY rule).
 - **get_person_episodes**: Gets all episodes featuring a specific person.
 - **list_episode_chapters**: Fetches ALL chapters (table of contents) for specific episodes. Use after find_person/get_person_episodes to see what topics were covered, then craft targeted search_quotes queries from the chapter headlines.
 - **get_episode**: Fetch full metadata for a single episode by GUID. Use when you need episode details (title, date, guests, artwork) beyond what search_quotes returns.
-- **get_feed**: Fetch metadata for a podcast feed by ID. Use to confirm feed names or get artwork URLs.
+- **get_feed**: Fetch metadata for a podcast feed by ID. Returns feed name, episode count, artwork, description, hosts (array of host names), and feedType (interview/solo/panel/null when available).
 - **get_feed_episodes**: List episodes for a feed with optional date filtering. Use for "what has this show covered recently?" or browsing a feed's catalog.
 - **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId.
 - **suggest_action**: Present an actionable card to the user. Three types: submit-on-demand (transcription upsell), create-clip (future), follow-up-message (pre-filled chat message for multi-turn follow-ups and search suggestions — include optional context with pre-resolved GUIDs/feedIds so the next turn skips re-resolving). Does NOT execute the action.`;
@@ -56,7 +56,11 @@ PROMPT_SECTIONS.criticalRules = `
 2. search_chapters returning 0 does NOT mean we have no content. It uses keyword matching and may miss what search_quotes (semantic) would find.
 3. discover_podcasts finds external feeds that may or may not be transcribed. It enriches results but is NOT a substitute for search_quotes.
 4. **PERSON-SCOPING (MANDATORY)**: When the user asks what a specific person said, thinks, or believes, you MUST call find_person or get_person_episodes FIRST, then scope search_quotes to the returned GUIDs. Without this scoping, search_quotes will return clips of other people discussing the target person — not the person themselves. This is the #1 quality issue to avoid.
-5. **HOST DETECTION**: If a person is primarily a podcast HOST (e.g. Joe Rogan, Lex Fridman, Patrick Bet-David), they will have very few results in find_person/get_person_episodes (which searches guest appearances). Instead, use their feedId with search_quotes to search THEIR show directly. You can identify their feedId from the episode data.
+5. **SPLIT SEARCH STRATEGY (MANDATORY)**: After calling find_person, check BOTH "people" and "hostedFeeds" in the response. A person can be a host AND a guest on different shows. Split your search_quotes calls accordingly:
+   - **Hosted shows** (from hostedFeeds): Use feedIds to search their entire show — this covers ALL episodes without needing GUIDs. If feedType is present, use it for context: on an "interview" show the host asks questions so search for the topic/guest; on a "solo" show the host IS the primary voice; on a "panel" show multiple hosts discuss topics.
+   - **Guest appearances** (from people with role "guest"): Use the recentEpisodes GUIDs to scope search_quotes to just the episodes they appeared on.
+   - **Both**: If the person hosts Show A and guested on Show B, use feedIds=[Show A's feedId] for one search_quotes call and guids=[Show B GUIDs] for another. This ensures full coverage of their own show plus targeted results from guest spots.
+   - **Fallback** (backward compat): If hostedFeeds is empty but the person has role "creator" with many appearances concentrated on one feed, treat that feed's feedId as their hosted show. This handles feeds that haven't been tagged with hosts yet.
 6. **FEED ID RESOLUTION**: When filtering by feedIds, always use numeric IDs from the Feed ID Lookup table (appended below). NEVER pass show names, URLs, or RSS feed URLs as feedIds — Pinecone will silently return unscoped results, wasting tokens.
 7. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
 9. **NEVER FABRICATE GUIDs**: Episode GUIDs are UUIDs like "e750ccde-5ca5-4328-9cfd-1690442cd5f9". NEVER construct a GUID from an episode title (e.g. "660-building-amid-chaos-with-will-cole" is WRONG). If you don't have the exact GUID from a tool result in THIS conversation, call find_person or get_person_episodes to resolve it. Passing a fabricated GUID to search_quotes or list_episode_chapters will return 0 results and waste tokens.
@@ -259,7 +263,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'find_person',
-    description: 'Look up a person (podcast guest or creator) in the corpus by name. Guest metadata is stored as atomic tags (e.g. ["Jeff Bezos", "Bezos", "Jeff", "Amazon", "Blue Origin", "CEO"]). The search matches against individual tags, NOT across tags. So "Bezos Amazon" will match nothing — search with EITHER the person\'s name ("Jeff Bezos", "Bezos") OR their company ("Amazon"), not both combined. When the user says "X from Y", try the person\'s last name alone first — it\'s usually the most unique identifier.',
+    description: 'Look up a person (podcast guest or creator) in the corpus by name. Returns `people` (guest/creator appearances with episode GUIDs) AND `hostedFeeds` (feeds where the person is a tagged host, with feedId, feedType, and hosts array). Use hostedFeeds to identify their show and search it by feedId. Guest metadata is stored as atomic tags (e.g. ["Jeff Bezos", "Bezos", "Jeff", "Amazon", "Blue Origin", "CEO"]). The search matches against individual tags, NOT across tags. So "Bezos Amazon" will match nothing — search with EITHER the person\'s name ("Jeff Bezos", "Bezos") OR their company ("Amazon"), not both combined. When the user says "X from Y", try the person\'s last name alone first — it\'s usually the most unique identifier.',
     input_schema: {
       type: 'object',
       properties: {
@@ -306,7 +310,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_feed',
-    description: 'Fetch metadata for a specific podcast feed by feed ID. Returns feed name, episode count, artwork, and description. Use to confirm feed details or get artwork URLs.',
+    description: 'Fetch metadata for a specific podcast feed by feed ID. Returns feed name, episode count, artwork, description, hosts (array of host names when available), and feedType (interview/solo/panel/null). Use to confirm feed details or get artwork URLs.',
     input_schema: {
       type: 'object',
       properties: {

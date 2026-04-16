@@ -34,6 +34,8 @@ function formatFeed(doc) {
     description: meta.description || null,
     episodeCount: meta.episodeCount || null,
     imageUrl: meta.imageUrl || null,
+    hosts: Array.isArray(meta.hosts) ? meta.hosts : [],
+    feedType: meta.feedType || null,
   };
 }
 
@@ -212,8 +214,24 @@ async function findPeople({ guestsOnly, search, feedId, limit, page }) {
     pipelines.push(JamieVectorMetadata.aggregate(creatorPipeline));
   }
 
-  const results = await Promise.all(pipelines);
-  let allPeople = results.flat()
+  // Feed-hosts pipeline: find feeds where the person is a tagged host
+  let feedHostsPromise = Promise.resolve([]);
+  if (search) {
+    feedHostsPromise = JamieVectorMetadata.find({
+      type: 'feed',
+      'metadataRaw.hosts': { $elemMatch: { $regex: search, $options: 'i' } },
+    })
+      .select('feedId metadataRaw')
+      .lean()
+      .then(docs => docs.map(formatFeed));
+  }
+
+  const [peopleResults, hostedFeeds] = await Promise.all([
+    Promise.all(pipelines),
+    feedHostsPromise,
+  ]);
+
+  let allPeople = peopleResults.flat()
     .map(p => ({
       ...p,
       feeds: (p.feeds || []).filter(f => f.feedId && f.title),
@@ -228,6 +246,7 @@ async function findPeople({ guestsOnly, search, feedId, limit, page }) {
 
   return {
     data: paginated,
+    hostedFeeds: hostedFeeds || [],
     pagination: buildPagination(pag.page, pag.limit, totalCount),
     query: { guestsOnly: excludeCreators, search: search || null, feedId: feedId || null },
   };

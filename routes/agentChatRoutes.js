@@ -152,7 +152,9 @@ function compactToolResult(toolName, result) {
 
       case 'find_person':
         if (result.people) {
-          return { people: result.people.map(compactFindPersonResult) };
+          const compact = { people: result.people.map(compactFindPersonResult) };
+          if (result.hostedFeeds?.length) compact.hostedFeeds = result.hostedFeeds;
+          return compact;
         }
         return result;
 
@@ -170,8 +172,8 @@ function compactToolResult(toolName, result) {
 
       case 'get_feed':
         if (result.feed) {
-          const { title, feedId, description, episodeCount, imageUrl } = result.feed;
-          return { feed: { title, feedId, description, episodeCount, imageUrl } };
+          const { title, feedId, description, episodeCount, imageUrl, hosts, feedType } = result.feed;
+          return { feed: { title, feedId, description, episodeCount, imageUrl, hosts, feedType } };
         }
         return result;
 
@@ -652,7 +654,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
           const resultCount = result.results?.length
             || result.episodes?.length
-            || result.people?.length
+            || (result.people?.length || 0) + (result.hostedFeeds?.length || 0)
             || result.chapters?.length
             || (result.episode ? 1 : 0)
             || (result.feed ? 1 : 0)

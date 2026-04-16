@@ -104,7 +104,7 @@ function filterFluffResults(data) {
 }
 
 function truncateResults(data) {
-  for (const key of ['results', 'chapters', 'episodes', 'people']) {
+  for (const key of ['results', 'chapters', 'episodes', 'people', 'hostedFeeds']) {
     if (data[key] && data[key].length > RESULT_HARD_CAP) {
       data[key] = data[key].slice(0, RESULT_HARD_CAP);
     }
@@ -171,9 +171,14 @@ async function handleFindPerson(input) {
   const { name } = input;
   printLog(`[TOOL] find_person: name="${name}"`);
   const data = await findPeople({ search: name, limit: RESULT_HARD_CAP });
-  const normalized = { people: data.data || [], pagination: data.pagination, query: data.query };
+  const normalized = {
+    people: data.data || [],
+    hostedFeeds: data.hostedFeeds || [],
+    pagination: data.pagination,
+    query: data.query,
+  };
   truncateResults(normalized);
-  printLog(`[TOOL] find_person: ${normalized.people?.length || 0} results`);
+  printLog(`[TOOL] find_person: ${normalized.people?.length || 0} people, ${normalized.hostedFeeds?.length || 0} hosted feeds`);
   return normalized;
 }
 

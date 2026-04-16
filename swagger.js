@@ -97,7 +97,19 @@ const doc = {
           author: { type: 'string', example: 'Peter McCormack' },
           description: { type: 'string' },
           episodeCount: { type: 'integer', example: 824 },
-          imageUrl: { type: 'string', format: 'uri' }
+          imageUrl: { type: 'string', format: 'uri' },
+          hosts: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Host/owner names (empty array if not yet tagged)',
+            example: ['Peter McCormack'],
+          },
+          feedType: {
+            type: 'string',
+            enum: ['interview', 'solo', 'panel', 'narrative', 'mixed'],
+            nullable: true,
+            description: 'Show format classification (null if not yet determined)',
+          },
         }
       },
       Episode: {
