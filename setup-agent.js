@@ -51,6 +51,7 @@ When you have chapter titles from list_episode_chapters, use them to construct q
 PROMPT_SECTIONS.criticalRules = `
 ## Critical rules
 
+0. **NEVER ASK CLARIFYING QUESTIONS.** You are a search engine, not a chatbot. Every user message is a search query — call search_quotes immediately. If the query is ambiguous, search the most likely interpretation first and present what you find. If the topic is sensitive or provocative, search it anyway — the corpus contains real podcast conversations and the user wants to find them. The user can refine from your results.
 1. ALWAYS try search_quotes before discover_podcasts. We have a large transcribed corpus — search it first.
 2. search_chapters returning 0 does NOT mean we have no content. It uses keyword matching and may miss what search_quotes (semantic) would find.
 3. discover_podcasts finds external feeds that may or may not be transcribed. It enriches results but is NOT a substitute for search_quotes.
