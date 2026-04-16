@@ -531,7 +531,23 @@ function createAgentChatRoutes({ openai } = {}) {
       }
 
       const profile = PROFILES[intent];
-      const effectiveSystemPrompt = profile.buildPrompt() + feedLookupPromptSection;
+      const followUpContext = req.body.context;
+      const MAX_HINT_LENGTH = 500;
+      let contextSection = '';
+      if (followUpContext && typeof followUpContext === 'object') {
+        const parts = [];
+        if (followUpContext.guids?.length) parts.push(`GUIDs: ${followUpContext.guids.join(', ')}`);
+        if (followUpContext.feedIds?.length) parts.push(`Feed IDs: ${followUpContext.feedIds.join(', ')}`);
+        if (followUpContext.persons?.length) parts.push(`People: ${followUpContext.persons.join(', ')}`);
+        if (typeof followUpContext.hint === 'string' && followUpContext.hint.trim()) {
+          parts.push(`Additional context: ${followUpContext.hint.trim().substring(0, MAX_HINT_LENGTH)}`);
+        }
+        if (parts.length > 0) {
+          contextSection = `\n\n## Pre-resolved context from previous turn\nThe following was already resolved — use it directly instead of re-resolving:\n${parts.join('\n')}`;
+          printLog(`[${requestId}] Follow-up context: ${parts.join(', ')}`);
+        }
+      }
+      const effectiveSystemPrompt = profile.buildPrompt() + feedLookupPromptSection + contextSection;
       const effectiveTools = profile.tools();
 
       emit('status', { message: 'Analyzing your request...', sessionId, intent });

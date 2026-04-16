@@ -62,7 +62,19 @@ const TEST_QUERIES = [
   { name: 'Sports Analytics',        cohort: 'cohort3', task: 'Has anyone discussed how data analytics is changing basketball strategy?' },
   { name: 'Book Deep Dive',          cohort: 'cohort3', task: 'Find in-depth discussion of "The Changing World Order" by Ray Dalio across podcasts' },
   { name: 'Whistleblower',           cohort: 'cohort3', task: 'Find podcast coverage of the David Grusch UFO whistleblower testimony' },
-  {name: 'Specific Point from Memory',            cohort: 'cohort3', task: 'mike rowe talking about how the human brain corrects for safety measures like helmets and takes more risk under those conditions'}
+  {name: 'Specific Point from Memory',            cohort: 'cohort3', task: 'mike rowe talking about how the human brain corrects for safety measures like helmets and takes more risk under those conditions'},
+
+  // --- Cohort 4: Prompt/execution flaw regressions ---
+  { name: 'Entity Resolution (Company)',    cohort: 'cohort4', task: 'what are people saying about zaprite' },
+  { name: 'Entity Resolution (Org)',        cohort: 'cohort4', task: 'what has the IMF said about bitcoin on podcasts' },
+  { name: 'Sensitive/Provocative Topic',    cohort: 'cohort4', task: 'fraud from Somalians and Armenians' },
+  { name: 'No Clarifying Questions',        cohort: 'cohort4', task: 'cutting weight' },
+  { name: 'Thin Results Escalation',        cohort: 'cohort4', task: 'what has anyone said about nostr on podcasts' },
+  { name: 'Multi-Person Company Query',     cohort: 'cohort4', task: 'what have people from Strike said about Lightning adoption' },
+  { name: 'Budget Panic Prevention',        cohort: 'cohort4', task: 'What have PayPal mafia members like Peter Thiel and David Sacks said about startups on podcasts?' },
+  { name: 'find_person Fallback',           cohort: 'cohort4', task: 'Roland from Alby talking about self custody' },
+  { name: 'Never Dead-End',                 cohort: 'cohort4', task: 'what did Satoshi Nakamoto say on Joe Rogan' },
+  { name: 'Research Session Quality',       cohort: 'cohort4', task: 'Make me a research session about Huberman on hormones and weight loss', mode: 'fast' },
 ];
 
 // ===== Helpers =====
@@ -92,10 +104,10 @@ function parseSSE(raw) {
   return events;
 }
 
-async function runAgentQuery(task) {
+async function runAgentQuery(task, mode) {
   const start = Date.now();
 
-  const agentModel = process.env.AGENT_MODEL || 'fast';
+  const agentModel = mode || process.env.AGENT_MODEL || 'fast';
 
   const headers = { 'Content-Type': 'application/json' };
   if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
@@ -183,7 +195,7 @@ async function main() {
     console.log(`━━━ ${q.name} ━━━`);
     console.log(`Query: "${q.task}"\n`);
 
-    const ag = await runAgentQuery(q.task).catch(err => ({ engine: 'agent', error: err.message }));
+    const ag = await runAgentQuery(q.task, q.mode).catch(err => ({ engine: 'agent', error: err.message }));
 
     const agentLabel = ag.engine || 'Agent';
     const agLlmCost = ag.cost?.claude;
