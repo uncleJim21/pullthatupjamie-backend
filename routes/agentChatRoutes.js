@@ -494,6 +494,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
       const effectiveHistory = compactHistoryEnabled ? compactHistory(history) : history;
       const messages = [...effectiveHistory, { role: 'user', content: message }];
+      const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
@@ -575,12 +576,18 @@ function createAgentChatRoutes({ openai } = {}) {
           if (toolUse.name === 'suggest_action') {
             result = handleSuggestAction(toolUse.input, emit);
           } else if (toolUse.name === 'create_research_session') {
-            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req });
+            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
             if (result.sessionId && result.url) {
               emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
             }
           } else {
             result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
+          }
+
+          if (toolUse.name === 'search_quotes' && result.results) {
+            for (const r of result.results) {
+              if (r.shareLink) clipCache.set(r.shareLink, r);
+            }
           }
           const toolLatency = Date.now() - toolStart;
 

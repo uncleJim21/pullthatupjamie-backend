@@ -69,9 +69,10 @@ async function generateSmartTitle(lastItemMetadata, fallbackTitle) {
  * @param {string} [opts.title] - Optional title override
  * @param {string} [opts.userId] - Authenticated user ID
  * @param {string} [opts.clientId] - Anonymous client ID
+ * @param {Map<string, object>} [opts.clipCache] - Pre-fetched clip metadata from agent search results
  * @returns {{ sessionId: string, url: string, title: string, itemCount: number }}
  */
-async function createResearchSessionDirect({ pineconeIds, title, userId, clientId }) {
+async function createResearchSessionDirect({ pineconeIds, title, userId, clientId, clipCache }) {
   if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
     throw new Error('pineconeIds must be a non-empty array');
   }
@@ -89,22 +90,42 @@ async function createResearchSessionDirect({ pineconeIds, title, userId, clientI
 
   printLog(`[SESSION-SVC] Creating session with ${uniqueIds.length} clips`);
 
-  let clips = [];
-  const isDebugMode = process.env.DEBUG_MODE === 'true';
-  if (isDebugMode) {
-    clips = uniqueIds.map(id => ({ shareLink: id }));
-  } else {
-    clips = await getClipsByIdsBatch(uniqueIds);
-    printLog(`[SESSION-SVC] Pinecone returned ${clips?.length || 0} clips`);
+  // Build metadata from cache (populated by prior search_quotes calls) or Pinecone fallback
+  const clipById = new Map();
+  const uncachedIds = [];
+
+  for (const id of uniqueIds) {
+    const cached = clipCache?.get(id);
+    if (cached) {
+      const { embedding, ...rest } = cached;
+      clipById.set(id, rest);
+    } else {
+      uncachedIds.push(id);
+    }
   }
 
-  const clipById = new Map();
-  clips.forEach(clip => {
-    if (clip && clip.shareLink) {
-      const { embedding, ...rest } = clip;
-      clipById.set(clip.shareLink, rest);
+  const cacheHits = uniqueIds.length - uncachedIds.length;
+  printLog(`[SESSION-SVC] Cache: ${cacheHits}/${uniqueIds.length} hits`);
+
+  if (uncachedIds.length > 0) {
+    const isDebugMode = process.env.DEBUG_MODE === 'true';
+    if (isDebugMode) {
+      uncachedIds.forEach(id => clipById.set(id, { shareLink: id }));
+    } else {
+      try {
+        const fetched = await getClipsByIdsBatch(uncachedIds);
+        printLog(`[SESSION-SVC] Pinecone fallback: ${fetched?.length || 0} clips for ${uncachedIds.length} uncached IDs`);
+        for (const clip of (fetched || [])) {
+          if (clip && clip.shareLink) {
+            const { embedding, ...rest } = clip;
+            clipById.set(clip.shareLink, rest);
+          }
+        }
+      } catch (err) {
+        printLog(`[SESSION-SVC] Pinecone fallback failed (non-fatal): ${err.message}`);
+      }
     }
-  });
+  }
 
   const items = uniqueIds.map(id => ({
     pineconeId: id,

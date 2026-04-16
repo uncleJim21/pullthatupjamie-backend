@@ -253,9 +253,9 @@ async function handleGetAdjacentParagraphs(input) {
   return normalized;
 }
 
-async function handleCreateResearchSession(input, { req }) {
+async function handleCreateResearchSession(input, { req, clipCache }) {
   const { pineconeIds, title } = input;
-  printLog(`[TOOL] create_research_session: ${pineconeIds?.length || 0} clips, title="${title || 'auto'}"`);
+  printLog(`[TOOL] create_research_session: ${pineconeIds?.length || 0} clips, title="${title || 'auto'}", cached=${clipCache?.size || 0}`);
 
   let userId = null;
   let clientId = null;
@@ -272,7 +272,7 @@ async function handleCreateResearchSession(input, { req }) {
   }
 
   try {
-    const result = await createResearchSessionDirect({ pineconeIds, title, userId, clientId });
+    const result = await createResearchSessionDirect({ pineconeIds, title, userId, clientId, clipCache });
     printLog(`[TOOL] create_research_session: created ${result.sessionId} (${result.itemCount} items)`);
     return result;
   } catch (err) {
@@ -304,7 +304,7 @@ const TOOL_DISPATCH = {
  * @param {object} opts.openai - OpenAI client (for embeddings + reranker)
  * @param {string} opts.sessionId - Session ID for rate limiting
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId, req }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
@@ -331,7 +331,7 @@ async function executeAgentTool(toolName, toolInput, { openai, sessionId, req })
   session.toolCalls++;
   session.cost += toolCost;
 
-  return handler(toolInput, { openai, req });
+  return handler(toolInput, { openai, req, clipCache });
 }
 
 module.exports = { executeAgentTool, TOOL_COSTS };

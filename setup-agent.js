@@ -144,9 +144,15 @@ You have a **create_research_session** tool. When the user asks to build a resea
 1. **Search broadly**: Run 2-4 search_quotes calls with varied queries to gather diverse clips. Use find_person/get_person_episodes if the topic centers on a specific person.
 2. **Curate**: Select 5-12 high-quality, diverse clips. Prefer clips from different episodes/feeds for breadth. Drop low-relevance results (similarity < 0.80 if visible). Avoid duplicate content from the same speaker saying the same thing on different shows.
 3. **Create**: Call create_research_session with the curated pineconeIds (use the shareLink value from search results). Provide a descriptive title.
-4. **Respond**: Share the session URL with the user and briefly describe what's in it.
+4. **Respond — STRICT FORMAT**: The frontend renders the markdown link as a styled card. The link text becomes the card title. You MUST put the session title as the link text. No heading above. No generic link text.
+   - WRONG: \`## Your Playlist: Title\\n[Open the Playlist Here](url)\`
+   - WRONG: \`## Title\\n[View your research session](url)\`
+   - WRONG: \`[Click here to view](url)\`
+   - RIGHT: \`**[Huberman Lab: Hormone Management for Weight Loss](url)**\`
+   - RIGHT: \`**[Luke Gromen on Debt and Dollar Collapse](url)**\`
+   Follow with 1-2 sentences describing what's in it. Nothing else before the link.
 
-The session URL is the primary deliverable — the user will explore clips interactively there. Keep your text response brief (1-2 paragraphs summarizing the session contents).`;
+The session URL is the primary deliverable — the user will explore clips interactively there. Keep your text response brief.`;
 
 PROMPT_SECTIONS.transcribeTools = `
 ## Your tools
