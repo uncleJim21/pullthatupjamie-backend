@@ -28,6 +28,173 @@ const MAX_TOOL_ROUNDS = 10;
 const TOKEN_BUDGET_SOFT = 12000;
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
+// --- Step F: Tool result compaction ---
+// Strips fields the LLM doesn't need for reasoning. Raw results are still logged & emitted to frontend.
+
+const SEARCH_QUOTES_KEEP = new Set(['quote', 'shareLink', 'episode', 'creator', 'date', 'summary', 'headline']);
+const FIND_PERSON_KEEP = new Set(['name', 'role', 'appearances', 'feeds', 'recentEpisodes']);
+const DISCOVER_KEEP_FEED = new Set(['title', 'feedId', 'feedGuid', 'transcriptAvailable', 'matchedEpisodes', 'nextSteps']);
+const DISCOVER_KEEP_EP = new Set(['title', 'guid', 'feedGuid', 'feedId', 'transcriptAvailable', 'image', 'publishedDate']);
+
+function compactSearchQuotesResult(r, i) {
+  const c = { _i: i };
+  for (const k of SEARCH_QUOTES_KEEP) {
+    if (r[k] !== undefined && r[k] !== null) c[k] = r[k];
+  }
+  if (r.additionalFields) {
+    if (r.additionalFields.guid) c.guid = r.additionalFields.guid;
+    if (r.additionalFields.feedId) c.feedId = r.additionalFields.feedId;
+  }
+  return c;
+}
+
+function compactDiscoverResult(r, i) {
+  const c = { _i: i };
+  for (const k of DISCOVER_KEEP_FEED) {
+    if (k === 'matchedEpisodes' && Array.isArray(r[k])) {
+      c[k] = r[k].map(ep => {
+        const slim = {};
+        for (const ek of DISCOVER_KEEP_EP) {
+          if (ep[ek] !== undefined) slim[ek] = ep[ek];
+        }
+        return slim;
+      });
+    } else if (r[k] !== undefined) {
+      c[k] = r[k];
+    }
+  }
+  return c;
+}
+
+function compactFindPersonResult(r) {
+  const c = {};
+  for (const k of FIND_PERSON_KEEP) {
+    if (r[k] !== undefined) c[k] = r[k];
+  }
+  return c;
+}
+
+function compactEpisode(ep) {
+  if (!ep) return ep;
+  const keep = ['title', 'guid', 'feedId', 'feedTitle', 'publishedDate', 'creator', 'guests', 'duration', 'description'];
+  const c = {};
+  for (const k of keep) {
+    if (ep[k] !== undefined) c[k] = ep[k];
+  }
+  return c;
+}
+
+function compactToolResult(toolName, result) {
+  try {
+    switch (toolName) {
+      case 'search_quotes':
+        if (result.results) {
+          return { results: result.results.map((r, i) => compactSearchQuotesResult(r, i)) };
+        }
+        return result;
+
+      case 'search_chapters':
+        if (result.data) {
+          return { data: result.data.map((r, i) => ({ _i: i, ...r, embedding: undefined })) };
+        }
+        return result;
+
+      case 'discover_podcasts':
+        if (result.results) {
+          return { results: result.results.map((r, i) => compactDiscoverResult(r, i)) };
+        }
+        return result;
+
+      case 'find_person':
+        if (result.people) {
+          return { people: result.people.map(compactFindPersonResult) };
+        }
+        return result;
+
+      case 'get_person_episodes':
+        if (result.episodes) {
+          return { episodes: result.episodes.map(compactEpisode) };
+        }
+        return result;
+
+      case 'get_episode':
+        if (result.episode) {
+          return { episode: compactEpisode(result.episode) };
+        }
+        return result;
+
+      case 'get_feed':
+        if (result.feed) {
+          const { title, feedId, description, episodeCount, imageUrl } = result.feed;
+          return { feed: { title, feedId, description, episodeCount, imageUrl } };
+        }
+        return result;
+
+      case 'get_feed_episodes':
+        if (result.episodes) {
+          return { episodes: result.episodes.map(compactEpisode) };
+        }
+        return result;
+
+      case 'get_adjacent_paragraphs': {
+        const compact = {};
+        for (const section of ['before', 'current', 'after']) {
+          if (!result[section]) continue;
+          if (Array.isArray(result[section])) {
+            compact[section] = result[section].map(p => ({ text: p.text || p.quote, shareLink: p.shareLink || p.id }));
+          } else {
+            compact[section] = { text: result[section].text || result[section].quote, shareLink: result[section].shareLink || result[section].id };
+          }
+        }
+        return compact;
+      }
+
+      default:
+        return result;
+    }
+  } catch {
+    return result;
+  }
+}
+
+// --- Step B: History compaction ---
+// Compresses older assistant messages, preserving structural data (GUIDs, feedIds, clips).
+
+const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const FEED_ID_RE = /\b(\d{5,8})\b/g;
+const CLIP_RE = /\{\{clip:([^}]+)\}\}/g;
+const PERSON_BOLD_RE = /\*\*([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\*\*/g;
+
+function compactAssistantMessage(text) {
+  const guids = [...new Set((text.match(GUID_RE) || []))];
+  const clips = [...new Set([...(text.matchAll(CLIP_RE))].map(m => m[1]))];
+  const people = [...new Set([...(text.matchAll(PERSON_BOLD_RE))].map(m => m[1]))];
+
+  const feedIds = [...new Set((text.match(FEED_ID_RE) || []))];
+
+  const truncated = text.substring(0, 200).replace(/\s+\S*$/, '…');
+
+  const parts = [truncated];
+  if (people.length) parts.push(`[people: ${people.join(', ')}]`);
+  if (guids.length) parts.push(`[guids: ${guids.join(', ')}]`);
+  if (feedIds.length) parts.push(`[feedIds: ${feedIds.join(', ')}]`);
+  if (clips.length) parts.push(`[clips: ${clips.join(', ')}]`);
+
+  return parts.join('\n');
+}
+
+function compactHistory(history) {
+  if (history.length <= 2) return history;
+
+  const lastAssistantIdx = history.reduce((acc, m, i) => m.role === 'assistant' ? i : acc, -1);
+
+  return history.map((msg, i) => {
+    if (msg.role !== 'assistant') return msg;
+    if (i === lastAssistantIdx) return msg;
+    return { role: 'assistant', content: compactAssistantMessage(msg.content) };
+  });
+}
+
 // --- Dynamic feed lookup table ---
 let feedLookupTable = null;
 let feedLookupPromptSection = '';
@@ -268,6 +435,8 @@ function createAgentChatRoutes({ openai } = {}) {
     const startTime = Date.now();
     const bypassTriage = req.body.bypassTriage === true;
     const triageEnabled = process.env.AGENT_TRIAGE_ENABLED !== 'false';
+    const compactResults = req.body.compactResults !== undefined ? req.body.compactResults !== false : process.env.AGENT_COMPACT_RESULTS !== 'false';
+    const compactHistoryEnabled = req.body.compactHistory !== undefined ? req.body.compactHistory !== false : process.env.AGENT_COMPACT_HISTORY !== 'false';
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
@@ -284,7 +453,7 @@ function createAgentChatRoutes({ openai } = {}) {
           .slice(-MAX_HISTORY_MESSAGES)
       : [];
 
-    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, "${message.substring(0, 100)}"`);
+    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, "${message.substring(0, 100)}"`);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -323,7 +492,8 @@ function createAgentChatRoutes({ openai } = {}) {
       emit('status', { message: 'Analyzing your request...', sessionId, intent });
       printLog(`[${requestId}] Intent: ${intent}, tools: ${effectiveTools.map(t => t.name).join(', ')}`);
 
-      const messages = [...history, { role: 'user', content: message }];
+      const effectiveHistory = compactHistoryEnabled ? compactHistory(history) : history;
+      const messages = [...effectiveHistory, { role: 'user', content: message }];
       let toolCalls = [];
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
@@ -446,10 +616,18 @@ function createAgentChatRoutes({ openai } = {}) {
             ? `\n\n[BUDGET WARNING: ${budgetUsed} tokens used of ~${TOKEN_BUDGET_SOFT} soft limit. Deliver your best answer now with available evidence.]`
             : `\n\n[Token usage: ${budgetUsed}/${TOKEN_BUDGET_SOFT}]`;
 
+          const llmResult = compactResults ? compactToolResult(toolUse.name, result) : result;
+          if (compactResults) {
+            const compactedSize = JSON.stringify(llmResult).length;
+            if (compactedSize < resultSize) {
+              console.log(`[${requestId}] Compacted ${toolUse.name}: ${resultSize} → ${compactedSize} chars (saved ${resultSize - compactedSize})`);
+            }
+          }
+
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolUse.id,
-            content: JSON.stringify(result) + budgetNote,
+            content: JSON.stringify(llmResult) + budgetNote,
           });
         }
 

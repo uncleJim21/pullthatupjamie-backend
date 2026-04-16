@@ -58,6 +58,9 @@ PROMPT_SECTIONS.criticalRules = `
 5. **HOST DETECTION**: If a person is primarily a podcast HOST (e.g. Joe Rogan, Lex Fridman, Patrick Bet-David), they will have very few results in find_person/get_person_episodes (which searches guest appearances). Instead, use their feedId with search_quotes to search THEIR show directly. You can identify their feedId from the episode data.
 6. **FEED ID RESOLUTION**: When filtering by feedIds, always use numeric IDs from the Feed ID Lookup table (appended below). NEVER pass show names, URLs, or RSS feed URLs as feedIds — Pinecone will silently return unscoped results, wasting tokens.
 7. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
+9. **NEVER FABRICATE GUIDs**: Episode GUIDs are UUIDs like "e750ccde-5ca5-4328-9cfd-1690442cd5f9". NEVER construct a GUID from an episode title (e.g. "660-building-amid-chaos-with-will-cole" is WRONG). If you don't have the exact GUID from a tool result in THIS conversation, call find_person or get_person_episodes to resolve it. Passing a fabricated GUID to search_quotes or list_episode_chapters will return 0 results and waste tokens.
+10. **find_person FALLBACK (MANDATORY)**: If find_person returns 0 results, you MUST immediately try search_quotes with the person's name, company, or brand as the query (e.g. "Roland Alby lightning payments"). find_person relies on guest metadata which is incomplete for many episodes — search_quotes searches actual transcript text and will often find content that find_person misses. NEVER give up on a person query without trying search_quotes.
+11. **NEVER DEAD-END THE USER**: Never tell the user to "start a new session", "try again later", "rephrase your query", or suggest the system can't help. If one tool returns nothing, try another tool. If all tools return nothing, say what you searched, what you found (nothing), and emit suggest_action cards (direct-query or follow-up-message) with alternative angles to try. The user should always have a next step.
 8. **UPSELL CHECK (MANDATORY)**: If the user asked about Show X but find_person/search_quotes returned results from Show Y, you MUST call discover_podcasts AND suggest_action BEFORE composing final text. COST-SAVING: Do NOT search Show X's feed to "confirm" the person isn't there — find_person already told you which show they're on. Go straight to searching their GUID + discover_podcasts in the SAME round. Example:
    - User: "What did Palmer Luckey say on Lex Fridman?" → find_person returns JRE episode
    - WRONG: search_quotes on Lex feedId to "confirm" Palmer isn't there ← WASTES TOKENS
@@ -222,11 +225,11 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'find_person',
-    description: 'Look up a person (podcast guest or creator) in the corpus by name. Returns matching people with their appearance counts.',
+    description: 'Look up a person (podcast guest or creator) in the corpus by name. Guest metadata is stored as atomic tags (e.g. ["Jeff Bezos", "Bezos", "Jeff", "Amazon", "Blue Origin", "CEO"]). The search matches against individual tags, NOT across tags. So "Bezos Amazon" will match nothing — search with EITHER the person\'s name ("Jeff Bezos", "Bezos") OR their company ("Amazon"), not both combined. When the user says "X from Y", try the person\'s last name alone first — it\'s usually the most unique identifier.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Person name to search for' },
+        name: { type: 'string', description: 'Person name OR company/brand — search ONE term at a time, never combined (e.g. "Bezos" not "Bezos Amazon")' },
       },
       required: ['name'],
     },
