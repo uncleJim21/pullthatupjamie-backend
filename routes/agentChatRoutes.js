@@ -25,8 +25,53 @@ function writeAgentLog(requestId, sessionId, logData) {
 }
 
 const MAX_TOOL_ROUNDS = 10;
-const TOKEN_BUDGET_SOFT = 12000;
+const COST_BUDGET_SOFT = 0.06;  // triggers "wrap up" guidance based on LLM cost only
+const COST_BUDGET_HARD = 0.09;  // hard ceiling — forces loop exit, LLM cost only
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
+
+/**
+ * Running cost tracker scoped to a single agent request.
+ * Separates LLM and tool costs using model-specific pricing.
+ */
+function createCostTracker(modelConfig) {
+  const tracker = {
+    llm:   { inputTokens: 0, outputTokens: 0, cost: 0 },
+    tools: { calls: 0, cost: 0 },
+    get total() { return this.llm.cost + this.tools.cost; },
+
+    addLlmUsage(inputTokens, outputTokens) {
+      this.llm.inputTokens += inputTokens;
+      this.llm.outputTokens += outputTokens;
+      this.llm.cost = (this.llm.inputTokens * modelConfig.inputPer1M / 1_000_000)
+                    + (this.llm.outputTokens * modelConfig.outputPer1M / 1_000_000);
+    },
+
+    addToolCall(toolName) {
+      this.tools.calls++;
+      this.tools.cost += TOOL_COSTS[toolName] || 0;
+    },
+
+    budgetNote() {
+      const spend = this.llm.cost;
+      if (spend > COST_BUDGET_HARD) {
+        return `\n\n[HARD BUDGET LIMIT: $${spend.toFixed(3)} LLM cost of $${COST_BUDGET_HARD} limit. You MUST deliver your answer NOW. Do NOT call any more tools.]`;
+      }
+      if (spend > COST_BUDGET_SOFT) {
+        return `\n\n[BUDGET WARNING: $${spend.toFixed(3)} LLM cost of $${COST_BUDGET_SOFT} soft limit. Finish searching and deliver your best answer now.]`;
+      }
+      return '';
+    },
+
+    summary() {
+      return {
+        claude: parseFloat(this.llm.cost.toFixed(6)),
+        tools: parseFloat(this.tools.cost.toFixed(4)),
+        total: parseFloat(this.total.toFixed(6)),
+      };
+    },
+  };
+  return tracker;
+}
 
 // --- Step F: Tool result compaction ---
 // Strips fields the LLM doesn't need for reasoning. Raw results are still logged & emitted to frontend.
@@ -496,8 +541,7 @@ function createAgentChatRoutes({ openai } = {}) {
       const messages = [...effectiveHistory, { role: 'user', content: message }];
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
+      const costs = createCostTracker(modelConfig);
       let round = 0;
       let hasExecutedTools = false;
       const agentLog = {
@@ -508,7 +552,7 @@ function createAgentChatRoutes({ openai } = {}) {
         finalText: null, error: null,
       };
 
-      while (round < MAX_TOOL_ROUNDS && !_aborted) {
+      while (round < MAX_TOOL_ROUNDS && !_aborted && costs.llm.cost < COST_BUDGET_HARD) {
         round++;
         console.log(`[${requestId}] === ROUND ${round} START ===`);
 
@@ -531,8 +575,7 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] Claude response: stop_reason="${response.stop_reason}", content_blocks=${response.content.length}, types=[${response.content.map(b => b.type).join(',')}]`);
         console.log(`[${requestId}] Tokens this round: input=${response.usage?.input_tokens}, output=${response.usage?.output_tokens}`);
 
-        totalInputTokens  += response.usage?.input_tokens || 0;
-        totalOutputTokens += response.usage?.output_tokens || 0;
+        costs.addLlmUsage(response.usage?.input_tokens || 0, response.usage?.output_tokens || 0);
 
         const assistantContent = response.content;
         messages.push({ role: 'assistant', content: assistantContent });
@@ -618,10 +661,8 @@ function createAgentChatRoutes({ openai } = {}) {
             latencyMs: toolLatency,
           });
 
-          const budgetUsed = totalInputTokens + totalOutputTokens;
-          const budgetNote = budgetUsed > TOKEN_BUDGET_SOFT
-            ? `\n\n[BUDGET WARNING: ${budgetUsed} tokens used of ~${TOKEN_BUDGET_SOFT} soft limit. Deliver your best answer now with available evidence.]`
-            : `\n\n[Token usage: ${budgetUsed}/${TOKEN_BUDGET_SOFT}]`;
+          costs.addToolCall(toolUse.name);
+          const budgetNote = costs.budgetNote();
 
           const llmResult = compactResults ? compactToolResult(toolUse.name, result) : result;
           if (compactResults) {
@@ -658,17 +699,16 @@ function createAgentChatRoutes({ openai } = {}) {
 
       const latencyMs = Date.now() - startTime;
 
-      const claudeCost = (totalInputTokens * modelConfig.inputPer1M / 1_000_000) + (totalOutputTokens * modelConfig.outputPer1M / 1_000_000);
-      const toolCost = toolCalls.reduce((sum, tc) => sum + (TOOL_COSTS[tc.name] || 0), 0);
+      const { claude: claudeCost, tools: toolCost, total: totalCost } = costs.summary();
 
-      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${totalInputTokens}+${totalOutputTokens} tokens, $${claudeCost.toFixed(4)} LLM, ${latencyMs}ms`);
+      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens, $${claudeCost.toFixed(4)} LLM + $${toolCost.toFixed(4)} tools = $${totalCost.toFixed(4)}, ${latencyMs}ms`);
 
       agentLog.completedAt = new Date().toISOString();
       agentLog.summary = {
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, input: tc.input, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
-        tokens: { input: totalInputTokens, output: totalOutputTokens },
-        cost: { claude: parseFloat(claudeCost.toFixed(6)), tools: parseFloat(toolCost.toFixed(4)), total: parseFloat((claudeCost + toolCost).toFixed(6)) },
+        tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
+        cost: costs.summary(),
         latencyMs,
       };
       writeAgentLog(requestId, sessionId, agentLog);
@@ -679,11 +719,11 @@ function createAgentChatRoutes({ openai } = {}) {
         intent,
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
-        tokens: { input: totalInputTokens, output: totalOutputTokens },
+        tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
         cost: {
-          claude: parseFloat(claudeCost.toFixed(6)),
-          tools: parseFloat(toolCost.toFixed(4)),
-          total: parseFloat((claudeCost + toolCost).toFixed(6)),
+          claude: claudeCost,
+          tools: toolCost,
+          total: totalCost,
         },
         latencyMs,
       });

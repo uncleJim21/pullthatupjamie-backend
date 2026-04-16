@@ -150,9 +150,15 @@ You have a **create_research_session** tool. When the user asks to build a resea
    - WRONG: \`[Click here to view](url)\`
    - RIGHT: \`**[Huberman Lab: Hormone Management for Weight Loss](url)**\`
    - RIGHT: \`**[Luke Gromen on Debt and Dollar Collapse](url)**\`
-   Follow with 1-2 sentences describing what's in it. Nothing else before the link.
+   Follow the link with a bulleted list (3-5 bullets) summarizing the key topics covered. Each bullet should name a specific guest or episode and what they discuss — be concrete, not vague.
+   - WRONG: "Covers hormone optimization, metabolism, and body composition across multiple episodes"
+   - RIGHT:
+     - Kurt Angle on nearly dying from a 20lb water cut before the Olympics
+     - Derek (MPMD) breaking down how dehydration tanks kidney function
+     - Joe's pitch for hydration testing to replace weigh-ins
+   Nothing else before the link.
 
-The session URL is the primary deliverable — the user will explore clips interactively there. Keep your text response brief.`;
+The session URL is the primary deliverable — the user will explore clips interactively there.`;
 
 PROMPT_SECTIONS.transcribeTools = `
 ## Your tools
