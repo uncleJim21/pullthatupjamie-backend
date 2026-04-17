@@ -64,17 +64,27 @@ const TEST_QUERIES = [
   { name: 'Whistleblower',           cohort: 'cohort3', task: 'Find podcast coverage of the David Grusch UFO whistleblower testimony' },
   {name: 'Specific Point from Memory',            cohort: 'cohort3', task: 'mike rowe talking about how the human brain corrects for safety measures like helmets and takes more risk under those conditions'},
 
-  // --- Cohort 4: Prompt/execution flaw regressions ---
-  { name: 'Entity Resolution (Company)',    cohort: 'cohort4', task: 'what are people saying about zaprite' },
-  { name: 'Entity Resolution (Org)',        cohort: 'cohort4', task: 'what has the IMF said about bitcoin on podcasts' },
-  { name: 'Sensitive/Provocative Topic',    cohort: 'cohort4', task: 'fraud from Somalians and Armenians' },
-  { name: 'No Clarifying Questions',        cohort: 'cohort4', task: 'cutting weight' },
-  { name: 'Thin Results Escalation',        cohort: 'cohort4', task: 'what has anyone said about nostr on podcasts' },
-  { name: 'Multi-Person Company Query',     cohort: 'cohort4', task: 'what have people from Strike said about Lightning adoption' },
-  { name: 'Budget Panic Prevention',        cohort: 'cohort4', task: 'What have PayPal mafia members like Peter Thiel and David Sacks said about startups on podcasts?' },
-  { name: 'find_person Fallback',           cohort: 'cohort4', task: 'Roland from Alby talking about self custody' },
-  { name: 'Never Dead-End',                 cohort: 'cohort4', task: 'what did Satoshi Nakamoto say on Joe Rogan' },
-  { name: 'Research Session Quality',       cohort: 'cohort4', task: 'Make me a research session about Huberman on hormones and weight loss', mode: 'fast' },
+  // --- Cohort 4: Host detection / split search strategy ---
+  { name: 'Host: Marty Bent on AI',          cohort: 'cohort4', task: 'What did Marty Bent say about AI?' },
+  { name: 'Host: Rogan on Mushrooms',        cohort: 'cohort4', task: 'What has Joe Rogan said about psychedelics on his own show?' },
+  { name: 'Host+Guest Split',                cohort: 'cohort4', task: 'What has Lex Fridman said about consciousness?' },
+  { name: 'Panel Show Host',                 cohort: 'cohort4', task: 'What have Matt Odell and Marty Bent discussed about privacy on Rabbit Hole Recap?' },
+  { name: 'Host by Last Name Only',          cohort: 'cohort4', task: 'What did McCormack say about the UK economy?' },
+  { name: 'Host Scoped to Feed',             cohort: 'cohort4', task: 'Find Peter McCormack discussing El Salvador on What Bitcoin Did' },
+  { name: 'Guest Not Host',                  cohort: 'cohort4', task: 'What did Michael Saylor say on TFTC?' },
+  { name: 'Multi-Feed Host',                 cohort: 'cohort4', task: 'What has Marty Bent said about mining across all his shows?' },
+
+  // --- Cohort 5: Prompt/execution flaw regressions ---
+  { name: 'Entity Resolution (Company)',    cohort: 'cohort5', task: 'what are people saying about zaprite' },
+  { name: 'Entity Resolution (Org)',        cohort: 'cohort5', task: 'what has the IMF said about bitcoin on podcasts' },
+  { name: 'Sensitive/Provocative Topic',    cohort: 'cohort5', task: 'fraud from Somalians and Armenians' },
+  { name: 'No Clarifying Questions',        cohort: 'cohort5', task: 'cutting weight' },
+  { name: 'Thin Results Escalation',        cohort: 'cohort5', task: 'what has anyone said about nostr on podcasts' },
+  { name: 'Multi-Person Company Query',     cohort: 'cohort5', task: 'what have people from Strike said about Lightning adoption' },
+  { name: 'Budget Panic Prevention',        cohort: 'cohort5', task: 'What have PayPal mafia members like Peter Thiel and David Sacks said about startups on podcasts?' },
+  { name: 'find_person Fallback',           cohort: 'cohort5', task: 'Roland from Alby talking about self custody' },
+  { name: 'Never Dead-End',                 cohort: 'cohort5', task: 'what did Satoshi Nakamoto say on Joe Rogan' },
+  { name: 'Research Session Quality',       cohort: 'cohort5', task: 'Make me a research session about Huberman on hormones and weight loss', mode: 'fast' },
 ];
 
 // ===== Helpers =====
