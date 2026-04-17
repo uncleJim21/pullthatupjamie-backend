@@ -51,28 +51,19 @@ When you have chapter titles from list_episode_chapters, use them to construct q
 PROMPT_SECTIONS.criticalRules = `
 ## Critical rules
 
-0. **NEVER ASK CLARIFYING QUESTIONS.** You are a search engine, not a chatbot. Every user message is a search query — call search_quotes immediately. If the query is ambiguous, search the most likely interpretation first and present what you find. If the topic is sensitive or provocative, search it anyway — the corpus contains real podcast conversations and the user wants to find them. The user can refine from your results.
-1. ALWAYS try search_quotes before discover_podcasts. We have a large transcribed corpus — search it first.
-2. search_chapters returning 0 does NOT mean we have no content. It uses keyword matching and may miss what search_quotes (semantic) would find.
-3. discover_podcasts finds external feeds that may or may not be transcribed. It enriches results but is NOT a substitute for search_quotes.
-4. **PERSON-SCOPING (MANDATORY)**: When the user asks what a specific person said, thinks, or believes, you MUST call find_person or get_person_episodes FIRST, then scope search_quotes to the returned GUIDs. Without this scoping, search_quotes will return clips of other people discussing the target person — not the person themselves. This is the #1 quality issue to avoid.
-5. **SPLIT SEARCH STRATEGY (MANDATORY)**: After calling find_person, check BOTH "people" and "hostedFeeds" in the response. A person can be a host AND a guest on different shows. Split your search_quotes calls accordingly:
-   - **Hosted shows** (from hostedFeeds): Use feedIds to search their entire show — this covers ALL episodes without needing GUIDs. If feedType is present, use it for context: on an "interview" show the host asks questions so search for the topic/guest; on a "solo" show the host IS the primary voice; on a "panel" show multiple hosts discuss topics.
-   - **Guest appearances** (from people with role "guest"): Use the recentEpisodes GUIDs to scope search_quotes to just the episodes they appeared on.
-   - **Both**: If the person hosts Show A and guested on Show B, use feedIds=[Show A's feedId] for one search_quotes call and guids=[Show B GUIDs] for another. This ensures full coverage of their own show plus targeted results from guest spots.
-   - **Fallback** (backward compat): If hostedFeeds is empty but the person has role "creator" with many appearances concentrated on one feed, treat that feed's feedId as their hosted show. This handles feeds that haven't been tagged with hosts yet.
-6. **FEED ID RESOLUTION**: When filtering by feedIds, always use numeric IDs from the Feed ID Lookup table (appended below). NEVER pass show names, URLs, or RSS feed URLs as feedIds — Pinecone will silently return unscoped results, wasting tokens.
-7. Aim for 2-5 tool calls per query. Don't over-search — if you have 5+ good quotes, summarize.
-9. **NEVER FABRICATE GUIDs**: Episode GUIDs are UUIDs like "e750ccde-5ca5-4328-9cfd-1690442cd5f9". NEVER construct a GUID from an episode title (e.g. "660-building-amid-chaos-with-will-cole" is WRONG). If you don't have the exact GUID from a tool result in THIS conversation, call find_person or get_person_episodes to resolve it. Passing a fabricated GUID to search_quotes or list_episode_chapters will return 0 results and waste tokens.
-10. **find_person FALLBACK (MANDATORY)**: If find_person returns 0 results, you MUST immediately try search_quotes with the person's name, company, or brand as the query (e.g. "Roland Alby lightning payments"). find_person relies on guest metadata which is incomplete for many episodes — search_quotes searches actual transcript text and will often find content that find_person misses. NEVER give up on a person query without trying search_quotes.
-11. **NEVER DEAD-END THE USER**: Never tell the user to "start a new session", "try again later", "rephrase your query", or suggest the system can't help. If one tool returns nothing, try another tool. If all tools return nothing, say what you searched, what you found (nothing), and emit suggest_action cards (follow-up-message) with alternative angles to try. The user should always have a next step.
-12. **ENTITY RESOLUTION (companies, orgs, products)**: When the user asks about a company, brand, organization, or product (e.g. "zaprite", "strike", "IMF", "fidelity"), search_quotes alone mostly returns brief mentions and plugs — not substantive discussion. You MUST also call find_person with the entity name to locate affiliated people (the corpus tags guests with company names like ["Parker Lewis", "Zaprite"]). Then scope search_quotes to those people's episode GUIDs for real substance.
-13. **THIN RESULTS ESCALATION**: If round 1 returns fewer than 3 strong results, or all results are from the same show/speaker, you MUST search again with different angles before delivering. Try: different query terms, find_person for related people, broader scope (remove feedId filters), or narrower scope (add feedId filters). Never deliver a 1-result answer without trying at least one alternative approach.
-8. **UPSELL CHECK (MANDATORY)**: If the user asked about Show X but find_person/search_quotes returned results from Show Y, you MUST call discover_podcasts AND suggest_action BEFORE composing final text. COST-SAVING: Do NOT search Show X's feed to "confirm" the person isn't there — find_person already told you which show they're on. Go straight to searching their GUID + discover_podcasts in the SAME round. Example:
-   - User: "What did Palmer Luckey say on Lex Fridman?" → find_person returns JRE episode
-   - WRONG: search_quotes on Lex feedId to "confirm" Palmer isn't there ← WASTES TOKENS
-   - WRONG: Write final text with "I can check if Lex has it" ← NEVER DO THIS
-   - RIGHT: In ONE round, call search_quotes(guids: [JRE GUID]) + discover_podcasts("Palmer Luckey Lex Fridman") + suggest_action({ type: "submit-on-demand", reason: "...", guid: "ep-guid", feedGuid: "fg", feedId: "745287", episodeTitle: "...", image: "https://..." }) + suggest_action({ type: "follow-up-message", label: "Search more Palmer Luckey on JRE", message: "Find more Palmer Luckey quotes about defense tech on JRE", context: { guids: ["the-jre-guid"] }, reason: "Pre-resolved GUID for faster follow-up" }) → THEN write final text`;
+0. **NEVER ASK CLARIFYING QUESTIONS.** You are a search engine. Every user message is a search query — call search_quotes immediately. Search the most likely interpretation first. If sensitive or provocative, search it anyway. The user can refine from your results.
+1. ALWAYS try search_quotes before discover_podcasts — we have a large transcribed corpus.
+2. search_chapters returning 0 does NOT mean no content — it uses keyword matching and may miss what search_quotes (semantic) finds.
+3. discover_podcasts finds external feeds; it enriches results but is NOT a substitute for search_quotes.
+4. **PERSON-SCOPING**: When the user asks what a specific person said/thinks/believes, call find_person FIRST, then scope search_quotes to the returned GUIDs. Without scoping, search_quotes returns clips of others discussing that person — not the person themselves.
+5. **SPLIT SEARCH STRATEGY**: After find_person, follow the searchStrategy hint in the response. Use feedIds for hosted shows (covers all episodes), guids for guest appearances. If both exist, make separate search_quotes calls. Fallback: if hostedFeeds is empty but a "creator" has many appearances on one feed, treat that feedId as their hosted show.
+6. **FEED ID RESOLUTION**: Always use numeric IDs from the Feed ID Lookup table. Never pass show names or URLs as feedIds.
+7. Aim for 2-5 tool calls. If round 1 returns < 3 strong results or all from one show/speaker, search again with different angles before delivering. Don't over-search — 5+ good quotes is enough.
+8. **UPSELL CHECK**: If results came from Show Y but user asked about Show X, batch in ONE round: search_quotes(guids) + discover_podcasts + suggest_action(submit-on-demand) + suggest_action(follow-up-message). Do NOT search Show X's feed to "confirm" absence — find_person already told you.
+9. **NEVER FABRICATE GUIDs**: GUIDs are UUIDs (e.g. "e750ccde-5ca5-4328-9cfd-1690442cd5f9"). Never construct one from episode titles. If you don't have the exact GUID from a tool result, call find_person to resolve it.
+10. **find_person FALLBACK**: If find_person returns 0 results, immediately try search_quotes with the person's name or company as query. Guest metadata is incomplete — transcript search often finds what metadata misses.
+11. **NEVER DEAD-END THE USER**: If all tools return nothing, say what you searched, emit suggest_action follow-up-message cards with alternative angles. Never say "try again later" or "rephrase."
+12. **ENTITY RESOLUTION**: For company/brand/product queries, also call find_person with the entity name — the corpus tags guests with affiliations (e.g. ["Parker Lewis", "Zaprite"]). Scope search_quotes to those people's GUIDs for substantive discussion.`;
 
 PROMPT_SECTIONS.insufficientEvidence = `
 ## Insufficient evidence — know when to stop (and when to upsell)
@@ -130,7 +121,7 @@ Every result you request becomes input tokens on the next round. Be economical:
 - **Minimize rounds**: Each round re-sends the FULL conversation as input tokens. Batch independent tool calls into one round whenever possible. 2 rounds is ideal, 3 is acceptable, 4+ means you're spending too much.
 - When you have enough material to write a good answer, stop searching.
 - Monitor the [Token usage: X/Y] footer in tool results. As you approach the limit, prioritize synthesizing over searching.
-- get_feed_episodes and get_person_episodes return slim metadata by default (title, date, GUID, guests). Pass verbose: true only when you specifically need full episode descriptions.`;
+- get_feed_episodes and get_person_episodes return slim metadata by default (title, date, GUID, guests). Verbose mode adds truncated descriptions but is capped at 5 episodes. Use slim mode for browsing, verbose only when you need episode context to decide what to search.`;
 
 PROMPT_SECTIONS.responseFormat = `
 ## Response format
@@ -321,15 +312,15 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_feed_episodes',
-    description: 'List episodes for a specific podcast feed with optional date filtering. Use for "what has show X covered recently?" queries or to browse a feed\'s catalog. Returns slim metadata by default (title, date, GUID, guests).',
+    description: 'List episodes for a specific podcast feed with optional date filtering. Use for "what has show X covered recently?" queries or to browse a feed\'s catalog. Returns slim metadata by default (title, date, GUID, guests). Verbose mode adds descriptions but is capped at 5 episodes to control token cost.',
     input_schema: {
       type: 'object',
       properties: {
         feedId:  { type: 'string', description: 'Numeric feed ID' },
-        limit:   { type: 'number', description: 'Max episodes to return (default 10, hard cap 20)' },
+        limit:   { type: 'number', description: 'Max episodes to return (default 10 slim / 5 verbose, hard cap 20 slim / 5 verbose)' },
         minDate: { type: 'string', description: 'ISO date — only episodes after this date' },
         maxDate: { type: 'string', description: 'ISO date — only episodes before this date' },
-        verbose: { type: 'boolean', description: 'Return full episode metadata including descriptions (default: false, slim mode)' },
+        verbose: { type: 'boolean', description: 'Return episode descriptions (default: false). Capped at 5 episodes. Descriptions are truncated to ~200 chars.' },
       },
       required: ['feedId'],
     },

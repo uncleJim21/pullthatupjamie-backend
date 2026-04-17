@@ -45,6 +45,14 @@ const LIMITS = {
 const RESULT_HARD_CAP = 20;
 const MIN_SEQUENCE_INDEX = 3;
 const MIN_WORD_COUNT = 15;
+const AD_MATCH_THRESHOLD = 3;
+const AD_PHRASES = [
+  /\bpromo code\b/i, /\buse code\b/i, /\bsign up at\b/i, /\bdiscount\b/i,
+  /\bsponsored by\b/i, /\bbrought to you by\b/i,
+  /\bgo to \w+\.com\b/i, /\blink in the description\b/i, /\bspecial offer\b/i,
+  /\bfree trial\b/i, /\bdownload the app\b/i, /\bcoupon\b/i,
+  /\bcheck (it )?out at\b/i, /\bheads? to \w+\.com\b/i,
+];
 
 const SLIM_EPISODE_FIELDS = new Set([
   'title', 'guid', 'feedId', 'publishedDate', 'creator',
@@ -82,10 +90,19 @@ function extractSequenceFromId(pineconeId) {
   return match ? parseInt(match[1], 10) : null;
 }
 
+function isAdContent(text) {
+  let matches = 0;
+  for (const pattern of AD_PHRASES) {
+    if (pattern.test(text) && ++matches >= AD_MATCH_THRESHOLD) return true;
+  }
+  return false;
+}
+
 function filterFluffResults(data) {
   if (!data.results || !Array.isArray(data.results)) return data;
 
   const before = data.results.length;
+  let adRemoved = 0;
   data.results = data.results.filter(r => {
     const id = r.shareLink || r.shareUrl || '';
     const seq = extractSequenceFromId(id);
@@ -95,10 +112,12 @@ function filterFluffResults(data) {
     const text = r.quote || '';
     const wordCount = text.split(/\s+/).filter(Boolean).length;
     if (wordCount > 0 && wordCount < MIN_WORD_COUNT) return false;
+    if (isAdContent(text)) { adRemoved++; return false; }
     return true;
   });
-  if (data.results.length < before) {
-    printLog(`[TOOL] Fluff filter: removed ${before - data.results.length} intro/short clips`);
+  const removed = before - data.results.length;
+  if (removed > 0) {
+    printLog(`[TOOL] Fluff filter: removed ${removed} clips (${adRemoved} ad/sponsor)`);
   }
   return data;
 }
@@ -167,6 +186,35 @@ async function handleDiscoverPodcasts(input) {
   return data;
 }
 
+function buildSearchStrategy(people, hostedFeeds) {
+  const hostedFeedIds = (hostedFeeds || []).slice(0, 5).map(f => String(f.feedId));
+
+  const guestGuids = [];
+  for (const p of (people || [])) {
+    if (p.role === 'guest' && Array.isArray(p.recentEpisodes)) {
+      for (const ep of p.recentEpisodes) {
+        if (ep.guid && guestGuids.length < 10) guestGuids.push(ep.guid);
+      }
+    }
+  }
+
+  const parts = [];
+  if (hostedFeedIds.length) {
+    const feedNames = hostedFeeds.slice(0, 3).map(f => f.title || f.feedId).join(', ');
+    parts.push(`Host of ${feedNames}. Search with feedIds=[${hostedFeedIds.join(',')}].`);
+  }
+  if (guestGuids.length) {
+    parts.push(`Guest on ${guestGuids.length} episode(s). Search with guids for guest appearances.`);
+  }
+  if (!parts.length) parts.push('No hosted feeds or guest episodes found. Try search_quotes with name as query.');
+
+  return {
+    hostedFeedIds,
+    guestGuids,
+    hint: parts.join(' ').substring(0, 250),
+  };
+}
+
 async function handleFindPerson(input) {
   const { name } = input;
   printLog(`[TOOL] find_person: name="${name}"`);
@@ -178,7 +226,8 @@ async function handleFindPerson(input) {
     query: data.query,
   };
   truncateResults(normalized);
-  printLog(`[TOOL] find_person: ${normalized.people?.length || 0} people, ${normalized.hostedFeeds?.length || 0} hosted feeds`);
+  normalized.searchStrategy = buildSearchStrategy(normalized.people, normalized.hostedFeeds);
+  printLog(`[TOOL] find_person: ${normalized.people?.length || 0} people, ${normalized.hostedFeeds?.length || 0} hosted feeds, hint="${normalized.searchStrategy.hint}"`);
   return normalized;
 }
 
@@ -227,11 +276,15 @@ async function handleGetFeed(input) {
   return normalized;
 }
 
+const VERBOSE_EPISODE_LIMIT = 5;
+
 async function handleGetFeedEpisodes(input) {
   const { feedId, limit, minDate, maxDate, verbose } = input;
-  const clampedLimit = clampLimit(limit, 10);
+  const defaultLimit = verbose ? VERBOSE_EPISODE_LIMIT : 10;
+  const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : RESULT_HARD_CAP;
+  const clampedLimit = Math.min(Math.max(1, limit || defaultLimit), hardCap);
 
-  printLog(`[TOOL] get_feed_episodes: feedId="${feedId}", limit=${clampedLimit}`);
+  printLog(`[TOOL] get_feed_episodes: feedId="${feedId}", limit=${clampedLimit}, verbose=${!!verbose}`);
   const data = await getFeedEpisodes({ feedId, limit: clampedLimit, minDate, maxDate });
   const normalized = { episodes: data.data || [], pagination: data.pagination };
   truncateResults(normalized);

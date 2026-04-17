@@ -36,13 +36,14 @@ async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCOR
   const systemPrompt = `You are a relevance scorer for podcast transcript clips. Given the user's question and a numbered list of clips, score each clip 0-10 on how directly relevant and substantive it is to answering the question.
 
 Scoring guide:
-- 0-1: Completely irrelevant, or just an intro/outro greeting or social media plug
+- 0-1: Completely irrelevant, sponsor/ad reads, promo codes, "brought to you by" segments, social media plugs, or intro/outro greetings
 - 2-3: Mentions a keyword but discusses something else entirely
 - 4-5: Somewhat relevant but tangential or shallow
 - 6-7: Relevant and contains useful information
 - 8-10: Directly and substantively addresses the question
 
 Additional penalties:
+- Clips that are primarily advertising, sponsorship reads, or promotional content (promo codes, URLs to sign up, "brought to you by", discount offers) should score 0-1 regardless of keyword overlap with the query
 - Clips that are just someone else talking ABOUT the topic person (rather than the person speaking) should be scored 3-5 unless the commentary itself is particularly insightful
 - Very short clips with no real content should score 0-2
 

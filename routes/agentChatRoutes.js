@@ -24,9 +24,9 @@ function writeAgentLog(requestId, sessionId, logData) {
   }
 }
 
-const MAX_TOOL_ROUNDS = 10;
-const COST_BUDGET_SOFT = 0.06;  // triggers "wrap up" guidance based on LLM cost only
-const COST_BUDGET_HARD = 0.09;  // hard ceiling — forces loop exit, LLM cost only
+const MAX_TOOL_ROUNDS = 6;
+const COST_BUDGET_SOFT = 0.055;  // triggers "wrap up" guidance based on LLM cost only
+const COST_BUDGET_HARD = 0.08;   // hard ceiling — forces loop exit, LLM cost only
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
 /**
@@ -119,6 +119,8 @@ function compactFindPersonResult(r) {
   return c;
 }
 
+const MAX_COMPACT_DESCRIPTION = 200;
+
 function compactEpisode(ep) {
   if (!ep) return ep;
   const keep = ['title', 'guid', 'feedId', 'feedTitle', 'publishedDate', 'creator', 'guests', 'duration', 'description'];
@@ -126,7 +128,26 @@ function compactEpisode(ep) {
   for (const k of keep) {
     if (ep[k] !== undefined) c[k] = ep[k];
   }
+  if (c.description && c.description.length > MAX_COMPACT_DESCRIPTION) {
+    c.description = c.description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, MAX_COMPACT_DESCRIPTION) + '…';
+  }
   return c;
+}
+
+function measureMessages(messages) {
+  let userChars = 0, assistantChars = 0, toolResultChars = 0;
+  for (const msg of messages) {
+    const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    const len = raw.length;
+    if (msg.role === 'user') {
+      const isToolResult = Array.isArray(msg.content) && msg.content[0]?.type === 'tool_result';
+      if (isToolResult) toolResultChars += len;
+      else userChars += len;
+    } else if (msg.role === 'assistant') {
+      assistantChars += len;
+    }
+  }
+  return { userChars, assistantChars, toolResultChars, totalChars: userChars + assistantChars + toolResultChars };
 }
 
 function compactToolResult(toolName, result) {
@@ -154,6 +175,7 @@ function compactToolResult(toolName, result) {
         if (result.people) {
           const compact = { people: result.people.map(compactFindPersonResult) };
           if (result.hostedFeeds?.length) compact.hostedFeeds = result.hostedFeeds;
+          if (result.searchStrategy) compact.searchStrategy = result.searchStrategy;
           return compact;
         }
         return result;
@@ -246,13 +268,22 @@ function compactHistory(history) {
 let feedLookupTable = null;
 let feedLookupPromptSection = '';
 
+const FEED_TABLE_MIN_EPISODES = 50;
+
 async function buildFeedLookup() {
   if (feedLookupTable) return;
   try {
-    const feeds = await JamieVectorMetadata.find({ type: 'feed' })
-      .select('feedId metadataRaw.title')
-      .sort({ 'metadataRaw.title': 1 })
-      .lean();
+    const [feeds, epCounts] = await Promise.all([
+      JamieVectorMetadata.find({ type: 'feed' })
+        .select('feedId metadataRaw.title')
+        .lean(),
+      JamieVectorMetadata.aggregate([
+        { $match: { type: 'episode' } },
+        { $group: { _id: '$feedId', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const countMap = new Map(epCounts.map(e => [String(e._id), e.count]));
 
     feedLookupTable = {};
     const lines = [];
@@ -260,10 +291,14 @@ async function buildFeedLookup() {
       const title = f.metadataRaw?.title || 'Unknown';
       const fid = String(f.feedId);
       feedLookupTable[title.toLowerCase()] = fid;
-      lines.push(`${fid}: ${title}`);
+      const transcribed = countMap.get(fid) || 0;
+      if (transcribed >= FEED_TABLE_MIN_EPISODES) {
+        lines.push(`${fid}: ${title}`);
+      }
     }
-    feedLookupPromptSection = `\n\n## Feed ID Lookup\n\nWhen filtering search_quotes by feedIds, you MUST use numeric feed IDs — not show names or URLs. Here is the complete list:\n\n${lines.join('\n')}\n\nIf the user mentions a show name, look it up here. When a person IS a host (e.g. Joe Rogan → The Joe Rogan Experience), use their show's feedId directly with search_quotes instead of find_person.`;
-    printLog(`[AGENT] Feed lookup table built: ${feeds.length} feeds`);
+    lines.sort();
+    feedLookupPromptSection = `\n\n## Feed ID Lookup\nUse numeric feed IDs with search_quotes feedIds filter. Not exhaustive — use search_quotes or find_person for unlisted shows.\n${lines.join('\n')}`;
+    printLog(`[AGENT] Feed lookup table built: ${lines.length}/${feeds.length} feeds (${FEED_TABLE_MIN_EPISODES}+ transcribed episodes)`);
   } catch (err) {
     printLog(`[AGENT] Feed lookup build failed (non-fatal): ${err.message}`);
     feedLookupPromptSection = '';
@@ -578,7 +613,11 @@ function createAgentChatRoutes({ openai } = {}) {
           emit('status', { message: 'Composing your answer...', sessionId });
         }
 
-        console.log(`[${requestId}] Calling Claude API streaming (model=${modelConfig.id}, messages=${messages.length})...`);
+        const msgMetrics = measureMessages(messages);
+        const systemChars = effectiveSystemPrompt.length;
+        const totalInputChars = systemChars + msgMetrics.totalChars;
+        printLog(`[${requestId}] Round ${round} input: system=${systemChars}c (~${Math.ceil(systemChars/4)}tok), messages=${msgMetrics.totalChars}c (user=${msgMetrics.userChars}, assistant=${msgMetrics.assistantChars}, toolResults=${msgMetrics.toolResultChars}), total=~${Math.ceil(totalInputChars/4)}tok est`);
+
         const stream = await anthropic.messages.create({
           model: modelConfig.id,
           max_tokens: 4096,
@@ -719,6 +758,8 @@ function createAgentChatRoutes({ openai } = {}) {
 
       const { claude: claudeCost, tools: toolCost, total: totalCost } = costs.summary();
 
+      const finalMetrics = measureMessages(messages);
+      printLog(`[${requestId}] Token budget breakdown: system=~${Math.ceil(effectiveSystemPrompt.length/4)}tok, user=~${Math.ceil(finalMetrics.userChars/4)}tok, assistant=~${Math.ceil(finalMetrics.assistantChars/4)}tok, toolResults=~${Math.ceil(finalMetrics.toolResultChars/4)}tok | actual=${costs.llm.inputTokens}in+${costs.llm.outputTokens}out`);
       printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens, $${claudeCost.toFixed(4)} LLM + $${toolCost.toFixed(4)} tools = $${totalCost.toFixed(4)}, ${latencyMs}ms`);
 
       agentLog.completedAt = new Date().toISOString();
