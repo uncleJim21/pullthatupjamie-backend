@@ -597,6 +597,8 @@ function createAgentChatRoutes({ openai } = {}) {
       const costs = createCostTracker(modelConfig);
       let round = 0;
       let hasExecutedTools = false;
+      const discoverResults = [];
+      const suggestedGuids = new Set();
       const agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
         query: message, startedAt: new Date().toISOString(),
@@ -685,9 +687,27 @@ function createAgentChatRoutes({ openai } = {}) {
           }
 
           if (toolUse.name === 'search_quotes' && result.results) {
+            const dupes = [];
             for (const r of result.results) {
-              if (r.shareLink) clipCache.set(r.shareLink, r);
+              if (r.shareLink) {
+                if (clipCache.has(r.shareLink)) dupes.push(r.shareLink);
+                clipCache.set(r.shareLink, r);
+              }
             }
+            printLog(`[${requestId}] search_quotes shareLinks: ${result.results.map(r => {
+              const q = (r.quote || '').substring(0, 60).replace(/\n/g, ' ');
+              return `${r.shareLink} "${q}…"`;
+            }).join(' | ')}`);
+            if (dupes.length > 0) {
+              printLog(`[${requestId}] ⚠ DUPLICATE shareLinks across parallel search_quotes calls: ${dupes.join(', ')}`);
+            }
+          }
+          if (toolUse.name === 'discover_podcasts' && result.results) {
+            discoverResults.push(...result.results);
+          }
+          if (toolUse.name === 'suggest_action' && toolUse.input?.type === 'submit-on-demand') {
+            if (toolUse.input.guid) suggestedGuids.add(toolUse.input.guid);
+            if (toolUse.input.feedId) suggestedGuids.add(toolUse.input.feedId);
           }
           const toolLatency = Date.now() - toolStart;
 
@@ -727,6 +747,12 @@ function createAgentChatRoutes({ openai } = {}) {
             if (compactedSize < resultSize) {
               console.log(`[${requestId}] Compacted ${toolUse.name}: ${resultSize} → ${compactedSize} chars (saved ${resultSize - compactedSize})`);
             }
+          }
+          if (toolUse.name === 'search_quotes' && llmResult.results) {
+            printLog(`[${requestId}] LLM receives search_quotes: ${llmResult.results.map(r => {
+              const q = (r.quote || '').substring(0, 50).replace(/\n/g, ' ');
+              return `[${r._i}] ${r.shareLink} "${q}…"`;
+            }).join(' | ')}`);
           }
 
           toolResults.push({
@@ -771,6 +797,35 @@ function createAgentChatRoutes({ openai } = {}) {
         latencyMs,
       };
       writeAgentLog(requestId, sessionId, agentLog);
+
+      // Auto-upsell: surface untranscribed episodes from discover results the agent didn't suggest
+      const AUTO_UPSELL_MAX = 2;
+      let autoUpsellCount = 0;
+      for (const feed of discoverResults) {
+        if (autoUpsellCount >= AUTO_UPSELL_MAX) break;
+        const eps = feed.matchedEpisodes || [];
+        for (const ep of eps) {
+          if (autoUpsellCount >= AUTO_UPSELL_MAX) break;
+          if (ep.transcriptAvailable) continue;
+          const key = ep.guid || feed.feedId;
+          if (suggestedGuids.has(key)) continue;
+          suggestedGuids.add(key);
+          emit('suggested_action', {
+            type: 'submit-on-demand',
+            reason: `${feed.title || 'This show'} has untranscribed episodes that may be relevant.`,
+            guid: ep.guid || undefined,
+            feedGuid: ep.feedGuid || feed.feedGuid || undefined,
+            feedId: feed.feedId ? String(feed.feedId) : undefined,
+            episodeTitle: ep.title || undefined,
+            image: ep.image || feed.imageUrl || undefined,
+          });
+          autoUpsellCount++;
+          console.log(`[${requestId}] Auto-upsell: ${ep.title || ep.guid} from ${feed.title}`);
+        }
+      }
+      if (autoUpsellCount > 0) {
+        printLog(`[${requestId}] Auto-upsell: emitted ${autoUpsellCount} submit-on-demand from discover results`);
+      }
 
       emit('done', {
         sessionId,
