@@ -599,6 +599,7 @@ function createAgentChatRoutes({ openai } = {}) {
       let hasExecutedTools = false;
       const discoverResults = [];
       const suggestedGuids = new Set();
+      const accumulatedTextByRound = [];
       const agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
         query: message, startedAt: new Date().toISOString(),
@@ -641,22 +642,25 @@ function createAgentChatRoutes({ openai } = {}) {
 
         const isFinalResponse = response.stop_reason !== 'tool_use';
 
+        const roundText = assistantContent
+          .filter(b => b.type === 'text')
+          .map(b => b.text)
+          .join('');
+        if (roundText.length > 0) {
+          accumulatedTextByRound.push({ round, text: roundText });
+        }
+
         if (isFinalResponse) {
-          const fullText = assistantContent
-            .filter(b => b.type === 'text')
-            .map(b => b.text)
-            .join('');
-          console.log(`[${requestId}] Final text streamed (${fullText.length} chars)`);
+          const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
+          console.log(`[${requestId}] Final text streamed: ${fullText.length} chars across ${accumulatedTextByRound.length} round(s) (round ${round} contributed ${roundText.length} chars)`);
           agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
           agentLog.finalText = fullText;
           emit('text_done', { text: fullText });
           break;
         }
 
-        // Suppress any intermediate text that was streamed (shouldn't happen with our prompt)
-        const intermediateText = assistantContent.filter(b => b.type === 'text').map(b => b.text).join('');
-        if (intermediateText.length > 0) {
-          console.log(`[${requestId}] Intermediate text suppressed (${intermediateText.length} chars): "${intermediateText.substring(0, 80)}..."`);
+        if (roundText.length > 0) {
+          console.log(`[${requestId}] Intermediate text captured (${roundText.length} chars) for final text_done: "${roundText.substring(0, 80)}..."`);
         }
 
         const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
