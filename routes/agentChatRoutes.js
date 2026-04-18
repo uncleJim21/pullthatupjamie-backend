@@ -416,9 +416,35 @@ function sanitizeSuggestAction(toolInput) {
   return clean;
 }
 
-function handleSuggestAction(toolInput, emit) {
+function handleSuggestAction(toolInput, emit, { episodeCache, suggestedGuids, requestId } = {}) {
   const sanitized = sanitizeSuggestAction(toolInput);
   const { type, reason, ...params } = sanitized;
+
+  if (type === 'submit-on-demand') {
+    const enriched = { ...params };
+    if (enriched.guid && episodeCache?.has(enriched.guid)) {
+      const cached = episodeCache.get(enriched.guid);
+      enriched.feedGuid = enriched.feedGuid || cached.feedGuid;
+      enriched.feedId = enriched.feedId || cached.feedId;
+      enriched.episodeTitle = enriched.episodeTitle || cached.episodeTitle;
+      enriched.image = enriched.image || cached.image;
+    }
+    const missing = [];
+    if (!enriched.guid) missing.push('guid');
+    if (!enriched.feedGuid) missing.push('feedGuid');
+    if (!enriched.feedId) missing.push('feedId');
+    if (missing.length > 0) {
+      console.log(`[${requestId || 'SUGGEST'}] ⚠ Dropping submit-on-demand — missing ${missing.join(',')} after cache lookup (guid=${enriched.guid || 'none'})`);
+      return { acknowledged: false, message: `Skipped: submit-on-demand requires a guid from a recent discover_podcasts or get_feed_episodes result. The server fills in feedGuid/feedId/title/image automatically, but nothing in the cache matched "${enriched.guid || ''}". Missing: ${missing.join(', ')}.` };
+    }
+    if (suggestedGuids) {
+      suggestedGuids.add(enriched.guid);
+      if (enriched.feedId) suggestedGuids.add(enriched.feedId);
+    }
+    emit('suggested_action', { type, reason, ...enriched });
+    return { acknowledged: true, message: `Transcription suggestion surfaced for "${enriched.episodeTitle || enriched.guid}". Continue your response naturally; do not narrate this suggestion to the user.` };
+  }
+
   emit('suggested_action', { type, reason, ...params });
   return { acknowledged: true, message: `Action "${type}" suggested to user. Continue your response — the user will decide whether to approve.` };
 }
@@ -600,6 +626,19 @@ function createAgentChatRoutes({ openai } = {}) {
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
+      const episodeCache = new Map();
+
+      const cacheEpisode = (ep, feedFallback = {}) => {
+        if (!ep || !ep.guid) return;
+        const existing = episodeCache.get(ep.guid) || {};
+        episodeCache.set(ep.guid, {
+          guid: ep.guid,
+          feedGuid: existing.feedGuid || ep.feedGuid || feedFallback.feedGuid || null,
+          feedId: existing.feedId || (ep.feedId != null ? String(ep.feedId) : null) || (feedFallback.feedId != null ? String(feedFallback.feedId) : null),
+          episodeTitle: existing.episodeTitle || ep.title || ep.episodeTitle || null,
+          image: existing.image || ep.image || feedFallback.image || null,
+        });
+      };
       const agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
         query: message, startedAt: new Date().toISOString(),
@@ -680,7 +719,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
           let result;
           if (toolUse.name === 'suggest_action') {
-            result = handleSuggestAction(toolUse.input, emit);
+            result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
           } else if (toolUse.name === 'create_research_session') {
             result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
             if (result.sessionId && result.url) {
@@ -708,10 +747,18 @@ function createAgentChatRoutes({ openai } = {}) {
           }
           if (toolUse.name === 'discover_podcasts' && result.results) {
             discoverResults.push(...result.results);
+            for (const feed of result.results) {
+              const feedFallback = { feedGuid: feed.feedGuid, feedId: feed.feedId, image: feed.image };
+              for (const ep of (feed.matchedEpisodes || [])) cacheEpisode(ep, feedFallback);
+              for (const ep of (feed.episodes || [])) cacheEpisode(ep, feedFallback);
+            }
           }
-          if (toolUse.name === 'suggest_action' && toolUse.input?.type === 'submit-on-demand') {
-            if (toolUse.input.guid) suggestedGuids.add(toolUse.input.guid);
-            if (toolUse.input.feedId) suggestedGuids.add(toolUse.input.feedId);
+          if (toolUse.name === 'get_feed_episodes' && result.episodes) {
+            const feedFallback = { feedId: result.feed?.feedId || result.feedId, feedGuid: result.feed?.feedGuid, image: result.feed?.image };
+            for (const ep of result.episodes) cacheEpisode(ep, feedFallback);
+          }
+          if (toolUse.name === 'get_person_episodes' && result.episodes) {
+            for (const ep of result.episodes) cacheEpisode(ep);
           }
           const toolLatency = Date.now() - toolStart;
 
