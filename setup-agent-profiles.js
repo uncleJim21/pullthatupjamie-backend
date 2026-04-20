@@ -20,8 +20,23 @@ const RESEARCH_SESSION_TOOLS = [
   'suggest_action',
 ];
 
+// Transcribe profile is the safety net for two scenarios:
+//   1. User explicitly asks to transcribe/ingest something (primary use case).
+//   2. Classifier misroutes a follow-up question about an already-transcribed
+//      episode into transcribe (e.g. "I just transcribed X, tell me about Y").
+// For (2) we include search/lookup tools so the agent can still answer usefully
+// instead of dead-ending on discover_podcasts alone.
 const TRANSCRIBE_TOOLS = [
   'discover_podcasts',
+  'search_quotes',
+  'search_chapters',
+  'find_person',
+  'get_person_episodes',
+  'list_episode_chapters',
+  'get_episode',
+  'get_feed',
+  'get_feed_episodes',
+  'get_adjacent_paragraphs',
   'suggest_action',
 ];
 
@@ -66,6 +81,9 @@ const PROFILES = {
       return [
         PROMPT_SECTIONS.base,
         buildCurrentDateSection(),
+        PROMPT_SECTIONS.searchTools,
+        PROMPT_SECTIONS.searchCrafting,
+        PROMPT_SECTIONS.criticalRules,
         PROMPT_SECTIONS.transcribeTools,
         PROMPT_SECTIONS.transcribeRules,
       ].join('\n');
@@ -81,8 +99,8 @@ const CLASSIFIER_PROMPT = `Classify the user's intent into exactly one category.
 
 Categories:
 - "research_session": User explicitly asks to CREATE a research session, playlist, collection, or compilation of clips. Must be an explicit creation request, not just a search.
-- "transcribe": User explicitly asks to TRANSCRIBE, INGEST, or ADD a podcast/episode to the corpus. Must be an explicit transcription request.
-- "search": Everything else — questions, searches, lookups, comparisons, topic exploration. This is the default.
+- "transcribe": User explicitly asks to TRANSCRIBE, INGEST, or ADD a podcast/episode. Must be an explicit FUTURE-TENSE transcription request (imperative: "transcribe X", "ingest Y", "get Z transcribed"). Past-tense mentions ("I transcribed", "already transcribed", "just transcribed") are NOT transcribe intent — they're context for a follow-up search. If the same message contains a follow-up question ("what did they say", "summarize", "tell me about"), always prefer "search".
+- "search": Everything else — questions, searches, lookups, comparisons, topic exploration, AND any message that references an already-transcribed episode with a follow-up question. This is the default.
 
 Examples:
 - "Make me a research session on AI" → {"intent":"research_session"}
@@ -91,6 +109,9 @@ Examples:
 - "Transcribe the latest Lex Fridman episode" → {"intent":"transcribe"}
 - "Can you ingest the All-In podcast?" → {"intent":"transcribe"}
 - "Get Corporate Gossip transcribed" → {"intent":"transcribe"}
+- "I just transcribed episode abc123. What did they say about tariffs?" → {"intent":"search"}
+- "I transcribed the latest All-In, summarize the key points" → {"intent":"search"}
+- "Already transcribed that one — now tell me the top takeaways" → {"intent":"search"}
 - "What did Huberman say about creatine?" → {"intent":"search"}
 - "Palmer Luckey on Joe Rogan" → {"intent":"search"}
 - "Compare Bitcoin views on TFTC vs WBD" → {"intent":"search"}`;

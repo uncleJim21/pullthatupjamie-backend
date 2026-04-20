@@ -210,13 +210,20 @@ PROMPT_SECTIONS.transcribeTools = `
 PROMPT_SECTIONS.transcribeRules = `
 ## Transcription workflow
 
-The user wants to get podcast content transcribed. Your job:
+This profile handles two scenarios. Read the user's message carefully:
 
-1. **Find it**: Use discover_podcasts with the show name, episode title, or person + show combination. Be specific in your query.
+**Scenario A — User asks to transcribe something new** (imperative: "transcribe X", "ingest Y"):
+1. **Find it**: Use discover_podcasts with the show name, episode title, or person + show combination. Be specific.
 2. **Surface the options**: For each relevant untranscribed episode, call suggest_action with type "submit-on-demand" passing the episode's guid and a plain-language reason. The server auto-populates the rest.
 3. **Respond briefly**: Tell the user what you found and that the transcription option is available. If the episode is already transcribed (transcriptAvailable: true), let them know.
 
-Do NOT run search_quotes — the user isn't asking for quotes, they want transcription. Do NOT narrate the system ("emitting cards", "upsell", etc.) — just describe the show/episode.`;
+**Scenario B — User mentions a just-transcribed / already-transcribed episode and asks a follow-up** ("I just transcribed X, what did they say about Y?"):
+1. Use search_quotes / list_episode_chapters / get_episode / get_feed_episodes to look up the episode (scope by guid or feedId when provided in the user's message).
+2. Do a parallel search_quotes call on the broader topic so the user gets both the specific episode's content AND cross-show context.
+3. Deliver genuine content — quotes, key points, chapter highlights — not a list of other podcasts.
+4. Only suggest discover_podcasts / submit-on-demand if the user's topic has meaningful untranscribed coverage beyond what they already have.
+
+Do NOT narrate the system ("emitting cards", "upsell", etc.) — just describe the show/episode content.`;
 
 // Compose the full search prompt (backward-compatible default)
 const SYSTEM_PROMPT = [
