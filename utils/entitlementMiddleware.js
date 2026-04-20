@@ -242,7 +242,7 @@ const QUOTA_CONFIG_PRODUCTION = {
     [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },       // 1/week
     [TIERS.registered]: { maxUsage: 10, periodLengthDays: 30 },    // 10/month
     [TIERS.subscriber]: { maxUsage: 50, periodLengthDays: 30 },    // 50/month
-    [TIERS.admin]: { maxUsage: -1, periodLengthDays: 30 }          // Unlimited
+    [TIERS.admin]: { maxUsage: 250, periodLengthDays: 30 }         // 250/month (safety cap, was unlimited)
   }
 };
 

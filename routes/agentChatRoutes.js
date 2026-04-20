@@ -632,14 +632,40 @@ function createAgentChatRoutes({ openai } = {}) {
           .slice(-MAX_HISTORY_MESSAGES)
       : [];
 
-    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, "${message.substring(0, 100)}"`);
+    // Streaming decision — precedence:
+    //   1. req.body.stream (explicit opt-in/out from caller)
+    //   2. Accept: text/event-stream header
+    //   3. req._defaultStream (set by route wrappers — /api/pull sets false)
+    //   4. Default true (preserves legacy /api/chat/* frontend behavior)
+    const acceptHeader = String(req.headers.accept || '').toLowerCase();
+    const acceptWantsSse = acceptHeader.includes('text/event-stream');
+    const streaming = typeof req.body.stream === 'boolean'
+      ? req.body.stream
+      : acceptWantsSse
+        ? true
+        : typeof req._defaultStream === 'boolean'
+          ? req._defaultStream
+          : true;
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
+    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
+
+    if (streaming) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+    }
+
+    // Non-streaming accumulator. Populated by emit() when !streaming.
+    const buffered = {
+      text: '',
+      suggestedActions: [],
+      toolCalls: [],
+      session: null,
+      error: null,
+    };
 
     // Fields stripped from SSE payloads when includeMetrics=false (default).
     // Keys = event type, values = set of top-level fields to drop.
@@ -662,10 +688,33 @@ function createAgentChatRoutes({ openai } = {}) {
     };
 
     const emit = (eventType, data) => {
-      try {
-        const payload = sanitize(eventType, data);
-        res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
-      } catch (e) { /* client disconnected */ }
+      const payload = sanitize(eventType, data);
+      if (streaming) {
+        try {
+          res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
+        } catch (e) { /* client disconnected */ }
+        return;
+      }
+      // Non-streaming: accumulate for the final JSON response.
+      // text_delta is ignored — text_done carries the full final text.
+      switch (eventType) {
+        case 'text_done':
+          if (payload && typeof payload.text === 'string') buffered.text = payload.text;
+          break;
+        case 'suggested_action':
+          if (payload) buffered.suggestedActions.push(payload);
+          break;
+        case 'tool_result':
+          if (payload) buffered.toolCalls.push(payload);
+          break;
+        case 'session_created':
+          if (payload) buffered.session = payload;
+          break;
+        case 'error':
+          if (payload && payload.error) buffered.error = payload.error;
+          break;
+        // text_delta, tool_call, status, done — intentionally dropped in non-streaming mode
+      }
     };
 
     let _aborted = false;
@@ -1001,7 +1050,28 @@ function createAgentChatRoutes({ openai } = {}) {
         latencyMs,
       });
 
-      res.end();
+      if (streaming) {
+        res.end();
+      } else {
+        const responseBody = {
+          sessionId,
+          text: buffered.text,
+          suggestedActions: buffered.suggestedActions,
+        };
+        if (buffered.session) responseBody.session = buffered.session;
+        if (includeMetrics) {
+          responseBody.metrics = {
+            model: modelConfig.label,
+            intent,
+            rounds: round,
+            toolCalls: buffered.toolCalls,
+            tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
+            cost: { claude: claudeCost, tools: toolCost, total: totalCost },
+            latencyMs,
+          };
+        }
+        res.status(200).json(responseBody);
+      }
 
     } catch (error) {
       printLog(`[${requestId}] ERROR: ${error.message}`);
@@ -1020,8 +1090,14 @@ function createAgentChatRoutes({ openai } = {}) {
       } catch (logErr) {
         console.error(`[${requestId}] Failed to write agent log:`, logErr.message);
       }
-      emit('error', { error: error.message });
-      res.end();
+      if (streaming) {
+        emit('error', { error: error.message });
+        res.end();
+      } else if (!res.headersSent) {
+        res.status(500).json({ sessionId, error: error.message });
+      } else {
+        res.end();
+      }
     }
   }
 

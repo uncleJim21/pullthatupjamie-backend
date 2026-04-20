@@ -1707,7 +1707,103 @@ app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API ac
 const agentChatRouter = createAgentChatRoutes({ openai });
 app.use('/api/chat', agentChatRouter); // Claude agent handles /chat/agent and /chat/workflow (frontend, no entitlement gate)
 app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
+  // #swagger.tags = ['Pull']
+  // #swagger.summary = 'Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)'
+  /* #swagger.description = 'Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). Authentication accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). Quotas reset per configured period.' */
+  /* #swagger.security = [{ L402Credential: [] }, { BearerJWT: [] }, {}] */
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      message: 'What did Luke Gromen say about debt deflation this month?',
+      sessionId: 'optional-agent-session-id',
+      stream: false,
+      history: [
+        { role: 'user', content: 'previous user turn' },
+        { role: 'assistant', content: 'previous assistant turn' }
+      ],
+      context: {
+        guids: ['episode-guid-1'],
+        feedIds: ['1015378'],
+        persons: ['Luke Gromen'],
+        hint: 'focus on recent inflation commentary'
+      }
+    },
+    description: "Only the message field is required. stream defaults to false (single JSON response once the agent finishes); set true or send Accept: text/event-stream to receive an SSE stream of intermediate events. sessionId enables multi-turn continuity (auto-generated if omitted). history supplies prior turns (most recent last, each entry is role + content). context is optional pre-resolved hints from a prior suggested follow-up action."
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Agent response. Default (stream=false): single application/json body with { sessionId, text, suggestedActions } after the full agent loop completes. Streaming mode (stream=true OR Accept: text/event-stream): text/event-stream connection with incremental events (status, tool_call, tool_result, text_delta, text_done, suggested_action, done).',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          properties: {
+            sessionId: { type: 'string', example: 'agent-1234567890-abc123' },
+            text: { type: 'string', description: 'Final synthesized answer. May contain {{clip:shareLink}} placeholders that clients can render as inline quote cards.', example: 'Luke Gromen argued the debt deflation dynamic...' },
+            suggestedActions: {
+              type: 'array',
+              description: 'Optional follow-up chips and/or transcription-card offers.',
+              items: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: ['follow-up-query', 'submit-on-demand'] },
+                  label: { type: 'string' },
+                  payload: { type: 'object' }
+                }
+              }
+            },
+            session: {
+              type: 'object',
+              nullable: true,
+              description: 'Populated only if the agent created a shareable research session.',
+              properties: {
+                sessionId: { type: 'string' },
+                url: { type: 'string' },
+                itemCount: { type: 'integer' }
+              }
+            }
+          }
+        }
+      },
+      'text/event-stream': {
+        schema: {
+          type: 'string',
+          example: 'event: status\ndata: {"message":"Analyzing your request...","sessionId":"agent-1234..."}\n\nevent: text_delta\ndata: {"text":"Luke Gromen argued..."}\n\nevent: text_done\ndata: {"text":"Luke Gromen argued the debt deflation dynamic..."}\n\nevent: done\ndata: {"sessionId":"agent-1234..."}\n\n'
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Missing or invalid `message` in request body.',
+    schema: { error: 'message (or task) is required' }
+  } */
+  /* #swagger.responses[402] = {
+    description: 'Payment Required. Returned when an anonymous caller hits the endpoint without opting into free-tier (no `X-Free-Tier: true` header) OR when free-tier quota is exhausted and the caller is anonymous. Includes an L402 challenge in the WWW-Authenticate header with a Lightning invoice. Pay the invoice and retry with Authorization: L402 <macaroon>:<preimage>.',
+    schema: {
+      error: 'Payment required',
+      code: 'PAYMENT_REQUIRED',
+      invoice: 'lnbc...',
+      macaroon: 'base64...'
+    }
+  } */
+  /* #swagger.responses[429] = {
+    description: 'Quota exceeded for the caller\'s tier. Wait until `resetDate` or upgrade to a higher tier (subscriber / L402 prepaid).',
+    schema: {
+      error: 'Quota exceeded',
+      code: 'QUOTA_EXCEEDED',
+      used: 10,
+      max: 10,
+      resetDate: '2026-05-20T00:00:00.000Z',
+      daysUntilReset: 23,
+      tier: 'registered'
+    }
+  } */
+  /* #swagger.responses[503] = {
+    description: 'Agent backend not available (missing or invalid Anthropic API key on server).',
+    schema: { error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' }
+  } */
   req.url = '/agent';
+  req._defaultStream = false; // /api/pull defaults to a single JSON response; streaming is opt-in.
   agentChatRouter(req, res, next);
 }); // L402-protected pull endpoint — public API
 
