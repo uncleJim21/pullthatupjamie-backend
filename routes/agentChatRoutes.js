@@ -597,7 +597,12 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
-    const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
+    // TEMPORARILY DEPRECATED: fast vs quality mode selection.
+    // The `model` field in req.body is intentionally ignored — all requests
+    // use DEFAULT_AGENT_MODEL. To re-enable dual-mode, restore:
+    //   const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
+    // and re-expose the `model` param in the frontend / API docs.
+    const modelKey = DEFAULT_AGENT_MODEL;
     const modelConfig = AGENT_MODELS[modelKey];
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestId = `AGENT-${sessionId.slice(-8)}`;
