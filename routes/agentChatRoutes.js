@@ -416,33 +416,94 @@ function sanitizeSuggestAction(toolInput) {
   return clean;
 }
 
+function buildSubmitOnDemandPayload(input, { episodeCache, feedFallback } = {}) {
+  const payload = {
+    type: 'submit-on-demand',
+    reason: input.reason || '',
+    guid: input.guid || undefined,
+    feedGuid: input.feedGuid || undefined,
+    feedId: input.feedId != null && input.feedId !== '' ? String(input.feedId) : undefined,
+    episodeTitle: input.episodeTitle || undefined,
+    image: input.image || undefined,
+  };
+  const source = {
+    guid: payload.guid ? 'input' : 'missing',
+    feedGuid: payload.feedGuid ? 'input' : 'missing',
+    feedId: payload.feedId ? 'input' : 'missing',
+    episodeTitle: payload.episodeTitle ? 'input' : 'missing',
+    image: payload.image ? 'input' : 'missing',
+  };
+
+  if (payload.guid && episodeCache?.has(payload.guid)) {
+    const cached = episodeCache.get(payload.guid);
+    if (!payload.feedGuid && cached.feedGuid) { payload.feedGuid = cached.feedGuid; source.feedGuid = 'cache'; }
+    if (!payload.feedId && cached.feedId) { payload.feedId = String(cached.feedId); source.feedId = 'cache'; }
+    if (!payload.episodeTitle && cached.episodeTitle) { payload.episodeTitle = cached.episodeTitle; source.episodeTitle = 'cache'; }
+    if (!payload.image && cached.image) { payload.image = cached.image; source.image = 'cache'; }
+  }
+
+  if (feedFallback) {
+    if (!payload.feedGuid && feedFallback.feedGuid) { payload.feedGuid = feedFallback.feedGuid; source.feedGuid = 'feed'; }
+    if (!payload.feedId && feedFallback.feedId) { payload.feedId = String(feedFallback.feedId); source.feedId = 'feed'; }
+    if (!payload.image && feedFallback.image) { payload.image = feedFallback.image; source.image = 'feed'; }
+  }
+
+  return { payload, source };
+}
+
+function emitSubmitOnDemand(input, { emit, episodeCache, suggestedGuids, requestId, feedFallback, origin = 'llm' } = {}) {
+  const { payload, source } = buildSubmitOnDemandPayload(input, { episodeCache, feedFallback });
+
+  const missing = [];
+  if (!payload.guid) missing.push('guid');
+  if (!payload.feedGuid) missing.push('feedGuid');
+  if (!payload.feedId) missing.push('feedId');
+
+  const titlePreview = payload.episodeTitle ? payload.episodeTitle.substring(0, 60) : '';
+  const prefix = `[${requestId || 'SUGGEST'}] submit-on-demand[${origin}]`;
+
+  if (missing.length > 0) {
+    console.log(`${prefix} DROPPED — missing ${missing.join(',')} | guid=${payload.guid || 'null'}(${source.guid}) feedGuid=${payload.feedGuid || 'null'}(${source.feedGuid}) feedId=${payload.feedId || 'null'}(${source.feedId}) title="${titlePreview}"`);
+    return { emitted: false, missing, payload };
+  }
+
+  if (suggestedGuids?.has(payload.guid) || (payload.feedId && suggestedGuids?.has(payload.feedId))) {
+    console.log(`${prefix} SKIPPED (dedup) guid=${payload.guid} feedId=${payload.feedId}`);
+    return { emitted: false, reason: 'dedup', payload };
+  }
+
+  if (suggestedGuids) {
+    suggestedGuids.add(payload.guid);
+    if (payload.feedId) suggestedGuids.add(payload.feedId);
+  }
+
+  emit('suggested_action', payload);
+  console.log(`${prefix} EMITTED guid=${payload.guid}(${source.guid}) feedGuid=${payload.feedGuid}(${source.feedGuid}) feedId=${payload.feedId}(${source.feedId}) title="${titlePreview}"(${source.episodeTitle}) image=${payload.image ? 'yes' : 'no'}(${source.image})`);
+  return { emitted: true, payload };
+}
+
 function handleSuggestAction(toolInput, emit, { episodeCache, suggestedGuids, requestId } = {}) {
   const sanitized = sanitizeSuggestAction(toolInput);
   const { type, reason, ...params } = sanitized;
 
   if (type === 'submit-on-demand') {
-    const enriched = { ...params };
-    if (enriched.guid && episodeCache?.has(enriched.guid)) {
-      const cached = episodeCache.get(enriched.guid);
-      enriched.feedGuid = enriched.feedGuid || cached.feedGuid;
-      enriched.feedId = enriched.feedId || cached.feedId;
-      enriched.episodeTitle = enriched.episodeTitle || cached.episodeTitle;
-      enriched.image = enriched.image || cached.image;
+    const result = emitSubmitOnDemand(
+      { reason, ...params },
+      { emit, episodeCache, suggestedGuids, requestId, origin: 'llm' },
+    );
+    if (!result.emitted) {
+      if (result.reason === 'dedup') {
+        return { acknowledged: false, message: 'Already surfaced this transcription suggestion earlier in the response. Skip — do not retry.' };
+      }
+      return {
+        acknowledged: false,
+        message: `Skipped: submit-on-demand requires a guid from a recent discover_podcasts or get_feed_episodes result. Missing: ${(result.missing || []).join(', ')}. The server auto-fills feedGuid/feedId/title/image from the cache, but nothing in the cache matched guid "${params.guid || 'none'}".`,
+      };
     }
-    const missing = [];
-    if (!enriched.guid) missing.push('guid');
-    if (!enriched.feedGuid) missing.push('feedGuid');
-    if (!enriched.feedId) missing.push('feedId');
-    if (missing.length > 0) {
-      console.log(`[${requestId || 'SUGGEST'}] ⚠ Dropping submit-on-demand — missing ${missing.join(',')} after cache lookup (guid=${enriched.guid || 'none'})`);
-      return { acknowledged: false, message: `Skipped: submit-on-demand requires a guid from a recent discover_podcasts or get_feed_episodes result. The server fills in feedGuid/feedId/title/image automatically, but nothing in the cache matched "${enriched.guid || ''}". Missing: ${missing.join(', ')}.` };
-    }
-    if (suggestedGuids) {
-      suggestedGuids.add(enriched.guid);
-      if (enriched.feedId) suggestedGuids.add(enriched.feedId);
-    }
-    emit('suggested_action', { type, reason, ...enriched });
-    return { acknowledged: true, message: `Transcription suggestion surfaced for "${enriched.episodeTitle || enriched.guid}". Continue your response naturally; do not narrate this suggestion to the user.` };
+    return {
+      acknowledged: true,
+      message: `Transcription suggestion surfaced for "${result.payload.episodeTitle || result.payload.guid}". Continue your response naturally; do not narrate this suggestion to the user.`,
+    };
   }
 
   emit('suggested_action', { type, reason, ...params });
@@ -851,31 +912,45 @@ function createAgentChatRoutes({ openai } = {}) {
 
       // Auto-upsell: surface untranscribed episodes from discover results the agent didn't suggest
       const AUTO_UPSELL_MAX = 2;
-      let autoUpsellCount = 0;
-      for (const feed of discoverResults) {
-        if (autoUpsellCount >= AUTO_UPSELL_MAX) break;
-        const eps = feed.matchedEpisodes || [];
-        for (const ep of eps) {
-          if (autoUpsellCount >= AUTO_UPSELL_MAX) break;
-          if (ep.transcriptAvailable) continue;
-          const key = ep.guid || feed.feedId;
-          if (suggestedGuids.has(key)) continue;
-          suggestedGuids.add(key);
-          emit('suggested_action', {
-            type: 'submit-on-demand',
-            reason: `${feed.title || 'This show'} has untranscribed episodes that may be relevant.`,
-            guid: ep.guid || undefined,
-            feedGuid: ep.feedGuid || feed.feedGuid || undefined,
-            feedId: feed.feedId ? String(feed.feedId) : undefined,
-            episodeTitle: ep.title || undefined,
-            image: ep.image || feed.imageUrl || undefined,
-          });
-          autoUpsellCount++;
-          console.log(`[${requestId}] Auto-upsell: ${ep.title || ep.guid} from ${feed.title}`);
+      let autoUpsellEmitted = 0;
+      let autoUpsellAttempted = 0;
+      let autoUpsellDropped = 0;
+      let autoUpsellDeduped = 0;
+      outer: for (const feed of discoverResults) {
+        const feedFallback = {
+          feedGuid: feed.feedGuid || feed.podcastGuid || null,
+          feedId: feed.feedId != null ? String(feed.feedId) : null,
+          image: feed.image || feed.artwork || feed.imageUrl || null,
+        };
+        // For transcribed feeds, untranscribed episodes live in matchedEpisodes (flagged transcriptAvailable=false).
+        // For untranscribed feeds, all episodes live in feed.episodes (always untranscribed).
+        const candidateEpisodes = [
+          ...(feed.matchedEpisodes || []).filter(ep => !ep.transcriptAvailable),
+          ...(feed.episodes || []),
+        ];
+        for (const ep of candidateEpisodes) {
+          if (autoUpsellEmitted >= AUTO_UPSELL_MAX) break outer;
+          autoUpsellAttempted++;
+          const result = emitSubmitOnDemand(
+            {
+              reason: `${feed.title || 'This show'} has untranscribed episodes that may be relevant.`,
+              guid: ep.guid || null,
+              feedGuid: ep.feedGuid || null,
+              feedId: ep.feedId != null ? String(ep.feedId) : null,
+              episodeTitle: ep.title || null,
+              image: ep.image || null,
+            },
+            { emit, episodeCache, suggestedGuids, requestId, feedFallback, origin: 'auto-upsell' },
+          );
+          if (result.emitted) autoUpsellEmitted++;
+          else if (result.reason === 'dedup') autoUpsellDeduped++;
+          else autoUpsellDropped++;
         }
       }
-      if (autoUpsellCount > 0) {
-        printLog(`[${requestId}] Auto-upsell: emitted ${autoUpsellCount} submit-on-demand from discover results`);
+      if (autoUpsellAttempted > 0) {
+        printLog(`[${requestId}] Auto-upsell summary: attempted=${autoUpsellAttempted} emitted=${autoUpsellEmitted} dropped=${autoUpsellDropped} deduped=${autoUpsellDeduped} (max=${AUTO_UPSELL_MAX}, from ${discoverResults.length} discover feed(s))`);
+      } else if (discoverResults.length > 0) {
+        printLog(`[${requestId}] Auto-upsell: 0 candidates from ${discoverResults.length} discover feed(s) — no untranscribed matchedEpisodes`);
       }
 
       emit('done', {
