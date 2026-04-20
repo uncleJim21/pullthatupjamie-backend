@@ -606,6 +606,11 @@ function createAgentChatRoutes({ openai } = {}) {
     const triageEnabled = process.env.AGENT_TRIAGE_ENABLED !== 'false';
     const compactResults = req.body.compactResults !== undefined ? req.body.compactResults !== false : process.env.AGENT_COMPACT_RESULTS !== 'false';
     const compactHistoryEnabled = req.body.compactHistory !== undefined ? req.body.compactHistory !== false : process.env.AGENT_COMPACT_HISTORY !== 'false';
+    // Internal-only flag driven by env. When false (default / production),
+    // SSE emits are stripped of model, cost, tokens, intent, tool inputs,
+    // round numbers, etc. Set AGENT_INCLUDE_METRICS=true in .env on internal
+    // environments (local dev, benchmarks) to receive the full payload.
+    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true';
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
@@ -631,9 +636,30 @@ function createAgentChatRoutes({ openai } = {}) {
       'X-Accel-Buffering': 'no',
     });
 
+    // Fields stripped from SSE payloads when includeMetrics=false (default).
+    // Keys = event type, values = set of top-level fields to drop.
+    const INTERNAL_FIELDS = {
+      status:      new Set(['intent']),
+      tool_call:   new Set(['input', 'round']),
+      tool_result: new Set(['resultCount', 'latencyMs', 'round']),
+      done:        new Set(['model', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
+    };
+
+    const sanitize = (eventType, data) => {
+      if (includeMetrics) return data;
+      const stripKeys = INTERNAL_FIELDS[eventType];
+      if (!stripKeys || !data || typeof data !== 'object') return data;
+      const out = {};
+      for (const k of Object.keys(data)) {
+        if (!stripKeys.has(k)) out[k] = data[k];
+      }
+      return out;
+    };
+
     const emit = (eventType, data) => {
       try {
-        res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`);
+        const payload = sanitize(eventType, data);
+        res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
       } catch (e) { /* client disconnected */ }
     };
 
