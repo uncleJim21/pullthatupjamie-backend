@@ -5,7 +5,7 @@
  * based on the classified intent. The `search` profile is the full default.
  */
 
-const { PROMPT_SECTIONS, TOOL_DEFINITIONS } = require('./setup-agent');
+const { PROMPT_SECTIONS, TOOL_DEFINITIONS, buildCurrentDateSection } = require('./setup-agent');
 
 const ALL_TOOL_NAMES = TOOL_DEFINITIONS.map(t => t.name);
 
@@ -34,6 +34,7 @@ const PROFILES = {
     buildPrompt() {
       return [
         PROMPT_SECTIONS.base,
+        buildCurrentDateSection(),
         PROMPT_SECTIONS.searchTools,
         PROMPT_SECTIONS.searchCrafting,
         PROMPT_SECTIONS.criticalRules,
@@ -51,6 +52,7 @@ const PROFILES = {
     buildPrompt() {
       return [
         PROMPT_SECTIONS.base,
+        buildCurrentDateSection(),
         PROMPT_SECTIONS.searchCrafting,
         PROMPT_SECTIONS.sessionCuration,
         PROMPT_SECTIONS.tokenStewardship,
@@ -63,6 +65,7 @@ const PROFILES = {
     buildPrompt() {
       return [
         PROMPT_SECTIONS.base,
+        buildCurrentDateSection(),
         PROMPT_SECTIONS.transcribeTools,
         PROMPT_SECTIONS.transcribeRules,
       ].join('\n');

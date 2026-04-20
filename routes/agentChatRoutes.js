@@ -641,6 +641,8 @@ function createAgentChatRoutes({ openai } = {}) {
     res.on('close', () => { _aborted = true; });
     const aborted = () => _aborted;
 
+    let agentLog = null;
+
     try {
       await buildFeedLookup();
 
@@ -700,7 +702,7 @@ function createAgentChatRoutes({ openai } = {}) {
           image: existing.image || ep.image || feedFallback.image || null,
         });
       };
-      const agentLog = {
+      agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
         query: message, startedAt: new Date().toISOString(),
         classifierTokens,
@@ -973,9 +975,20 @@ function createAgentChatRoutes({ openai } = {}) {
     } catch (error) {
       printLog(`[${requestId}] ERROR: ${error.message}`);
       console.error(`[${requestId}] Stack:`, error.stack);
-      agentLog.error = error.message;
-      agentLog.completedAt = new Date().toISOString();
-      writeAgentLog(requestId, sessionId, agentLog);
+      try {
+        if (!agentLog) {
+          agentLog = {
+            requestId, sessionId, model: modelConfig.label,
+            query: message, startedAt: new Date().toISOString(),
+            rounds: [], finalText: null,
+          };
+        }
+        agentLog.error = error.message;
+        agentLog.completedAt = new Date().toISOString();
+        writeAgentLog(requestId, sessionId, agentLog);
+      } catch (logErr) {
+        console.error(`[${requestId}] Failed to write agent log:`, logErr.message);
+      }
       emit('error', { error: error.message });
       res.end();
     }
