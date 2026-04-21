@@ -55,6 +55,10 @@ const doc = {
     {
       name: 'Agent Auth',
       description: 'L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N to any request for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget.'
+    },
+    {
+      name: 'Pull',
+      description: 'LLM-orchestrated agent endpoint. Send a natural-language research query and receive a Server-Sent Events (SSE) stream containing the agent\'s progress and a synthesized answer with podcast quotes, episode metadata, and optional follow-up actions. The agent can call internal tools (semantic quote search, chapter lookup, person resolution, podcast discovery) over multiple turns before delivering a final response. Authentication accepts L402 prepaid credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true to opt in). Per-tier quotas apply.'
     }
   ],
   components: {
@@ -77,145 +81,200 @@ const doc = {
         name: 'X-Client-Id',
         description: 'Anonymous client identifier for session tracking without authentication.'
       }
-    },
-    schemas: {
-      Pagination: {
-        type: 'object',
-        properties: {
-          page: { type: 'integer', example: 1 },
-          totalPages: { type: 'integer', example: 5 },
-          totalCount: { type: 'integer', example: 250 },
-          limit: { type: 'integer', example: 50 },
-          hasMore: { type: 'boolean', example: true }
-        }
+    }
+    // NOTE: `components.schemas` is defined separately (PROPER_SCHEMAS below) and
+    // injected during post-processing. swagger-autogen mis-interprets OpenAPI 3
+    // schema objects placed here — it wraps every property in { type, properties }
+    // treating the schema definitions as example data. Keeping schemas out of the
+    // input doc and merging them after generation preserves their valid OAS3 shape.
+  }
+};
+
+// Proper OpenAPI 3 schema definitions, injected post-generation (see NOTE above).
+const PROPER_SCHEMAS = {
+  Pagination: {
+    type: 'object',
+    properties: {
+      page: { type: 'integer', example: 1 },
+      totalPages: { type: 'integer', example: 5 },
+      totalCount: { type: 'integer', example: 250 },
+      limit: { type: 'integer', example: 50 },
+      hasMore: { type: 'boolean', example: true }
+    }
+  },
+  Feed: {
+    type: 'object',
+    properties: {
+      feedId: { type: 'string', example: '1015378' },
+      title: { type: 'string', example: 'What Bitcoin Did' },
+      author: { type: 'string', example: 'Peter McCormack' },
+      description: { type: 'string' },
+      episodeCount: { type: 'integer', example: 824 },
+      imageUrl: { type: 'string', format: 'uri' },
+      hosts: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Host/owner names (empty array if not yet tagged)',
+        example: ['Peter McCormack']
       },
-      Feed: {
-        type: 'object',
-        properties: {
-          feedId: { type: 'string', example: '1015378' },
-          title: { type: 'string', example: 'What Bitcoin Did' },
-          author: { type: 'string', example: 'Peter McCormack' },
-          description: { type: 'string' },
-          episodeCount: { type: 'integer', example: 824 },
-          imageUrl: { type: 'string', format: 'uri' }
-        }
-      },
-      Episode: {
-        type: 'object',
-        properties: {
-          guid: { type: 'string' },
-          title: { type: 'string' },
-          creator: { type: 'string' },
-          description: { type: 'string' },
-          publishedDate: { type: 'string' },
-          duration: { type: 'string' },
-          imageUrl: { type: 'string', format: 'uri' },
-          guests: { type: 'array', items: { type: 'string' } }
-        }
-      },
-      Chapter: {
-        type: 'object',
-        properties: {
-          pineconeId: { type: 'string' },
-          chapterNumber: { type: 'integer' },
-          headline: { type: 'string' },
-          keywords: { type: 'array', items: { type: 'string' } },
-          summary: { type: 'string' },
-          startTime: { type: 'number' },
-          endTime: { type: 'number' },
-          duration: { type: 'number' }
-        }
-      },
-      Topic: {
-        type: 'object',
-        properties: {
-          keyword: { type: 'string', example: 'artificial intelligence' },
-          count: { type: 'integer', example: 150 },
-          feeds: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                feedId: { type: 'string' },
-                title: { type: 'string' }
-              }
-            }
-          },
-          sampleEpisodes: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                guid: { type: 'string' },
-                title: { type: 'string' }
-              }
-            }
+      feedType: {
+        type: 'string',
+        enum: ['interview', 'solo', 'panel', 'narrative', 'mixed'],
+        nullable: true,
+        description: 'Show format classification (null if not yet determined)'
+      }
+    }
+  },
+  Episode: {
+    type: 'object',
+    properties: {
+      guid: { type: 'string' },
+      title: { type: 'string' },
+      creator: { type: 'string' },
+      description: { type: 'string' },
+      publishedDate: { type: 'string' },
+      duration: { type: 'string' },
+      imageUrl: { type: 'string', format: 'uri' },
+      guests: { type: 'array', items: { type: 'string' } }
+    }
+  },
+  Chapter: {
+    type: 'object',
+    properties: {
+      pineconeId: { type: 'string' },
+      chapterNumber: { type: 'integer' },
+      headline: { type: 'string' },
+      keywords: { type: 'array', items: { type: 'string' } },
+      summary: { type: 'string' },
+      startTime: { type: 'number' },
+      endTime: { type: 'number' },
+      duration: { type: 'number' }
+    }
+  },
+  Topic: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', example: 'artificial intelligence' },
+      count: { type: 'integer', example: 150 },
+      feeds: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            feedId: { type: 'string' },
+            title: { type: 'string' }
           }
         }
       },
-      Person: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', example: 'Elon Musk' },
-          role: { type: 'string', enum: ['guest', 'creator'] },
-          appearances: { type: 'integer', example: 3 },
-          feeds: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                feedId: { type: 'string' },
-                title: { type: 'string' }
-              }
-            }
-          },
-          recentEpisodes: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                guid: { type: 'string' },
-                title: { type: 'string' },
-                publishedDate: { type: 'string' }
-              }
-            }
+      sampleEpisodes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            guid: { type: 'string' },
+            title: { type: 'string' }
+          }
+        }
+      }
+    }
+  },
+  Person: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', example: 'Elon Musk' },
+      role: { type: 'string', enum: ['guest', 'creator'] },
+      appearances: { type: 'integer', example: 3 },
+      feeds: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            feedId: { type: 'string' },
+            title: { type: 'string' }
           }
         }
       },
-      SearchResult: {
-        type: 'object',
-        properties: {
-          shareUrl: { type: 'string', format: 'uri' },
-          shareLink: { type: 'string' },
-          quote: { type: 'string' },
-          episode: { type: 'string' },
-          creator: { type: 'string' },
-          audioUrl: { type: 'string', format: 'uri' },
-          episodeImage: { type: 'string', format: 'uri' },
-          listenLink: { type: 'string' },
-          date: { type: 'string' },
-          similarity: {
-            type: 'object',
-            properties: {
-              combined: { type: 'number', example: 0.8542 },
-              vector: { type: 'number', example: 0.8542 }
-            }
-          },
-          timeContext: {
-            type: 'object',
-            properties: {
-              start_time: { type: 'number' },
-              end_time: { type: 'number' }
-            }
+      recentEpisodes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            guid: { type: 'string' },
+            title: { type: 'string' },
+            publishedDate: { type: 'string' }
           }
         }
-      },
-      Error: {
+      }
+    }
+  },
+  SearchResult: {
+    type: 'object',
+    properties: {
+      shareUrl: { type: 'string', format: 'uri' },
+      shareLink: { type: 'string' },
+      quote: { type: 'string' },
+      episode: { type: 'string' },
+      creator: { type: 'string' },
+      audioUrl: { type: 'string', format: 'uri' },
+      episodeImage: { type: 'string', format: 'uri' },
+      listenLink: { type: 'string' },
+      date: { type: 'string' },
+      similarity: {
         type: 'object',
         properties: {
-          error: { type: 'string' },
+          combined: { type: 'number', example: 0.8542 },
+          vector: { type: 'number', example: 0.8542 }
+        }
+      },
+      timeContext: {
+        type: 'object',
+        properties: {
+          start_time: { type: 'number' },
+          end_time: { type: 'number' }
+        }
+      }
+    }
+  },
+  Error: {
+    type: 'object',
+    properties: {
+      error: { type: 'string' },
+      message: { type: 'string' },
+      details: { type: 'string' }
+    }
+  },
+  L402Challenge: {
+    type: 'object',
+    description: 'L402 Payment Required challenge. Also emitted as a WWW-Authenticate response header.',
+    properties: {
+      type: { type: 'string', example: 'https://pullthatupjamie.ai/l402/payment-required' },
+      title: { type: 'string', example: 'Payment Required' },
+      status: { type: 'integer', example: 402 },
+      detail: { type: 'string', example: 'Purchase credits to access this endpoint. Pay the Lightning invoice, then retry with Authorization: L402 <macaroon>:<preimage>' },
+      macaroon: { type: 'string', description: 'Base64-encoded macaroon credential', example: 'AgEDTDQwMgJCM...' },
+      invoice: { type: 'string', description: 'BOLT-11 Lightning invoice string', example: 'lnbc10u1p...' },
+      paymentHash: { type: 'string', example: '9f8a2b...' },
+      amountSats: { type: 'integer', example: 1000 },
+      amountUsd: { type: 'number', example: 1.00 },
+      btcUsdRate: { type: 'number', example: 100000 },
+      expiresAt: { type: 'string', format: 'date-time' },
+      code: {
+        type: 'string',
+        description: 'Machine-readable reason code.',
+        enum: ['PAYMENT_REQUIRED', 'AUTH_REQUIRED', 'NO_BALANCE', 'INSUFFICIENT_FUNDS', 'QUOTA_EXCEEDED']
+      },
+      creditInfo: {
+        type: 'object',
+        properties: {
+          model: { type: 'string', example: 'credit' },
+          service: { type: 'string', example: 'pullthatupjamie' },
           message: { type: 'string' },
-          details: { type: 'string' }
+          customAmount: { type: 'string' },
+          defaultSats: { type: 'integer' },
+          minSats: { type: 'integer' },
+          maxSats: { type: 'integer' },
+          balanceEndpoint: { type: 'string', example: '/api/agent/balance' },
+          responseHeaders: { type: 'array', items: { type: 'string' } }
         }
       }
     }
@@ -236,7 +295,8 @@ const ALLOWED_TAGS = new Set([
   'Create',
   'Agent Auth',
   'Discovery',
-  'On-Demand Transcription'
+  'On-Demand Transcription',
+  'Pull'
 ]);
 
 swaggerAutogen(outputFile, routes, doc).then(({ success, data }) => {
@@ -263,6 +323,10 @@ swaggerAutogen(outputFile, routes, doc).then(({ success, data }) => {
   }
 
   spec.paths = filteredPaths;
+
+  // Inject proper OpenAPI 3 schemas (swagger-autogen mangles them if placed in the input doc).
+  spec.components = spec.components || {};
+  spec.components.schemas = PROPER_SCHEMAS;
 
   fs.writeFileSync(outputFile, JSON.stringify(spec, null, 2));
 

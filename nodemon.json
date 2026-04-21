@@ -1,0 +1,14 @@
+{
+  "ignore": [
+    "logs/**",
+    "node_modules/**",
+    "dist/**",
+    ".git/**",
+    "*.test.js",
+    "tests/**",
+    "dbs/**",
+    "assets/**",
+    ".venv/**"
+  ],
+  "delay": 500
+}

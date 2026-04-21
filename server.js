@@ -69,6 +69,8 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const corpusRoutes = require('./routes/corpusRoutes');
 const agentRoutes = require('./routes/agentRoutes');
 const discoverRoutes = require('./routes/discoverRoutes');
+// const createWorkflowRoutes = require('./routes/workflowRoutes'); // Shelved — replaced by Claude agent
+const createAgentChatRoutes = require('./routes/agentChatRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { User } = require('./models/shared/UserSchema');
 const { Entitlement } = require('./models/Entitlement');
@@ -1178,158 +1180,14 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
     description: 'Server error',
     schema: { error: 'Failed to search quotes', details: 'Error message' }
   } */
-  let { query, feedIds=[], limit = 5, minDate = null, maxDate = null, episodeName = null, guid = null, guids: guidsParam = [], smartMode = false } = req.body;
-  const originalQuery = query;
-  feedIds = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
-  let guids = [
-    ...(guid ? [guid] : []),
-    ...(Array.isArray(guidsParam) ? guidsParam : [])
-  ];
-  limit = Math.min(process.env.MAX_PODCAST_SEARCH_RESULTS ? parseInt(process.env.MAX_PODCAST_SEARCH_RESULTS) : 50, Math.floor(limit))
-  const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
-  printLog(`[${requestId}] /api/search-quotes request received`);
-  printLog(`[${requestId}] Query: "${query}", Limit: ${limit}, Feeds: ${feedIds.length}, GUIDs: ${guids.length || 'none'}, SmartMode: ${smartMode}`);
-
-  let triageResult = null;
-  if (smartMode && !feedIds.length && !guids.length) {
-    try {
-      triageResult = await triageQuery(query, openai);
-      printLog(`[${requestId}] Triage result: intent=${triageResult.triage?.intent}, confidence=${triageResult.triage?.confidence}, latency=${triageResult.triage?.latencyMs}ms`);
-      if (triageResult.rewrittenQuery) query = triageResult.rewrittenQuery;
-      if (triageResult.feedIds?.length) feedIds = triageResult.feedIds;
-      if (triageResult.guids?.length) guids = triageResult.guids;
-      if (triageResult.episodeName) episodeName = triageResult.episodeName;
-      if (triageResult.minDate && !minDate) minDate = triageResult.minDate;
-      if (triageResult.maxDate && !maxDate) maxDate = triageResult.maxDate;
-      printLog(`[${requestId}] Post-triage: query="${query}", feedIds=${JSON.stringify(feedIds)}, guids=${JSON.stringify(guids)}`);
-    } catch (triageError) {
-      printLog(`[${requestId}] Triage failed (non-fatal): ${triageError.message}`);
-    }
-  }
-
   try {
-    // Step 1: Generate query embedding
-    printLog(`[${requestId}] Step 1: Generating query embedding...`);
-    const embeddingResponse = await openai.embeddings.create({
-      model: "text-embedding-ada-002",
-      input: query
-    });
-    
-    const embedding = embeddingResponse.data[0].embedding;
-    printLog(`[${requestId}] ✓ Query embedding generated`);
-
-    // Step 2: Search Pinecone WITHOUT metadata (MongoDB will provide it)
-    printLog(`[${requestId}] Step 2: Searching Pinecone (without metadata)...`);
-    const minimalResults = await findSimilarDiscussions({
-      embedding,
-      feedIds,
-      guids,
-      limit,
-      query,
-      minDate,
-      maxDate,
-      episodeName,
-      includeMetadata: false
-    });
-    
-    printLog(`[${requestId}] ✓ Pinecone returned ${minimalResults.length} results`);
-    
-    // Step 3: Extract Pinecone IDs and fetch metadata from MongoDB
-    printLog(`[${requestId}] Step 3: Fetching metadata from MongoDB...`);
-    const pineconeIds = minimalResults.map(r => r.id);
-    
-    const JamieVectorMetadata = require('./models/JamieVectorMetadata');
-    const metadataDocs = await JamieVectorMetadata.find({
-      pineconeId: { $in: pineconeIds },
-      type: 'paragraph'
-    })
-    .select('pineconeId metadataRaw')
-    .lean();
-    
-    printLog(`[${requestId}] ✓ Found ${metadataDocs.length} metadata docs in MongoDB`);
-    
-    // Step 4: Create lookup map and merge with Pinecone scores
-    const metadataMap = new Map();
-    metadataDocs.forEach(doc => {
-      metadataMap.set(doc.pineconeId, doc.metadataRaw);
-    });
-    
-    // Step 5: Format results by combining Pinecone scores with MongoDB metadata
-    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
-    const results = minimalResults
-      .map(minimalResult => {
-        const metadata = metadataMap.get(minimalResult.id);
-        if (!metadata) {
-          // If metadata not found in MongoDB, skip this result
-          printLog(`[${requestId}] ⚠️ No metadata found for ${minimalResult.id}`);
-          return null;
-        }
-        
-        const hierarchyLevel = metadata.type || 'paragraph';
-        
-        // For chapters, prefer the chapter headline/title as the primary text
-        const quote =
-          hierarchyLevel === 'chapter'
-            ? (metadata.headline || metadata.summary || metadata.text || "Quote unavailable")
-            : (metadata.text || metadata.summary || metadata.headline || "Quote unavailable");
-        
-        return {
-          shareUrl: `${baseUrl}/share?clip=${minimalResult.id}`,
-          shareLink: minimalResult.id,
-          quote,
-          episode: metadata.episode || metadata.title || "Unknown episode",
-          creator: metadata.creator || "Creator not specified",
-          audioUrl: metadata.audioUrl || "URL unavailable",
-          episodeImage: metadata.episodeImage || "Image unavailable",
-          listenLink: metadata.listenLink || "",
-          date: metadata.publishedDate || "Date not provided",
-          similarity: {
-            combined: parseFloat(minimalResult.score.toFixed(4)),
-            vector: parseFloat(minimalResult.score.toFixed(4))
-          },
-          timeContext: {
-            start_time: metadata.start_time || null,
-            end_time: metadata.end_time || null
-          }
-        };
-      })
-      .filter(Boolean); // Remove null entries
-    
-    printLog(`[${requestId}] ✓ Formatted ${results.length} results`);
-    printLog(`[${requestId}] /api/search-quotes complete`);
-
-    const response = {
-      query,
-      results,
-      total: results.length,
-      model: "text-embedding-ada-002",
-      relatedEndpoints: {
-        discoverPodcasts: {
-          description: 'Search the full Podcast Index catalog for podcasts not yet in our corpus',
-          method: 'POST',
-          url: '/api/discover-podcasts'
-        },
-        requestTranscription: {
-          description: 'Submit untranscribed podcast episodes for transcription, timestamped chaptering, and indexing',
-          method: 'POST',
-          url: '/api/on-demand/submitOnDemandRun'
-        }
-      }
-    };
-    if (triageResult) {
-      response.originalQuery = originalQuery;
-      response.triage = triageResult.triage;
-    }
-    res.json(response);
-
+    const { searchQuotes } = require('./services/searchQuotesService');
+    const result = await searchQuotes(req.body, { openai });
+    res.json(result);
   } catch (error) {
-    printLog(`[${requestId}] ✗ Error:`, error.message);
+    printLog(`[search-quotes] Error: ${error.message}`);
     console.error('Search quotes error:', error);
-    res.status(500).json({ 
-      error: 'Failed to search quotes',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Failed to search quotes', details: error.message });
   }
 });
 
@@ -1379,123 +1237,15 @@ app.post('/api/search-chapters', serviceHmac({ optional: true }), createEntitlem
     schema: { $ref: '#/components/schemas/Error' }
   } */
   try {
-    const { search, feedIds = [], limit: rawLimit = 20, page: rawPage = 1 } = req.body;
-
-    if (!search || typeof search !== 'string' || search.trim().length === 0) {
-      return res.status(400).json({
-        error: 'Bad request',
-        message: 'search is required in request body'
-      });
+    const { searchChapters } = require('./services/searchChaptersService');
+    const result = await searchChapters(req.body);
+    if (result.status) {
+      return res.status(result.status).json(result);
     }
-
-    const searchTerm = search.trim();
-    const limit = Math.min(Math.max(1, parseInt(rawLimit, 10) || 20), 200);
-    const page = Math.max(1, parseInt(rawPage, 10) || 1);
-    const skip = (page - 1) * limit;
-
-    const lower = searchTerm.toLowerCase();
-    const upper = searchTerm.toUpperCase();
-    const titleCase = searchTerm.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
-    const firstCap = searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1).toLowerCase();
-    const keywordVariants = [...new Set([searchTerm, lower, upper, titleCase, firstCap])];
-
-    const query = {
-      type: 'chapter',
-      'metadataRaw.keywords': { $in: keywordVariants }
-    };
-
-    const feedIdArray = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
-    if (feedIdArray.length > 0) {
-      query.feedId = { $in: feedIdArray };
-    }
-
-    const totalCount = await JamieVectorMetadata.countDocuments(query);
-
-    const chapters = await JamieVectorMetadata.find(query)
-      .select('pineconeId guid feedId start_time end_time metadataRaw')
-      .sort({ 'metadataRaw.headline': 1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    const uniqueGuids = [...new Set(chapters.map(c => c.guid).filter(Boolean))];
-    const episodeMap = new Map();
-
-    if (uniqueGuids.length > 0) {
-      const episodes = await JamieVectorMetadata.find({
-        type: 'episode',
-        guid: { $in: uniqueGuids }
-      })
-        .select('guid feedId publishedDate metadataRaw')
-        .lean();
-
-      for (const ep of episodes) {
-        episodeMap.set(ep.guid, ep);
-      }
-    }
-
-    const formatChapterResult = (doc) => {
-      const meta = doc.metadataRaw || {};
-      return {
-        pineconeId: doc.pineconeId,
-        chapterNumber: meta.chapterNumber ?? meta.chapter_number ?? null,
-        headline: meta.headline || null,
-        keywords: meta.keywords || [],
-        summary: meta.summary || null,
-        startTime: meta.startTime ?? meta.start_time ?? doc.start_time ?? null,
-        endTime: meta.endTime ?? meta.end_time ?? doc.end_time ?? null,
-        duration: meta.duration || null
-      };
-    };
-
-    const formatEpisodeContext = (doc) => {
-      const meta = doc.metadataRaw || {};
-      return {
-        guid: doc.guid || meta.guid,
-        title: meta.title || null,
-        creator: meta.creator || null,
-        publishedDate: meta.publishedDate || doc.publishedDate || null,
-        feedId: doc.feedId || meta.feedId,
-        imageUrl: meta.imageUrl || meta.episodeImage || null,
-        listenLink: meta.listenLink || null
-      };
-    };
-
-    const nullEpisode = (chapter) => ({
-      guid: chapter.guid, title: null, creator: null,
-      publishedDate: null, feedId: chapter.feedId,
-      imageUrl: null, listenLink: null
-    });
-
-    const data = chapters.map(chapter => ({
-      chapter: formatChapterResult(chapter),
-      episode: episodeMap.has(chapter.guid)
-        ? formatEpisodeContext(episodeMap.get(chapter.guid))
-        : nullEpisode(chapter)
-    }));
-
-    const totalPages = Math.ceil(totalCount / limit);
-
-    res.json({
-      data,
-      pagination: {
-        page,
-        totalPages,
-        totalCount,
-        limit,
-        hasMore: page < totalPages
-      },
-      query: {
-        search: searchTerm,
-        feedIds: feedIdArray.length > 0 ? feedIdArray : null
-      }
-    });
+    res.json(result);
   } catch (error) {
     console.error('[search-chapters] Error:', error);
-    res.status(500).json({
-      error: 'Failed to search chapters',
-      details: error.message
-    });
+    res.status(500).json({ error: 'Failed to search chapters', details: error.message });
   }
 });
 
@@ -1953,6 +1703,109 @@ app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
 app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
+// app.use('/api/chat', createWorkflowRoutes({ openai })); // Shelved — replaced by Claude agent
+const agentChatRouter = createAgentChatRoutes({ openai });
+app.use('/api/chat', agentChatRouter); // Claude agent handles /chat/agent and /chat/workflow (frontend, no entitlement gate)
+app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
+  // #swagger.tags = ['Pull']
+  // #swagger.summary = 'Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)'
+  /* #swagger.description = 'Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). Authentication accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). Quotas reset per configured period.' */
+  /* #swagger.security = [{ L402Credential: [] }, { BearerJWT: [] }, {}] */
+  /* #swagger.parameters['body'] = {
+    in: 'body',
+    required: true,
+    schema: {
+      message: 'What did Luke Gromen say about debt deflation this month?',
+      sessionId: 'optional-agent-session-id',
+      stream: false,
+      history: [
+        { role: 'user', content: 'previous user turn' },
+        { role: 'assistant', content: 'previous assistant turn' }
+      ],
+      context: {
+        guids: ['episode-guid-1'],
+        feedIds: ['1015378'],
+        persons: ['Luke Gromen'],
+        hint: 'focus on recent inflation commentary'
+      }
+    },
+    description: "Only the message field is required. stream defaults to false (single JSON response once the agent finishes); set true or send Accept: text/event-stream to receive an SSE stream of intermediate events. sessionId enables multi-turn continuity (auto-generated if omitted). history supplies prior turns (most recent last, each entry is role + content). context is optional pre-resolved hints from a prior suggested follow-up action."
+  } */
+  /* #swagger.responses[200] = {
+    description: 'Agent response. Default (stream=false): single application/json body with { sessionId, text, suggestedActions } after the full agent loop completes. Streaming mode (stream=true OR Accept: text/event-stream): text/event-stream connection with incremental events (status, tool_call, tool_result, text_delta, text_done, suggested_action, done).',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          properties: {
+            sessionId: { type: 'string', example: 'agent-1234567890-abc123' },
+            text: { type: 'string', description: 'Final synthesized answer. May contain {{clip:shareLink}} placeholders that clients can render as inline quote cards.', example: 'Luke Gromen argued the debt deflation dynamic...' },
+            suggestedActions: {
+              type: 'array',
+              description: 'Optional follow-up chips and/or transcription-card offers.',
+              items: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: ['follow-up-query', 'submit-on-demand'] },
+                  label: { type: 'string' },
+                  payload: { type: 'object' }
+                }
+              }
+            },
+            session: {
+              type: 'object',
+              nullable: true,
+              description: 'Populated only if the agent created a shareable research session.',
+              properties: {
+                sessionId: { type: 'string' },
+                url: { type: 'string' },
+                itemCount: { type: 'integer' }
+              }
+            }
+          }
+        }
+      },
+      'text/event-stream': {
+        schema: {
+          type: 'string',
+          example: 'event: status\ndata: {"message":"Analyzing your request...","sessionId":"agent-1234..."}\n\nevent: text_delta\ndata: {"text":"Luke Gromen argued..."}\n\nevent: text_done\ndata: {"text":"Luke Gromen argued the debt deflation dynamic..."}\n\nevent: done\ndata: {"sessionId":"agent-1234..."}\n\n'
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[400] = {
+    description: 'Missing or invalid `message` in request body.',
+    schema: { error: 'message (or task) is required' }
+  } */
+  /* #swagger.responses[402] = {
+    description: 'Payment Required. Returned when an anonymous caller hits the endpoint without opting into free-tier (no `X-Free-Tier: true` header) OR when free-tier quota is exhausted and the caller is anonymous. Includes an L402 challenge in the WWW-Authenticate header with a Lightning invoice. Pay the invoice and retry with Authorization: L402 <macaroon>:<preimage>.',
+    schema: {
+      error: 'Payment required',
+      code: 'PAYMENT_REQUIRED',
+      invoice: 'lnbc...',
+      macaroon: 'base64...'
+    }
+  } */
+  /* #swagger.responses[429] = {
+    description: 'Quota exceeded for the caller\'s tier. Wait until `resetDate` or upgrade to a higher tier (subscriber / L402 prepaid).',
+    schema: {
+      error: 'Quota exceeded',
+      code: 'QUOTA_EXCEEDED',
+      used: 10,
+      max: 10,
+      resetDate: '2026-05-20T00:00:00.000Z',
+      daysUntilReset: 23,
+      tier: 'registered'
+    }
+  } */
+  /* #swagger.responses[503] = {
+    description: 'Agent backend not available (missing or invalid Anthropic API key on server).',
+    schema: { error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' }
+  } */
+  req.url = '/agent';
+  req._defaultStream = false; // /api/pull defaults to a single JSON response; streaming is opt-in.
+  agentChatRouter(req, res, next);
+}); // L402-protected pull endpoint — public API
 
 // OpenAPI spec and Swagger UI
 const openapiSpec = require('./openapi.json');

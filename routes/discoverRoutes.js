@@ -176,7 +176,7 @@ async function fetchTrending(params) {
   }
 }
 
-async function fetchEpisodesForFeed(feedId) {
+async function fetchEpisodesForFeed(feedId, feedUrl) {
   try {
     const response = await axios.post(`${RSS_EXTRACTOR_BASE}/getPodcastByFeedId`, {
       feedId: String(feedId),
@@ -185,9 +185,24 @@ async function fetchEpisodesForFeed(feedId) {
     const data = response.data;
     const feedInfo = data?.episodes?.feedInfo || data?.feedInfo || {};
     const episodes = data?.episodes?.episodes || data?.episodes || [];
-    return { feedInfo, episodes };
+    if (episodes.length > 0) return { feedInfo, episodes };
   } catch (error) {
     printLog(`[DISCOVER] getPodcastByFeedId failed for feedId ${feedId}: ${error.message}`);
+  }
+
+  if (!feedUrl) return { feedInfo: {}, episodes: [] };
+
+  try {
+    const response = await axios.post(`${RSS_EXTRACTOR_BASE}/getFeed`, {
+      feedUrl, feedId: String(feedId), limit: 10
+    }, { headers: RSS_HEADERS, timeout: RSS_TIMEOUT_MS });
+    const data = response.data;
+    const feedInfo = data?.feedInfo || {};
+    const inner = data?.episodes;
+    const episodes = inner?.episodes || (Array.isArray(inner) ? inner : []);
+    return { feedInfo, episodes };
+  } catch (error) {
+    printLog(`[DISCOVER] getFeed fallback failed for feedId ${feedId}: ${error.message}`);
     return { feedInfo: {}, episodes: [] };
   }
 }
@@ -222,12 +237,17 @@ function normalizePersonEpisode(item) {
     feedGuid: item.podcastGuid || null,
     feedTitle: item.feedTitle || '',
     feedUrl: item.feedUrl || '',
-    feedAuthor: item.feedAuthor || ''
+    feedAuthor: item.feedAuthor || '',
+    image: item.image || item.feedImage || '',
+    enclosureUrl: item.enclosureUrl || '',
+    link: item.link || '',
   };
 }
 
-function buildNextSteps(feed, transcriptAvailable) {
-  if (transcriptAvailable) {
+function buildNextSteps(feed, transcriptAvailable, matchedEpisodes) {
+  const untranscribedEpisodes = (matchedEpisodes || []).filter(ep => !ep.transcriptAvailable);
+
+  if (transcriptAvailable && untranscribedEpisodes.length === 0) {
     return {
       searchTranscript: {
         description: 'Semantic search across this podcast\'s transcripts with timestamped deeplinks',
@@ -239,6 +259,32 @@ function buildNextSteps(feed, transcriptAvailable) {
         description: 'Get timestamped chapters for a specific episode',
         method: 'GET',
         url: '/api/episode-with-chapters/:guid'
+      }
+    };
+  }
+
+  if (transcriptAvailable && untranscribedEpisodes.length > 0) {
+    return {
+      searchTranscript: {
+        description: 'Semantic search across this podcast\'s existing transcripts',
+        method: 'POST',
+        url: '/api/search-quotes',
+        body: { query: '...', feedIds: [feed.feedId], smartMode: true }
+      },
+      requestTranscription: {
+        description: `${untranscribedEpisodes.length} matched episode(s) on this feed are NOT yet transcribed`,
+        method: 'POST',
+        url: '/api/on-demand/submitOnDemandRun',
+        bodyTemplate: {
+          message: `Transcribe episodes from ${feed.title || 'podcast'}`,
+          parameters: {},
+          episodes: untranscribedEpisodes.map(ep => ({
+            guid: ep.guid,
+            feedGuid: ep.feedGuid || feed.feedGuid || '<feedGuid>',
+            feedId: String(feed.feedId),
+            title: ep.title,
+          }))
+        }
       }
     };
   }
@@ -268,14 +314,322 @@ function buildNextSteps(feed, transcriptAvailable) {
   return steps;
 }
 
-// ========== Main Endpoint ==========
+// ========== Core discover logic (shared by HTTP route and agent tool handler) ==========
 
-/**
- * POST /api/discover-podcasts
- * LLM-assisted podcast discovery across the Podcast Index catalog.
- * Routes queries to byterm, byperson, and/or trending based on intent.
- * Applies string-based name filtering + LLM re-ranking to reduce false positives.
- */
+async function discoverPodcasts({ query, limit = 10 }) {
+  if (!query || typeof query !== 'string') {
+    return { error: 'query is required and must be a string', status: 400 };
+  }
+
+  const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
+  const requestId = `DISCOVER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const startTime = Date.now();
+  const timings = { llm: 0, search: 0, filter: 0, episodes: 0, enrichment: 0, total: 0 };
+
+  printLog(`[${requestId}] ========== DISCOVER REQUEST ==========`);
+  printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit}`);
+
+  const llmStart = Date.now();
+  const routing = await extractSearchRouting(query);
+  timings.llm = Date.now() - llmStart;
+
+  const bytermQueries = (routing.byterm_queries || []).slice(0, 2);
+  const bypersonQueries = (routing.byperson_queries || []).slice(0, 2);
+  const topicHints = (routing.topic_hints || []).slice(0, 2);
+  const trendingParams = routing.trending || null;
+
+  printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, topic_hints=${JSON.stringify(topicHints)}, trending=${JSON.stringify(trendingParams)}`);
+
+  const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || topicHints.length > 0 || trendingParams;
+  if (!hasAnySearch) {
+    return {
+      error: 'Could not determine search strategy from query',
+      detail: 'Try being more specific about the podcast name, topic, or person you\'re looking for',
+      status: 400,
+    };
+  }
+
+  const searchStart = Date.now();
+  const searchPromises = [];
+  const searchLabels = [];
+
+  for (const term of bytermQueries) {
+    searchPromises.push(searchByTerm(term));
+    searchLabels.push(`byterm:"${term}"`);
+  }
+  for (const person of bypersonQueries) {
+    searchPromises.push(searchByPerson(person));
+    searchLabels.push(`byperson:"${person}"`);
+  }
+  for (const hint of topicHints) {
+    searchPromises.push(searchByTerm(hint));
+    searchLabels.push(`topic_hint:"${hint}"`);
+  }
+  if (trendingParams) {
+    searchPromises.push(fetchTrending(trendingParams));
+    searchLabels.push(`trending:${JSON.stringify(trendingParams)}`);
+  }
+
+  const rawResults = await Promise.all(searchPromises);
+  timings.search = Date.now() - searchStart;
+
+  printLog(`[${requestId}] Search (${timings.search}ms): ${searchLabels.length} backends queried: ${searchLabels.join(', ')}`);
+
+  const feedMap = new Map();
+  const personEpisodes = [];
+  let resultIdx = 0;
+
+  for (let i = 0; i < bytermQueries.length; i++) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] byterm "${bytermQueries[i]}": ${feeds.length} feeds`);
+  }
+
+  for (let i = 0; i < bypersonQueries.length; i++) {
+    const rawEpisodes = rawResults[resultIdx++] || [];
+    const normalized = rawEpisodes.map(ep => normalizePersonEpisode(ep));
+    const filtered = filterByPersonRelevance(normalized, bypersonQueries[i]);
+
+    printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${rawEpisodes.length} raw → ${filtered.length} after name filter`);
+
+    for (const ep of filtered) {
+      personEpisodes.push(ep);
+      const fid = ep.feedId;
+      if (fid && !feedMap.has(fid)) {
+        feedMap.set(fid, {
+          feedId: fid,
+          feedGuid: ep.podcastGuid || null,
+          title: ep.feedTitle,
+          url: ep.feedUrl,
+          description: '',
+          author: ep.feedAuthor,
+          image: '',
+          language: '',
+          categories: {},
+          trendScore: null,
+        });
+      }
+    }
+  }
+
+  for (let i = 0; i < topicHints.length; i++) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] topic_hint "${topicHints[i]}": ${feeds.length} feeds`);
+  }
+
+  if (trendingParams) {
+    const feeds = rawResults[resultIdx++] || [];
+    for (const feed of feeds) {
+      const normalized = normalizeFeed(feed);
+      if (normalized.feedId && !feedMap.has(normalized.feedId)) {
+        feedMap.set(normalized.feedId, normalized);
+      }
+    }
+    printLog(`[${requestId}] trending: ${feeds.length} feeds`);
+  }
+
+  const episodesByFeed = new Map();
+  for (const ep of personEpisodes) {
+    if (!episodesByFeed.has(ep.feedId)) episodesByFeed.set(ep.feedId, []);
+    episodesByFeed.get(ep.feedId).push(ep);
+  }
+
+  const enrichStart = Date.now();
+  const feedIds = Array.from(feedMap.keys());
+  const episodeGuids = personEpisodes.map(ep => ep.guid).filter(Boolean);
+
+  const [transcribedFeedDocs, transcribedEpisodeDocs] = await Promise.all([
+    feedIds.length > 0
+      ? JamieVectorMetadata.find({ type: 'feed', feedId: { $in: feedIds } }).select('feedId').lean()
+      : [],
+    episodeGuids.length > 0
+      ? JamieVectorMetadata.find({ type: 'episode', guid: { $in: episodeGuids } }).select('guid feedId').lean()
+      : [],
+  ]);
+
+  const transcribedFeedIds = new Set(transcribedFeedDocs.map(f => String(f.feedId)));
+  const transcribedEpisodeGuids = new Set(transcribedEpisodeDocs.map(ep => ep.guid));
+  for (const ep of transcribedEpisodeDocs) {
+    if (ep.feedId) transcribedFeedIds.add(String(ep.feedId));
+  }
+  timings.enrichment = Date.now() - enrichStart;
+
+  printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds, ${transcribedEpisodeGuids.size} transcribed episodes found`);
+
+  let results = Array.from(feedMap.values())
+    .slice(0, effectiveLimit)
+    .map(feed => {
+      const feedTranscribed = transcribedFeedIds.has(feed.feedId);
+      const rawEpisodes = episodesByFeed.get(feed.feedId) || null;
+      const matchedEpisodes = rawEpisodes
+        ? rawEpisodes.slice(0, 10).map(ep => ({
+            ...ep,
+            transcriptAvailable: !!(ep.guid && transcribedEpisodeGuids.has(ep.guid)),
+          }))
+        : null;
+      return {
+        ...feed,
+        transcriptAvailable: feedTranscribed,
+        matchedEpisodes,
+        episodes: null,
+        nextSteps: buildNextSteps(feed, feedTranscribed, matchedEpisodes),
+      };
+    });
+
+  if (results.length > 0) {
+    const filterStart = Date.now();
+    results = await filterResultsWithLLM(query, results, requestId);
+    timings.filter = Date.now() - filterStart;
+    printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
+  }
+
+  const hasBypersonQuery = bypersonQueries.length > 0;
+  const needsUntranscribedFetch = results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
+  const needsTranscribedGapFetch = hasBypersonQuery &&
+    results.some(r => r.transcriptAvailable && !r.matchedEpisodes);
+  const shouldFetchEpisodes = routing.fetch_episodes || needsUntranscribedFetch || needsTranscribedGapFetch;
+
+  if (shouldFetchEpisodes) {
+    const untranscribedToFetch = results
+      .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
+      .slice(0, MAX_EPISODE_FETCH_FEEDS);
+
+    const transcribedGapToFetch = hasBypersonQuery
+      ? results
+          .filter(r => r.transcriptAvailable && !r.matchedEpisodes)
+          .slice(0, MAX_EPISODE_FETCH_FEEDS)
+      : [];
+
+    const allToFetch = [...untranscribedToFetch, ...transcribedGapToFetch];
+
+    if (allToFetch.length > 0) {
+      const episodeStart = Date.now();
+      const episodeResults = await Promise.all(
+        allToFetch.map(f => fetchEpisodesForFeed(f.feedId, f.url))
+      );
+      timings.episodes = Date.now() - episodeStart;
+
+      // Collect all fetched episode GUIDs for a second enrichment pass
+      // (the initial transcribedEpisodeGuids only covers personEpisodes)
+      const allFetchedGuids = [];
+      const normalizedByIndex = [];
+      for (let i = 0; i < allToFetch.length; i++) {
+        const { feedInfo, episodes } = episodeResults[i];
+        const feedGuid = feedInfo?.feedGuid || feedInfo?.podcastGuid || null;
+        const feedResult = results.find(r => r.feedId === allToFetch[i].feedId);
+        if (!feedResult || episodes.length === 0) { normalizedByIndex.push(null); continue; }
+        if (!feedResult.feedGuid && feedGuid) feedResult.feedGuid = feedGuid;
+
+        const normalizedEpisodes = episodes.slice(0, 10).map(ep => ({
+          guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
+          title: ep.itemTitle || ep.title || 'Untitled',
+          date: ep.publishedDate
+            ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
+            : null,
+          duration: ep.length || ep.duration || null,
+          feedGuid: feedResult.feedGuid,
+          feedId: feedResult.feedId,
+          image: ep.image || ep.feedImage || ep.artwork || '',
+          enclosureUrl: ep.enclosureUrl || '',
+          link: ep.link || '',
+        }));
+        normalizedByIndex.push(normalizedEpisodes);
+        for (const ep of normalizedEpisodes) {
+          if (ep.guid) allFetchedGuids.push(ep.guid);
+        }
+      }
+
+      // Second enrichment: check which fetched episodes are already transcribed
+      const fetchedTranscribedGuids = new Set();
+      if (allFetchedGuids.length > 0) {
+        const docs = await JamieVectorMetadata.find({
+          type: 'episode', guid: { $in: allFetchedGuids }
+        }).select('guid').lean();
+        for (const d of docs) fetchedTranscribedGuids.add(d.guid);
+      }
+
+      for (let i = 0; i < allToFetch.length; i++) {
+        const normalizedEpisodes = normalizedByIndex[i];
+        if (!normalizedEpisodes) continue;
+        const feedResult = results.find(r => r.feedId === allToFetch[i].feedId);
+        if (!feedResult) continue;
+
+        if (feedResult.transcriptAvailable) {
+          const stampedEpisodes = normalizedEpisodes.map(ep => ({
+            ...ep,
+            transcriptAvailable: !!(ep.guid && fetchedTranscribedGuids.has(ep.guid)),
+          }));
+          feedResult.matchedEpisodes = stampedEpisodes;
+          feedResult.nextSteps = buildNextSteps(feedResult, true, stampedEpisodes);
+        } else {
+          feedResult.episodes = normalizedEpisodes;
+          if (feedResult.nextSteps.requestTranscription) {
+            feedResult.nextSteps.requestTranscription.bodyTemplate.episodes =
+              normalizedEpisodes.map(ep => ({ guid: ep.guid, feedGuid: ep.feedGuid, feedId: ep.feedId }));
+          }
+        }
+      }
+
+      printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${allToFetch.length} feeds (${untranscribedToFetch.length} untranscribed, ${transcribedGapToFetch.length} transcribed-gap)`);
+    }
+  }
+
+  timings.total = Date.now() - startTime;
+
+  printLog(`[${requestId}] ========== DISCOVER COMPLETE (${timings.total}ms) ==========`);
+  const untranscribedEpCount = results.reduce((n, r) => n + (r.matchedEpisodes || []).filter(ep => !ep.transcriptAvailable).length, 0);
+  printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed feeds, ${results.filter(r => !r.transcriptAvailable).length} untranscribed feeds, ${untranscribedEpCount} untranscribed matched episodes)`);
+
+  return {
+    query,
+    routing: {
+      intent: routing.intent,
+      byterm: bytermQueries,
+      byperson: bypersonQueries,
+      topicHints,
+      trending: trendingParams,
+    },
+    results,
+    total: results.length,
+    transcribedCount: results.filter(r => r.transcriptAvailable).length,
+    untranscribedCount: results.filter(r => !r.transcriptAvailable).length,
+    metadata: {
+      llmLatencyMs: timings.llm,
+      searchLatencyMs: timings.search,
+      filterLatencyMs: timings.filter,
+      episodeFetchLatencyMs: timings.episodes,
+      enrichmentLatencyMs: timings.enrichment,
+      totalLatencyMs: timings.total,
+      backendsQueried: searchLabels,
+    },
+    relatedEndpoints: {
+      searchTranscripts: {
+        description: 'Semantic search across transcribed podcast content with timestamped deeplinks',
+        method: 'POST',
+        url: '/api/search-quotes',
+      },
+      submitTranscription: {
+        description: 'Submit episodes for transcription, timestamped chaptering, and semantic indexing',
+        method: 'POST',
+        url: '/api/on-demand/submitOnDemandRun',
+      },
+    },
+  };
+}
+
+// ========== HTTP Route (thin wrapper) ==========
+
 router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.DISCOVER_PODCASTS), async (req, res) => {
   // #swagger.tags = ['Discovery']
   // #swagger.summary = 'LLM-assisted podcast discovery across the Podcast Index catalog'
@@ -288,295 +642,16 @@ router.post('/discover-podcasts', serviceHmac({ optional: true }), createEntitle
       limit: 10
     }
   } */
-  const requestId = `DISCOVER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const startTime = Date.now();
-  const timings = { llm: 0, search: 0, filter: 0, episodes: 0, enrichment: 0, total: 0 };
-
   try {
-    const { query, limit = 10 } = req.body;
-
-    if (!query || typeof query !== 'string') {
-      return res.status(400).json({ error: 'query is required and must be a string' });
+    const result = await discoverPodcasts(req.body);
+    if (result.status) {
+      return res.status(result.status).json(result);
     }
-
-    const effectiveLimit = Math.min(25, Math.max(1, Math.floor(limit)));
-
-    printLog(`[${requestId}] ========== DISCOVER REQUEST ==========`);
-    printLog(`[${requestId}] Query: "${query}", Limit: ${effectiveLimit}`);
-
-    // Step 1: LLM extracts routing instructions + topic hints
-    const llmStart = Date.now();
-    const routing = await extractSearchRouting(query);
-    timings.llm = Date.now() - llmStart;
-
-    const bytermQueries = (routing.byterm_queries || []).slice(0, 2);
-    const bypersonQueries = (routing.byperson_queries || []).slice(0, 2);
-    const topicHints = (routing.topic_hints || []).slice(0, 2);
-    const trendingParams = routing.trending || null;
-
-    printLog(`[${requestId}] LLM routing (${timings.llm}ms): intent=${routing.intent}, byterm=${JSON.stringify(bytermQueries)}, byperson=${JSON.stringify(bypersonQueries)}, topic_hints=${JSON.stringify(topicHints)}, trending=${JSON.stringify(trendingParams)}`);
-
-    const hasAnySearch = bytermQueries.length > 0 || bypersonQueries.length > 0 || topicHints.length > 0 || trendingParams;
-    if (!hasAnySearch) {
-      return res.status(400).json({
-        error: 'Could not determine search strategy from query',
-        detail: 'Try being more specific about the podcast name, topic, or person you\'re looking for'
-      });
-    }
-
-    // Step 2: Fan out ALL searches in parallel (byterm + byperson + topic_hints + trending)
-    const searchStart = Date.now();
-    const searchPromises = [];
-    const searchLabels = [];
-
-    for (const term of bytermQueries) {
-      searchPromises.push(searchByTerm(term));
-      searchLabels.push(`byterm:"${term}"`);
-    }
-    for (const person of bypersonQueries) {
-      searchPromises.push(searchByPerson(person));
-      searchLabels.push(`byperson:"${person}"`);
-    }
-    for (const hint of topicHints) {
-      searchPromises.push(searchByTerm(hint));
-      searchLabels.push(`topic_hint:"${hint}"`);
-    }
-    if (trendingParams) {
-      searchPromises.push(fetchTrending(trendingParams));
-      searchLabels.push(`trending:${JSON.stringify(trendingParams)}`);
-    }
-
-    const rawResults = await Promise.all(searchPromises);
-    timings.search = Date.now() - searchStart;
-
-    printLog(`[${requestId}] Search (${timings.search}ms): ${searchLabels.length} backends queried: ${searchLabels.join(', ')}`);
-
-    // Step 3: Normalize, name-filter, and deduplicate
-    const feedMap = new Map();
-    const personEpisodes = [];
-    let resultIdx = 0;
-
-    // Process byterm results (feeds)
-    for (let i = 0; i < bytermQueries.length; i++) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] byterm "${bytermQueries[i]}": ${feeds.length} feeds`);
-    }
-
-    // Process byperson results with string-based name filtering
-    for (let i = 0; i < bypersonQueries.length; i++) {
-      const rawEpisodes = rawResults[resultIdx++] || [];
-      const normalized = rawEpisodes.map(ep => normalizePersonEpisode(ep));
-      const filtered = filterByPersonRelevance(normalized, bypersonQueries[i]);
-
-      printLog(`[${requestId}] byperson "${bypersonQueries[i]}": ${rawEpisodes.length} raw → ${filtered.length} after name filter`);
-
-      for (const ep of filtered) {
-        personEpisodes.push(ep);
-        const fid = ep.feedId;
-        if (fid && !feedMap.has(fid)) {
-          feedMap.set(fid, {
-            feedId: fid,
-            feedGuid: ep.podcastGuid || null,
-            title: ep.feedTitle,
-            url: ep.feedUrl,
-            description: '',
-            author: ep.feedAuthor,
-            image: '',
-            language: '',
-            categories: {},
-            trendScore: null
-          });
-        }
-      }
-    }
-
-    // Process topic_hint results (feeds, ranked lower by virtue of being added after byterm/byperson)
-    for (let i = 0; i < topicHints.length; i++) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] topic_hint "${topicHints[i]}": ${feeds.length} feeds`);
-    }
-
-    // Process trending results (feeds)
-    if (trendingParams) {
-      const feeds = rawResults[resultIdx++] || [];
-      for (const feed of feeds) {
-        const normalized = normalizeFeed(feed);
-        if (normalized.feedId && !feedMap.has(normalized.feedId)) {
-          feedMap.set(normalized.feedId, normalized);
-        }
-      }
-      printLog(`[${requestId}] trending: ${feeds.length} feeds`);
-    }
-
-    // Group person episodes by feedId for inline attachment
-    const episodesByFeed = new Map();
-    for (const ep of personEpisodes) {
-      if (!episodesByFeed.has(ep.feedId)) {
-        episodesByFeed.set(ep.feedId, []);
-      }
-      episodesByFeed.get(ep.feedId).push(ep);
-    }
-
-    // Step 4: Transcript availability via JamieVectorMetadata
-    const enrichStart = Date.now();
-    const feedIds = Array.from(feedMap.keys());
-    const episodeGuids = personEpisodes.map(ep => ep.guid).filter(Boolean);
-
-    const [transcribedFeedDocs, transcribedEpisodeDocs] = await Promise.all([
-      feedIds.length > 0
-        ? JamieVectorMetadata.find({ type: 'feed', feedId: { $in: feedIds } }).select('feedId').lean()
-        : [],
-      episodeGuids.length > 0
-        ? JamieVectorMetadata.find({ type: 'episode', guid: { $in: episodeGuids } }).select('guid feedId').lean()
-        : []
-    ]);
-
-    const transcribedFeedIds = new Set(transcribedFeedDocs.map(f => String(f.feedId)));
-    for (const ep of transcribedEpisodeDocs) {
-      if (ep.feedId) transcribedFeedIds.add(String(ep.feedId));
-    }
-    timings.enrichment = Date.now() - enrichStart;
-
-    printLog(`[${requestId}] Enrichment (${timings.enrichment}ms): ${transcribedFeedIds.size} transcribed feeds found`);
-
-    // Step 5: Build preliminary results with nextSteps
-    let results = Array.from(feedMap.values())
-      .slice(0, effectiveLimit)
-      .map(feed => {
-        const transcriptAvailable = transcribedFeedIds.has(feed.feedId);
-        const matchedEpisodes = episodesByFeed.get(feed.feedId) || null;
-
-        return {
-          ...feed,
-          transcriptAvailable,
-          matchedEpisodes: matchedEpisodes ? matchedEpisodes.slice(0, 10) : null,
-          episodes: null,
-          nextSteps: buildNextSteps(feed, transcriptAvailable)
-        };
-      });
-
-    // Step 6: LLM filter pass — remove obvious false positives
-    if (results.length > 0) {
-      const filterStart = Date.now();
-      results = await filterResultsWithLLM(query, results, requestId);
-      timings.filter = Date.now() - filterStart;
-      printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
-    }
-
-    // Step 7: Fetch episodes for top untranscribed feeds without person-matched episodes
-    const shouldFetchEpisodes = routing.fetch_episodes ||
-      results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
-
-    if (shouldFetchEpisodes) {
-      const feedsToFetch = results
-        .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
-        .slice(0, MAX_EPISODE_FETCH_FEEDS);
-
-      if (feedsToFetch.length > 0) {
-        const episodeStart = Date.now();
-        const episodeResults = await Promise.all(
-          feedsToFetch.map(f => fetchEpisodesForFeed(f.feedId))
-        );
-        timings.episodes = Date.now() - episodeStart;
-
-        for (let i = 0; i < feedsToFetch.length; i++) {
-          const { feedInfo, episodes } = episodeResults[i];
-          const feedGuid = feedInfo?.feedGuid || feedInfo?.podcastGuid || null;
-          const feedResult = results.find(r => r.feedId === feedsToFetch[i].feedId);
-
-          if (feedResult && episodes.length > 0) {
-            if (!feedResult.feedGuid && feedGuid) {
-              feedResult.feedGuid = feedGuid;
-            }
-            feedResult.episodes = episodes.slice(0, 10).map(ep => ({
-              guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
-              title: ep.itemTitle || ep.title || 'Untitled',
-              date: ep.publishedDate
-                ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
-                : null,
-              duration: ep.length || ep.duration || null,
-              feedGuid: feedResult.feedGuid,
-              feedId: feedResult.feedId
-            }));
-
-            if (feedResult.nextSteps.requestTranscription) {
-              feedResult.nextSteps.requestTranscription.bodyTemplate.episodes =
-                feedResult.episodes.map(ep => ({
-                  guid: ep.guid,
-                  feedGuid: ep.feedGuid,
-                  feedId: ep.feedId
-                }));
-            }
-          }
-        }
-
-        printLog(`[${requestId}] Episodes fetched (${timings.episodes}ms) for ${feedsToFetch.length} feeds`);
-      }
-    }
-
-    timings.total = Date.now() - startTime;
-
-    printLog(`[${requestId}] ========== DISCOVER COMPLETE (${timings.total}ms) ==========`);
-    printLog(`[${requestId}] Returning ${results.length} results (${results.filter(r => r.transcriptAvailable).length} transcribed, ${results.filter(r => !r.transcriptAvailable).length} untranscribed)`);
-
-    res.json({
-      query,
-      routing: {
-        intent: routing.intent,
-        byterm: bytermQueries,
-        byperson: bypersonQueries,
-        topicHints,
-        trending: trendingParams
-      },
-      results,
-      total: results.length,
-      transcribedCount: results.filter(r => r.transcriptAvailable).length,
-      untranscribedCount: results.filter(r => !r.transcriptAvailable).length,
-      metadata: {
-        llmLatencyMs: timings.llm,
-        searchLatencyMs: timings.search,
-        filterLatencyMs: timings.filter,
-        episodeFetchLatencyMs: timings.episodes,
-        enrichmentLatencyMs: timings.enrichment,
-        totalLatencyMs: timings.total,
-        backendsQueried: searchLabels
-      },
-      relatedEndpoints: {
-        searchTranscripts: {
-          description: 'Semantic search across transcribed podcast content with timestamped deeplinks',
-          method: 'POST',
-          url: '/api/search-quotes'
-        },
-        submitTranscription: {
-          description: 'Submit episodes for transcription, timestamped chaptering, and semantic indexing',
-          method: 'POST',
-          url: '/api/on-demand/submitOnDemandRun'
-        }
-      }
-    });
-
+    res.json(result);
   } catch (error) {
-    timings.total = Date.now() - startTime;
-    printLog(`[${requestId}] ✗ Error (${timings.total}ms): ${error.message}`);
-    console.error(`[${requestId}] Stack:`, error.stack);
-
-    res.status(500).json({
-      error: 'Discovery failed',
-      detail: error.message,
-      requestId
-    });
+    printLog(`[DISCOVER] Error: ${error.message}`);
+    console.error('[DISCOVER] Stack:', error.stack);
+    res.status(500).json({ error: 'Discovery failed', detail: error.message });
   }
 });
 
@@ -655,3 +730,19 @@ router.post('/rss/getFeed', serviceHmac({ optional: true }), createEntitlementMi
 });
 
 module.exports = router;
+
+module.exports.discoverPodcasts = discoverPodcasts;
+
+// Export internal functions for direct use by workflow orchestrator
+module.exports.discoverInternal = {
+  extractSearchRouting,
+  searchByTerm,
+  searchByPerson,
+  fetchTrending,
+  fetchEpisodesForFeed,
+  filterResultsWithLLM,
+  filterByPersonRelevance,
+  normalizeFeed,
+  normalizePersonEpisode,
+  buildNextSteps,
+};

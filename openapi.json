@@ -37,7 +37,7 @@
     },
     {
       "name": "On-Demand Transcription",
-      "description": "Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. L402 payers can also download full transcript JSON files by presenting the same credential when polling job status. Once indexed, content is searchable via the Search endpoints."
+      "description": "Submit podcast episodes for transcription, timestamped chaptering, keyword extraction, and permanent semantic indexing. Poll for job status and receive chapter data on completion. Once indexed, content is searchable via the Search endpoints."
     },
     {
       "name": "Research Sessions",
@@ -50,6 +50,10 @@
     {
       "name": "Agent Auth",
       "description": "L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N to any request for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget."
+    },
+    {
+      "name": "Pull",
+      "description": "LLM-orchestrated agent endpoint. Send a natural-language research query and receive a Server-Sent Events (SSE) stream containing the agent's progress and a synthesized answer with podcast quotes, episode metadata, and optional follow-up actions. The agent can call internal tools (semantic quote search, chapter lookup, person resolution, podcast discovery) over multiple turns before delivering a final response. Authentication accepts L402 prepaid credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true to opt in). Per-tier quotas apply."
     }
   ],
   "paths": {
@@ -544,7 +548,6 @@
                 },
                 "feedIds": {
                   "type": "array",
-                  "description": "Array of feed IDs to filter results. Must be an array, not a single value.",
                   "example": [
                     "1015378"
                   ],
@@ -570,16 +573,7 @@
                 },
                 "guid": {
                   "type": "string",
-                  "description": "Single episode GUID to filter results. For multiple episodes, use guids instead.",
                   "example": ""
-                },
-                "guids": {
-                  "type": "array",
-                  "description": "Array of episode GUIDs to filter results. Use this to search across multiple specific episodes in one request.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "example": []
                 }
               }
             }
@@ -683,44 +677,6 @@
                   },
                   "xml": {
                     "name": "main"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "query": {
-                    "example": "any"
-                  },
-                  "feedIds": {
-                    "example": "any"
-                  },
-                  "limit": {
-                    "example": "any"
-                  },
-                  "minDate": {
-                    "example": "any"
-                  },
-                  "maxDate": {
-                    "example": "any"
-                  },
-                  "episodeName": {
-                    "example": "any"
-                  },
-                  "guid": {
-                    "example": "any"
-                  },
-                  "guids": {
-                    "example": "any"
-                  },
-                  "smartMode": {
-                    "example": "any"
                   }
                 }
               }
@@ -996,30 +952,373 @@
               }
             }
           }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "search": {
-                    "example": "any"
+        }
+      }
+    },
+    "/api/pull": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). Authentication accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). Quotas reset per configured period.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "example": "What did Luke Gromen say about debt deflation this month?"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "example": "optional-agent-session-id"
+                },
+                "stream": {
+                  "type": "boolean",
+                  "example": false
+                },
+                "history": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "example": "assistant"
+                      },
+                      "content": {
+                        "type": "string",
+                        "example": "previous assistant turn"
+                      }
+                    }
+                  }
+                },
+                "context": {
+                  "type": "object",
+                  "properties": {
+                    "guids": {
+                      "type": "array",
+                      "example": [
+                        "episode-guid-1"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "feedIds": {
+                      "type": "array",
+                      "example": [
+                        "1015378"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "persons": {
+                      "type": "array",
+                      "example": [
+                        "Luke Gromen"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "hint": {
+                      "type": "string",
+                      "example": "focus on recent inflation commentary"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Only the message field is required. stream defaults to false (single JSON response once the agent finishes); set true or send Accept: text/event-stream to receive an SSE stream of intermediate events. sessionId enables multi-turn continuity (auto-generated if omitted). history supplies prior turns (most recent last, each entry is role + content). context is optional pre-resolved hints from a prior suggested follow-up action."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent response. Default (stream=false): single application/json body with { sessionId, text, suggestedActions } after the full agent loop completes. Streaming mode (stream=true OR Accept: text/event-stream): text/event-stream connection with incremental events (status, tool_call, tool_result, text_delta, text_done, suggested_action, done).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "type": "string",
+                      "example": "agent-1234567890-abc123"
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Final synthesized answer. May contain {{clip:shareLink}} placeholders that clients can render as inline quote cards.",
+                      "example": "Luke Gromen argued the debt deflation dynamic..."
+                    },
+                    "suggestedActions": {
+                      "type": "array",
+                      "description": "Optional follow-up chips and/or transcription-card offers.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "follow-up-query",
+                              "submit-on-demand"
+                            ]
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "payload": {
+                            "type": "object"
+                          }
+                        }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "Populated only if the agent created a shareable research session.",
+                      "properties": {
+                        "sessionId": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "itemCount": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "example": "event: status\ndata: {\"message\":\"Analyzing your request...\",\"sessionId\":\"agent-1234...\"}\n\nevent: text_delta\ndata: {\"text\":\"Luke Gromen argued...\"}\n\nevent: text_done\ndata: {\"text\":\"Luke Gromen argued the debt deflation dynamic...\"}\n\nevent: done\ndata: {\"sessionId\":\"agent-1234...\"}\n\n"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid `message` in request body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "message (or task) is required"
+                    }
                   },
-                  "feedIds": {
-                    "example": "any"
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "message (or task) is required"
+                    }
                   },
-                  "limit": {
-                    "example": "any"
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment Required. Returned when an anonymous caller hits the endpoint without opting into free-tier (no `X-Free-Tier: true` header) OR when free-tier quota is exhausted and the caller is anonymous. Includes an L402 challenge in the WWW-Authenticate header with a Lightning invoice. Pay the invoice and retry with Authorization: L402 <macaroon>:<preimage>.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Payment required"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "PAYMENT_REQUIRED"
+                    },
+                    "invoice": {
+                      "type": "string",
+                      "example": "lnbc..."
+                    },
+                    "macaroon": {
+                      "type": "string",
+                      "example": "base64..."
+                    }
                   },
-                  "page": {
-                    "example": "any"
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Payment required"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "PAYMENT_REQUIRED"
+                    },
+                    "invoice": {
+                      "type": "string",
+                      "example": "lnbc..."
+                    },
+                    "macaroon": {
+                      "type": "string",
+                      "example": "base64..."
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Quota exceeded for the caller's tier. Wait until `resetDate` or upgrade to a higher tier (subscriber / L402 prepaid).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Quota exceeded"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "QUOTA_EXCEEDED"
+                    },
+                    "used": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "max": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "resetDate": {
+                      "type": "string",
+                      "example": "2026-05-20T00:00:00.000Z"
+                    },
+                    "daysUntilReset": {
+                      "type": "number",
+                      "example": 23
+                    },
+                    "tier": {
+                      "type": "string",
+                      "example": "registered"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Quota exceeded"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "QUOTA_EXCEEDED"
+                    },
+                    "used": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "max": {
+                      "type": "number",
+                      "example": 10
+                    },
+                    "resetDate": {
+                      "type": "string",
+                      "example": "2026-05-20T00:00:00.000Z"
+                    },
+                    "daysUntilReset": {
+                      "type": "number",
+                      "example": 23
+                    },
+                    "tier": {
+                      "type": "string",
+                      "example": "registered"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent backend not available (missing or invalid Anthropic API key on server).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env"
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
                   }
                 }
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "L402Credential": []
+          },
+          {
+            "BearerJWT": []
+          },
+          {}
+        ]
       }
     },
     "/api/on-demand/submitOnDemandRun": {
@@ -1105,7 +1404,7 @@
                           "properties": {
                             "description": {
                               "type": "string",
-                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode. If you paid via L402, include the same Authorization header when polling to receive transcript download URLs in the response."
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
                             },
                             "method": {
                               "type": "string",
@@ -1209,7 +1508,7 @@
                           "properties": {
                             "description": {
                               "type": "string",
-                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode. If you paid via L402, include the same Authorization header when polling to receive transcript download URLs in the response."
+                              "example": "Poll until status is \"complete\". Typical transcription takes 30-120 seconds per episode."
                             },
                             "method": {
                               "type": "string",
@@ -1333,8 +1632,15 @@
           "On-Demand Transcription"
         ],
         "summary": "Get transcription job status with chapters on completion",
-        "description": "Returns job status and per-episode progress. When status is \"complete\", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required for basic polling — anyone with the jobId can poll.\n\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a relative path to `GET /api/on-demand/transcript/{jobId}/{guid}` that streams the full transcript JSON through an authenticated proxy. The same L402 credential must be presented to that endpoint.",
+        "description": "Returns job status and per-episode progress. When status is \"complete\", the response is enriched with chapter headlines, keywords, summaries, and timestamps for each successfully transcribed episode, plus a nextSteps block pointing to /api/search-quotes for semantic search across the newly indexed content. No authentication required for basic polling — anyone with the jobId can poll.\\n\\nOptional: if the caller includes an Authorization header with the same L402 credential used to pay for the job, each completed episode will also include a `transcriptUrl` — a relative path to GET /api/on-demand/transcript/{jobId}/{guid} that streams the full transcript JSON through an authenticated proxy. The same L402 credential must be presented to that endpoint.",
         "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "body",
             "in": "body",
@@ -1353,13 +1659,15 @@
             "name": "Authorization",
             "in": "header",
             "required": false,
-            "type": "string",
-            "description": "Optional L402 credential (`L402 <macaroon>:<preimage>`). When present and matching the credential that paid for the job, transcript download URLs are included in each completed episode."
+            "description": "Optional L402 credential (L402 <macaroon>:<preimage>). When present and matching the credential that paid for the job, transcript download URLs are included.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Job status with optional chapter enrichment",
+            "description": "Job status with optional chapter enrichment and transcript URLs",
             "content": {
               "application/json": {
                 "schema": {
@@ -1460,7 +1768,6 @@
                           },
                           "transcriptUrl": {
                             "type": "string",
-                            "description": "Only present when a valid matching L402 credential is provided in the Authorization header. Relative path to download the full transcript JSON.",
                             "example": "/api/on-demand/transcript/6b2440adae3f806198eb56c0/dd043afd-d7f8-4a96-97aa-a24a743fc219"
                           }
                         }
@@ -1471,15 +1778,18 @@
                       "properties": {
                         "downloadTranscript": {
                           "type": "object",
-                          "description": "Only present when transcriptUrl is included in episodes (i.e. valid L402 credential was provided).",
                           "properties": {
                             "description": {
                               "type": "string",
-                              "example": "Download the full transcript JSON for each completed episode. Use the transcriptUrl from each episode above. Requires the same L402 credential."
+                              "example": "Download the full transcript JSON for each completed episode. Requires the same L402 credential that paid for the job. The transcriptUrl for each episode is included above when a valid L402 credential is presented."
                             },
                             "method": {
                               "type": "string",
                               "example": "GET"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/on-demand/transcript/{jobId}/{guid}"
                             },
                             "headers": {
                               "type": "object",
@@ -1541,7 +1851,182 @@
               },
               "application/xml": {
                 "schema": {
-                  "$ref": "#/paths/~1api~1on-demand~1getOnDemandJobStatus/post/responses/200/content/application~1json/schema"
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "example": "6b2440adae3f806198eb56c0"
+                    },
+                    "status": {
+                      "type": "string",
+                      "example": "complete"
+                    },
+                    "stats": {
+                      "type": "object",
+                      "properties": {
+                        "totalEpisodes": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "totalFeeds": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesProcessed": {
+                          "type": "number",
+                          "example": 1
+                        },
+                        "episodesSkipped": {
+                          "type": "number",
+                          "example": 0
+                        },
+                        "episodesFailed": {
+                          "type": "number",
+                          "example": 0
+                        }
+                      }
+                    },
+                    "episodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "guid": {
+                            "type": "string",
+                            "example": "dd043afd-d7f8-4a96-97aa-a24a743fc219"
+                          },
+                          "feedId": {
+                            "type": "string",
+                            "example": "357756"
+                          },
+                          "status": {
+                            "type": "string",
+                            "example": "success"
+                          },
+                          "chapters": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "chapterNumber": {
+                                  "type": "number",
+                                  "example": 1
+                                },
+                                "headline": {
+                                  "type": "string",
+                                  "example": "SEC and CFTC Developments in Crypto"
+                                },
+                                "keywords": {
+                                  "type": "array",
+                                  "example": [
+                                    "SEC",
+                                    "CFTC",
+                                    "crypto regulations"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "summary": {
+                                  "type": "string",
+                                  "example": "Discussion on SEC and CFTC actions regarding crypto..."
+                                },
+                                "startTime": {
+                                  "type": "number",
+                                  "example": 0
+                                },
+                                "endTime": {
+                                  "type": "number",
+                                  "example": 159.48
+                                }
+                              }
+                            }
+                          },
+                          "transcriptUrl": {
+                            "type": "string",
+                            "example": "/api/on-demand/transcript/6b2440adae3f806198eb56c0/dd043afd-d7f8-4a96-97aa-a24a743fc219"
+                          }
+                        }
+                      }
+                    },
+                    "nextSteps": {
+                      "type": "object",
+                      "properties": {
+                        "downloadTranscript": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Download the full transcript JSON for each completed episode. Requires the same L402 credential that paid for the job. The transcriptUrl for each episode is included above when a valid L402 credential is presented."
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "GET"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/on-demand/transcript/{jobId}/{guid}"
+                            },
+                            "headers": {
+                              "type": "object",
+                              "properties": {
+                                "Authorization": {
+                                  "type": "string",
+                                  "example": "L402 <macaroon>:<preimage>"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "searchTranscripts": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "example": "Semantic search across the newly transcribed content with timestamped deeplinks"
+                            },
+                            "method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "/api/search-quotes"
+                            },
+                            "body": {
+                              "type": "object",
+                              "properties": {
+                                "query": {
+                                  "type": "string",
+                                  "example": "..."
+                                },
+                                "feedIds": {
+                                  "type": "array",
+                                  "example": [
+                                    "357756"
+                                  ],
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "smartMode": {
+                                  "type": "boolean",
+                                  "example": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "xml": {
+                    "name": "main"
+                  }
                 }
               }
             }
@@ -1590,7 +2075,7 @@
           "On-Demand Transcription"
         ],
         "summary": "Download full transcript JSON for a transcribed episode",
-        "description": "Streams the full transcript JSON for the given episode through an authenticated proxy. Requires the same L402 credential (`Authorization: L402 <macaroon>:<preimage>`) that was used to pay for the transcription job. The `transcriptUrl` for each episode is returned by `getOnDemandJobStatus` when a valid L402 credential is provided.",
+        "description": "Streams the full transcript JSON for the given episode. Requires the same L402 credential that was used to pay for the transcription job.",
         "parameters": [
           {
             "name": "jobId",
@@ -1611,101 +2096,43 @@
             "description": "Episode GUID"
           },
           {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": true,
+            "description": "L402 credential (L402 <macaroon>:<preimage>) matching the one that paid for the job",
             "schema": {
               "type": "string"
-            },
-            "description": "L402 credential (`L402 <macaroon>:<preimage>`) matching the one that paid for the job."
+            }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Full transcript JSON streamed as a file download",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "The full transcript JSON file for the episode. Structure varies by transcript format."
-                }
-              }
-            },
-            "headers": {
-              "Content-Disposition": {
-                "schema": {
-                  "type": "string",
-                  "example": "attachment; filename=\"dd043afd-d7f8-4a96-97aa-a24a743fc219.json\""
-                }
-              },
-              "Content-Length": {
-                "schema": {
-                  "type": "integer"
-                },
-                "description": "Size of the transcript file in bytes"
-              }
-            }
-          },
           "401": {
-            "description": "Missing or invalid L402 credential",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Unauthorized"
-                    },
-                    "message": {
-                      "type": "string",
-                      "example": "Valid matching L402 credential required"
-                    }
-                  }
-                }
-              }
-            }
+            "description": "Unauthorized"
           },
           "403": {
-            "description": "Job was not paid via L402",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "No L402 credential associated with this job"
-                    }
-                  }
-                }
-              }
-            }
+            "description": "Forbidden"
           },
           "404": {
-            "description": "Job or episode not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "example": "Episode not found or not yet transcribed"
-                    }
-                  }
-                }
-              }
-            }
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
           },
           "502": {
-            "description": "Upstream storage error while streaming transcript"
+            "description": "Bad Gateway"
           },
           "503": {
-            "description": "Transcript storage not available"
+            "description": "Service Unavailable"
           },
           "504": {
-            "description": "Stream timed out (stalled for >60 seconds)"
+            "description": "Gateway Timeout"
           }
         }
       }
@@ -4455,26 +4882,6 @@
               }
             }
           }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "example": "any"
-                  },
-                  "guestsOnly": {
-                    "example": "any"
-                  },
-                  "feedId": {
-                    "example": "any"
-                  }
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -4646,6 +5053,270 @@
         }
       }
     },
+    "/api/search-quotes-3d": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "example": "any"
+                  },
+                  "feedIds": {
+                    "example": "any"
+                  },
+                  "guid": {
+                    "example": "any"
+                  },
+                  "guids": {
+                    "example": "any"
+                  },
+                  "limit": {
+                    "example": "any"
+                  },
+                  "minDate": {
+                    "example": "any"
+                  },
+                  "maxDate": {
+                    "example": "any"
+                  },
+                  "episodeName": {
+                    "example": "any"
+                  },
+                  "fastMode": {
+                    "example": "any"
+                  },
+                  "extractAxisLabels": {
+                    "example": "any"
+                  },
+                  "createSession": {
+                    "example": "any"
+                  },
+                  "smartMode": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search-quotes-3d/expand": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "example": "any"
+                  },
+                  "queries": {
+                    "example": "any"
+                  },
+                  "fastMode": {
+                    "example": "any"
+                  },
+                  "extractAxisLabels": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fetch-research-id": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "researchSessionId": {
+                    "example": "any"
+                  },
+                  "fastMode": {
+                    "example": "any"
+                  },
+                  "extractAxisLabels": {
+                    "example": "any"
+                  },
+                  "forceRecompute": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/episode-with-chapters/{guid}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/fetch-adjacent-paragraphs": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "paragraphId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "adjacentSteps",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/get-hierarchy": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "paragraphId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chapterId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
     "/api/discover-podcasts": {
       "post": {
         "tags": [
@@ -4677,6 +5348,151 @@
           "200": {
             "description": "OK"
           },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/rss/searchFeeds": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "502": {
+            "description": "Bad Gateway"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "podcastName": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rss/searchByPerson": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "502": {
+            "description": "Bad Gateway"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rss/getFeed": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "502": {
+            "description": "Bad Gateway"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "feedUrl": {
+                    "example": "any"
+                  },
+                  "feedId": {
+                    "example": "any"
+                  },
+                  "limit": {
+                    "example": "any"
+                  },
+                  "skipCleanGuid": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/entitlements/stats": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/admin/entitlements/reset": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
           "400": {
             "description": "Bad Request"
           },
@@ -4690,15 +5506,409 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "query": {
-                    "example": "any"
-                  },
-                  "limit": {
+                  "entitlementType": {
                     "example": "any"
                   }
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/admin/entitlements/identifier/{identifierType}/{identifier}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "identifierType",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "identifier",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/admin/entitlements/update": {
+      "put": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "identifier": {
+                    "example": "any"
+                  },
+                  "identifierType": {
+                    "example": "any"
+                  },
+                  "entitlementType": {
+                    "example": "any"
+                  },
+                  "updates": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/entitlements/cleanup": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/episode/{guid}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/paragraph-with-episode/{paragraphId}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "paragraphId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/feed/{feedId}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "feedId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/paragraph-with-feed/{paragraphId}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "paragraphId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/text-for-timerange/{guid}/{startTime}/{endTime}": {
+      "get": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startTime",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "endTime",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/twitter/test-auth": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/twitter/test-media-upload": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mediaUrl": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/debug/twitter/clear-tokens": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/debug/twitter/test-revoke": {
+      "post": {
+        "tags": [
+          "Pull"
+        ],
+        "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (` {  sessionId, text, suggestedActions }",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal Server Error"
           }
         }
       }
@@ -4729,878 +5939,407 @@
       "Pagination": {
         "type": "object",
         "properties": {
-          "type": {
-            "type": "string",
-            "example": "object"
+          "page": {
+            "type": "integer",
+            "example": 1
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "page": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 1
-                  }
-                }
-              },
-              "totalPages": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 5
-                  }
-                }
-              },
-              "totalCount": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 250
-                  }
-                }
-              },
-              "limit": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 50
-                  }
-                }
-              },
-              "hasMore": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "boolean"
-                  },
-                  "example": {
-                    "type": "boolean",
-                    "example": true
-                  }
-                }
-              }
-            }
+          "totalPages": {
+            "type": "integer",
+            "example": 5
+          },
+          "totalCount": {
+            "type": "integer",
+            "example": 250
+          },
+          "limit": {
+            "type": "integer",
+            "example": 50
+          },
+          "hasMore": {
+            "type": "boolean",
+            "example": true
           }
-        },
-        "xml": {
-          "name": "Pagination"
         }
       },
       "Feed": {
         "type": "object",
         "properties": {
-          "type": {
+          "feedId": {
             "type": "string",
-            "example": "object"
+            "example": "1015378"
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "feedId": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "example": {
-                    "type": "string",
-                    "example": "1015378"
-                  }
-                }
-              },
-              "title": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "example": {
-                    "type": "string",
-                    "example": "What Bitcoin Did"
-                  }
-                }
-              },
-              "author": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "example": {
-                    "type": "string",
-                    "example": "Peter McCormack"
-                  }
-                }
-              },
-              "description": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "episodeCount": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 824
-                  }
-                }
-              },
-              "imageUrl": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "format": {
-                    "type": "string",
-                    "example": "uri"
-                  }
-                }
-              }
-            }
+          "title": {
+            "type": "string",
+            "example": "What Bitcoin Did"
+          },
+          "author": {
+            "type": "string",
+            "example": "Peter McCormack"
+          },
+          "description": {
+            "type": "string"
+          },
+          "episodeCount": {
+            "type": "integer",
+            "example": 824
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Host/owner names (empty array if not yet tagged)",
+            "example": [
+              "Peter McCormack"
+            ]
+          },
+          "feedType": {
+            "type": "string",
+            "enum": [
+              "interview",
+              "solo",
+              "panel",
+              "narrative",
+              "mixed"
+            ],
+            "nullable": true,
+            "description": "Show format classification (null if not yet determined)"
           }
-        },
-        "xml": {
-          "name": "Feed"
         }
       },
       "Episode": {
         "type": "object",
         "properties": {
-          "type": {
-            "type": "string",
-            "example": "object"
+          "guid": {
+            "type": "string"
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "guid": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "title": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "creator": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "description": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "publishedDate": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "duration": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "imageUrl": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "format": {
-                    "type": "string",
-                    "example": "uri"
-                  }
-                }
-              },
-              "guests": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "string"
-                      }
-                    }
-                  }
-                }
-              }
+          "title": {
+            "type": "string"
+          },
+          "creator": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "publishedDate": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "guests": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
-        },
-        "xml": {
-          "name": "Episode"
         }
       },
       "Chapter": {
         "type": "object",
         "properties": {
-          "type": {
-            "type": "string",
-            "example": "object"
+          "pineconeId": {
+            "type": "string"
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "pineconeId": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "chapterNumber": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  }
-                }
-              },
-              "headline": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "keywords": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "string"
-                      }
-                    }
-                  }
-                }
-              },
-              "summary": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "startTime": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "number"
-                  }
-                }
-              },
-              "endTime": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "number"
-                  }
-                }
-              },
-              "duration": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "number"
-                  }
-                }
-              }
+          "chapterNumber": {
+            "type": "integer"
+          },
+          "headline": {
+            "type": "string"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "startTime": {
+            "type": "number"
+          },
+          "endTime": {
+            "type": "number"
+          },
+          "duration": {
+            "type": "number"
           }
-        },
-        "xml": {
-          "name": "Chapter"
         }
       },
       "Topic": {
         "type": "object",
         "properties": {
-          "type": {
+          "keyword": {
             "type": "string",
-            "example": "object"
+            "example": "artificial intelligence"
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "keyword": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "example": {
-                    "type": "string",
-                    "example": "artificial intelligence"
-                  }
+          "count": {
+            "type": "integer",
+            "example": 150
+          },
+          "feeds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "feedId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
                 }
-              },
-              "count": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 150
-                  }
-                }
-              },
-              "feeds": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "object"
-                      },
-                      "properties": {
-                        "type": "object",
-                        "properties": {
-                          "feedId": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          },
-                          "title": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              },
-              "sampleEpisodes": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "object"
-                      },
-                      "properties": {
-                        "type": "object",
-                        "properties": {
-                          "guid": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          },
-                          "title": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
+              }
+            }
+          },
+          "sampleEpisodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "guid": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
                 }
               }
             }
           }
-        },
-        "xml": {
-          "name": "Topic"
         }
       },
       "Person": {
         "type": "object",
         "properties": {
-          "type": {
+          "name": {
             "type": "string",
-            "example": "object"
+            "example": "Elon Musk"
           },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "example": {
-                    "type": "string",
-                    "example": "Elon Musk"
-                  }
+          "role": {
+            "type": "string",
+            "enum": [
+              "guest",
+              "creator"
+            ]
+          },
+          "appearances": {
+            "type": "integer",
+            "example": 3
+          },
+          "feeds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "feedId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
                 }
-              },
-              "role": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "enum": {
-                    "type": "array",
-                    "example": [
-                      "guest",
-                      "creator"
-                    ],
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                }
-              },
-              "appearances": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "integer"
-                  },
-                  "example": {
-                    "type": "number",
-                    "example": 3
-                  }
-                }
-              },
-              "feeds": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "object"
-                      },
-                      "properties": {
-                        "type": "object",
-                        "properties": {
-                          "feedId": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          },
-                          "title": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              },
-              "recentEpisodes": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "array"
-                  },
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "example": "object"
-                      },
-                      "properties": {
-                        "type": "object",
-                        "properties": {
-                          "guid": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          },
-                          "title": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          },
-                          "publishedDate": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string",
-                                "example": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
+              }
+            }
+          },
+          "recentEpisodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "guid": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "publishedDate": {
+                  "type": "string"
                 }
               }
             }
           }
-        },
-        "xml": {
-          "name": "Person"
         }
       },
       "SearchResult": {
         "type": "object",
         "properties": {
-          "type": {
+          "shareUrl": {
             "type": "string",
-            "example": "object"
+            "format": "uri"
           },
-          "properties": {
+          "shareLink": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "episode": {
+            "type": "string"
+          },
+          "creator": {
+            "type": "string"
+          },
+          "audioUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "episodeImage": {
+            "type": "string",
+            "format": "uri"
+          },
+          "listenLink": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "similarity": {
             "type": "object",
             "properties": {
-              "shareUrl": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "format": {
-                    "type": "string",
-                    "example": "uri"
-                  }
-                }
+              "combined": {
+                "type": "number",
+                "example": 0.8542
               },
-              "shareLink": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
+              "vector": {
+                "type": "number",
+                "example": 0.8542
+              }
+            }
+          },
+          "timeContext": {
+            "type": "object",
+            "properties": {
+              "start_time": {
+                "type": "number"
               },
-              "quote": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "episode": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "creator": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "audioUrl": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "format": {
-                    "type": "string",
-                    "example": "uri"
-                  }
-                }
-              },
-              "episodeImage": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  },
-                  "format": {
-                    "type": "string",
-                    "example": "uri"
-                  }
-                }
-              },
-              "listenLink": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "date": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
-              },
-              "similarity": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "object"
-                  },
-                  "properties": {
-                    "type": "object",
-                    "properties": {
-                      "combined": {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "example": "number"
-                          },
-                          "example": {
-                            "type": "number",
-                            "example": 0.8542
-                          }
-                        }
-                      },
-                      "vector": {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "example": "number"
-                          },
-                          "example": {
-                            "type": "number",
-                            "example": 0.8542
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              },
-              "timeContext": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "object"
-                  },
-                  "properties": {
-                    "type": "object",
-                    "properties": {
-                      "start_time": {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "example": "number"
-                          }
-                        }
-                      },
-                      "end_time": {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "example": "number"
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
+              "end_time": {
+                "type": "number"
               }
             }
           }
-        },
-        "xml": {
-          "name": "SearchResult"
         }
       },
       "Error": {
         "type": "object",
         "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          }
+        }
+      },
+      "L402Challenge": {
+        "type": "object",
+        "description": "L402 Payment Required challenge. Also emitted as a WWW-Authenticate response header.",
+        "properties": {
           "type": {
             "type": "string",
-            "example": "object"
+            "example": "https://pullthatupjamie.ai/l402/payment-required"
           },
-          "properties": {
+          "title": {
+            "type": "string",
+            "example": "Payment Required"
+          },
+          "status": {
+            "type": "integer",
+            "example": 402
+          },
+          "detail": {
+            "type": "string",
+            "example": "Purchase credits to access this endpoint. Pay the Lightning invoice, then retry with Authorization: L402 <macaroon>:<preimage>"
+          },
+          "macaroon": {
+            "type": "string",
+            "description": "Base64-encoded macaroon credential",
+            "example": "AgEDTDQwMgJCM..."
+          },
+          "invoice": {
+            "type": "string",
+            "description": "BOLT-11 Lightning invoice string",
+            "example": "lnbc10u1p..."
+          },
+          "paymentHash": {
+            "type": "string",
+            "example": "9f8a2b..."
+          },
+          "amountSats": {
+            "type": "integer",
+            "example": 1000
+          },
+          "amountUsd": {
+            "type": "number",
+            "example": 1
+          },
+          "btcUsdRate": {
+            "type": "number",
+            "example": 100000
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable reason code.",
+            "enum": [
+              "PAYMENT_REQUIRED",
+              "AUTH_REQUIRED",
+              "NO_BALANCE",
+              "INSUFFICIENT_FUNDS",
+              "QUOTA_EXCEEDED"
+            ]
+          },
+          "creditInfo": {
             "type": "object",
             "properties": {
-              "error": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
+              "model": {
+                "type": "string",
+                "example": "credit"
+              },
+              "service": {
+                "type": "string",
+                "example": "pullthatupjamie"
               },
               "message": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
-                }
+                "type": "string"
               },
-              "details": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "example": "string"
-                  }
+              "customAmount": {
+                "type": "string"
+              },
+              "defaultSats": {
+                "type": "integer"
+              },
+              "minSats": {
+                "type": "integer"
+              },
+              "maxSats": {
+                "type": "integer"
+              },
+              "balanceEndpoint": {
+                "type": "string",
+                "example": "/api/agent/balance"
+              },
+              "responseHeaders": {
+                "type": "array",
+                "items": {
+                  "type": "string"
                 }
               }
             }
           }
-        },
-        "xml": {
-          "name": "Error"
         }
       }
     }

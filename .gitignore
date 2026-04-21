@@ -13,5 +13,9 @@ scripts/seedPodcastFeeds.js
 test/cost-baseline-100.sh
 .l402-creds
 
+# Test comparison output
+tests/output/
+logs/
+
 # Skills build artifacts — ClawHub zips are CI artifacts, not committed
 dist/clawhub/

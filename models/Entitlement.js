@@ -29,6 +29,9 @@ const entitlementSchema = new mongoose.Schema({
       'ai-analyze',  // Research session AI analysis
       'twitter-post', // Twitter posting (costs ~$0.01/tweet, Nostr is free)
       'discover-podcasts', // LLM-assisted podcast discovery via Podcast Index
+      'chapter-search',   // Chapter keyword search across corpus
+      'workflow',          // Deprecated — renamed to 'pull'
+      'pull',              // LLM-orchestrated corpus query ("Pull That Up")
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
       'custom'            // Custom entitlement
