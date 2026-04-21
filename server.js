@@ -1709,8 +1709,16 @@ app.use('/api/chat', agentChatRouter); // Claude agent handles /chat/agent and /
 app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
   // #swagger.tags = ['Pull']
   // #swagger.summary = 'Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)'
-  /* #swagger.description = 'Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). Authentication accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). Quotas reset per configured period.' */
+  /* #swagger.description = 'Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). PRICING: $0.10 per call, deducted from the prepaid L402 balance. AUTH: accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). INVOICE AMOUNT: if you call without credentials to receive a 402 challenge, the invoice defaults to DEFAULT_CREDIT_PURCHASE_SATS (1000 sats unless overridden by server env). To request a different amount, append `?amountSats=N` to the URL (min 10, max 500,000 sats). Passing `?amountSats` together with an existing `Authorization: L402 ...` credential returns 400 (CONFLICTING_PARAMS) — credentials cannot be topped up that way; instead, let the balance deplete or request a fresh invoice.' */
   /* #swagger.security = [{ L402Credential: [] }, { BearerJWT: [] }, {}] */
+  /* #swagger.parameters['amountSats'] = {
+    in: 'query',
+    required: false,
+    type: 'integer',
+    minimum: 10,
+    maximum: 500000,
+    description: 'Only meaningful when calling without an L402 credential (to receive a 402 challenge). Specifies the sats amount for the returned Lightning invoice. Defaults to DEFAULT_CREDIT_PURCHASE_SATS (1000 sats unless overridden by server env). Conflicts with Authorization: L402 header — combining them returns 400.'
+  } */
   /* #swagger.parameters['body'] = {
     in: 'body',
     required: true,
