@@ -25,10 +25,6 @@ const AGENT_PRICING_MICRO_USD = {
 const AGENT_MIN_DEPOSIT_SATS = 10;        // 10 sats minimum
 const AGENT_MAX_DEPOSIT_SATS = 500000;    // 500,000 sats maximum
 
-// Pull credit-back: partial refund when a pull resolves quickly (<= threshold rounds)
-const PULL_CREDIT_BACK_MICRO_USD = 50000;       // $0.05 back
-const PULL_CREDIT_BACK_MAX_ROUNDS = 2;           // refund if <= this many rounds used
-
 // Default amount for inline 402 challenges on protected endpoints
 const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHASE_SATS) || 1000;
 
@@ -48,7 +44,5 @@ module.exports = {
   AGENT_MIN_DEPOSIT_SATS,
   AGENT_MAX_DEPOSIT_SATS,
   DEFAULT_CREDIT_PURCHASE_SATS,
-  PULL_CREDIT_BACK_MICRO_USD,
-  PULL_CREDIT_BACK_MAX_ROUNDS,
   getAgentCostMicroUsd
 };
