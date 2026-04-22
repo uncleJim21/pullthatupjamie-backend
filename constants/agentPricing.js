@@ -28,6 +28,11 @@ const AGENT_MAX_DEPOSIT_SATS = 500000;    // 500,000 sats maximum
 // Default amount for inline 402 challenges on protected endpoints
 const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHASE_SATS) || 1000;
 
+// Safety buffer applied when auto-sizing per-endpoint default invoices.
+// Absorbs BTC price drift between the cached rate used for sizing (up to ~60 min old)
+// and the time the user actually pays. 1.15 = 15% extra headroom.
+const AGENT_DEFAULT_SATS_BUFFER = 1.15;
+
 /**
  * Get the microdollar cost for a given entitlement type.
  * Returns null if the entitlement type has no agent pricing (not billable).
@@ -39,10 +44,32 @@ function getAgentCostMicroUsd(entitlementType) {
   return AGENT_PRICING_MICRO_USD[entitlementType] ?? null;
 }
 
+/**
+ * Compute a right-sized default 402 invoice amount (in sats) for a priced
+ * endpoint, covering exactly one call plus a small safety buffer.
+ *
+ * Returns null when the endpoint is not priced or no BTC rate is available
+ * (caller should fall back to DEFAULT_CREDIT_PURCHASE_SATS).
+ *
+ * @param {string} entitlementType - e.g. 'pull', 'search-quotes'
+ * @param {number} btcUsdRate - current BTC/USD rate
+ * @returns {number|null} default sats (integer), or null if not sizable
+ */
+function computeDefaultSatsForEndpoint(entitlementType, btcUsdRate) {
+  const costMicroUsd = getAgentCostMicroUsd(entitlementType);
+  if (!costMicroUsd || !btcUsdRate || btcUsdRate <= 0) return null;
+  const costUsd = costMicroUsd / 1_000_000;
+  const satsPerUsd = 100_000_000 / btcUsdRate;
+  const raw = costUsd * satsPerUsd * AGENT_DEFAULT_SATS_BUFFER;
+  return Math.max(AGENT_MIN_DEPOSIT_SATS, Math.ceil(raw));
+}
+
 module.exports = {
   AGENT_PRICING_MICRO_USD,
   AGENT_MIN_DEPOSIT_SATS,
   AGENT_MAX_DEPOSIT_SATS,
   DEFAULT_CREDIT_PURCHASE_SATS,
-  getAgentCostMicroUsd
+  AGENT_DEFAULT_SATS_BUFFER,
+  getAgentCostMicroUsd,
+  computeDefaultSatsForEndpoint
 };
