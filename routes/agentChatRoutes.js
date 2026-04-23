@@ -7,6 +7,7 @@ const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -82,8 +83,35 @@ function createCostTracker(modelConfig) {
 
 const SEARCH_QUOTES_KEEP = new Set(['quote', 'shareLink', 'episode', 'creator', 'date', 'summary', 'headline']);
 const FIND_PERSON_KEEP = new Set(['name', 'role', 'appearances', 'feeds', 'recentEpisodes']);
-const DISCOVER_KEEP_FEED = new Set(['title', 'feedId', 'feedGuid', 'transcriptAvailable', 'matchedEpisodes', 'nextSteps']);
-const DISCOVER_KEEP_EP = new Set(['title', 'guid', 'feedGuid', 'feedId', 'transcriptAvailable', 'image', 'publishedDate']);
+const DISCOVER_KEEP_FEED = new Set(['title', 'feedId', 'feedGuid', 'transcriptAvailable', 'matchedEpisodes', 'episodes', 'nextSteps']);
+const DISCOVER_AGENT_EP_DESC_MAX = 120;
+
+function stripDiscoverDescForAgent(text, maxLen) {
+  if (!text || typeof text !== 'string') return '';
+  const s = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, maxLen)}…`;
+}
+
+/** Episodes the main agent sees from discover: title, transcript flag, short description, guests — full guid kept for suggest_action */
+function compactDiscoverEpisodeForAgent(ep) {
+  if (!ep) return ep;
+  const out = {
+    title: ep.title,
+    guid: ep.guid,
+    transcriptAvailable: !!ep.transcriptAvailable,
+    publishedDate: ep.publishedDate || ep.date || null,
+  };
+  const desc = stripDiscoverDescForAgent(ep.description || '', DISCOVER_AGENT_EP_DESC_MAX);
+  if (desc) out.description = desc;
+  if (Array.isArray(ep.guests) && ep.guests.length) {
+    out.guests = ep.guests.slice(0, 5);
+  }
+  if (ep.feedId != null) out.feedId = ep.feedId;
+  if (ep.feedGuid) out.feedGuid = ep.feedGuid;
+  if (ep.image) out.image = ep.image;
+  return out;
+}
 
 function compactSearchQuotesResult(r, i) {
   const c = { _i: i };
@@ -100,14 +128,8 @@ function compactSearchQuotesResult(r, i) {
 function compactDiscoverResult(r, i) {
   const c = { _i: i };
   for (const k of DISCOVER_KEEP_FEED) {
-    if (k === 'matchedEpisodes' && Array.isArray(r[k])) {
-      c[k] = r[k].map(ep => {
-        const slim = {};
-        for (const ek of DISCOVER_KEEP_EP) {
-          if (ep[ek] !== undefined) slim[ek] = ep[ek];
-        }
-        return slim;
-      });
+    if ((k === 'matchedEpisodes' || k === 'episodes') && Array.isArray(r[k])) {
+      c[k] = r[k].map(ep => compactDiscoverEpisodeForAgent(ep));
     } else if (r[k] !== undefined) {
       c[k] = r[k];
     }
@@ -1034,13 +1056,18 @@ function createAgentChatRoutes({ openai } = {}) {
       };
       writeAgentLog(requestId, sessionId, agentLog);
 
-      // Auto-upsell: surface untranscribed episodes from discover results the agent didn't suggest
+      // Auto-upsell: surface untranscribed episodes from discover results the agent didn't suggest.
+      // Before emitting, run each candidate through a tiered relevance filter
+      // (language + token overlap, then optional gpt-4o-mini batch classification)
+      // to avoid surfacing irrelevant shows (e.g. a Spanish-language podcast for an English query).
       const AUTO_UPSELL_MAX = 2;
       let autoUpsellEmitted = 0;
       let autoUpsellAttempted = 0;
       let autoUpsellDropped = 0;
       let autoUpsellDeduped = 0;
-      outer: for (const feed of discoverResults) {
+
+      const allCandidates = [];
+      for (const feed of discoverResults) {
         const feedFallback = {
           feedGuid: feed.feedGuid || feed.podcastGuid || null,
           feedId: feed.feedId != null ? String(feed.feedId) : null,
@@ -1053,28 +1080,67 @@ function createAgentChatRoutes({ openai } = {}) {
           ...(feed.episodes || []),
         ];
         for (const ep of candidateEpisodes) {
-          if (autoUpsellEmitted >= AUTO_UPSELL_MAX) break outer;
-          autoUpsellAttempted++;
-          const result = emitSubmitOnDemand(
-            {
-              reason: `${feed.title || 'This show'} has untranscribed episodes that may be relevant.`,
-              guid: ep.guid || null,
-              feedGuid: ep.feedGuid || null,
-              feedId: ep.feedId != null ? String(ep.feedId) : null,
-              episodeTitle: ep.title || null,
-              image: ep.image || null,
-            },
-            { emit, episodeCache, suggestedGuids, requestId, feedFallback, origin: 'auto-upsell' },
-          );
-          if (result.emitted) autoUpsellEmitted++;
-          else if (result.reason === 'dedup') autoUpsellDeduped++;
-          else autoUpsellDropped++;
+          allCandidates.push({ feed, episode: ep, feedFallback });
         }
       }
-      if (autoUpsellAttempted > 0) {
-        printLog(`[${requestId}] Auto-upsell summary: attempted=${autoUpsellAttempted} emitted=${autoUpsellEmitted} dropped=${autoUpsellDropped} deduped=${autoUpsellDeduped} (max=${AUTO_UPSELL_MAX}, from ${discoverResults.length} discover feed(s))`);
+
+      let filterResult = {
+        approved: allCandidates,
+        totalCandidates: allCandidates.length,
+        filteredByLang: 0,
+        filteredByOverlap: 0,
+        filteredByLLM: 0,
+        llmSkipped: true,
+        llmReason: 'no-candidates',
+        latencyMs: 0,
+      };
+      if (allCandidates.length > 0) {
+        filterResult = await filterUpsellCandidates({
+          query: message,
+          candidates: allCandidates,
+          openai,
+          requestId,
+        });
+      }
+
+      for (const cand of filterResult.approved) {
+        if (autoUpsellEmitted >= AUTO_UPSELL_MAX) break;
+        autoUpsellAttempted++;
+        const feed = cand.feed || {};
+        const ep = cand.episode || {};
+        const result = emitSubmitOnDemand(
+          {
+            reason: `${feed.title || 'This show'} has untranscribed episodes that may be relevant.`,
+            guid: ep.guid || null,
+            feedGuid: ep.feedGuid || null,
+            feedId: ep.feedId != null ? String(ep.feedId) : null,
+            episodeTitle: ep.title || null,
+            image: ep.image || null,
+          },
+          { emit, episodeCache, suggestedGuids, requestId, feedFallback: cand.feedFallback, origin: 'auto-upsell' },
+        );
+        if (result.emitted) autoUpsellEmitted++;
+        else if (result.reason === 'dedup') autoUpsellDeduped++;
+        else autoUpsellDropped++;
+      }
+
+      const anyFilterActivity = filterResult.filteredByLang || filterResult.filteredByOverlap || filterResult.filteredByLLM;
+      if (autoUpsellAttempted > 0 || anyFilterActivity) {
+        console.log(
+          `[${requestId}] Auto-upsell summary: ` +
+          `totalCandidates=${filterResult.totalCandidates} ` +
+          `filteredByLang=${filterResult.filteredByLang} ` +
+          `filteredByOverlap=${filterResult.filteredByOverlap} ` +
+          `filteredByLLM=${filterResult.filteredByLLM} ` +
+          `approved=${filterResult.approved.length} ` +
+          `attempted=${autoUpsellAttempted} emitted=${autoUpsellEmitted} ` +
+          `dropped=${autoUpsellDropped} deduped=${autoUpsellDeduped} ` +
+          `llmSkipped=${filterResult.llmSkipped}${filterResult.llmReason ? `(${filterResult.llmReason})` : ''} ` +
+          `filterMs=${filterResult.latencyMs} ` +
+          `(max=${AUTO_UPSELL_MAX}, from ${discoverResults.length} discover feed(s))`
+        );
       } else if (discoverResults.length > 0) {
-        printLog(`[${requestId}] Auto-upsell: 0 candidates from ${discoverResults.length} discover feed(s) — no untranscribed matchedEpisodes`);
+        console.log(`[${requestId}] Auto-upsell: 0 candidates from ${discoverResults.length} discover feed(s) — no untranscribed matchedEpisodes`);
       }
 
       emit('done', {

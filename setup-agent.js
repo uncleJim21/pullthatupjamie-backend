@@ -53,13 +53,13 @@ PROMPT_SECTIONS.searchTools = `
 
 - **search_quotes**: Semantic vector search across all transcribed podcast content (Pinecone). This is your MOST POWERFUL tool — it finds relevant quotes even when exact keywords don't match. Always try this first for any topic query.
 - **search_chapters**: Keyword/regex search on chapter metadata (headlines, keywords, summaries). Good for structured segments but may miss content that search_quotes would find. Use short keyword phrases (1-3 words), not full sentences.
-- **discover_podcasts**: Searches the external Podcast Index (4M+ feeds) for podcasts by topic. Useful for finding shows the user might not know about. Does NOT search already-transcribed shows.
+- **discover_podcasts**: Searches the **live Podcast Index** (4M+ feeds) for podcasts by topic, name, or person. Returns each feed with an overall \`transcriptAvailable\` flag AND per-episode \`matchedEpisodes[].transcriptAvailable\` flags. Use it to find NEW shows **and** to probe a known/transcribed feed for RECENT un-ingested episodes (our corpus may be stale relative to the live RSS).
 - **find_person**: Looks up a person by name across indexed shows. Returns guest/creator appearances AND hostedFeeds — feeds where the person is a known host/owner. Each hosted feed includes feedId, feedType (interview/solo/panel/null), and hosts. Use hostedFeeds to split your search strategy (see SPLIT SEARCH STRATEGY rule).
 - **get_person_episodes**: Gets all episodes featuring a specific person.
 - **list_episode_chapters**: Fetches ALL chapters (table of contents) for specific episodes. Use after find_person/get_person_episodes to see what topics were covered, then craft targeted search_quotes queries from the chapter headlines.
 - **get_episode**: Fetch full metadata for a single episode by GUID. Use when you need episode details (title, date, guests, artwork) beyond what search_quotes returns.
 - **get_feed**: Fetch metadata for a podcast feed by ID. Returns feed name, episode count, artwork, description, hosts (array of host names), and feedType (interview/solo/panel/null when available).
-- **get_feed_episodes**: List episodes for a feed with optional date filtering. Use for "what has this show covered recently?" or browsing a feed's catalog.
+- **get_feed_episodes**: List episodes for a feed with optional date filtering — **scoped to our transcribed corpus only** (i.e. episodes we have already ingested). If this returns 0 for a date window but the feed is known to be active, the episodes likely exist on the live RSS but are un-ingested — in that case call \`discover_podcasts\` to surface them as transcription candidates.
 - **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId.
 - **suggest_action**: Surface a transcription suggestion or follow-up option to the user. Three types: submit-on-demand (offer transcription of an untranscribed episode — only pass the episode guid, the server fills in the rest), create-clip (future), follow-up-message (pre-filled chat message with optional pre-resolved context). Does NOT execute the action.`;
 
@@ -112,6 +112,7 @@ After your search_quotes call, you MUST run discover_podcasts if ANY of these ar
 1. **User assumption mismatch**: The user asked about content on Show X, but your search results came from Show Y. Run discover_podcasts to check if Show X has the content untranscribed. Do NOT just offer to check — actually do it.
 2. **User names a show not in the Feed ID Lookup table** — they want content we likely don't have. Run discover_podcasts to find it.
 3. **search_quotes returned 0 results** for the user's intended source — the content may exist untranscribed.
+4. **Recency gap on a known feed**: The user asks what a show has covered in a recent time window ("in April", "this month", "last week", "latest"), and either search_quotes / get_feed_episodes returned 0 for that window OR the returned episodes are older than the requested window. Our corpus is NOT the live RSS — call discover_podcasts with the show name (or the show name + a topic term) to surface recent un-ingested episodes as submit-on-demand candidates.
 
 You SHOULD also run discover_podcasts (not mandatory, but strongly encouraged) when:
 - Your search results come from only 1-2 feeds and the topic is broadly discussed
@@ -273,7 +274,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'discover_podcasts',
-    description: 'Search the external Podcast Index catalog (4M+ feeds) for podcasts by topic. Returns feeds with transcript availability flags. Use to find NEW shows, not to search existing transcripts.',
+    description: 'Search the live Podcast Index catalog (4M+ feeds) for podcasts by topic, show name, or person. Returns each feed with an overall transcriptAvailable flag and per-episode matchedEpisodes[].transcriptAvailable flags from the live RSS. Use to (a) find NEW shows the user may not know about, and (b) probe a known/transcribed feed for RECENT episodes that our corpus has not yet ingested (so they can be surfaced as transcription candidates).',
     input_schema: {
       type: 'object',
       properties: {
@@ -343,7 +344,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_feed_episodes',
-    description: 'List episodes for a specific podcast feed with optional date filtering. Use for "what has show X covered recently?" queries or to browse a feed\'s catalog. Returns slim metadata by default (title, date, GUID, guests). Verbose mode adds descriptions but is capped at 5 episodes to control token cost.',
+    description: 'List episodes for a specific podcast feed **scoped to our transcribed corpus only** (NOT the live RSS). Use to browse what we have already ingested for a feed, or to confirm coverage within a date window. If minDate/maxDate returns 0 episodes for an active show, the episodes likely exist on the live RSS but are un-ingested — in that case call discover_podcasts to surface them as transcription candidates. Returns slim metadata by default (title, date, GUID, guests). Verbose mode adds descriptions but is capped at 5 episodes to control token cost.',
     input_schema: {
       type: 'object',
       properties: {

@@ -12,7 +12,12 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const RSS_EXTRACTOR_BASE = 'https://rss-extractor-app-yufbq.ondigitalocean.app';
 const RSS_TIMEOUT_MS = 10000;
-const MAX_EPISODE_FETCH_FEEDS = 2;
+/** Max feeds per bucket (untranscribed vs transcribed-gap) for RSS episode fetch in one discover call */
+const MAX_EPISODE_FETCH_FEEDS = 4;
+/** Newest episodes attached to transcribed feeds (corpus gap / upsell); keep small for latency + tokens */
+const MAX_TRANSCRIBED_FETCH_EPISODES = 5;
+/** Untranscribed feeds: slightly more context for the agent */
+const MAX_UNTRANSCRIBED_FETCH_EPISODES = 10;
 
 const RSS_HEADERS = {
   'accept': 'application/json',
@@ -222,6 +227,27 @@ function normalizeFeed(raw) {
     categories: raw.categories || {},
     trendScore: raw.trendScore || null
   };
+}
+
+function stripHtmlTruncate(text, maxLen) {
+  if (!text || typeof text !== 'string') return '';
+  const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (plain.length <= maxLen) return plain;
+  return `${plain.slice(0, maxLen)}…`;
+}
+
+function extractEpisodeGuests(ep) {
+  const raw =
+    ep.guests ||
+    ep.itunesGuests ||
+    ep.persons ||
+    ep.dcCreator ||
+    ep.author;
+  if (Array.isArray(raw)) {
+    return raw.map(g => (typeof g === 'string' ? g : g?.name || g?.title || '')).filter(Boolean).slice(0, 8);
+  }
+  if (typeof raw === 'string' && raw.trim()) return [raw.trim()];
+  return [];
 }
 
 function normalizePersonEpisode(item) {
@@ -494,10 +520,8 @@ async function discoverPodcasts({ query, limit = 10 }) {
     printLog(`[${requestId}] LLM filter pass (${timings.filter}ms)`);
   }
 
-  const hasBypersonQuery = bypersonQueries.length > 0;
   const needsUntranscribedFetch = results.some(r => !r.transcriptAvailable && !r.matchedEpisodes);
-  const needsTranscribedGapFetch = hasBypersonQuery &&
-    results.some(r => r.transcriptAvailable && !r.matchedEpisodes);
+  const needsTranscribedGapFetch = results.some(r => r.transcriptAvailable && !r.matchedEpisodes);
   const shouldFetchEpisodes = routing.fetch_episodes || needsUntranscribedFetch || needsTranscribedGapFetch;
 
   if (shouldFetchEpisodes) {
@@ -505,11 +529,9 @@ async function discoverPodcasts({ query, limit = 10 }) {
       .filter(r => !r.transcriptAvailable && !r.matchedEpisodes)
       .slice(0, MAX_EPISODE_FETCH_FEEDS);
 
-    const transcribedGapToFetch = hasBypersonQuery
-      ? results
-          .filter(r => r.transcriptAvailable && !r.matchedEpisodes)
-          .slice(0, MAX_EPISODE_FETCH_FEEDS)
-      : [];
+    const transcribedGapToFetch = results
+      .filter(r => r.transcriptAvailable && !r.matchedEpisodes)
+      .slice(0, MAX_EPISODE_FETCH_FEEDS);
 
     const allToFetch = [...untranscribedToFetch, ...transcribedGapToFetch];
 
@@ -531,19 +553,30 @@ async function discoverPodcasts({ query, limit = 10 }) {
         if (!feedResult || episodes.length === 0) { normalizedByIndex.push(null); continue; }
         if (!feedResult.feedGuid && feedGuid) feedResult.feedGuid = feedGuid;
 
-        const normalizedEpisodes = episodes.slice(0, 10).map(ep => ({
-          guid: ep.episodeGUID || ep.enclosureUrl || ep.itemUUID,
-          title: ep.itemTitle || ep.title || 'Untitled',
-          date: ep.publishedDate
-            ? new Date(ep.publishedDate * 1000).toISOString().split('T')[0]
-            : null,
-          duration: ep.length || ep.duration || null,
-          feedGuid: feedResult.feedGuid,
-          feedId: feedResult.feedId,
-          image: ep.image || ep.feedImage || ep.artwork || '',
-          enclosureUrl: ep.enclosureUrl || '',
-          link: ep.link || '',
-        }));
+        const maxEp = feedResult.transcriptAvailable
+          ? MAX_TRANSCRIBED_FETCH_EPISODES
+          : MAX_UNTRANSCRIBED_FETCH_EPISODES;
+        const normalizedEpisodes = episodes.slice(0, maxEp).map(rawEp => {
+          const descRaw = rawEp.itemDescription || rawEp.description || rawEp.summary || '';
+          const guests = extractEpisodeGuests(rawEp);
+          const dateStr = rawEp.publishedDate
+            ? new Date(rawEp.publishedDate * 1000).toISOString().split('T')[0]
+            : null;
+          return {
+            guid: rawEp.episodeGUID || rawEp.enclosureUrl || rawEp.itemUUID,
+            title: rawEp.itemTitle || rawEp.title || 'Untitled',
+            date: dateStr,
+            publishedDate: dateStr,
+            description: stripHtmlTruncate(descRaw, 600),
+            guests,
+            duration: rawEp.length || rawEp.duration || null,
+            feedGuid: feedResult.feedGuid,
+            feedId: feedResult.feedId,
+            image: rawEp.image || rawEp.feedImage || rawEp.artwork || '',
+            enclosureUrl: rawEp.enclosureUrl || '',
+            link: rawEp.link || '',
+          };
+        });
         normalizedByIndex.push(normalizedEpisodes);
         for (const ep of normalizedEpisodes) {
           if (ep.guid) allFetchedGuids.push(ep.guid);
