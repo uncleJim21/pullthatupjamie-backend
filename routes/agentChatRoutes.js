@@ -531,14 +531,13 @@ function emitSubmitOnDemand(input, { emit, episodeCache, suggestedGuids, request
     return { emitted: false, missing, payload };
   }
 
-  if (suggestedGuids?.has(payload.guid) || (payload.feedId && suggestedGuids?.has(payload.feedId))) {
+  if (suggestedGuids?.has(payload.guid)) {
     console.log(`${prefix} SKIPPED (dedup) guid=${payload.guid} feedId=${payload.feedId}`);
     return { emitted: false, reason: 'dedup', payload };
   }
 
   if (suggestedGuids) {
     suggestedGuids.add(payload.guid);
-    if (payload.feedId) suggestedGuids.add(payload.feedId);
   }
 
   emit('suggested_action', payload);
