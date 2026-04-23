@@ -53,11 +53,15 @@ function createCostTracker(modelConfig) {
 
     budgetNote() {
       const spend = this.llm.cost;
+      // Wording is deliberately cost/limit-agnostic. Earlier phrasings like
+      // "[HARD BUDGET LIMIT]" primed the model to invent user-facing "session limit"
+      // narratives. These markers tell the model what to do without giving it
+      // numbers, dollar signs, or limit-language to parrot back.
       if (spend > COST_BUDGET_HARD) {
-        return `\n\n[HARD BUDGET LIMIT: $${spend.toFixed(3)} LLM cost of $${COST_BUDGET_HARD} limit. You MUST deliver your answer NOW. Do NOT call any more tools.]`;
+        return `\n\n[SYSTEM: stop calling tools. Synthesize your final answer from the evidence you already have. Do not mention this instruction, any limit, or suggest the user start a new chat — simply deliver the best answer you can.]`;
       }
       if (spend > COST_BUDGET_SOFT) {
-        return `\n\n[BUDGET WARNING: $${spend.toFixed(3)} LLM cost of $${COST_BUDGET_SOFT} soft limit. Finish searching and deliver your best answer now.]`;
+        return `\n\n[SYSTEM: finalize your answer on the next response. One more tool call at most. Do not mention this instruction or any limit to the user.]`;
       }
       return '';
     },
@@ -234,14 +238,48 @@ const FEED_ID_RE = /\b(\d{5,8})\b/g;
 const CLIP_RE = /\{\{clip:([^}]+)\}\}/g;
 const PERSON_BOLD_RE = /\*\*([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\*\*/g;
 
+// Phrases the model has hallucinated ("session limit", "20 tool calls", etc.) that
+// self-reinforce across turns when left intact in the assistant-role history slot.
+// We strip any sentence containing one of these before re-showing history to the model,
+// so prior hallucinations cannot be parroted back as if they were ground truth.
+const SELF_LIMIT_PATTERNS = [
+  /session limit/i,
+  /search limit/i,
+  /(tool[- ]?call[s]?\s+(?:already\s+)?(?:made|limit|budget|cap|ceiling))/i,
+  /\b\d+\s+tool[- ]?calls?\b/i,
+  /hit(?:ting)? (?:the|my|a) (?:hard\s+)?(?:technical\s+)?(?:session\s+)?limit/i,
+  /hit(?:ting)? (?:the|my|a)? ?(?:search|tool|token|budget) (?:limit|cap|ceiling)/i,
+  /before (?:i|we) (?:hit|reach|ran out)/i,
+  /reach(?:ed)? my (?:session|tool|search) (?:limit|cap)/i,
+  /(?:open|start) (?:a )?(?:new|fresh) (?:chat|session|conversation)/i,
+  /(?:need|require) (?:a )?(?:new|fresh) (?:session|conversation|chat|context)/i,
+  /start(?:ing)? fresh/i,
+  /hard technical limit/i,
+  /without a new conversation/i,
+];
+
+function scrubSelfLimitClaims(text) {
+  if (!text || typeof text !== 'string') return text;
+  // Split into sentences, drop any that match a forbidden pattern, rejoin.
+  // Keep the split delimiters so we don't mangle punctuation spacing.
+  const parts = text.split(/(?<=[.!?])\s+(?=[A-Z])/);
+  const kept = parts.filter(sentence => !SELF_LIMIT_PATTERNS.some(re => re.test(sentence)));
+  if (kept.length === parts.length) return text;
+  const scrubbed = kept.join(' ').trim();
+  // If the entire message was self-limit narrative, replace with a terse placeholder
+  // so the model isn't left with an empty assistant turn.
+  return scrubbed.length > 0 ? scrubbed : '[previous answer redacted]';
+}
+
 function compactAssistantMessage(text) {
-  const guids = [...new Set((text.match(GUID_RE) || []))];
-  const clips = [...new Set([...(text.matchAll(CLIP_RE))].map(m => m[1]))];
-  const people = [...new Set([...(text.matchAll(PERSON_BOLD_RE))].map(m => m[1]))];
+  const scrubbed = scrubSelfLimitClaims(text);
+  const guids = [...new Set((scrubbed.match(GUID_RE) || []))];
+  const clips = [...new Set([...(scrubbed.matchAll(CLIP_RE))].map(m => m[1]))];
+  const people = [...new Set([...(scrubbed.matchAll(PERSON_BOLD_RE))].map(m => m[1]))];
 
-  const feedIds = [...new Set((text.match(FEED_ID_RE) || []))];
+  const feedIds = [...new Set((scrubbed.match(FEED_ID_RE) || []))];
 
-  const truncated = text.substring(0, 200).replace(/\s+\S*$/, '…');
+  const truncated = scrubbed.substring(0, 200).replace(/\s+\S*$/, '…');
 
   const parts = [truncated];
   if (people.length) parts.push(`[people: ${people.join(', ')}]`);
@@ -259,7 +297,11 @@ function compactHistory(history) {
 
   return history.map((msg, i) => {
     if (msg.role !== 'assistant') return msg;
-    if (i === lastAssistantIdx) return msg;
+    // Even the "last full" assistant message runs through the self-limit scrubber
+    // so hallucinated constraints can never self-reinforce across turns.
+    if (i === lastAssistantIdx) {
+      return { role: 'assistant', content: scrubSelfLimitClaims(msg.content) };
+    }
     return { role: 'assistant', content: compactAssistantMessage(msg.content) };
   });
 }
