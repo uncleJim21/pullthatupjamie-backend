@@ -11,11 +11,12 @@
  *   - No separate gateway needed (inlined)
  *
  * Usage:
- *   node tests/agent-comparison.js [--query N] [--cohort cohortN] [--save] ["custom query 1" ...]
+ *   node tests/agent-comparison.js [--query N] [--queries N,M,P] [--cohort cohortN] [--save] [--provider anthropic|tinfoil|all] [--model key] [--models key1,key2] [--profile default|deep-turns] ["custom query 1" ...]
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
  * --cohort cohortN only run queries from the specified cohort (cohort1, cohort2, cohort3)
  * --query N        run a single query by 1-based index
+ * --queries N,M,P  run a specific subset of queries by 1-based indices
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
  */
 
@@ -114,32 +115,79 @@ function parseSSE(raw) {
   return events;
 }
 
-async function runAgentQuery(task, mode) {
+function parseCsv(input) {
+  if (!input || typeof input !== 'string') return [];
+  return input.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function defaultModelsForProvider(provider) {
+  if (provider === 'anthropic') return ['fast'];
+  if (provider === 'tinfoil') return ['gemma'];
+  if (provider === 'all') return ['fast', 'gemma'];
+  return [];
+}
+
+async function runAgentQuery(task, { model, provider, executionProfile } = {}) {
   const start = Date.now();
 
-  const agentModel = mode || process.env.AGENT_MODEL || 'fast';
+  const agentModel = model || process.env.AGENT_MODEL || 'fast';
 
   const headers = { 'Content-Type': 'application/json' };
   if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
 
+  const payload = { message: task, model: agentModel, includeMetrics: true };
+  if (provider) payload.provider = provider;
+  if (executionProfile) payload.executionProfile = executionProfile;
+
   const resp = await fetch(`${JAMIE_URL}/api/chat/workflow`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ message: task, model: agentModel }),
+    body: JSON.stringify(payload),
   });
 
   const raw = await resp.text();
   const latencyMs = Date.now() - start;
+  let parsedJson = null;
+  try { parsedJson = JSON.parse(raw); } catch {}
+
+  if (!resp.ok) {
+    const msg = parsedJson?.error || parsedJson?.message || raw.substring(0, 200);
+    throw new Error(`HTTP ${resp.status}: ${msg}`);
+  }
+
   const events = parseSSE(raw);
+
+  // Fallback for JSON mode or non-SSE responses.
+  if (events.length === 0 && parsedJson && typeof parsedJson === 'object') {
+    return {
+      engine: `agent (${parsedJson?.metrics?.model || agentModel})`,
+      modelKey: parsedJson?.metrics?.modelKey || agentModel,
+      provider: parsedJson?.metrics?.provider || provider || 'unknown',
+      executionProfile: parsedJson?.metrics?.executionProfile || executionProfile || 'default',
+      latencyMs,
+      summary: parsedJson?.text || '',
+      fullSummaryLength: (parsedJson?.text || '').length,
+      toolOrder: (parsedJson?.metrics?.toolCalls || []).map(tc => `${tc.name}(${tc.resultCount ?? '?'} results)`),
+      rounds: parsedJson?.metrics?.rounds || 0,
+      cost: parsedJson?.metrics?.cost || {},
+      tokens: parsedJson?.metrics?.tokens || {},
+      hasClipTokens: (parsedJson?.text || '').includes('{{clip:'),
+      error: parsedJson?.error || null,
+    };
+  }
 
   const textDoneEvent = events.find(e => e.event === 'text_done');
   const textDeltaEvents = events.filter(e => e.event === 'text_delta');
   const toolCallEvents = events.filter(e => e.event === 'tool_call');
   const toolResultEvents = events.filter(e => e.event === 'tool_result');
   const doneEvent = events.find(e => e.event === 'done');
+  const errorEvent = events.find(e => e.event === 'error');
 
   const fullText = textDoneEvent?.data?.text || textDeltaEvents.map(e => e.data?.text || '').join('');
   const modelLabel = doneEvent?.data?.model || agentModel;
+  const modelKey = doneEvent?.data?.modelKey || agentModel;
+  const providerLabel = doneEvent?.data?.provider || provider || 'unknown';
+  const profile = doneEvent?.data?.executionProfile || executionProfile || 'default';
   const toolOrder = toolCallEvents.map(e => {
     const matchingResult = toolResultEvents.find(r => r.data?.tool === e.data?.tool && r.data?.round === e.data?.round);
     return `${e.data.tool}(${matchingResult?.data?.resultCount ?? '?'} results)`;
@@ -147,6 +195,9 @@ async function runAgentQuery(task, mode) {
 
   return {
     engine: `agent (${modelLabel})`,
+    modelKey,
+    provider: providerLabel,
+    executionProfile: profile,
     latencyMs,
     summary: fullText,
     fullSummaryLength: fullText.length,
@@ -155,6 +206,7 @@ async function runAgentQuery(task, mode) {
     cost: doneEvent?.data?.cost || {},
     tokens: doneEvent?.data?.tokens || {},
     hasClipTokens: fullText.includes('{{clip:'),
+    error: errorEvent?.data?.error || null,
   };
 }
 
@@ -163,21 +215,45 @@ async function runAgentQuery(task, mode) {
 async function main() {
   const args = process.argv.slice(2);
   const shouldSave = args.includes('--save');
+  const getFlagValue = (flag) => {
+    const idx = args.indexOf(flag);
+    if (idx === -1) return null;
+    return args[idx + 1] || null;
+  };
 
-  const cohortFilter = args.includes('--cohort')
-    ? args[args.indexOf('--cohort') + 1]
-    : null;
+  const cohortFilter = getFlagValue('--cohort');
+  const providerFilter = getFlagValue('--provider');
+  const modelFilter = getFlagValue('--model');
+  const modelsFilter = parseCsv(getFlagValue('--models'));
+  const executionProfile = getFlagValue('--profile');
 
-  const queryIndex = args.includes('--query')
-    ? parseInt(args[args.indexOf('--query') + 1], 10) - 1
-    : null;
+  const queryIndexRaw = getFlagValue('--query');
+  const queryIndex = queryIndexRaw ? parseInt(queryIndexRaw, 10) - 1 : null;
+  const queriesFlagRaw = getFlagValue('--queries');
+  const queriesIndices = queriesFlagRaw
+    ? parseCsv(queriesFlagRaw)
+        .map(s => parseInt(s, 10))
+        .filter(n => Number.isInteger(n) && n >= 1 && n <= TEST_QUERIES.length)
+        .map(n => n - 1)
+    : [];
 
-  const flagArgs = new Set(['--query', '--cohort']);
-  const positionalQueries = args.filter(a => !a.startsWith('--') && !flagArgs.has(args[args.indexOf(a) - 1]));
+  const valueFlags = new Set(['--query', '--queries', '--cohort', '--provider', '--model', '--models', '--profile']);
+  const positionalQueries = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--save') continue;
+    if (valueFlags.has(arg)) {
+      i++;
+      continue;
+    }
+    if (!arg.startsWith('--')) positionalQueries.push(arg);
+  }
   
   let queries;
   if (positionalQueries.length > 0) {
     queries = positionalQueries.map((q, i) => ({ name: `Custom #${i + 1}`, cohort: 'custom', task: q }));
+  } else if (queriesIndices.length > 0) {
+    queries = queriesIndices.map(i => TEST_QUERIES[i]);
   } else if (queryIndex !== null && queryIndex >= 0 && queryIndex < TEST_QUERIES.length) {
     queries = [TEST_QUERIES[queryIndex]];
   } else if (cohortFilter) {
@@ -198,6 +274,9 @@ async function main() {
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[33mNOT SET\x1b[0m'}`);
   if (cohortFilter) console.log(`  Cohort: \x1b[33m${cohortFilter}\x1b[0m (${queries.length} queries)`);
+  if (providerFilter) console.log(`  Provider filter: \x1b[33m${providerFilter}\x1b[0m`);
+  if (modelFilter || modelsFilter.length > 0) console.log(`  Model filter: \x1b[33m${[modelFilter, ...modelsFilter].filter(Boolean).join(', ')}\x1b[0m`);
+  if (executionProfile) console.log(`  Execution profile: \x1b[33m${executionProfile}\x1b[0m`);
   if (shouldSave) console.log('  Saving full output to tests/output/');
   console.log();
 
@@ -205,48 +284,70 @@ async function main() {
     console.log(`━━━ ${q.name} ━━━`);
     console.log(`Query: "${q.task}"\n`);
 
-    const ag = await runAgentQuery(q.task, q.mode).catch(err => ({ engine: 'agent', error: err.message }));
+    const requestedModels = modelsFilter.length > 0
+      ? modelsFilter
+      : modelFilter
+        ? [modelFilter]
+        : providerFilter
+          ? defaultModelsForProvider(providerFilter)
+          : [q.mode || process.env.AGENT_MODEL || 'fast'];
+    const runTargets = requestedModels.length > 0 ? requestedModels : ['fast'];
+    const forcedProvider = providerFilter && providerFilter !== 'all' ? providerFilter : null;
 
-    const agentLabel = ag.engine || 'Agent';
-    const agLlmCost = ag.cost?.claude;
-    const agToolCost = ag.cost?.tools;
-    const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
+    for (const modelKey of runTargets) {
+      const ag = await runAgentQuery(q.task, {
+        model: modelKey,
+        provider: forcedProvider,
+        executionProfile,
+      }).catch(err => ({
+        engine: `agent (${modelKey})`,
+        modelKey,
+        provider: forcedProvider || 'unknown',
+        executionProfile: executionProfile || 'default',
+        error: err.message,
+      }));
 
-    console.log('┌─────────────────────┬────────────────────────────┐');
-    console.log(`│ Metric              │ ${pad(agentLabel, 26)} │`);
-    console.log('├─────────────────────┼────────────────────────────┤');
+      const agentLabel = ag.engine || 'Agent';
+      const agLlmCost = ag.cost?.claude;
+      const agToolCost = ag.cost?.tools;
+      const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
 
-    const rows = [
-      ['Latency', `${ag.latencyMs || '?'}ms`],
-      ['Tool order', truncate((ag.toolOrder || []).join(' → '), 26)],
-      ['Rounds', `${ag.rounds || '?'}`],
-      ['Summary length', `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
-      ['{{clip:}} tokens', ag.hasClipTokens ? 'Yes' : 'No'],
-      ['LLM cost', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
-      ['Tool cost', agToolCost != null ? `$${agToolCost.toFixed(4)}` : '?'],
-      ['Total cost', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
-      ['Tokens', agLlmDetail],
-    ];
+      console.log(`Model target: ${modelKey} | Provider: ${ag.provider || '?'} | Profile: ${ag.executionProfile || 'default'}`);
+      console.log('┌─────────────────────┬────────────────────────────┐');
+      console.log(`│ Metric              │ ${pad(agentLabel, 26)} │`);
+      console.log('├─────────────────────┼────────────────────────────┤');
 
-    for (const [label, val] of rows) {
-      console.log(`│ ${pad(label, 19)} │ ${pad(val, 26)} │`);
+      const rows = [
+        ['Latency', `${ag.latencyMs || '?'}ms`],
+        ['Tool order', truncate((ag.toolOrder || []).join(' → '), 26)],
+        ['Rounds', `${ag.rounds || '?'}`],
+        ['Summary length', `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
+        ['{{clip:}} tokens', ag.hasClipTokens ? 'Yes' : 'No'],
+        ['LLM cost', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
+        ['Tool cost', agToolCost != null ? `$${agToolCost.toFixed(4)}` : '?'],
+        ['Total cost', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
+        ['Tokens', agLlmDetail],
+      ];
+
+      for (const [label, val] of rows) {
+        console.log(`│ ${pad(label, 19)} │ ${pad(val, 26)} │`);
+      }
+
+      console.log('└─────────────────────┴────────────────────────────┘');
+
+      if (ag.tokens?.input) {
+        const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || modelKey;
+        console.log(`\n  LLM: ${agModelName} — ${ag.tokens.input}in/${ag.tokens.output}out — $${(ag.cost?.claude || 0).toFixed(6)}`);
+      }
+
+      console.log('\n--- Summary (first 300 chars) ---');
+      console.log((ag.summary || ag.error || '(none)').substring(0, 300));
+
+      if (ag.error) console.log(`\nERROR: ${ag.error}`);
+      console.log('\n');
+
+      allResults.push({ query: q, ag, run: { modelKey, provider: forcedProvider || ag.provider, executionProfile: executionProfile || ag.executionProfile } });
     }
-
-    console.log('└─────────────────────┴────────────────────────────┘');
-
-    if (ag.tokens?.input) {
-      const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || 'claude';
-      console.log(`\n  LLM: ${agModelName} — ${ag.tokens.input}in/${ag.tokens.output}out — $${(ag.cost?.claude || 0).toFixed(6)}`);
-    }
-
-    console.log('\n--- Summary (first 300 chars) ---');
-    console.log((ag.summary || ag.error || '(none)').substring(0, 300));
-
-    if (ag.error) console.log(`\nERROR: ${ag.error}`);
-
-    console.log('\n');
-
-    allResults.push({ query: q, ag });
   }
 
   if (shouldSave && allResults.length > 0) {
@@ -260,12 +361,13 @@ async function main() {
 
     let md = `# Agent Benchmark\n\n`;
     md += `**Date:** ${new Date().toISOString()}\n`;
-    md += `**Agent model:** ${agModel}\n`;
+    md += `**Primary run label:** ${agModel}\n`;
     md += `**Endpoint:** POST /api/chat/workflow\n\n`;
 
-    for (const { query, ag } of allResults) {
+    for (const { query, ag, run } of allResults) {
       md += `---\n\n## ${query.name}${query.cohort ? ` [${query.cohort}]` : ''}\n\n`;
       md += `**Query:** "${query.task}"\n\n`;
+      md += `**Run target:** model=${run?.modelKey || ag.modelKey || 'unknown'}, provider=${run?.provider || ag.provider || 'unknown'}, profile=${run?.executionProfile || ag.executionProfile || 'default'}\n\n`;
 
       md += `| Metric | Value |\n|--------|-------|\n`;
       md += `| Latency | ${ag.latencyMs || '?'}ms |\n`;
@@ -317,6 +419,22 @@ async function main() {
     md += `| Metric | Value |\n|--------|-------|\n`;
     md += `| Produced summary (>50 chars) | ${agHasSummary}/${allResults.length} |\n`;
     md += `| Included {{clip:}} tokens | ${agClipTokens}/${allResults.length} |\n`;
+
+    const grouped = new Map();
+    for (const r of allResults) {
+      const key = `${r.run?.provider || r.ag.provider || 'unknown'}|${r.run?.modelKey || r.ag.modelKey || 'unknown'}|${r.run?.executionProfile || r.ag.executionProfile || 'default'}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(r);
+    }
+
+    md += `\n### By Model/Profile\n\n`;
+    md += `| Provider | Model | Profile | Runs | Mean Cost | Mean Latency |\n|---|---|---:|---:|---:|---:|\n`;
+    for (const [key, rows] of grouped.entries()) {
+      const [provider, model, profile] = key.split('|');
+      const costs = rows.map(r => r.ag.cost?.total).filter(c => c != null && c > 0);
+      const latencies = rows.map(r => r.ag.latencyMs).filter(Boolean);
+      md += `| ${provider} | ${model} | ${profile} | ${rows.length} | $${avg(costs).toFixed(5)} | ${avg(latencies).toFixed(0)}ms |\n`;
+    }
 
     fs.writeFileSync(filepath, md);
     console.log(`\x1b[32m✔ Full output saved to ${filepath}\x1b[0m\n`);
