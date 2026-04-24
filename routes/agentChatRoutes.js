@@ -5,9 +5,11 @@ const path = require('path');
 const { printLog } = require('../constants.js');
 const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
+const { resolveModelSelection, AGENT_MODELS } = require('../constants/agentModels');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
+const { createProvider } = require('../utils/agent/providers');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -25,16 +27,15 @@ function writeAgentLog(requestId, sessionId, logData) {
   }
 }
 
-const MAX_TOOL_ROUNDS = 6;
-const COST_BUDGET_SOFT = 0.055;  // triggers "wrap up" guidance based on LLM cost only
-const COST_BUDGET_HARD = 0.08;   // hard ceiling — forces loop exit, LLM cost only
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
 /**
  * Running cost tracker scoped to a single agent request.
  * Separates LLM and tool costs using model-specific pricing.
  */
-function createCostTracker(modelConfig) {
+function createCostTracker(modelConfig, executionProfile) {
+  const costBudgetSoft = executionProfile?.costBudgetSoft ?? 0.055;
+  const costBudgetHard = executionProfile?.costBudgetHard ?? 0.08;
   const tracker = {
     llm:   { inputTokens: 0, outputTokens: 0, cost: 0 },
     tools: { calls: 0, cost: 0 },
@@ -58,10 +59,10 @@ function createCostTracker(modelConfig) {
       // "[HARD BUDGET LIMIT]" primed the model to invent user-facing "session limit"
       // narratives. These markers tell the model what to do without giving it
       // numbers, dollar signs, or limit-language to parrot back.
-      if (spend > COST_BUDGET_HARD) {
+      if (spend > costBudgetHard) {
         return `\n\n[SYSTEM: stop calling tools. Synthesize your final answer from the evidence you already have. Do not mention this instruction, any limit, or suggest the user start a new chat — simply deliver the best answer you can.]`;
       }
-      if (spend > COST_BUDGET_SOFT) {
+      if (spend > costBudgetSoft) {
         return `\n\n[SYSTEM: finalize your answer on the next response. One more tool call at most. Do not mention this instruction or any limit to the user.]`;
       }
       return '';
@@ -369,11 +370,6 @@ async function buildFeedLookup() {
   }
 }
 
-const AGENT_MODELS = {
-  fast:    { id: 'claude-haiku-4-5-20251001', inputPer1M: 1.00, outputPer1M: 5.00, label: 'Haiku 4.5' },
-  quality: { id: 'claude-sonnet-4-6',         inputPer1M: 3.00, outputPer1M: 15.00, label: 'Sonnet 4.6' },
-};
-const DEFAULT_AGENT_MODEL = 'fast';
 const CLASSIFIER_MODEL = AGENT_MODELS.fast.id;
 
 let anthropic;
@@ -574,84 +570,6 @@ function handleSuggestAction(toolInput, emit, { episodeCache, suggestedGuids, re
 }
 
 /**
- * Consume a streaming Claude response, emitting text_delta SSE events for
- * final (non-tool-use) rounds. Returns a shape compatible with the
- * non-streaming messages.create() response.
- */
-async function consumeStream(stream, { emit, aborted, requestId }) {
-  const contentBlocks = [];
-  let stopReason = null;
-  let inputTokens = 0;
-  let outputTokens = 0;
-
-  let currentBlockType = null;
-  let currentBlockText = '';
-  let currentToolInput = '';
-  let currentToolId = '';
-  let currentToolName = '';
-  let hasToolUse = false;
-
-  for await (const event of stream) {
-    if (aborted()) break;
-
-    switch (event.type) {
-      case 'message_start':
-        inputTokens = event.message?.usage?.input_tokens || 0;
-        break;
-
-      case 'content_block_start':
-        currentBlockType = event.content_block.type;
-        currentBlockText = '';
-        currentToolInput = '';
-        if (currentBlockType === 'tool_use') {
-          hasToolUse = true;
-          currentToolId = event.content_block.id;
-          currentToolName = event.content_block.name;
-        }
-        break;
-
-      case 'content_block_delta':
-        if (event.delta.type === 'text_delta') {
-          currentBlockText += event.delta.text;
-          if (!hasToolUse && !aborted()) {
-            emit('text_delta', { text: event.delta.text });
-          }
-        } else if (event.delta.type === 'input_json_delta') {
-          currentToolInput += event.delta.partial_json;
-        }
-        break;
-
-      case 'content_block_stop':
-        if (currentBlockType === 'text') {
-          contentBlocks.push({ type: 'text', text: currentBlockText });
-        } else if (currentBlockType === 'tool_use') {
-          let parsedInput = {};
-          try { parsedInput = JSON.parse(currentToolInput); } catch { /* empty input */ }
-          contentBlocks.push({
-            type: 'tool_use',
-            id: currentToolId,
-            name: currentToolName,
-            input: parsedInput,
-          });
-        }
-        currentBlockType = null;
-        break;
-
-      case 'message_delta':
-        stopReason = event.delta?.stop_reason || stopReason;
-        outputTokens = event.usage?.output_tokens || outputTokens;
-        break;
-    }
-  }
-
-  return {
-    content: contentBlocks,
-    stop_reason: stopReason,
-    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-  };
-}
-
-/**
  * @param {object} deps
  * @param {object} deps.openai - OpenAI client (for clip reranker)
  */
@@ -660,13 +578,9 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
-    // TEMPORARILY DEPRECATED: fast vs quality mode selection.
-    // The `model` field in req.body is intentionally ignored — all requests
-    // use DEFAULT_AGENT_MODEL. To re-enable dual-mode, restore:
-    //   const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
-    // and re-expose the `model` param in the frontend / API docs.
-    const modelKey = DEFAULT_AGENT_MODEL;
-    const modelConfig = AGENT_MODELS[modelKey];
+    const { modelKey, modelConfig, executionProfile, profileKey } = resolveModelSelection(req.body || {});
+    const maxToolRounds = executionProfile.maxToolRounds;
+    const providerClient = createProvider(modelConfig.provider);
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestId = `AGENT-${sessionId.slice(-8)}`;
     const startTime = Date.now();
@@ -678,14 +592,18 @@ function createAgentChatRoutes({ openai } = {}) {
     // SSE emits are stripped of model, cost, tokens, intent, tool inputs,
     // round numbers, etc. Set AGENT_INCLUDE_METRICS=true in .env on internal
     // environments (local dev, benchmarks) to receive the full payload.
-    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true';
+    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true' || req.body?.includeMetrics === true;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
     }
 
-    if (!anthropicKeyValid) {
-      return res.status(503).json({ error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' });
+    const providerReady = await providerClient.validate();
+    if (!providerReady) {
+      const envKey = modelConfig.provider === 'tinfoil' ? 'TINFOIL_API_KEY' : 'ANTHROPIC_API_KEY';
+      return res.status(503).json({
+        error: `${modelConfig.provider} provider is not configured or unavailable. Check ${envKey} in .env`,
+      });
     }
 
     const rawHistory = req.body.history || [];
@@ -712,7 +630,7 @@ function createAgentChatRoutes({ openai } = {}) {
           ? req._defaultStream
           : true;
 
-    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
+    printLog(`[${requestId}] POST ${req.path} — provider=${modelConfig.provider}, model=${modelConfig.label} (${modelKey}), profile=${profileKey}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
 
     if (streaming) {
       res.writeHead(200, {
@@ -738,7 +656,7 @@ function createAgentChatRoutes({ openai } = {}) {
       status:      new Set(['intent']),
       tool_call:   new Set(['input', 'round']),
       tool_result: new Set(['resultCount', 'latencyMs', 'round']),
-      done:        new Set(['model', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
+      done:        new Set(['provider', 'model', 'modelKey', 'executionProfile', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
     };
 
     const sanitize = (eventType, data) => {
@@ -793,12 +711,13 @@ function createAgentChatRoutes({ openai } = {}) {
 
       let intent = DEFAULT_INTENT;
       let classifierTokens = null;
-      if (triageEnabled && !bypassTriage) {
+      const classifierAvailable = anthropicKeyValid;
+      if (triageEnabled && !bypassTriage && classifierAvailable) {
         const result = await classifyIntent(message, history);
         intent = result.intent;
         classifierTokens = result.classifierTokens;
       } else {
-        printLog(`[${requestId}] Triage bypassed (enabled=${triageEnabled}, bypassTriage=${bypassTriage})`);
+        printLog(`[${requestId}] Triage bypassed (enabled=${triageEnabled}, bypassTriage=${bypassTriage}, classifierAvailable=${classifierAvailable})`);
       }
 
       const profile = PROFILES[intent];
@@ -828,7 +747,7 @@ function createAgentChatRoutes({ openai } = {}) {
       const messages = [...effectiveHistory, { role: 'user', content: message }];
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
-      const costs = createCostTracker(modelConfig);
+      const costs = createCostTracker(modelConfig, executionProfile);
       let round = 0;
       let hasExecutedTools = false;
       const discoverResults = [];
@@ -855,7 +774,7 @@ function createAgentChatRoutes({ openai } = {}) {
         finalText: null, error: null,
       };
 
-      while (round < MAX_TOOL_ROUNDS && !_aborted && costs.llm.cost < COST_BUDGET_HARD) {
+      while (round < maxToolRounds && !_aborted && costs.llm.cost < executionProfile.costBudgetHard) {
         round++;
         console.log(`[${requestId}] === ROUND ${round} START ===`);
 
@@ -868,16 +787,16 @@ function createAgentChatRoutes({ openai } = {}) {
         const totalInputChars = systemChars + msgMetrics.totalChars;
         printLog(`[${requestId}] Round ${round} input: system=${systemChars}c (~${Math.ceil(systemChars/4)}tok), messages=${msgMetrics.totalChars}c (user=${msgMetrics.userChars}, assistant=${msgMetrics.assistantChars}, toolResults=${msgMetrics.toolResultChars}), total=~${Math.ceil(totalInputChars/4)}tok est`);
 
-        const stream = await anthropic.messages.create({
+        const response = await providerClient.createResponse({
           model: modelConfig.id,
-          max_tokens: 4096,
+          maxTokens: 4096,
           system: effectiveSystemPrompt,
           messages,
           tools: effectiveTools,
-          stream: true,
+          aborted,
+          onTextDelta: (text) => emit('text_delta', { text }),
+          requestId,
         });
-
-        const response = await consumeStream(stream, { emit, aborted, requestId });
 
         console.log(`[${requestId}] Claude response: stop_reason="${response.stop_reason}", content_blocks=${response.content.length}, types=[${response.content.map(b => b.type).join(',')}]`);
         console.log(`[${requestId}] Tokens this round: input=${response.usage?.input_tokens}, output=${response.usage?.output_tokens}`);
@@ -1146,7 +1065,10 @@ function createAgentChatRoutes({ openai } = {}) {
 
       emit('done', {
         sessionId,
+        provider: modelConfig.provider,
         model: modelConfig.label,
+        modelKey,
+        executionProfile: profileKey,
         intent,
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
@@ -1170,7 +1092,10 @@ function createAgentChatRoutes({ openai } = {}) {
         if (buffered.session) responseBody.session = buffered.session;
         if (includeMetrics) {
           responseBody.metrics = {
+            provider: modelConfig.provider,
             model: modelConfig.label,
+            modelKey,
+            executionProfile: profileKey,
             intent,
             rounds: round,
             toolCalls: buffered.toolCalls,
