@@ -702,11 +702,17 @@ function createAgentChatRoutes({ openai } = {}) {
 
     // Fields stripped from SSE payloads when includeMetrics=false (default).
     // Keys = event type, values = set of top-level fields to drop.
+    //
+    // NOTE: tool_call.input / tool_call.round / tool_result.resultCount /
+    // tool_result.latencyMs / tool_result.round are NOT stripped — the
+    // frontend uses them for subtitle rendering ("Searching defense tech..."),
+    // result-count chips ("[7 results]"), and round-keyed call/result
+    // matching in multi-round runs. These match the OpenAPI spec for these
+    // events. Only `status.intent` and the rich `done` summary remain gated
+    // (those are genuine internal telemetry).
     const INTERNAL_FIELDS = {
-      status:      new Set(['intent']),
-      tool_call:   new Set(['input', 'round']),
-      tool_result: new Set(['resultCount', 'latencyMs', 'round']),
-      done:        new Set(['provider', 'model', 'modelKey', 'executionProfile', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
+      status: new Set(['intent']),
+      done:   new Set(['provider', 'model', 'modelKey', 'executionProfile', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
     };
 
     const sanitize = (eventType, data) => {
@@ -1057,6 +1063,20 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] === SYNTHESIS START === reason=${synthesisExitReason}, elapsed=${latency.elapsedMs()}ms`);
         emit('status', { message: 'Composing your answer...', sessionId });
 
+        // Bound the synthesis call by its own short deadline. By the time we
+        // get here we already have all the tool results in `messages` —
+        // synthesis is just composing prose, it should not run another 25s
+        // and blow past the latency hard cap. Default 15s, env-overridable.
+        // The deadline is enforced two ways:
+        //   1. Wrapped `aborted` predicate that streaming providers check
+        //      per chunk, so partial text already streamed to the client is
+        //      preserved and the loop exits cleanly.
+        //   2. `timeoutMs` passed to the provider, which becomes the fetch's
+        //      AbortController timeout, killing non-streaming or hung calls.
+        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '15000', 10);
+        const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
+        const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
+
         let streamedSynthesis = '';
         try {
           // Use a synthesis-only prompt that explicitly forbids tool-call
@@ -1075,7 +1095,8 @@ function createAgentChatRoutes({ openai } = {}) {
             // Empty tools → providers skip the `tools`/`tool_choice` fields,
             // forcing the model to produce text only.
             tools: [],
-            aborted,
+            aborted: synthesisAborted,
+            timeoutMs: synthesisBudgetMs,
             onTextDelta: (text) => {
               streamedSynthesis += text;
               emit('text_delta', { text });
@@ -1113,7 +1134,9 @@ function createAgentChatRoutes({ openai } = {}) {
           const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
           agentLog.finalText = fullText;
           emit('text_done', { text: fullText });
-          console.log(`[${requestId}] === SYNTHESIS DONE === ${streamedSynthesis.length} chars synthesized, ${fullText.length} total`);
+          const synthesisElapsed = synthesisBudgetMs - (synthesisDeadlineMs - Date.now());
+          const deadlineHit = Date.now() >= synthesisDeadlineMs;
+          console.log(`[${requestId}] === SYNTHESIS DONE === ${streamedSynthesis.length} chars synthesized, ${fullText.length} total, ${synthesisElapsed}ms${deadlineHit ? ' (deadline hit)' : ''}`);
         } catch (err) {
           console.error(`[${requestId}] === SYNTHESIS FAILED === ${err.message}`);
           // Best-effort: emit any accumulated intermediate text so the user

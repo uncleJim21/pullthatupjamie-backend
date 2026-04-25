@@ -88,60 +88,6 @@ function convertMessagesToOpenAi(messages = []) {
   return out;
 }
 
-function normalizeOpenAiResponse(payload) {
-  const choice = payload?.choices?.[0] || {};
-  const message = choice.message || {};
-  const content = [];
-
-  // V4 thinking mode emits inline reasoning that must be echoed back on
-  // subsequent turns. We surface it as a `thinking` content block so the
-  // orchestrator preserves it in conversation history; convertMessagesToOpenAi
-  // turns it back into reasoning_content for follow-up requests.
-  if (typeof message.reasoning_content === 'string' && message.reasoning_content.trim()) {
-    content.push({ type: 'thinking', text: message.reasoning_content });
-  }
-
-  if (typeof message.content === 'string' && message.content.trim()) {
-    content.push({ type: 'text', text: message.content });
-  } else if (Array.isArray(message.content)) {
-    const text = message.content
-      .filter(part => part?.type === 'text' && typeof part.text === 'string')
-      .map(part => part.text)
-      .join('\n');
-    if (text.trim()) content.push({ type: 'text', text });
-  }
-
-  if (Array.isArray(message.tool_calls)) {
-    for (const tc of message.tool_calls) {
-      let parsedInput = {};
-      try {
-        parsedInput = JSON.parse(tc.function?.arguments || '{}');
-      } catch {}
-      content.push({
-        type: 'tool_use',
-        id: tc.id || `tool_${crypto.randomUUID()}`,
-        name: tc.function?.name,
-        input: parsedInput,
-      });
-    }
-  }
-
-  const stopReason = content.some(c => c.type === 'tool_use')
-    ? 'tool_use'
-    : (choice.finish_reason || 'end_turn');
-
-  return {
-    content,
-    stop_reason: stopReason,
-    usage: {
-      input_tokens: payload?.usage?.prompt_tokens || 0,
-      output_tokens: payload?.usage?.completion_tokens || 0,
-      cached_input_tokens: payload?.usage?.prompt_cache_hit_tokens ?? null,
-      reasoning_tokens: payload?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
-    },
-  };
-}
-
 class DeepSeekProvider {
   constructor() {
     this.baseUrl = DEFAULT_BASE_URL.replace(/\/$/, '');
@@ -174,7 +120,7 @@ class DeepSeekProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, requestId }) {
+  async createResponse({ model, maxTokens, system, messages, tools, onTextDelta, aborted, requestId, timeoutMs }) {
     const openAiMessages = [
       { role: 'system', content: system },
       ...convertMessagesToOpenAi(messages),
@@ -184,7 +130,11 @@ class DeepSeekProvider {
       model,
       messages: openAiMessages,
       max_tokens: maxTokens,
-      stream: false,
+      stream: true,
+      // include_usage tells DeepSeek (and any OpenAI-compatible upstream) to
+      // emit a final chunk with prompt/completion token counts. Without it,
+      // the streaming response has no usage info and our cost tracker undercounts.
+      stream_options: { include_usage: true },
     };
 
     // Only attach tools/tool_choice when at least one tool is supplied. The
@@ -201,35 +151,149 @@ class DeepSeekProvider {
       payload.reasoning_effort = DEFAULT_REASONING_EFFORT;
     }
 
+    const safeOnTextDelta = typeof onTextDelta === 'function' ? onTextDelta : () => {};
+    const safeAborted = typeof aborted === 'function' ? aborted : () => false;
+
+    const effectiveTimeoutMs = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+      ? Math.floor(timeoutMs)
+      : DEFAULT_REQUEST_TIMEOUT_MS;
+
     const url = `${this.baseUrl}/chat/completions`;
     const controller = new AbortController();
     const started = Date.now();
-    const timeout = setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
     let resp;
     try {
       resp = await fetch(url, {
         method: 'POST',
-        headers: this.authHeaders(),
+        headers: { ...this.authHeaders(), Accept: 'text/event-stream' },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
     } catch (err) {
       clearTimeout(timeout);
       if (err?.name === 'AbortError') {
-        throw new Error(`DeepSeek request timed out after ${DEFAULT_REQUEST_TIMEOUT_MS}ms (${requestId || 'no-req-id'})`);
+        throw new Error(`DeepSeek request timed out after ${effectiveTimeoutMs}ms (${requestId || 'no-req-id'})`);
       }
       throw err;
     }
-    clearTimeout(timeout);
 
     if (!resp.ok) {
+      clearTimeout(timeout);
       const body = await resp.text();
       throw new Error(`DeepSeek request failed (${resp.status}) after ${Date.now() - started}ms: ${body.substring(0, 300)}`);
     }
 
-    const data = await resp.json();
-    return normalizeOpenAiResponse(data);
+    // SSE consumption. DeepSeek's chat completions stream is OpenAI-compatible:
+    //   data: {...delta...}\n\n
+    //   data: {...delta...}\n\n
+    //   data: [DONE]\n\n
+    // Each delta carries one or more of: content (text), reasoning_content
+    // (V4 thinking-mode tokens), tool_calls (incremental, indexed). The final
+    // chunk before [DONE] carries the usage object when stream_options.include_usage
+    // is set. We reconstruct the same {content, stop_reason, usage} shape the
+    // orchestrator expects from the non-streaming path.
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let textParts = '';
+    let reasoningParts = '';
+    const toolCallsByIndex = new Map();
+    let finishReason = null;
+    let usage = null;
+
+    try {
+      for await (const chunk of resp.body) {
+        if (safeAborted()) {
+          // Pull the plug — controller.abort() will surface as an AbortError
+          // upstream which we swallow at the loop boundary.
+          controller.abort();
+          break;
+        }
+        buffer += decoder.decode(chunk, { stream: true });
+
+        let nlIdx;
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nlIdx).trim();
+          buffer = buffer.slice(nlIdx + 1);
+          if (!line) continue;
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]' || data.length === 0) continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            // Partial / malformed chunk — skip; the next chunk will likely
+            // round it out via the buffered split above.
+            continue;
+          }
+
+          const choice = parsed.choices?.[0];
+          if (choice) {
+            const delta = choice.delta || {};
+            if (typeof delta.content === 'string' && delta.content.length > 0) {
+              textParts += delta.content;
+              if (!safeAborted()) safeOnTextDelta(delta.content);
+            }
+            if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+              reasoningParts += delta.reasoning_content;
+            }
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = typeof tc.index === 'number' ? tc.index : 0;
+                if (!toolCallsByIndex.has(idx)) {
+                  toolCallsByIndex.set(idx, {
+                    id: tc.id || `tool_${crypto.randomUUID()}`,
+                    type: tc.type || 'function',
+                    function: { name: '', arguments: '' },
+                  });
+                }
+                const acc = toolCallsByIndex.get(idx);
+                if (tc.id && acc.id.startsWith('tool_')) acc.id = tc.id;
+                if (tc.type) acc.type = tc.type;
+                if (typeof tc.function?.name === 'string') acc.function.name += tc.function.name;
+                if (typeof tc.function?.arguments === 'string') acc.function.arguments += tc.function.arguments;
+              }
+            }
+            if (choice.finish_reason) finishReason = choice.finish_reason;
+          }
+          if (parsed.usage) usage = parsed.usage;
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const content = [];
+    if (reasoningParts.trim()) content.push({ type: 'thinking', text: reasoningParts });
+    if (textParts.trim()) content.push({ type: 'text', text: textParts });
+    for (const tc of toolCallsByIndex.values()) {
+      let parsedInput = {};
+      try { parsedInput = JSON.parse(tc.function.arguments || '{}'); } catch {}
+      content.push({
+        type: 'tool_use',
+        id: tc.id,
+        name: tc.function.name,
+        input: parsedInput,
+      });
+    }
+
+    const stopReason = content.some(c => c.type === 'tool_use')
+      ? 'tool_use'
+      : (finishReason || 'end_turn');
+
+    return {
+      content,
+      stop_reason: stopReason,
+      usage: {
+        input_tokens: usage?.prompt_tokens || 0,
+        output_tokens: usage?.completion_tokens || 0,
+        cached_input_tokens: usage?.prompt_cache_hit_tokens ?? null,
+        reasoning_tokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
+      },
+    };
   }
 }
 
