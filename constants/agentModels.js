@@ -6,17 +6,25 @@
  * - Gemma defaults can be overridden via env without code edits.
  */
 
+// Latency budgets are wall-clock from agent start to current loop check.
+// They drive the same SYSTEM-marker mechanism as cost budgets: soft injects
+// a "wrap up next round" hint, hard exits the orchestration loop.
+// Per-request overrides accepted via body.latencyBudgetSoftMs / latencyBudgetHardMs.
 const EXECUTION_PROFILES = {
   default: {
     maxToolRounds: 6,
     costBudgetSoft: 0.055,
     costBudgetHard: 0.08,
+    latencyBudgetSoftMs: 25_000,
+    latencyBudgetHardMs: 40_000,
     label: 'Default',
   },
   'deep-turns': {
     maxToolRounds: 10,
     costBudgetSoft: 0.08,
     costBudgetHard: 0.12,
+    latencyBudgetSoftMs: 60_000,
+    latencyBudgetHardMs: 90_000,
     label: 'Deep Turns',
   },
 };
@@ -71,6 +79,50 @@ const AGENT_MODELS = {
     outputPer1M: parseFloat(process.env.TINFOIL_GLM_OUTPUT_PER_1M || '5.25'),
     label: 'GLM-5.1 (Tinfoil)',
   },
+  // DeepSeek V4 via OpenRouter (passthrough pricing, no confidential enclave).
+  // Rates verified empirically 2026-04-25 on a Novita-routed call.
+  // When/if Tinfoil adds DeepSeek, register a parallel entry with provider: 'tinfoil'
+  // (e.g. key 'deepseek-v4-flash-tinfoil') so callers can pick the routing.
+  'deepseek-v4-flash': {
+    key: 'deepseek-v4-flash',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_DEEPSEEK_FLASH_MODEL || 'deepseek/deepseek-v4-flash',
+    inputPer1M: parseFloat(process.env.OPENROUTER_DEEPSEEK_FLASH_INPUT_PER_1M || '0.14'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_DEEPSEEK_FLASH_OUTPUT_PER_1M || '0.28'),
+    label: 'DeepSeek V4-Flash (OpenRouter)',
+  },
+  'deepseek-v4-pro': {
+    key: 'deepseek-v4-pro',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_DEEPSEEK_PRO_MODEL || 'deepseek/deepseek-v4-pro',
+    // Empirically verified 2026-04-25 via Together (only OR upstream that
+    // accepts tool calls for V4-Pro today). Together charges ~5x DeepSeek's
+    // direct rate; if/when other upstreams open up, switch routing or move
+    // off OpenRouter to DeepSeek direct ($0.435/$0.87 per 1M).
+    inputPer1M: parseFloat(process.env.OPENROUTER_DEEPSEEK_PRO_INPUT_PER_1M || '2.10'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_DEEPSEEK_PRO_OUTPUT_PER_1M || '4.40'),
+    label: 'DeepSeek V4-Pro (OpenRouter/Together)',
+  },
+  // DeepSeek V4 via the first-party API (api.deepseek.com).
+  // Cheapest option and only path that doesn't depend on OpenRouter's shared
+  // upstream pool. Note: data is sent directly to DeepSeek (Hangzhou) — pick
+  // this routing only when the privacy tradeoff is acceptable.
+  'deepseek-v4-flash-direct': {
+    key: 'deepseek-v4-flash-direct',
+    provider: 'deepseek',
+    id: process.env.DEEPSEEK_FLASH_MODEL || 'deepseek-v4-flash',
+    inputPer1M: parseFloat(process.env.DEEPSEEK_FLASH_INPUT_PER_1M || '0.14'),
+    outputPer1M: parseFloat(process.env.DEEPSEEK_FLASH_OUTPUT_PER_1M || '0.28'),
+    label: 'DeepSeek V4-Flash (Direct)',
+  },
+  'deepseek-v4-pro-direct': {
+    key: 'deepseek-v4-pro-direct',
+    provider: 'deepseek',
+    id: process.env.DEEPSEEK_PRO_MODEL || 'deepseek-v4-pro',
+    inputPer1M: parseFloat(process.env.DEEPSEEK_PRO_INPUT_PER_1M || '0.435'),
+    outputPer1M: parseFloat(process.env.DEEPSEEK_PRO_OUTPUT_PER_1M || '0.87'),
+    label: 'DeepSeek V4-Pro (Direct)',
+  },
 };
 
 const DEFAULT_AGENT_MODEL = process.env.AGENT_MODEL && AGENT_MODELS[process.env.AGENT_MODEL]
@@ -91,6 +143,14 @@ const LEGACY_MODEL_ALIASES = {
   'tinfoil-glm-5-1': 'glm-5-1',
   kimi: 'kimi-k2-6',
   glm: 'glm-5-1',
+  'openrouter-deepseek-v4-flash': 'deepseek-v4-flash',
+  'openrouter-deepseek-v4-pro': 'deepseek-v4-pro',
+  deepseek: 'deepseek-v4-flash-direct',
+  'deepseek-flash': 'deepseek-v4-flash-direct',
+  'deepseek-pro': 'deepseek-v4-pro-direct',
+  'deepseek-direct': 'deepseek-v4-flash-direct',
+  'deepseek-flash-direct': 'deepseek-v4-flash-direct',
+  'deepseek-pro-direct': 'deepseek-v4-pro-direct',
 };
 
 function normalizeModelKey(input) {
@@ -106,13 +166,30 @@ function resolveModelSelection(body = {}) {
   let modelKey = requestedModel;
   if (!modelKey && requestedProvider === 'tinfoil') modelKey = 'gemma';
   if (!modelKey && requestedProvider === 'anthropic') modelKey = DEFAULT_AGENT_MODEL;
+  if (!modelKey && requestedProvider === 'openrouter') modelKey = 'deepseek-v4-flash';
+  if (!modelKey && requestedProvider === 'deepseek') modelKey = 'deepseek-v4-flash-direct';
   if (!modelKey) modelKey = DEFAULT_AGENT_MODEL;
 
   const modelConfig = AGENT_MODELS[modelKey] || AGENT_MODELS[DEFAULT_AGENT_MODEL];
   const profileKey = EXECUTION_PROFILES[body.executionProfile]
     ? body.executionProfile
     : DEFAULT_EXECUTION_PROFILE;
-  const executionProfile = EXECUTION_PROFILES[profileKey];
+  const baseProfile = EXECUTION_PROFILES[profileKey];
+
+  const overrideSoftMs = Number.isFinite(body.latencyBudgetSoftMs) && body.latencyBudgetSoftMs > 0
+    ? Math.floor(body.latencyBudgetSoftMs)
+    : null;
+  const overrideHardMs = Number.isFinite(body.latencyBudgetHardMs) && body.latencyBudgetHardMs > 0
+    ? Math.floor(body.latencyBudgetHardMs)
+    : null;
+
+  const executionProfile = (overrideSoftMs !== null || overrideHardMs !== null)
+    ? {
+        ...baseProfile,
+        ...(overrideSoftMs !== null ? { latencyBudgetSoftMs: overrideSoftMs } : {}),
+        ...(overrideHardMs !== null ? { latencyBudgetHardMs: overrideHardMs } : {}),
+      }
+    : baseProfile;
 
   return {
     modelKey,
