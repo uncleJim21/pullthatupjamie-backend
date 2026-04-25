@@ -6,6 +6,7 @@ Ephemeral backlog for tracking cross-session work. New chat threads should check
 
 - [ ] Frontend: handle `suggested_action` SSE event — render `submit-on-demand` as upsell cards (with `image` thumbnail + Fountain listen link via `getFountainLink` API), `direct-query` as one-tap search cards, `follow-up-message` as chat chips
 - [ ] Frontend: handle `session_created` SSE event — render a card with the session URL when the agent creates a research session
+- [ ] **Waiting on Tinfoil**: migrate default pull model to DeepSeek V4-Flash once it's available on Tinfoil. Full plan + cost math + "reinvest subsidy into parallel workers" idea in [`DEEPSEEK_V4_TRANSITION_PLAN.md`](./DEEPSEEK_V4_TRANSITION_PLAN.md). Baseline benchmark to compare against is `tests/output/comparison-2026-04-24T18-22-21.md`.
 
 ## Recently Implemented (pending frontend integration)
 
