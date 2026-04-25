@@ -153,15 +153,44 @@ const LEGACY_MODEL_ALIASES = {
   'deepseek-pro-direct': 'deepseek-v4-pro-direct',
 };
 
+/**
+ * Resolve a client-supplied model string to a registered model key.
+ *
+ * Returns:
+ *   - The canonical key when the input matches a model in AGENT_MODELS.
+ *   - The aliased key when the input matches LEGACY_MODEL_ALIASES.
+ *   - DEFAULT_AGENT_MODEL when the input is the literal string "default".
+ *   - null when the input is empty/missing OR doesn't resolve to anything.
+ *
+ * Callers handle the null case by falling back to DEFAULT_AGENT_MODEL — this
+ * is the contract documented on the `/api/pull` endpoint: any unknown / empty
+ * model value resolves to whatever the server's AGENT_MODEL env points to.
+ */
 function normalizeModelKey(input) {
-  if (!input || typeof input !== 'string') return null;
-  if (AGENT_MODELS[input]) return input;
-  return LEGACY_MODEL_ALIASES[input] || null;
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed === 'default') return DEFAULT_AGENT_MODEL;
+  if (AGENT_MODELS[trimmed]) return trimmed;
+  if (LEGACY_MODEL_ALIASES[trimmed]) return LEGACY_MODEL_ALIASES[trimmed];
+  return null;
 }
 
 function resolveModelSelection(body = {}) {
-  const requestedModel = normalizeModelKey(body.model);
+  const rawRequestedModel = body.model;
+  const requestedModel = normalizeModelKey(rawRequestedModel);
   const requestedProvider = body.provider;
+
+  // Visibility: if the caller passed *something* non-empty for `model` and it
+  // didn't resolve, log it once. We still fall back to the default below —
+  // this is a debugging aid, not an error response.
+  if (requestedModel === null
+      && typeof rawRequestedModel === 'string'
+      && rawRequestedModel.trim().length > 0
+      && rawRequestedModel.trim() !== 'default') {
+    console.warn(`[resolveModelSelection] Unknown model "${rawRequestedModel}" — falling back to "${DEFAULT_AGENT_MODEL}"`);
+  }
 
   let modelKey = requestedModel;
   if (!modelKey && requestedProvider === 'tinfoil') modelKey = 'gemma';
