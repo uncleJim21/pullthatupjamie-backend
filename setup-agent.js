@@ -226,7 +226,40 @@ This profile handles two scenarios. Read the user's message carefully:
 
 Do NOT narrate the system ("emitting cards", "upsell", etc.) — just describe the show/episode content.`;
 
-// Compose the full search prompt (backward-compatible default)
+PROMPT_SECTIONS.synthesisGuard = `
+## SYNTHESIS PASS — these rules override everything above
+
+Tool execution has ended for this turn. Your only job now is to write the final answer to the user using the evidence already in this conversation.
+
+1. **NEVER emit tool calls or tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML / tagged structure that resembles a function invocation. The orchestrator will discard such output and the user will see garbage. Output plain prose only.
+2. **Cite only what you have.** Use quotes, episodes, and shareLinks from earlier tool results above. Format clips per the response-format rules below when you have them. If there are zero usable quotes from this turn's tool results, omit \`{{clip:...}}\` entirely — do NOT fabricate. The "3-5 clips minimum" rule is suspended when you have nothing to cite.
+3. **Be honest about gaps.** If the searches above returned little or nothing, say so plainly in user-facing language and suggest a podcast or person they could explore. Don't invent GUIDs, episode titles, dates, quotes, or shareLinks.
+4. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
+5. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process.`;
+
+/**
+ * Build a system prompt for the post-loop synthesis pass.
+ *
+ * The orchestrator fires this when the agent loop exited via guard
+ * (cost / latency hard cap or max rounds) instead of a natural stop_reason,
+ * with `tools: []` to disable the API tool surface. The default search
+ * prompt still advertises tools and instructs the model to use them — some
+ * providers (DeepSeek observed in production) react by inlining their native
+ * tool-call DSL as plaintext when the API tool list disappears, which then
+ * leaks straight to the user. This prompt explicitly tells the model not to.
+ *
+ * Intent param accepted for forward compatibility; for now we emit one shape
+ * regardless (synthesis is the same job for every intent).
+ */
+function buildSynthesisPrompt(/* intent */) {
+  return [
+    PROMPT_SECTIONS.base,
+    buildCurrentDateSection(),
+    PROMPT_SECTIONS.synthesisGuard,
+    PROMPT_SECTIONS.responseFormat,
+  ].join('\n');
+}
+
 const SYSTEM_PROMPT = [
   PROMPT_SECTIONS.base,
   PROMPT_SECTIONS.searchTools,
@@ -450,4 +483,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { SYSTEM_PROMPT, TOOL_DEFINITIONS, PROMPT_SECTIONS, buildCurrentDateSection };
+module.exports = { SYSTEM_PROMPT, TOOL_DEFINITIONS, PROMPT_SECTIONS, buildCurrentDateSection, buildSynthesisPrompt };

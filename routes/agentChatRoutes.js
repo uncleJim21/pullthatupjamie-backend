@@ -3,13 +3,14 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 const { printLog } = require('../constants.js');
-const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
+const { SYSTEM_PROMPT, TOOL_DEFINITIONS, buildSynthesisPrompt } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
 const { resolveModelSelection, AGENT_MODELS } = require('../constants/agentModels');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
+const { sanitizeAgentText, hasToolCallMarkup } = require('../utils/agent/sanitizeOutput');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -720,6 +721,18 @@ function createAgentChatRoutes({ openai } = {}) {
     };
 
     const emit = (eventType, data) => {
+      // Defensive sanitization for text events: strip provider-specific
+      // tool-call markup (DSML, function_calls XML, etc.) before it ever
+      // reaches the client. This is a safety net in case a model ignores
+      // the synthesis-prompt instructions and inlines tool DSL as plaintext.
+      // Any drop is logged once so we know if a model is misbehaving in prod.
+      if ((eventType === 'text_delta' || eventType === 'text_done')
+          && data && typeof data.text === 'string'
+          && hasToolCallMarkup(data.text)) {
+        const cleaned = sanitizeAgentText(data.text);
+        console.warn(`[${requestId}] Stripped tool-call markup from ${eventType}: ${data.text.length} → ${cleaned.length} chars`);
+        data = { ...data, text: cleaned };
+      }
       const payload = sanitize(eventType, data);
       if (streaming) {
         try {
@@ -1046,10 +1059,18 @@ function createAgentChatRoutes({ openai } = {}) {
 
         let streamedSynthesis = '';
         try {
+          // Use a synthesis-only prompt that explicitly forbids tool-call
+          // markup. The default search prompt advertises tools and tells the
+          // model to use them — when paired with `tools: []`, some providers
+          // (DeepSeek observed in production) react by emitting their native
+          // tool-call DSL as plaintext, which then leaks straight to the user.
+          // The synthesis prompt overrides those rules and reasserts: write
+          // plain prose, cite only what's already in evidence, no markup.
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent);
           const synthesisResponse = await providerClient.createResponse({
             model: modelConfig.id,
             maxTokens: 2048,
-            system: effectiveSystemPrompt,
+            system: synthesisSystemPrompt,
             messages,
             // Empty tools → providers skip the `tools`/`tool_choice` fields,
             // forcing the model to produce text only.
