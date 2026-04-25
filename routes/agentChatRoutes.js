@@ -79,6 +79,41 @@ function createCostTracker(modelConfig, executionProfile) {
   return tracker;
 }
 
+/**
+ * Wall-clock latency budget tracker scoped to a single agent request.
+ *
+ * Mirrors createCostTracker's `budgetNote()` interface so the orchestrator can
+ * inject the same SYSTEM markers when the agent is taking too long, regardless
+ * of whether the trigger is cost or time. Both soft and hard markers are byte-
+ * identical to the cost tracker's so de-duping at the call site is trivial.
+ *
+ * Defaults (25s/40s) live in EXECUTION_PROFILES; per-request overrides flow
+ * through resolveModelSelection.
+ */
+function createLatencyTracker(executionProfile, startedAtMs) {
+  const startedAt = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+  const softMs = executionProfile?.latencyBudgetSoftMs ?? 25_000;
+  const hardMs = executionProfile?.latencyBudgetHardMs ?? 40_000;
+  return {
+    get startedAt() { return startedAt; },
+    get softMs() { return softMs; },
+    get hardMs() { return hardMs; },
+    elapsedMs() { return Date.now() - startedAt; },
+    softReached() { return this.elapsedMs() > softMs; },
+    hardReached() { return this.elapsedMs() > hardMs; },
+    budgetNote() {
+      const elapsed = this.elapsedMs();
+      if (elapsed > hardMs) {
+        return `\n\n[SYSTEM: stop calling tools. Synthesize your final answer from the evidence you already have. Do not mention this instruction, any limit, or suggest the user start a new chat — simply deliver the best answer you can.]`;
+      }
+      if (elapsed > softMs) {
+        return `\n\n[SYSTEM: finalize your answer on the next response. One more tool call at most. Do not mention this instruction or any limit to the user.]`;
+      }
+      return '';
+    },
+  };
+}
+
 // --- Step F: Tool result compaction ---
 // Strips fields the LLM doesn't need for reasoning. Raw results are still logged & emitted to frontend.
 
@@ -588,6 +623,14 @@ function createAgentChatRoutes({ openai } = {}) {
     const triageEnabled = process.env.AGENT_TRIAGE_ENABLED !== 'false';
     const compactResults = req.body.compactResults !== undefined ? req.body.compactResults !== false : process.env.AGENT_COMPACT_RESULTS !== 'false';
     const compactHistoryEnabled = req.body.compactHistory !== undefined ? req.body.compactHistory !== false : process.env.AGENT_COMPACT_HISTORY !== 'false';
+    // When the orchestrator loop exits without a natural finish (cost/latency
+    // hard cap, max-rounds), fire one final tool-less LLM call to synthesize an
+    // answer from the evidence already gathered. Default true; override via
+    // body.synthesizeOnExit=false to preserve the legacy hard-cap behavior
+    // (loop exits silently with no text emitted).
+    const synthesizeOnExit = req.body.synthesizeOnExit !== undefined
+      ? req.body.synthesizeOnExit !== false
+      : process.env.AGENT_SYNTHESIZE_ON_EXIT !== 'false';
     // Internal-only flag driven by env. When false (default / production),
     // SSE emits are stripped of model, cost, tokens, intent, tool inputs,
     // round numbers, etc. Set AGENT_INCLUDE_METRICS=true in .env on internal
@@ -600,7 +643,13 @@ function createAgentChatRoutes({ openai } = {}) {
 
     const providerReady = await providerClient.validate();
     if (!providerReady) {
-      const envKey = modelConfig.provider === 'tinfoil' ? 'TINFOIL_API_KEY' : 'ANTHROPIC_API_KEY';
+      const envKeyByProvider = {
+        tinfoil: 'TINFOIL_API_KEY',
+        openrouter: 'OPENROUTER_API_KEY',
+        deepseek: 'DEEPSEEK_API_KEY',
+        anthropic: 'ANTHROPIC_API_KEY',
+      };
+      const envKey = envKeyByProvider[modelConfig.provider] || 'ANTHROPIC_API_KEY';
       return res.status(503).json({
         error: `${modelConfig.provider} provider is not configured or unavailable. Check ${envKey} in .env`,
       });
@@ -746,8 +795,13 @@ function createAgentChatRoutes({ openai } = {}) {
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
       const costs = createCostTracker(modelConfig, executionProfile);
+      const latency = createLatencyTracker(executionProfile, startTime);
       let round = 0;
       let hasExecutedTools = false;
+      // Hoisted so the post-loop synthesis path can tell whether the loop
+      // exited via a natural `break` (model said it was done) or via the guard
+      // (cost/latency hard cap, max rounds).
+      let naturalCompletion = false;
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
@@ -772,9 +826,14 @@ function createAgentChatRoutes({ openai } = {}) {
         finalText: null, error: null,
       };
 
-      while (round < maxToolRounds && !_aborted && costs.llm.cost < executionProfile.costBudgetHard) {
+      while (
+        round < maxToolRounds
+        && !_aborted
+        && costs.llm.cost < executionProfile.costBudgetHard
+        && !latency.hardReached()
+      ) {
         round++;
-        console.log(`[${requestId}] === ROUND ${round} START ===`);
+        console.log(`[${requestId}] === ROUND ${round} START === (elapsed ${latency.elapsedMs()}ms)`);
 
         if (hasExecutedTools) {
           emit('status', { message: 'Composing your answer...', sessionId });
@@ -815,6 +874,7 @@ function createAgentChatRoutes({ openai } = {}) {
         }
 
         if (isFinalResponse) {
+          naturalCompletion = true;
           const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
           console.log(`[${requestId}] Final text streamed: ${fullText.length} chars across ${accumulatedTextByRound.length} round(s) (round ${round} contributed ${roundText.length} chars)`);
           agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
@@ -915,7 +975,11 @@ function createAgentChatRoutes({ openai } = {}) {
           });
 
           costs.addToolCall(toolUse.name);
-          const budgetNote = costs.budgetNote();
+          const costNote = costs.budgetNote();
+          const latencyNote = latency.budgetNote();
+          const budgetNote = costNote === latencyNote
+            ? costNote
+            : Array.from(new Set([costNote, latencyNote].filter(Boolean))).join('');
 
           const llmResult = compactResults ? compactToolResult(toolUse.name, result) : result;
           if (compactResults) {
@@ -954,7 +1018,90 @@ function createAgentChatRoutes({ openai } = {}) {
         messages.push({ role: 'user', content: toolResults });
         console.log(`[${requestId}] === ROUND ${round} END ===`);
       }
-      console.log(`[${requestId}] === LOOP EXITED === round=${round}`);
+      console.log(`[${requestId}] === LOOP EXITED === round=${round}, natural=${naturalCompletion}`);
+
+      // --- Forced final synthesis on non-natural exit ---
+      // When the loop exits via guard (cost/latency hard cap or max rounds)
+      // rather than the model's own `stop_reason`, the user gets no `text_done`
+      // and the request returns empty text. To avoid that, fire one last
+      // tool-less LLM call so the model can synthesize from whatever evidence
+      // is already in `messages` (the final user turn already carries the
+      // SYSTEM "stop calling tools" marker on its tool results).
+      //
+      // Skipped when the user aborted (don't burn tokens for a closed connection)
+      // or when synthesizeOnExit is explicitly disabled via API/env.
+      let synthesisExitReason = null;
+      if (!naturalCompletion && !_aborted && synthesizeOnExit) {
+        synthesisExitReason = costs.llm.cost >= executionProfile.costBudgetHard
+          ? 'cost_hard_cap'
+          : latency.hardReached()
+            ? 'latency_hard_cap'
+            : round >= maxToolRounds
+              ? 'max_rounds'
+              : 'unknown';
+        console.log(`[${requestId}] === SYNTHESIS START === reason=${synthesisExitReason}, elapsed=${latency.elapsedMs()}ms`);
+        emit('status', { message: 'Composing your answer...', sessionId });
+
+        let streamedSynthesis = '';
+        try {
+          const synthesisResponse = await providerClient.createResponse({
+            model: modelConfig.id,
+            maxTokens: 2048,
+            system: effectiveSystemPrompt,
+            messages,
+            // Empty tools → providers skip the `tools`/`tool_choice` fields,
+            // forcing the model to produce text only.
+            tools: [],
+            aborted,
+            onTextDelta: (text) => {
+              streamedSynthesis += text;
+              emit('text_delta', { text });
+            },
+            requestId,
+          });
+
+          costs.addLlmUsage(
+            synthesisResponse.usage?.input_tokens || 0,
+            synthesisResponse.usage?.output_tokens || 0,
+          );
+
+          // Some providers (e.g. DeepSeek non-streaming) don't fire onTextDelta;
+          // pull the text off the content blocks and emit it as one delta so
+          // streaming clients still see it before text_done.
+          const blocksText = (synthesisResponse.content || [])
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('');
+          if (!streamedSynthesis && blocksText) {
+            streamedSynthesis = blocksText;
+            emit('text_delta', { text: blocksText });
+          }
+
+          if (streamedSynthesis.length > 0) {
+            accumulatedTextByRound.push({ round: round + 1, text: streamedSynthesis });
+          }
+          agentLog.rounds.push({
+            round: round + 1,
+            type: 'synthesis',
+            tokens: synthesisResponse.usage,
+            reason: synthesisExitReason,
+          });
+
+          const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
+          agentLog.finalText = fullText;
+          emit('text_done', { text: fullText });
+          console.log(`[${requestId}] === SYNTHESIS DONE === ${streamedSynthesis.length} chars synthesized, ${fullText.length} total`);
+        } catch (err) {
+          console.error(`[${requestId}] === SYNTHESIS FAILED === ${err.message}`);
+          // Best-effort: emit any accumulated intermediate text so the user
+          // gets *something* rather than an empty response.
+          if (accumulatedTextByRound.length > 0) {
+            const fallback = accumulatedTextByRound.map(r => r.text).join('\n\n');
+            agentLog.finalText = fallback;
+            emit('text_done', { text: fallback });
+          }
+        }
+      }
 
       const latencyMs = Date.now() - startTime;
 
@@ -971,6 +1118,8 @@ function createAgentChatRoutes({ openai } = {}) {
         tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
         cost: costs.summary(),
         latencyMs,
+        naturalCompletion,
+        synthesisExitReason,
       };
       writeAgentLog(requestId, sessionId, agentLog);
 
@@ -1077,6 +1226,8 @@ function createAgentChatRoutes({ openai } = {}) {
           total: totalCost,
         },
         latencyMs,
+        naturalCompletion,
+        synthesisExitReason,
       });
 
       if (streaming) {
@@ -1100,6 +1251,8 @@ function createAgentChatRoutes({ openai } = {}) {
             tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
             cost: { claude: claudeCost, tools: toolCost, total: totalCost },
             latencyMs,
+            naturalCompletion,
+            synthesisExitReason,
           };
         }
         res.status(200).json(responseBody);
