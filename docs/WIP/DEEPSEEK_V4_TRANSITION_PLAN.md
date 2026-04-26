@@ -1,8 +1,8 @@
 # DeepSeek V4 Transition Plan
 
-Status: **Waiting for Tinfoil to host DeepSeek V4.** Tinfoil has confirmed they intend to ship it; no ETA yet.
+Status: **Direct DeepSeek API (V4-Flash + V4-Pro) integrated and live as production default.** V4-Pro is also live on Tinfoil as of 2026-04-26 — see `docs/WIP/TINFOIL_DEEPSEEK_V4_PRO.md` for the Tinfoil-specific verification, gotchas, and rollout plan. V4-Flash is **not** on Tinfoil yet.
 
-This doc is the checkpoint from the 2026-04-24 cost/quality investigation so a future session can pick up immediately once V4 lands on Tinfoil.
+This doc is the original 2026-04-24 cost/quality investigation. It captures the economic case for moving off Haiku and the parallel-workers strategy idea. The Tinfoil-specific findings now live in their own runbook.
 
 ## TL;DR
 
