@@ -1089,7 +1089,7 @@ function createAgentChatRoutes({ openai } = {}) {
           const synthesisSystemPrompt = buildSynthesisPrompt(intent);
           const synthesisResponse = await providerClient.createResponse({
             model: modelConfig.id,
-            maxTokens: 2048,
+            maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
             messages,
             // Empty tools → providers skip the `tools`/`tool_choice` fields,

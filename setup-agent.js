@@ -161,11 +161,16 @@ Every result you request becomes input tokens on the next round. Be economical:
 - Monitor the [Token usage: X/Y] footer in tool results. As you approach the limit, prioritize synthesizing over searching.
 - get_feed_episodes and get_person_episodes return slim metadata by default (title, date, GUID, guests). Verbose mode adds truncated descriptions but is capped at 5 episodes. Use slim mode for browsing, verbose only when you need episode context to decide what to search.`;
 
-PROMPT_SECTIONS.responseFormat = `
+// Response-format prompt is split into a stable "base" (formatting / citation
+// rules) and a swappable "length" section. The active length variant is
+// selected at module load via AGENT_RESPONSE_VERBOSITY (default | expansive).
+// Add new variants here and wire them through the resolver below — keeps the
+// per-request "go crazy" hatch easy to add later without re-templating the
+// formatting rules.
+PROMPT_SECTIONS.responseFormatBase = `
 ## Response format
 
 - Do NOT emit any intermediate reasoning, narration, or "thinking out loud" text between tool calls. No "Let me search for...", "I'll look into...", or "Hmm, interesting." Only output your final research summary after all tool calls are complete.
-- Write a concise, editorial-style overview (2-4 paragraphs) that directly answers the user's question.
 - Mention specific podcast names, episode titles, dates, and speakers by name.
 - Do NOT start with "Based on the results" or "Here's what I found". Lead with the answer.
 - Do NOT comment on the quality of your own search results, your process, or your performance. No "Excellent result", "Great find", "I found exactly what you need", "Interesting", etc. Just deliver the answer.
@@ -177,7 +182,7 @@ PROMPT_SECTIONS.responseFormat = `
 3. **Commentary above, quote below** — your summary or context should be regular prose in its own paragraph. The clip token and quote follow below it as a distinct block.
 4. **No redundant episode list** — do NOT repeat clips in a "Relevant Episodes" section at the end if they were already cited inline. Only list episodes that were NOT already quoted above.
 5. **One clip per quote** — each {{clip:...}} corresponds to exactly one quoted passage. Don't stack multiple clip tokens together.
-6. **MANDATORY** — include at LEAST 3-5 clip references in a typical response. These render as playable audio links — without them, the user has no way to hear the source material.
+6. **Clip references** — when you have evidence to cite, include at least 1 {{clip:...}} grounded in a real search result, up to a maximum of 5. Feel free to use as many as the answer genuinely benefits from within that range — these render as playable audio links and are how the user hears the source material. If the question is genuinely unanswerable from your evidence, omit clips entirely rather than fabricate.
 
 Example of correct formatting:
 
@@ -190,6 +195,33 @@ Sacks warns that shortened disruption cycles undermine the traditional startup e
 
 {{clip:4a43da89-9d1a-4b9e-9304-aa9ab4a1ee97_p86}}
 > *"If every business becomes disrupted every 5-6 years, all you're gonna end up with is just the cash."*`;
+
+PROMPT_SECTIONS.responseLengthDefault = `
+### Length and structure
+
+- Match the length to the question. A one-line factual ask deserves a one-line answer; a comparison or "deep dive" question deserves more room. Don't pad short answers with filler, and don't truncate questions that genuinely need 4-5 paragraphs to answer.
+- Avoid bold subheadings unless the answer genuinely covers multiple distinct topics the user asked about. A single-topic answer is one flowing piece, not a structured report.
+- Do NOT recap the user's question in your own words before answering. Lead with the substance.`;
+
+PROMPT_SECTIONS.responseLengthExpansive = `
+### Length and structure
+
+- The user has asked for thorough, expansive coverage. Take the room you need: multi-section structured reports with bold subheadings, the full 5-clip cap, and 600+ word answers are all appropriate when the question merits them.
+- Trim genuine filler and avoid recapping the user's question, but otherwise be generous with detail.`;
+
+const RESPONSE_LENGTH_VARIANTS = {
+  default: PROMPT_SECTIONS.responseLengthDefault,
+  expansive: PROMPT_SECTIONS.responseLengthExpansive,
+};
+
+const ACTIVE_RESPONSE_VERBOSITY = (process.env.AGENT_RESPONSE_VERBOSITY || 'default').toLowerCase();
+const ACTIVE_RESPONSE_LENGTH_SECTION =
+  RESPONSE_LENGTH_VARIANTS[ACTIVE_RESPONSE_VERBOSITY] || PROMPT_SECTIONS.responseLengthDefault;
+
+PROMPT_SECTIONS.responseFormat = [
+  PROMPT_SECTIONS.responseFormatBase,
+  ACTIVE_RESPONSE_LENGTH_SECTION,
+].join('\n');
 
 PROMPT_SECTIONS.sessionCuration = `
 ## Research session creation
@@ -245,7 +277,7 @@ PROMPT_SECTIONS.synthesisGuard = `
 Tool execution has ended for this turn. Your only job now is to write the final answer to the user using the evidence already in this conversation.
 
 1. **NEVER emit tool calls or tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML / tagged structure that resembles a function invocation. The orchestrator will discard such output and the user will see garbage. Output plain prose only.
-2. **Cite only what you have.** Use quotes, episodes, and shareLinks from earlier tool results above. Format clips per the response-format rules below when you have them. If there are zero usable quotes from this turn's tool results, omit \`{{clip:...}}\` entirely — do NOT fabricate. The "3-5 clips minimum" rule is suspended when you have nothing to cite.
+2. **Cite only what you have.** Use quotes, episodes, and shareLinks from earlier tool results above. Format clips per the response-format rules below when you have them. If there are zero usable quotes from this turn's tool results, omit \`{{clip:...}}\` entirely — do NOT fabricate. The minimum-clip floor is suspended when you have nothing to cite.
 3. **Be honest about gaps.** If the searches above returned little or nothing, say so plainly in user-facing language and suggest a podcast or person they could explore. Don't invent GUIDs, episode titles, dates, quotes, or shareLinks.
 4. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
 5. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process.`;
