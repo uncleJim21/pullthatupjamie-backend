@@ -120,7 +120,7 @@ class DeepSeekProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, onTextDelta, aborted, requestId, timeoutMs }) {
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted, requestId, timeoutMs }) {
     const openAiMessages = [
       { role: 'system', content: system },
       ...convertMessagesToOpenAi(messages),
@@ -137,12 +137,22 @@ class DeepSeekProvider {
       stream_options: { include_usage: true },
     };
 
-    // Only attach tools/tool_choice when at least one tool is supplied. The
-    // OpenAI spec rejects an empty tools array with tool_choice: 'auto', and
-    // omitting both fields is also how the orchestrator forces a tool-less
-    // synthesis call after a hard cap exit.
+    // Tool advertising rules:
+    //   • Default (toolChoice undefined): attach tools+`tool_choice: 'auto'`
+    //     only when at least one tool is supplied. Empty tools + 'auto' is
+    //     rejected by the OpenAI spec.
+    //   • toolChoice === 'none' (synthesis pass): attach `tool_choice: 'none'`
+    //     AND include the tool schemas if available. DeepSeek's documented
+    //     behavior is that 'none' explicitly forbids invocation but still
+    //     anchors the model to the same world it saw in earlier rounds —
+    //     critical to prevent it from inlining its native DSML tool-call
+    //     markup as a fallback when tools vanish from the request shape.
+    //     See docs/AGENT_SYNTHESIS_PASS.md.
     const convertedTools = convertToolsToOpenAi(tools);
-    if (convertedTools.length > 0) {
+    if (toolChoice === 'none') {
+      payload.tool_choice = 'none';
+      if (convertedTools.length > 0) payload.tools = convertedTools;
+    } else if (convertedTools.length > 0) {
       payload.tools = convertedTools;
       payload.tool_choice = 'auto';
     }

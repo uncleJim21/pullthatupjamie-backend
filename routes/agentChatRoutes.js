@@ -1086,15 +1086,21 @@ function createAgentChatRoutes({ openai } = {}) {
           // tool-call DSL as plaintext, which then leaks straight to the user.
           // The synthesis prompt overrides those rules and reasserts: write
           // plain prose, cite only what's already in evidence, no markup.
+          //
+          // Belt-and-suspenders: in addition to the prompt, we keep the
+          // tool schemas attached and pass `toolChoice: 'none'`. DeepSeek's
+          // documented behavior is that 'none' explicitly forbids tool
+          // invocation while keeping the request shape consistent with
+          // earlier rounds — empirically critical to stop it from inlining
+          // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
           const synthesisSystemPrompt = buildSynthesisPrompt(intent);
           const synthesisResponse = await providerClient.createResponse({
             model: modelConfig.id,
             maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
             messages,
-            // Empty tools → providers skip the `tools`/`tool_choice` fields,
-            // forcing the model to produce text only.
-            tools: [],
+            tools: effectiveTools,
+            toolChoice: 'none',
             aborted: synthesisAborted,
             timeoutMs: synthesisBudgetMs,
             onTextDelta: (text) => {

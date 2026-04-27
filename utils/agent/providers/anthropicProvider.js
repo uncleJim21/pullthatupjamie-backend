@@ -92,15 +92,24 @@ class AnthropicProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, onTextDelta, aborted }) {
-    const stream = await this.client.messages.create({
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted }) {
+    const params = {
       model,
       max_tokens: maxTokens,
       system,
       messages,
       tools,
       stream: true,
-    });
+    };
+
+    // See docs/AGENT_SYNTHESIS_PASS.md. Claude's tool_choice is the object
+    // form ({ type: 'none' | 'auto' | 'any' | { type: 'tool', name } }), not
+    // the OpenAI string form. Map the cross-provider 'none' signal here.
+    if (toolChoice === 'none') {
+      params.tool_choice = { type: 'none' };
+    }
+
+    const stream = await this.client.messages.create(params);
     return consumeAnthropicStream(stream, { onTextDelta, aborted });
   }
 }

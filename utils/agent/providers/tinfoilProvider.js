@@ -145,7 +145,7 @@ class TinfoilProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, requestId }) {
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, requestId }) {
     const openAiMessages = [
       { role: 'system', content: system },
       ...convertMessagesToOpenAi(messages),
@@ -158,11 +158,17 @@ class TinfoilProvider {
       stream: false,
     };
 
-    // Only attach tools/tool_choice when at least one tool is supplied — the
-    // OpenAI spec rejects empty tools + tool_choice: 'auto', and the orchestrator
-    // relies on this to issue tool-less synthesis calls after a hard cap exit.
+    // See docs/AGENT_SYNTHESIS_PASS.md for the rationale behind toolChoice:
+    //   • toolChoice === 'none' (synthesis pass): force `tool_choice: 'none'`
+    //     and keep the tool schemas attached so the model stays anchored to
+    //     the same tool-aware context it saw during the main loop.
+    //   • Otherwise: only attach tools+'auto' when at least one tool is
+    //     supplied (empty tools + 'auto' is rejected by the OpenAI spec).
     const convertedTools = convertToolsToOpenAi(tools);
-    if (convertedTools.length > 0) {
+    if (toolChoice === 'none') {
+      payload.tool_choice = 'none';
+      if (convertedTools.length > 0) payload.tools = convertedTools;
+    } else if (convertedTools.length > 0) {
       payload.tools = convertedTools;
       payload.tool_choice = 'auto';
     }
