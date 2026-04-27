@@ -94,6 +94,17 @@ const TEST_QUERIES = [
   { name: 'find_person Fallback',           cohort: 'cohort5', task: 'Roland from Alby talking about self custody' },
   { name: 'Never Dead-End',                 cohort: 'cohort5', task: 'what did Satoshi Nakamoto say on Joe Rogan' },
   { name: 'Research Session Quality',       cohort: 'cohort5', task: 'Make me a research session about Huberman on hormones and weight loss', mode: 'fast' },
+
+  // --- Cohort 6: Proper-noun adversarial / LLM expansion validation ---
+  // Validates PROPER_NOUN_LLM_EXPANSION_ENABLED. First two are ASR-phonetic-mismatch
+  // targets (lncurl.lol → "ellen curl"). Last three are control queries that should
+  // NOT regress when expansion is on (zaprite, nostr) and a numeric-suffix coined
+  // term where the gate currently does NOT fire (x402 — flagged in WIP.md F2).
+  { name: 'Proper-noun: lncurl.lol',         cohort: 'cohort6', task: 'what is lncurl.lol and what is it used for?' },
+  { name: 'Proper-noun: ellen curl homophone', cohort: 'cohort6', task: 'tell me about ellen curl' },
+  { name: 'Proper-noun: x402 (numeric)',     cohort: 'cohort6', task: 'what is x402 used for?' },
+  { name: 'Proper-noun: zaprite control',    cohort: 'cohort6', task: 'what has been said about zaprite' },
+  { name: 'Proper-noun: nostr control',      cohort: 'cohort6', task: 'what about nostr on podcasts' },
 ];
 
 // ===== Helpers =====
