@@ -73,7 +73,20 @@ The "query" parameter is embedded and compared against transcript text. NEVER pa
 - BAD: "find Joe Rogan talking about mushrooms"
 - GOOD: "stoned ape theory psilocybin mushrooms cognitive evolution"
 
-When you have chapter titles from list_episode_chapters, use them to construct queries. If chapters say "Debt, AI, and Economic Implications" and "AI's Impact on Jobs," query "debt AI economic implications job loss" — not the user's original question.`;
+When you have chapter titles from list_episode_chapters, use them to construct queries. If chapters say "Debt, AI, and Economic Implications" and "AI's Impact on Jobs," query "debt AI economic implications job loss" — not the user's original question.
+
+### EXCEPTION — proper nouns, brands, URLs, hashtags, novel coinages
+
+When the user's message contains a literal proper noun, brand name, product name, URL/domain, hashtag, or novel coinage, pass it AS-IS as the query (in addition to or instead of a semantic rewrite). Do NOT expand it into a topic description. The retrieval engine has a literal-match path that handles these — semantic rewriting hides them from that path.
+
+- BAD: user says "lncurl.lol" → search_quotes({ query: "Lightning Network plug-and-play wallet protocol" })
+- GOOD: user says "lncurl.lol" → search_quotes({ query: "lncurl.lol" })
+- BAD: user says "Alby Hub" → search_quotes({ query: "self-hosted Lightning wallet server" })
+- GOOD: user says "Alby Hub" → search_quotes({ query: "Alby Hub" })
+- BAD: user says "BIP-32" → search_quotes({ query: "hierarchical deterministic wallet derivation" })
+- GOOD: user says "BIP-32" → search_quotes({ query: "BIP-32" })
+
+If the literal query returns nothing relevant, a follow-up call with semantic expansion is fair game in a later round.`;
 
 PROMPT_SECTIONS.criticalRules = `
 ## Critical rules
