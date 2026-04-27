@@ -120,7 +120,7 @@ function splitPunctuationTokens(query) {
   return tokens;
 }
 
-function buildShouldClauses(query) {
+function buildShouldClauses(query, extraQueries = []) {
   const clauses = [
     {
       phrase: {
@@ -164,6 +164,33 @@ function buildShouldClauses(query) {
     });
   }
 
+  // LLM-generated phonetic / spelling variants (e.g. "lncurl.lol" -> "ellen curl").
+  // Boost intentionally LOWER than original-query clauses (1.5 vs 2-4) so that
+  // expansion-only hits don't outrank exact-original-query matches when both
+  // exist in the same corpus. Variants probe both the standard text path
+  // (catches homophone tokens like "ellen") and the shingle-squashed path
+  // (catches letter-by-letter forms like "L N curl").
+  if (Array.isArray(extraQueries) && extraQueries.length) {
+    for (const extra of extraQueries) {
+      if (typeof extra !== 'string' || !extra.trim()) continue;
+      const trimmed = extra.trim();
+      clauses.push({
+        text: {
+          query: trimmed,
+          path: ATLAS_SEARCH_TEXT_PATH,
+          score: { boost: { value: 1.5 } },
+        },
+      });
+      clauses.push({
+        text: {
+          query: trimmed,
+          path: ATLAS_SEARCH_SHINGLE_PATH,
+          score: { boost: { value: 1.5 } },
+        },
+      });
+    }
+  }
+
   return clauses;
 }
 
@@ -176,7 +203,7 @@ function buildShouldClauses(query) {
  */
 async function atlasTextSearch({
   query, feedIds = [], guids = [], minDate = null, maxDate = null,
-  limit = 20, requestId = null,
+  limit = 20, requestId = null, extraQueries = [],
 }) {
   if (!query || typeof query !== 'string' || !query.trim()) return [];
 
@@ -189,7 +216,7 @@ async function atlasTextSearch({
         $search: {
           index: ATLAS_SEARCH_INDEX_NAME,
           compound: {
-            should: buildShouldClauses(query),
+            should: buildShouldClauses(query, extraQueries),
             filter: buildFilterClauses({ feedIds, guids, minDate, maxDate }),
             minimumShouldMatch: 1,
           },
@@ -210,7 +237,8 @@ async function atlasTextSearch({
       .option({ maxTimeMS: ATLAS_SEARCH_TIMEOUT_MS });
 
     const elapsed = Date.now() - started;
-    printLog(`${tag} returned ${docs.length} hits in ${elapsed}ms (query="${query.slice(0, 60)}")`);
+    const expansionSuffix = extraQueries.length ? ` +${extraQueries.length} variant(s)` : '';
+    printLog(`${tag} returned ${docs.length} hits in ${elapsed}ms (query="${query.slice(0, 60)}"${expansionSuffix})`);
 
     return docs
       .filter(d => d && d.pineconeId)

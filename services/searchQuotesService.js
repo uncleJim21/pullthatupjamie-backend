@@ -15,9 +15,11 @@ const { findSimilarDiscussions } = require('../agent-tools/pineconeTools.js');
 const { triageQuery } = require('../utils/queryTriage');
 const { isProperNounShaped } = require('../utils/properNounDetector');
 const { atlasTextSearch } = require('./atlasTextSearch');
+const { expandProperNounQuery } = require('./properNounLLMExpansion');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
 const PROPER_NOUN_SEARCH_ENABLED = process.env.PROPER_NOUN_SEARCH_ENABLED === 'true';
+const PROPER_NOUN_LLM_EXPANSION_ENABLED = process.env.PROPER_NOUN_LLM_EXPANSION_ENABLED === 'true';
 
 /**
  * Merge vector + lexical retrieval results into a single, deduped, capped list.
@@ -122,14 +124,30 @@ async function searchQuotes(params, { openai }) {
     && !episodeName
     && isProperNounShaped(query);
 
+  const llmExpansionActivated = lexicalActivated && PROPER_NOUN_LLM_EXPANSION_ENABLED;
   const lexicalStartedAt = lexicalActivated ? Date.now() : null;
 
-  const [embeddingResponse, lexicalRaw] = await Promise.all([
-    openai.embeddings.create({ model: 'text-embedding-ada-002', input: query }),
-    lexicalActivated
-      ? atlasTextSearch({ query, feedIds, guids, minDate, maxDate, limit, requestId })
-      : Promise.resolve([]),
+  // LLM expansion runs in parallel with the embedding call so its latency is
+  // largely masked by the existing parallelism. Atlas Search is held back
+  // until variants resolve so the lexical query benefits from them.
+  const expansionPromise = llmExpansionActivated
+    ? expandProperNounQuery(query, { openai }, { requestId })
+    : Promise.resolve([]);
+
+  const embeddingPromise = openai.embeddings.create({ model: 'text-embedding-ada-002', input: query });
+
+  const [embeddingResponse, expansionVariants] = await Promise.all([
+    embeddingPromise,
+    expansionPromise,
   ]);
+
+  const lexicalRaw = lexicalActivated
+    ? await atlasTextSearch({
+        query, feedIds, guids, minDate, maxDate, limit, requestId,
+        extraQueries: expansionVariants,
+      })
+    : [];
+
   const embedding = embeddingResponse.data[0].embedding;
 
   const lexicalLatencyMs = lexicalStartedAt ? Date.now() - lexicalStartedAt : null;
@@ -150,7 +168,10 @@ async function searchQuotes(params, { openai }) {
       return acc;
     }, {});
     const overlap = merged.filter(r => r.source === 'both').length;
-    printLog(`[${requestId}] Lexical activated: hits=${lexicalRaw.length}, latency=${lexicalLatencyMs}ms, overlap=${overlap}, finalMix=${JSON.stringify(sourceMix)}`);
+    const expansionSuffix = llmExpansionActivated
+      ? `, llmExpansion=${expansionVariants.length} variant(s)${expansionVariants.length ? ` ${JSON.stringify(expansionVariants)}` : ''}`
+      : '';
+    printLog(`[${requestId}] Lexical activated: hits=${lexicalRaw.length}, latency=${lexicalLatencyMs}ms, overlap=${overlap}, finalMix=${JSON.stringify(sourceMix)}${expansionSuffix}`);
   }
 
   const pineconeIds = merged.map(r => r.id);
