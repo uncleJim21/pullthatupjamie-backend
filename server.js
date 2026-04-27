@@ -1703,9 +1703,12 @@ app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
 app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
-// app.use('/api/chat', createWorkflowRoutes({ openai })); // Shelved — replaced by Claude agent
+// /api/chat/agent and /api/chat/workflow were removed 2026-04-27 — they were
+// unauthenticated public mounts of the agent loop. /api/pull is the sole
+// public entry point; it goes through serviceHmac + L402/JWT/free-tier
+// entitlement gating below. The agentChatRouter is still constructed because
+// /api/pull dispatches to it internally via req.url = '/agent'.
 const agentChatRouter = createAgentChatRoutes({ openai });
-app.use('/api/chat', agentChatRouter); // Claude agent handles /chat/agent and /chat/workflow (frontend, no entitlement gate)
 app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
   // #swagger.tags = ['Pull']
   // #swagger.summary = 'Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)'

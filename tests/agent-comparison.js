@@ -3,8 +3,16 @@
 /**
  * Agent Benchmark Test
  *
- * Sends queries to the Claude agent at POST /api/chat/workflow and
- * measures quality, tool ordering, cost, and latency.
+ * Sends queries to the Claude agent at POST /api/pull and measures
+ * quality, tool ordering, cost, and latency.
+ *
+ * NOTE 2026-04-27: previously hit /api/chat/workflow, which was removed
+ * (unauthenticated public mount). /api/pull is the sole public entry
+ * point now and is gated by serviceHmac + L402/JWT/free-tier. This
+ * benchmark sends X-Free-Tier: true so it works against a local server
+ * with no auth setup. We also send `stream: true` in the body because
+ * /api/pull defaults to a single JSON response — the parseSSE pipeline
+ * below assumes SSE.
  *
  * Prerequisites:
  *   - Jamie API running on :4132 (nodemon server.js)
@@ -119,13 +127,17 @@ async function runAgentQuery(task, mode) {
 
   const agentModel = mode || process.env.AGENT_MODEL || 'fast';
 
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+  };
   if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
+  else headers['X-Free-Tier'] = 'true';
 
-  const resp = await fetch(`${JAMIE_URL}/api/chat/workflow`, {
+  const resp = await fetch(`${JAMIE_URL}/api/pull`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ message: task, model: agentModel }),
+    body: JSON.stringify({ message: task, model: agentModel, stream: true }),
   });
 
   const raw = await resp.text();
@@ -261,7 +273,7 @@ async function main() {
     let md = `# Agent Benchmark\n\n`;
     md += `**Date:** ${new Date().toISOString()}\n`;
     md += `**Agent model:** ${agModel}\n`;
-    md += `**Endpoint:** POST /api/chat/workflow\n\n`;
+    md += `**Endpoint:** POST /api/pull\n\n`;
 
     for (const { query, ag } of allResults) {
       md += `---\n\n## ${query.name}${query.cohort ? ` [${query.cohort}]` : ''}\n\n`;

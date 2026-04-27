@@ -6,6 +6,13 @@
  * Simulates real conversations by sending chat history with each turn.
  * Compares compaction ON vs OFF across different conversation patterns.
  *
+ * NOTE 2026-04-27: previously hit /api/chat/workflow, which was removed
+ * (unauthenticated public mount). The agent is now reachable only via
+ * POST /api/pull, gated by serviceHmac + L402/JWT/free-tier. This test
+ * sends X-Free-Tier: true (when no JWT is set) so it works locally
+ * without auth setup, and forces SSE via `stream: true` because
+ * /api/pull defaults to JSON.
+ *
  * Usage:
  *   node tests/agent-multiturn.js [--set N] [--compact-off]
  *
@@ -87,13 +94,18 @@ async function runTurn(message, history, { compactOff }) {
   const start = Date.now();
   const agentModel = process.env.AGENT_MODEL || 'fast';
 
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+  };
   if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
+  else headers['X-Free-Tier'] = 'true';
 
   const body = {
     message,
     model: agentModel,
     history,
+    stream: true,
   };
 
   if (compactOff) {
@@ -101,7 +113,7 @@ async function runTurn(message, history, { compactOff }) {
     body.compactHistory = false;
   }
 
-  const resp = await fetch(`${JAMIE_URL}/api/chat/workflow`, {
+  const resp = await fetch(`${JAMIE_URL}/api/pull`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

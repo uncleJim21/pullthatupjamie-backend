@@ -699,7 +699,9 @@ function createAgentChatRoutes({ openai } = {}) {
     //   1. req.body.stream (explicit opt-in/out from caller)
     //   2. Accept: text/event-stream header
     //   3. req._defaultStream (set by route wrappers — /api/pull sets false)
-    //   4. Default true (preserves legacy /api/chat/* frontend behavior)
+    //   4. Default true (defensive fallback; today the only entry point is the
+    //      internal /agent dispatch from /api/pull, which sets _defaultStream
+    //      = false so JSON wins unless the caller opts into SSE explicitly)
     const acceptHeader = String(req.headers.accept || '').toLowerCase();
     const acceptWantsSse = acceptHeader.includes('text/event-stream');
     const streaming = typeof req.body.stream === 'boolean'
@@ -1208,8 +1210,12 @@ function createAgentChatRoutes({ openai } = {}) {
     }
   }
 
+  // Note: only `/agent` is registered. The previous public mounts at
+  // POST /api/chat/agent and POST /api/chat/workflow were removed 2026-04-27
+  // because they were exposed without auth/entitlement middleware. This
+  // router is no longer mounted at /api/chat in server.js — it's only
+  // reachable via internal dispatch from /api/pull (req.url = '/agent').
   router.post('/agent', handleAgentChat);
-  router.post('/workflow', handleAgentChat);
 
   return router;
 }

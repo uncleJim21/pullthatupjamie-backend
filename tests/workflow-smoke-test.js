@@ -1,6 +1,18 @@
 /**
- * Smoke test for the workflow endpoint.
- * 
+ * Smoke test for the agent endpoint (formerly /api/chat/workflow).
+ *
+ * NOTE 2026-04-27: /api/chat/workflow was removed (unauthenticated public
+ * mount of the Claude agent loop). The only public entry point is now
+ * POST /api/pull, which is gated by serviceHmac + L402/JWT/free-tier
+ * entitlement. This smoke test now hits /api/pull with X-Free-Tier: true
+ * for local testing. The legacy `task`/`maxIterations`/`outputFormat`/
+ * `expectFields` shape is preserved for parity with prior runs, even
+ * though the agent handler accepts `task` as an alias for `message` and
+ * does not honor maxIterations/outputFormat (those were the old workflow
+ * engine's knobs). Treat field-missing diagnostics here as informational
+ * — port the assertions to the agent's SSE/JSON shape if you bring this
+ * test back into active rotation.
+ *
  * Runs against a live server instance.
  * Usage: node tests/workflow-smoke-test.js [base_url]
  * Default base_url: http://localhost:3000
@@ -59,6 +71,7 @@ function makeRequest(path, body) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
+        'X-Free-Tier': 'true',
       },
       timeout: TIMEOUT_MS,
     };
@@ -92,7 +105,7 @@ async function runTest(testCase) {
   console.log(`Task: "${testCase.body.task}"`);
 
   try {
-    const result = await makeRequest('/api/chat/workflow', testCase.body);
+    const result = await makeRequest('/api/pull', testCase.body);
     const elapsed = Date.now() - start;
 
     console.log(`Status: ${result.status} (${elapsed}ms)`);
