@@ -3,7 +3,13 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 const { printLog } = require('../constants.js');
-const { SYSTEM_PROMPT, TOOL_DEFINITIONS, buildSynthesisPrompt } = require('../setup-agent');
+const {
+  SYSTEM_PROMPT,
+  TOOL_DEFINITIONS,
+  buildSynthesisPrompt,
+  buildStrictSynthesisPrompt,
+  TIER3_FALLBACK_MESSAGE,
+} = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
 const { resolveModelSelection, AGENT_MODELS } = require('../constants/agentModels');
 const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
@@ -11,6 +17,7 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
 const { sanitizeAgentText, hasToolCallMarkup } = require('../utils/agent/sanitizeOutput');
+const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -347,6 +354,46 @@ function compactAssistantMessage(text) {
   if (clips.length) parts.push(`[clips: ${clips.join(', ')}]`);
 
   return parts.join('\n');
+}
+
+/**
+ * Strip provider-private content blocks from assistant messages so the
+ * conversation can be safely forwarded to Anthropic in the Tier 2
+ * cross-provider re-synthesis step.
+ *
+ * Why: when the primary provider is DeepSeek (or anything with a private
+ * reasoning channel), assistant turns may contain blocks like
+ *   { type: 'thinking', text: '...' }
+ * which are *not* Anthropic-native — Anthropic's `thinking` block requires
+ * a `thinking` field (plus a `signature`), and unknown types 400 the
+ * request. We keep only the Anthropic-supported block shapes:
+ *   - text:        { type: 'text', text: string }
+ *   - tool_use:    { type: 'tool_use', id, name, input }
+ *   - tool_result: { type: 'tool_result', tool_use_id, content } (user role)
+ * String-content messages pass through unchanged.
+ */
+function sanitizeMessagesForAnthropic(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const ALLOWED_ASSISTANT_TYPES = new Set(['text', 'tool_use']);
+  const ALLOWED_USER_TYPES = new Set(['text', 'tool_result', 'image']);
+
+  return messages.map((msg) => {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (typeof msg.content === 'string') return msg;
+    if (!Array.isArray(msg.content)) return msg;
+
+    const allowed = msg.role === 'assistant' ? ALLOWED_ASSISTANT_TYPES : ALLOWED_USER_TYPES;
+    const cleanContent = msg.content.filter(block => block && allowed.has(block.type));
+
+    // Anthropic rejects assistant turns with empty content arrays. If we
+    // stripped everything (e.g. a turn that was only a thinking block),
+    // replace with a placeholder text block so the conversation stays valid.
+    if (msg.role === 'assistant' && cleanContent.length === 0) {
+      return { role: 'assistant', content: [{ type: 'text', text: '[reasoning omitted]' }] };
+    }
+
+    return { ...msg, content: cleanContent };
+  });
 }
 
 function compactHistory(history) {
@@ -828,6 +875,18 @@ function createAgentChatRoutes({ openai } = {}) {
       const accumulatedTextByRound = [];
       const episodeCache = new Map();
 
+      // Per-session ceiling on `get_adjacent_paragraphs`. Rationale: the
+      // 2026-04-27 regression (e.g. "PayPal Mafia members" query) showed
+      // DeepSeek over-pulling adjacent context — 7 calls in a single
+      // session — and burning the latency budget before producing prose.
+      // The cap is a hard ceiling that doesn't depend on prompt
+      // compliance: once exhausted, calls return a "blocked" stub instead
+      // of executing, which both saves time and signals to the model to
+      // synthesize. Most clean queries used 0-3 expansions, so 4 is
+      // generous; tune via env if needed.
+      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '4', 10);
+      let adjacentParagraphCount = 0;
+
       const cacheEpisode = (ep, feedFallback = {}) => {
         if (!ep || !ep.guid) return;
         const existing = episodeCache.get(ep.guid) || {};
@@ -865,10 +924,21 @@ function createAgentChatRoutes({ openai } = {}) {
         const totalInputChars = systemChars + msgMetrics.totalChars;
         printLog(`[${requestId}] Round ${round} input: system=${systemChars}c (~${Math.ceil(systemChars/4)}tok), messages=${msgMetrics.totalChars}c (user=${msgMetrics.userChars}, assistant=${msgMetrics.assistantChars}, toolResults=${msgMetrics.toolResultChars}), total=~${Math.ceil(totalInputChars/4)}tok est`);
 
+        // Belt-and-suspenders for the latency soft/hard cap nudge.
+        // `latency.budgetNote()` is already appended to every tool_result
+        // content (see ~30 lines down), but burying it inside JSON-ish
+        // tool-result payloads gives it weak attention weight on some
+        // models (DeepSeek under pressure observed ignoring it).
+        // Mirroring the same SYSTEM marker into the system prompt for the
+        // round costs nothing for clean queries (note is empty until soft
+        // cap is reached) and surfaces it in a higher-priority slot when
+        // it matters.
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetNote();
+
         const response = await providerClient.createResponse({
           model: modelConfig.id,
           maxTokens: 4096,
-          system: effectiveSystemPrompt,
+          system: roundSystemPrompt,
           messages,
           tools: effectiveTools,
           aborted,
@@ -931,7 +1001,19 @@ function createAgentChatRoutes({ openai } = {}) {
             if (result.sessionId && result.url) {
               emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
             }
+          } else if (toolUse.name === 'get_adjacent_paragraphs' && adjacentParagraphCount >= adjacentParagraphCap) {
+            // Hard ceiling reached. Return a blocked stub instead of executing —
+            // saves real time on the upstream call and (more importantly) gives
+            // the model an explicit signal that it has enough context and
+            // should synthesize. See `adjacentParagraphCap` declaration above
+            // for rationale.
+            result = {
+              blocked: true,
+              reason: `Adjacent-paragraph budget exhausted (${adjacentParagraphCount}/${adjacentParagraphCap}). Stop expanding context — synthesize the answer from the search_quotes results you already have.`,
+            };
+            console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
           } else {
+            if (toolUse.name === 'get_adjacent_paragraphs') adjacentParagraphCount++;
             result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
           }
 
@@ -1078,6 +1160,8 @@ function createAgentChatRoutes({ openai } = {}) {
         const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
 
         let streamedSynthesis = '';
+        let primaryOutputTokens = 0;
+        let primarySynthesisError = null;
         try {
           // Use a synthesis-only prompt that explicitly forbids tool-call
           // markup. The default search prompt advertises tools and tells the
@@ -1114,6 +1198,7 @@ function createAgentChatRoutes({ openai } = {}) {
             synthesisResponse.usage?.input_tokens || 0,
             synthesisResponse.usage?.output_tokens || 0,
           );
+          primaryOutputTokens = synthesisResponse.usage?.output_tokens || 0;
 
           // Some providers (e.g. DeepSeek non-streaming) don't fire onTextDelta;
           // pull the text off the content blocks and emit it as one delta so
@@ -1127,32 +1212,259 @@ function createAgentChatRoutes({ openai } = {}) {
             emit('text_delta', { text: blocksText });
           }
 
-          if (streamedSynthesis.length > 0) {
-            accumulatedTextByRound.push({ round: round + 1, text: streamedSynthesis });
-          }
           agentLog.rounds.push({
             round: round + 1,
             type: 'synthesis',
             tokens: synthesisResponse.usage,
             reason: synthesisExitReason,
           });
-
-          const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
-          agentLog.finalText = fullText;
-          emit('text_done', { text: fullText });
-          const synthesisElapsed = synthesisBudgetMs - (synthesisDeadlineMs - Date.now());
-          const deadlineHit = Date.now() >= synthesisDeadlineMs;
-          console.log(`[${requestId}] === SYNTHESIS DONE === ${streamedSynthesis.length} chars synthesized, ${fullText.length} total, ${synthesisElapsed}ms${deadlineHit ? ' (deadline hit)' : ''}`);
         } catch (err) {
+          primarySynthesisError = err;
           console.error(`[${requestId}] === SYNTHESIS FAILED === ${err.message}`);
-          // Best-effort: emit any accumulated intermediate text so the user
-          // gets *something* rather than an empty response.
-          if (accumulatedTextByRound.length > 0) {
-            const fallback = accumulatedTextByRound.map(r => r.text).join('\n\n');
-            agentLog.finalText = fallback;
-            emit('text_done', { text: fallback });
+        }
+
+        // ===== Synthesis quality gate + Tier 1/2/3 recovery =====
+        //
+        // The primary synthesis above streams text_delta events live to the
+        // client. If the result is unusable (DSML markup, narration-only
+        // preamble, mid-token truncation, suspiciously short), we run up to
+        // two recovery passes and then fall back to a hardcoded apology.
+        // Recovery passes are silent (no text_delta) so the canonical
+        // `text_done` payload is what matters for clients that re-render on
+        // text_done. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
+        const sanitizedPrimary = sanitizeAgentText(streamedSynthesis);
+
+        // When primary synthesis throws (typically the synthesis-budget
+        // timeout firing mid-stream), we may still have substantial clean
+        // prose already streamed to the client. Re-running synthesis with
+        // an even tighter budget will almost certainly time out again, so
+        // skip recovery if the streamed text is content-clean. We pass
+        // outputTokens: undefined so the low-tokens gate is suppressed
+        // (we never got a final usage block), and rely on the content
+        // checks (markup / narration / truncation / empty) to flag bad
+        // partial streams.
+        const primaryQuality = primarySynthesisError
+          ? evaluateSynthesisOutput({ text: sanitizedPrimary, outputTokens: undefined })
+          : evaluateSynthesisOutput({ text: sanitizedPrimary, outputTokens: primaryOutputTokens });
+
+        // Annotate the trigger for observability when an exception happened
+        // *and* the text failed content checks (the worst-of-both case).
+        if (primarySynthesisError && !primaryQuality.ok) {
+          primaryQuality.trigger = `exception+${primaryQuality.trigger}`;
+          primaryQuality.reason = `${primarySynthesisError.message} | ${primaryQuality.reason}`;
+        }
+
+        let finalSynthText = sanitizedPrimary;
+        const recoveryRecord = primaryQuality.ok ? null : {
+          primary: {
+            trigger: primaryQuality.trigger,
+            reason: primaryQuality.reason,
+            outputTokens: primaryOutputTokens,
+            textLen: sanitizedPrimary.length,
+          },
+        };
+
+        if (!primaryQuality.ok) {
+          console.log(`[${requestId}] Synthesis quality FAILED: trigger=${primaryQuality.trigger}, reason=${primaryQuality.reason}, tokens=${primaryOutputTokens}, len=${sanitizedPrimary.length}`);
+          emit('status', { message: 'Refining your answer...', sessionId });
+
+          // ===== Tier 1: strict re-synthesis on the same provider =====
+          // Same model, hardened prompt, temperature: 0 for determinism,
+          // halved time budget, tool_choice still 'none'. Silent — no
+          // text_delta emits, just collect text and evaluate.
+          const tier1Start = Date.now();
+          const tier1Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
+          const tier1Deadline = Date.now() + tier1Budget;
+          const tier1Aborted = () => _aborted || Date.now() >= tier1Deadline;
+          let tier1Text = '';
+          let tier1OutputTokens = 0;
+          let tier1Error = null;
+          try {
+            const tier1Resp = await providerClient.createResponse({
+              model: modelConfig.id,
+              maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+              system: buildStrictSynthesisPrompt(intent),
+              messages,
+              tools: effectiveTools,
+              toolChoice: 'none',
+              temperature: 0,
+              aborted: tier1Aborted,
+              timeoutMs: tier1Budget,
+              onTextDelta: () => { /* silent */ },
+              requestId,
+            });
+            costs.addLlmUsage(
+              tier1Resp.usage?.input_tokens || 0,
+              tier1Resp.usage?.output_tokens || 0,
+            );
+            tier1OutputTokens = tier1Resp.usage?.output_tokens || 0;
+            tier1Text = sanitizeAgentText(
+              (tier1Resp.content || [])
+                .filter(b => b.type === 'text')
+                .map(b => b.text)
+                .join('')
+            );
+          } catch (err) {
+            tier1Error = err;
+            console.error(`[${requestId}] Tier 1 re-synthesis FAILED: ${err.message}`);
+          }
+          const tier1Quality = tier1Error
+            ? { ok: false, trigger: 'exception', reason: tier1Error.message }
+            : evaluateSynthesisOutput({ text: tier1Text, outputTokens: tier1OutputTokens });
+          recoveryRecord.tier1 = {
+            ok: tier1Quality.ok,
+            trigger: tier1Quality.trigger || null,
+            reason: tier1Quality.reason || null,
+            outputTokens: tier1OutputTokens,
+            textLen: tier1Text.length,
+            elapsedMs: Date.now() - tier1Start,
+            model: modelConfig.id,
+          };
+          agentLog.rounds.push({
+            round: round + 1,
+            type: 'synthesis_tier1',
+            ok: tier1Quality.ok,
+            trigger: tier1Quality.trigger || null,
+            outputTokens: tier1OutputTokens,
+            elapsedMs: Date.now() - tier1Start,
+          });
+
+          if (tier1Quality.ok) {
+            console.log(`[${requestId}] Tier 1 recovered: ${tier1Text.length} chars, ${tier1OutputTokens} tokens, ${Date.now() - tier1Start}ms`);
+            finalSynthText = tier1Text;
+          } else {
+            console.log(`[${requestId}] Tier 1 also failed: trigger=${tier1Quality.trigger}, reason=${tier1Quality.reason}. Trying Tier 2 (Haiku).`);
+            emit('status', { message: 'Trying a different model...', sessionId });
+
+            // ===== Tier 2: cross-provider re-synthesis on Anthropic Haiku =====
+            // Different model family, different tool DSL — sidesteps
+            // DeepSeek-specific failure modes (DSML leaks, narration). Same
+            // strict prompt. Silent.
+            //
+            // Conversation-format note: when the primary provider is DeepSeek
+            // (or any model that emits private reasoning blocks), the
+            // assistant turns in `messages` may contain content blocks of
+            // type 'thinking' shaped for that provider. Anthropic's API
+            // rejects those with `messages.N.content.M.thinking.thinking:
+            // Field required`. Strip non-Anthropic-native blocks before
+            // forwarding so the cross-provider call doesn't 400 out.
+            const tier2Messages = sanitizeMessagesForAnthropic(messages);
+            const tier2Start = Date.now();
+            const tier2Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
+            const tier2Deadline = Date.now() + tier2Budget;
+            const tier2Aborted = () => _aborted || Date.now() >= tier2Deadline;
+            let tier2Text = '';
+            let tier2OutputTokens = 0;
+            let tier2Error = null;
+            const haikuConfig = AGENT_MODELS.fast;
+            try {
+              const haikuClient = createProvider(haikuConfig.provider);
+              const haikuReady = await haikuClient.validate();
+              if (!haikuReady) {
+                throw new Error(`Haiku provider (${haikuConfig.provider}) not configured — missing API key`);
+              }
+              const tier2Resp = await haikuClient.createResponse({
+                model: haikuConfig.id,
+                maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+                system: buildStrictSynthesisPrompt(intent),
+                messages: tier2Messages,
+                tools: effectiveTools,
+                toolChoice: 'none',
+                temperature: 0,
+                aborted: tier2Aborted,
+                onTextDelta: () => { /* silent */ },
+                requestId,
+              });
+              // Track the cross-provider call's token usage against this
+              // request's cost budget so observability stays honest, even
+              // though the cost-per-token differs from the primary model.
+              costs.addLlmUsage(
+                tier2Resp.usage?.input_tokens || 0,
+                tier2Resp.usage?.output_tokens || 0,
+              );
+              tier2OutputTokens = tier2Resp.usage?.output_tokens || 0;
+              tier2Text = sanitizeAgentText(
+                (tier2Resp.content || [])
+                  .filter(b => b.type === 'text')
+                  .map(b => b.text)
+                  .join('')
+              );
+            } catch (err) {
+              tier2Error = err;
+              console.error(`[${requestId}] Tier 2 cross-provider FAILED: ${err.message}`);
+            }
+            const tier2Quality = tier2Error
+              ? { ok: false, trigger: 'exception', reason: tier2Error.message }
+              : evaluateSynthesisOutput({ text: tier2Text, outputTokens: tier2OutputTokens });
+            recoveryRecord.tier2 = {
+              ok: tier2Quality.ok,
+              trigger: tier2Quality.trigger || null,
+              reason: tier2Quality.reason || null,
+              outputTokens: tier2OutputTokens,
+              textLen: tier2Text.length,
+              elapsedMs: Date.now() - tier2Start,
+              model: haikuConfig.id,
+              provider: haikuConfig.provider,
+            };
+            agentLog.rounds.push({
+              round: round + 1,
+              type: 'synthesis_tier2',
+              ok: tier2Quality.ok,
+              trigger: tier2Quality.trigger || null,
+              outputTokens: tier2OutputTokens,
+              elapsedMs: Date.now() - tier2Start,
+              model: haikuConfig.id,
+            });
+
+            if (tier2Quality.ok) {
+              console.log(`[${requestId}] Tier 2 recovered (${haikuConfig.id}): ${tier2Text.length} chars, ${tier2OutputTokens} tokens, ${Date.now() - tier2Start}ms`);
+              finalSynthText = tier2Text;
+            } else {
+              // ===== Tier 3: hardcoded graceful degradation =====
+              console.log(`[${requestId}] Tier 2 also failed: trigger=${tier2Quality.trigger}. Falling back to Tier 3 hardcoded message.`);
+              finalSynthText = TIER3_FALLBACK_MESSAGE;
+              recoveryRecord.tier3 = { used: true, message: TIER3_FALLBACK_MESSAGE };
+              agentLog.rounds.push({
+                round: round + 1,
+                type: 'synthesis_tier3',
+                ok: true,
+                fallback: 'hardcoded',
+              });
+            }
           }
         }
+
+        // ===== Commit the final synthesis text =====
+        // We're in the synthesis branch, which only fires when
+        // `naturalCompletion === false` — i.e. the loop exited because we
+        // hit a cap, not because the model said it was done. Any text
+        // emitted in earlier rounds was therefore intermediate narration
+        // ("Let me grab one more...") that the model intended to follow
+        // with another tool call. Drop it before pushing the synthesis
+        // output so the canonical `text_done` payload contains only the
+        // final synthesis prose, not the discarded thinking-out-loud
+        // preamble.
+        if (finalSynthText && finalSynthText.length > 0) {
+          accumulatedTextByRound.length = 0;
+          accumulatedTextByRound.push({ round: round + 1, text: finalSynthText });
+        }
+
+        const fullText = accumulatedTextByRound.length > 0
+          ? accumulatedTextByRound.map(r => r.text).join('\n\n')
+          : '';
+        if (fullText) {
+          agentLog.finalText = fullText;
+          if (recoveryRecord) {
+            agentLog.synthesisRecovery = recoveryRecord;
+          }
+          emit('text_done', { text: fullText });
+        }
+        const synthesisElapsedTotal = Date.now() - (synthesisDeadlineMs - synthesisBudgetMs);
+        const deadlineHit = Date.now() >= synthesisDeadlineMs;
+        const recoveryTier = recoveryRecord
+          ? (recoveryRecord.tier3 ? 'tier3' : (recoveryRecord.tier2?.ok ? 'tier2' : (recoveryRecord.tier1?.ok ? 'tier1' : 'none')))
+          : 'primary';
+        console.log(`[${requestId}] === SYNTHESIS DONE === recovery=${recoveryTier}, ${fullText.length} total chars, ${synthesisElapsedTotal}ms${deadlineHit ? ' (primary deadline hit)' : ''}`);
       }
 
       const latencyMs = Date.now() - startTime;

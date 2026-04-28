@@ -92,7 +92,7 @@ class AnthropicProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted }) {
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, temperature, onTextDelta, aborted }) {
     const params = {
       model,
       max_tokens: maxTokens,
@@ -107,6 +107,10 @@ class AnthropicProvider {
     // the OpenAI string form. Map the cross-provider 'none' signal here.
     if (toolChoice === 'none') {
       params.tool_choice = { type: 'none' };
+    }
+
+    if (Number.isFinite(temperature)) {
+      params.temperature = temperature;
     }
 
     const stream = await this.client.messages.create(params);

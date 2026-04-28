@@ -60,7 +60,7 @@ PROMPT_SECTIONS.searchTools = `
 - **get_episode**: Fetch full metadata for a single episode by GUID. Use when you need episode details (title, date, guests, artwork) beyond what search_quotes returns.
 - **get_feed**: Fetch metadata for a podcast feed by ID. Returns feed name, episode count, artwork, description, hosts (array of host names), and feedType (interview/solo/panel/null when available).
 - **get_feed_episodes**: List episodes for a feed with optional date filtering — **scoped to our transcribed corpus only** (i.e. episodes we have already ingested). If this returns 0 for a date window but the feed is known to be active, the episodes likely exist on the live RSS but are un-ingested — in that case call \`discover_podcasts\` to surface them as transcription candidates.
-- **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId.
+- **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId. **Use judiciously — limited to a small number of calls per session (env-configurable, default 4). Once exhausted, further calls return a "blocked" stub. Most queries can be answered from search_quotes results alone; reach for this only when the surrounding paragraphs would meaningfully change your answer.**
 - **suggest_action**: Surface a transcription suggestion or follow-up option to the user. Three types: submit-on-demand (offer transcription of an untranscribed episode — only pass the episode guid, the server fills in the rest), create-clip (future), follow-up-message (pre-filled chat message with optional pre-resolved context). Does NOT execute the action.`;
 
 PROMPT_SECTIONS.searchCrafting = `
@@ -305,6 +305,38 @@ function buildSynthesisPrompt(/* intent */) {
   ].join('\n');
 }
 
+PROMPT_SECTIONS.strictSynthesisGuard = `
+## STRICT SYNTHESIS — final attempt to write the user's answer
+
+The first synthesis attempt did not produce usable output. This is your last chance to write the answer to the user's question. Follow these rules absolutely — the orchestrator will discard your output and replace it with a hardcoded apology if you violate any of them:
+
+1. **Output ONLY plain prose.** No tool-call markup of any kind. No \`<...>\` tags. No DSML, XML, JSON, or any structure that resembles a function invocation. If you emit anything that looks like a tool call, it will be discarded.
+2. **Do NOT narrate.** Forbidden openers: "Let me", "I'll", "Let's", "Now I'll", "Based on", "Here's what I found", "Excellent", "Interesting", "Hmm", "Perfect", "Great", "OK". Open with the substantive answer directly.
+3. **Cite only what is already in the conversation history above.** Use \`{{clip:shareLink}}\` tokens for clips you have, italicized show titles for episodes you've referenced. If you have nothing to cite, omit clips entirely and write the answer in plain prose. Do not fabricate.
+4. **If you genuinely cannot answer from the conversation history, output exactly this single line and nothing else:**
+   \`No transcribed coverage found for this query.\`
+5. **No mention of tools, time limits, retries, or your own process.** Speak as a podcast research expert directly to the user.
+
+Write the answer now. Plain prose only.`;
+
+/**
+ * Build the strict-synthesis system prompt used by the Tier 1 recovery pass
+ * (and the Tier 2 cross-provider re-synthesis). Hardened wording explicitly
+ * forbids the failure modes we observed on the primary synthesis path:
+ * narration leaks ("Let me grab more context..."), tool-call markup, and
+ * fabricated citations. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
+ */
+function buildStrictSynthesisPrompt(/* intent */) {
+  return [
+    PROMPT_SECTIONS.base,
+    buildCurrentDateSection(),
+    PROMPT_SECTIONS.strictSynthesisGuard,
+    PROMPT_SECTIONS.responseFormat,
+  ].join('\n');
+}
+
+const TIER3_FALLBACK_MESSAGE = 'I gathered some results for your question but had trouble assembling them into a clean response. Try rephrasing or narrowing the question and I\'ll take another swing.';
+
 const SYSTEM_PROMPT = [
   PROMPT_SECTIONS.base,
   PROMPT_SECTIONS.searchTools,
@@ -437,7 +469,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_adjacent_paragraphs',
-    description: 'Expand context around a specific paragraph/quote by fetching neighboring paragraphs. Use when a search_quotes result looks promising but you need more surrounding context to verify relevance or extract a longer passage.',
+    description: 'Expand context around a specific paragraph/quote by fetching neighboring paragraphs. Use when a search_quotes result looks promising but you need more surrounding context to verify relevance or extract a longer passage. USE JUDICIOUSLY — there is a small per-session cap (env-configurable, default 4). Once exhausted, further calls return a {blocked: true, reason} stub. Most questions can be answered from search_quotes results directly; only reach for this when neighboring paragraphs would change your answer.',
     input_schema: {
       type: 'object',
       properties: {
@@ -528,4 +560,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { SYSTEM_PROMPT, TOOL_DEFINITIONS, PROMPT_SECTIONS, buildCurrentDateSection, buildSynthesisPrompt };
+module.exports = {
+  SYSTEM_PROMPT,
+  TOOL_DEFINITIONS,
+  PROMPT_SECTIONS,
+  buildCurrentDateSection,
+  buildSynthesisPrompt,
+  buildStrictSynthesisPrompt,
+  TIER3_FALLBACK_MESSAGE,
+};

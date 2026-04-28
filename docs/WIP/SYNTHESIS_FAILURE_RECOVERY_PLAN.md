@@ -1,8 +1,11 @@
 # WIP — "Catch the Failure" Synthesis Fallback Plan
 
-Status: **scoped, not implemented.** Captured 2026-04-27 after the
-20-query regression that measured the residual failure rate post-`tool_choice:
-'none'` fix.
+Status: **implemented 2026-04-27.** All three tiers wired into
+`routes/agentChatRoutes.js`. Quality gate in
+`utils/agent/synthesisQuality.js`. Strict prompt + Tier 3 fallback message in
+`setup-agent.js` (`buildStrictSynthesisPrompt`, `TIER3_FALLBACK_MESSAGE`).
+Pending: regression validation with the 20-query suite to measure post-fix
+failure rate and recovery latency.
 
 ## Why this exists
 

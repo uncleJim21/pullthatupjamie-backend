@@ -120,7 +120,7 @@ class DeepSeekProvider {
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted, requestId, timeoutMs }) {
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, temperature, onTextDelta, aborted, requestId, timeoutMs }) {
     const openAiMessages = [
       { role: 'system', content: system },
       ...convertMessagesToOpenAi(messages),
@@ -159,6 +159,13 @@ class DeepSeekProvider {
 
     if (DEFAULT_REASONING_EFFORT) {
       payload.reasoning_effort = DEFAULT_REASONING_EFFORT;
+    }
+
+    // Caller may pin temperature (e.g. strict re-synthesis uses 0 for
+    // deterministic prose). Skip when undefined so we keep the model's
+    // default sampling behavior on the main path.
+    if (Number.isFinite(temperature)) {
+      payload.temperature = temperature;
     }
 
     const safeOnTextDelta = typeof onTextDelta === 'function' ? onTextDelta : () => {};
