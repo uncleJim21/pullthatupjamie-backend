@@ -61,6 +61,7 @@ PROMPT_SECTIONS.searchTools = `
 - **get_feed**: Fetch metadata for a podcast feed by ID. Returns feed name, episode count, artwork, description, hosts (array of host names), and feedType (interview/solo/panel/null when available).
 - **get_feed_episodes**: List episodes for a feed with optional date filtering — **scoped to our transcribed corpus only** (i.e. episodes we have already ingested). If this returns 0 for a date window but the feed is known to be active, the episodes likely exist on the live RSS but are un-ingested — in that case call \`discover_podcasts\` to surface them as transcription candidates.
 - **get_adjacent_paragraphs**: Expand context around a specific paragraph. Use when a search_quotes result looks promising but you need surrounding context to verify relevance or extract a longer passage. Pass the shareLink value from search_quotes results as the paragraphId. **Use judiciously — limited to a small number of calls per session (env-configurable, default 4). Once exhausted, further calls return a "blocked" stub. Most queries can be answered from search_quotes results alone; reach for this only when the surrounding paragraphs would meaningfully change your answer.**
+- **Tool failures**: If a tool result JSON includes an \`error\` field (bad arguments, upstream API, reranker, etc.), read the message, fix parameters or switch tools, and **continue** the investigation. Do not treat it as a fatal stop unless the user's question is truly impossible to approach.
 - **suggest_action**: Surface a transcription suggestion or follow-up option to the user. Three types: submit-on-demand (offer transcription of an untranscribed episode — only pass the episode guid, the server fills in the rest), create-clip (future), follow-up-message (pre-filled chat message with optional pre-resolved context). Does NOT execute the action.`;
 
 PROMPT_SECTIONS.searchCrafting = `
@@ -396,7 +397,7 @@ const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        query:   { type: 'string', description: 'Natural language search query' },
+        query:   { type: 'string', description: 'Natural language search query (required, non-empty after trimming — empty values break embedding search)' },
         guid:    { type: 'string', description: 'Filter to a single episode GUID' },
         guids:   { type: 'array', items: { type: 'string' }, description: 'Filter to multiple episode GUIDs' },
         feedIds: { type: 'array', items: { type: 'string' }, description: 'Filter to specific podcast feed IDs' },

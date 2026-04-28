@@ -100,6 +100,18 @@ async function searchQuotes(params, { openai }) {
   limit = Math.min(maxResults, Math.floor(limit));
 
   const requestId = `SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  if (query == null || typeof query !== 'string' || !query.trim()) {
+    printLog(`[${requestId}] searchQuotes: skipped — missing or empty query (raw=${JSON.stringify(originalQuery)})`);
+    return {
+      query: typeof query === 'string' ? query : '',
+      results: [],
+      total: 0,
+      model: 'text-embedding-ada-002',
+      error: 'Embeddings search requires a non-empty query string. Retry with a concrete phrase from the user question.',
+    };
+  }
+
   printLog(`[${requestId}] searchQuotes: query="${query}", limit=${limit}, smartMode=${smartMode}`);
 
   let triageResult = null;
@@ -116,6 +128,18 @@ async function searchQuotes(params, { openai }) {
     } catch (err) {
       printLog(`[${requestId}] Triage failed (non-fatal): ${err.message}`);
     }
+  }
+
+  if (typeof query !== 'string' || !query.trim()) {
+    printLog(`[${requestId}] searchQuotes: skipped — empty query after triage`);
+    return {
+      query: '',
+      results: [],
+      total: 0,
+      model: 'text-embedding-ada-002',
+      error: 'Query became empty after triage rewrite. Retry search_quotes with an explicit keyword phrase (do not rely on triage alone).',
+      ...(triageResult ? { triage: triageResult.triage, originalQuery } : {}),
+    };
   }
 
   // Lexical fallback gating — kill-switch + heuristic + must not be already

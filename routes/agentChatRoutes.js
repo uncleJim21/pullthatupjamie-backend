@@ -1061,27 +1061,36 @@ function createAgentChatRoutes({ openai } = {}) {
           });
 
           let result;
-          if (toolUse.name === 'suggest_action') {
-            result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
-          } else if (toolUse.name === 'create_research_session') {
-            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
-            if (result.sessionId && result.url) {
-              emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
+          try {
+            if (toolUse.name === 'suggest_action') {
+              result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
+            } else if (toolUse.name === 'create_research_session') {
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
+              if (result.sessionId && result.url) {
+                emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
+              }
+            } else if (toolUse.name === 'get_adjacent_paragraphs' && adjacentParagraphCount >= adjacentParagraphCap) {
+              // Hard ceiling reached. Return a blocked stub instead of executing —
+              // saves real time on the upstream call and (more importantly) gives
+              // the model an explicit signal that it has enough context and
+              // should synthesize. See `adjacentParagraphCap` declaration above
+              // for rationale.
+              result = {
+                blocked: true,
+                reason: `Adjacent-paragraph budget exhausted (${adjacentParagraphCount}/${adjacentParagraphCap}). Stop expanding context — synthesize the answer from the search_quotes results you already have.`,
+              };
+              console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
+            } else {
+              if (toolUse.name === 'get_adjacent_paragraphs') adjacentParagraphCount++;
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
             }
-          } else if (toolUse.name === 'get_adjacent_paragraphs' && adjacentParagraphCount >= adjacentParagraphCap) {
-            // Hard ceiling reached. Return a blocked stub instead of executing —
-            // saves real time on the upstream call and (more importantly) gives
-            // the model an explicit signal that it has enough context and
-            // should synthesize. See `adjacentParagraphCap` declaration above
-            // for rationale.
+          } catch (toolErr) {
+            printLog(`[${requestId}] Tool ${toolUse.name} exception (recovered for LLM): ${toolErr.message}`);
             result = {
-              blocked: true,
-              reason: `Adjacent-paragraph budget exhausted (${adjacentParagraphCount}/${adjacentParagraphCap}). Stop expanding context — synthesize the answer from the search_quotes results you already have.`,
+              error: String(toolErr.message || toolErr),
+              toolExecutionFailed: true,
+              hint: 'Fix tool arguments or try another tool. If this was search_quotes, ensure `query` is a non-empty string.',
             };
-            console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
-          } else {
-            if (toolUse.name === 'get_adjacent_paragraphs') adjacentParagraphCount++;
-            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
           }
 
           if (toolUse.name === 'search_quotes' && result.results) {

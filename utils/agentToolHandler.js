@@ -138,9 +138,18 @@ async function handleSearchQuotes(input, { openai }) {
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
 
-  printLog(`[TOOL] search_quotes: query="${query}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
+  const q = typeof query === 'string' ? query.trim() : (query != null && query !== '' ? String(query).trim() : '');
+  if (!q) {
+    printLog(`[TOOL] search_quotes: rejected empty/missing query (raw=${JSON.stringify(query)})`);
+    return {
+      error: 'search_quotes requires a non-empty `query` string (the model omitted it or passed only whitespace). Retry with a concrete phrase from the user question.',
+      results: [],
+    };
+  }
+
+  printLog(`[TOOL] search_quotes: query="${q}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
   const data = await searchQuotes({
-    query, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
+    query: q, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
   }, { openai });
   filterFluffResults(data);
 
@@ -150,11 +159,15 @@ async function handleSearchQuotes(input, { openai }) {
       creator: r.creator || r.episode,
       episode: r.episode,
     }));
-    const reranked = await rerankClips({ query, clips, openai });
-    if (reranked.clips.length > 0) {
-      const rerankTexts = new Set(reranked.clips.map(c => c.quote));
-      data.results = data.results.filter(r => rerankTexts.has(r.quote));
-      printLog(`[TOOL] Reranker: ${clips.length} -> ${data.results.length} clips`);
+    try {
+      const reranked = await rerankClips({ query: q, clips, openai });
+      if (reranked.clips.length > 0) {
+        const rerankTexts = new Set(reranked.clips.map(c => c.quote));
+        data.results = data.results.filter(r => rerankTexts.has(r.quote));
+        printLog(`[TOOL] Reranker: ${clips.length} -> ${data.results.length} clips`);
+      }
+    } catch (rerankErr) {
+      printLog(`[TOOL] Reranker failed (non-fatal): ${rerankErr.message}`);
     }
   }
 
@@ -167,9 +180,14 @@ async function handleSearchQuotes(input, { openai }) {
 async function handleSearchChapters(input) {
   const { search, feedIds, limit, page = 1 } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const s = typeof search === 'string' ? search.trim() : (search != null && search !== '' ? String(search).trim() : '');
+  if (!s) {
+    printLog('[TOOL] search_chapters: rejected empty search');
+    return { error: 'search_chapters requires a non-empty `search` string.', data: [] };
+  }
 
-  printLog(`[TOOL] search_chapters: search="${search}", limit=${clampedLimit}`);
-  const data = await searchChapters({ search, feedIds, limit: clampedLimit, page });
+  printLog(`[TOOL] search_chapters: search="${s}", limit=${clampedLimit}`);
+  const data = await searchChapters({ search: s, feedIds, limit: clampedLimit, page });
   truncateResults(data);
   printLog(`[TOOL] search_chapters: ${data.data?.length || 0} results`);
   return data;
@@ -178,9 +196,14 @@ async function handleSearchChapters(input) {
 async function handleDiscoverPodcasts(input) {
   const { query, limit } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const q = typeof query === 'string' ? query.trim() : (query != null && query !== '' ? String(query).trim() : '');
+  if (!q) {
+    printLog(`[TOOL] discover_podcasts: rejected empty/missing query`);
+    return { error: 'discover_podcasts requires a non-empty `query` string.', results: [] };
+  }
 
-  printLog(`[TOOL] discover_podcasts: query="${query}", limit=${clampedLimit}`);
-  const data = await discoverPodcasts({ query, limit: clampedLimit });
+  printLog(`[TOOL] discover_podcasts: query="${q}", limit=${clampedLimit}`);
+  const data = await discoverPodcasts({ query: q, limit: clampedLimit });
   truncateResults(data);
   printLog(`[TOOL] discover_podcasts: ${data.results?.length || 0} results`);
   return data;
@@ -217,8 +240,17 @@ function buildSearchStrategy(people, hostedFeeds) {
 
 async function handleFindPerson(input) {
   const { name } = input;
-  printLog(`[TOOL] find_person: name="${name}"`);
-  const data = await findPeople({ search: name, limit: RESULT_HARD_CAP });
+  const n = typeof name === 'string' ? name.trim() : (name != null && name !== '' ? String(name).trim() : '');
+  if (!n) {
+    printLog(`[TOOL] find_person: rejected empty/missing name`);
+    return {
+      error: 'find_person requires a non-empty `name` string.',
+      people: [],
+      hostedFeeds: [],
+    };
+  }
+  printLog(`[TOOL] find_person: name="${n}"`);
+  const data = await findPeople({ search: n, limit: RESULT_HARD_CAP });
   const normalized = {
     people: data.data || [],
     hostedFeeds: data.hostedFeeds || [],
@@ -234,9 +266,14 @@ async function handleFindPerson(input) {
 async function handleGetPersonEpisodes(input) {
   const { name, limit, verbose } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const n = typeof name === 'string' ? name.trim() : (name != null && name !== '' ? String(name).trim() : '');
+  if (!n) {
+    printLog(`[TOOL] get_person_episodes: rejected empty name`);
+    return { error: 'get_person_episodes requires a non-empty `name`.', episodes: [] };
+  }
 
-  printLog(`[TOOL] get_person_episodes: name="${name}", limit=${clampedLimit}`);
-  const data = await getPersonEpisodes({ name, limit: clampedLimit });
+  printLog(`[TOOL] get_person_episodes: name="${n}", limit=${clampedLimit}`);
+  const data = await getPersonEpisodes({ name: n, limit: clampedLimit });
   const normalized = { episodes: data.data || [], pagination: data.pagination, query: data.query };
   truncateResults(normalized);
   if (!verbose && normalized.episodes) {
@@ -260,8 +297,13 @@ async function handleListEpisodeChapters(input) {
 
 async function handleGetEpisode(input) {
   const { guid } = input;
-  printLog(`[TOOL] get_episode: guid="${guid}"`);
-  const data = await getEpisode({ guid });
+  const g = typeof guid === 'string' ? guid.trim() : (guid != null && guid !== '' ? String(guid).trim() : '');
+  if (!g) {
+    printLog(`[TOOL] get_episode: rejected empty guid`);
+    return { error: 'get_episode requires a non-empty episode `guid`.', episode: null };
+  }
+  printLog(`[TOOL] get_episode: guid="${g}"`);
+  const data = await getEpisode({ guid: g });
   const normalized = { episode: data?.data || data };
   printLog(`[TOOL] get_episode: ${normalized.episode?.title || 'found'}`);
   return normalized;
@@ -269,8 +311,13 @@ async function handleGetEpisode(input) {
 
 async function handleGetFeed(input) {
   const { feedId } = input;
-  printLog(`[TOOL] get_feed: feedId="${feedId}"`);
-  const data = await getFeed({ feedId });
+  const fid = feedId != null && feedId !== '' ? String(feedId).trim() : '';
+  if (!fid) {
+    printLog(`[TOOL] get_feed: rejected empty feedId`);
+    return { error: 'get_feed requires a `feedId`.', feed: null };
+  }
+  printLog(`[TOOL] get_feed: feedId="${fid}"`);
+  const data = await getFeed({ feedId: fid });
   const normalized = { feed: data?.data || data };
   printLog(`[TOOL] get_feed: ${normalized.feed?.title || 'found'}`);
   return normalized;
@@ -280,12 +327,17 @@ const VERBOSE_EPISODE_LIMIT = 5;
 
 async function handleGetFeedEpisodes(input) {
   const { feedId, limit, minDate, maxDate, verbose } = input;
+  const fid = feedId != null && feedId !== '' ? String(feedId).trim() : '';
+  if (!fid) {
+    printLog(`[TOOL] get_feed_episodes: rejected empty feedId`);
+    return { error: 'get_feed_episodes requires a `feedId`.', episodes: [] };
+  }
   const defaultLimit = verbose ? VERBOSE_EPISODE_LIMIT : 10;
   const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : RESULT_HARD_CAP;
   const clampedLimit = Math.min(Math.max(1, limit || defaultLimit), hardCap);
 
-  printLog(`[TOOL] get_feed_episodes: feedId="${feedId}", limit=${clampedLimit}, verbose=${!!verbose}`);
-  const data = await getFeedEpisodes({ feedId, limit: clampedLimit, minDate, maxDate });
+  printLog(`[TOOL] get_feed_episodes: feedId="${fid}", limit=${clampedLimit}, verbose=${!!verbose}`);
+  const data = await getFeedEpisodes({ feedId: fid, limit: clampedLimit, minDate, maxDate });
   const normalized = { episodes: data.data || [], pagination: data.pagination };
   truncateResults(normalized);
   if (!verbose && normalized.episodes) {
@@ -297,10 +349,20 @@ async function handleGetFeedEpisodes(input) {
 
 async function handleGetAdjacentParagraphs(input) {
   const { paragraphId, windowSize } = input;
+  const pid = typeof paragraphId === 'string' ? paragraphId.trim() : (paragraphId != null && paragraphId !== '' ? String(paragraphId).trim() : '');
+  if (!pid) {
+    printLog(`[TOOL] get_adjacent_paragraphs: rejected empty paragraphId`);
+    return {
+      error: 'get_adjacent_paragraphs requires a non-empty `paragraphId` (shareLink from search_quotes).',
+      before: [],
+      current: null,
+      after: [],
+    };
+  }
   const clampedWindow = Math.min(Math.max(1, windowSize || 3), 10);
 
-  printLog(`[TOOL] get_adjacent_paragraphs: id="${paragraphId}", window=${clampedWindow}`);
-  const data = await getAdjacentParagraphs(paragraphId, clampedWindow);
+  printLog(`[TOOL] get_adjacent_paragraphs: id="${pid}", window=${clampedWindow}`);
+  const data = await getAdjacentParagraphs(pid, clampedWindow);
   const normalized = {
     before: data.before || [],
     current: data.current || null,
@@ -313,6 +375,10 @@ async function handleGetAdjacentParagraphs(input) {
 
 async function handleCreateResearchSession(input, { req, clipCache }) {
   const { pineconeIds, title } = input;
+  if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
+    printLog('[TOOL] create_research_session: rejected empty pineconeIds');
+    return { error: 'create_research_session requires a non-empty `pineconeIds` array (shareLinks from search_quotes).' };
+  }
   printLog(`[TOOL] create_research_session: ${pineconeIds?.length || 0} clips, title="${title || 'auto'}", cached=${clipCache?.size || 0}`);
 
   let userId = null;
@@ -389,7 +455,17 @@ async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, c
   session.toolCalls++;
   session.cost += toolCost;
 
-  return handler(toolInput, { openai, req, clipCache });
+  try {
+    return await handler(toolInput, { openai, req, clipCache });
+  } catch (err) {
+    const msg = err && (err.message || String(err));
+    printLog(`[TOOL] ${toolName} threw (recovered): ${msg}`);
+    return {
+      error: msg,
+      toolExecutionFailed: true,
+      hint: 'Fix arguments or try a different tool, then continue. Empty search_quotes.query causes embedding API errors — always pass a non-empty string.',
+    };
+  }
 }
 
 module.exports = { executeAgentTool, TOOL_COSTS };

@@ -22,7 +22,7 @@
  *   node tests/agent-comparison.js [--query N] [--queries N,M,P] [--cohort cohortN] [--save] [--provider anthropic|tinfoil|all] [--model key] [--models key1,key2] [--profile default|deep-turns] ["custom query 1" ...]
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
- * --cohort cohortN only run queries from the specified cohort (cohort1, cohort2, cohort3)
+ * --cohort cohortN only run queries from the specified cohort (cohort1–cohort8)
  * --query N        run a single query by 1-based index
  * --queries N,M,P  run a specific subset of queries by 1-based indices
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
@@ -114,6 +114,69 @@ const TEST_QUERIES = [
   // length guidance (short/lean answer when remaining budget is tight).
   // Add new latency-stress cases here as they're discovered in the wild.
   { name: 'Empires Patterns (synth-budget stress)', cohort: 'cohort7', task: 'What patterns repeat in the fall of great empires across history?' },
+
+  // --- Cohort 8: Stress on prior weak spots (cross-show, VC/macro, long narrative,
+  // impossible guest-host, broad synthesis, thin corpus, research session) ---
+  { name: 'C8 Cross: Pool vs Shapiro immigration', cohort: 'cohort8', task: 'Compare what Tim Pool and Ben Shapiro have said about immigration policy in the last year on their shows.' },
+  { name: 'C8 Cross: DW vs All-In China', cohort: 'cohort8', task: 'Compare DW News and All-In on China tech decoupling and supply chains.' },
+  { name: 'C8 Cross: Pivot vs Prof G layoffs', cohort: 'cohort8', task: 'Compare Pivot and Prof G on tech layoffs, hiring, and the job market for engineers.' },
+  { name: 'C8 Cross: Lex vs Huberman dopamine', cohort: 'cohort8', task: 'Compare Lex Fridman and Andrew Huberman on dopamine, motivation, and digital distraction.' },
+  { name: 'C8 Cross: Rogan vs Lex UFOs', cohort: 'cohort8', task: 'Compare Joe Rogan and Lex Fridman on UFO disclosure, whistleblowers, and government transparency.' },
+  { name: 'C8 Cross: WBD vs TFTC Lightning', cohort: 'cohort8', task: 'Compare What Bitcoin Did and TFTC on Lightning routing reliability and failures.' },
+  { name: 'C8 Cross: Today Explained vs Daily SCOTUS', cohort: 'cohort8', task: 'Compare Today Explained and The Daily on the Supreme Court term and major cases.' },
+  { name: 'C8 Cross: Hard Fork vs Pivot Meta', cohort: 'cohort8', task: 'Compare Hard Fork and Pivot on Meta, social media, and antitrust.' },
+  { name: 'C8 VC: Sacks JCal AI regulation', cohort: 'cohort8', task: 'What have David Sacks and Jason Calacanis said about AI regulation across All-In episodes?' },
+  { name: 'C8 VC: Founders Fund defense tech', cohort: 'cohort8', task: 'What have Founders Fund–affiliated voices said about defense tech, drones, and Anduril on podcasts?' },
+  { name: 'C8 VC: Thiel vs a16z elites', cohort: 'cohort8', task: 'Contrast Peter Thiel and Marc Andreessen on democracy, elites, and technocracy using podcast clips.' },
+  { name: 'C8 VC: YC valuations 2025–26', cohort: 'cohort8', task: 'What are Y Combinator partners saying about startup valuations in 2025 and 2026 on podcasts?' },
+
+  { name: 'C8 Narrative: 2008 crisis weekend', cohort: 'cohort8', task: 'Find a detailed narrative of the 2008 financial crisis weekend (Lehman, AIG, Fed) from podcasts.' },
+  { name: 'C8 Narrative: D-Day', cohort: 'cohort8', task: 'Find a detailed retelling of D-Day from history podcasts with specific moments and decisions.' },
+  { name: 'C8 Narrative: Chernobyl', cohort: 'cohort8', task: 'Chernobyl meltdown explained in narrative depth: timeline, mistakes, and aftermath on podcasts.' },
+  { name: 'C8 Narrative: Constantinople 1453', cohort: 'cohort8', task: 'Fall of Constantinople in 1453 — detailed expert narrative from history podcasts.' },
+  { name: 'C8 Narrative: Prohibition', cohort: 'cohort8', task: 'Prohibition-era bootlegging and organized crime told as a long narrative on podcasts.' },
+  { name: 'C8 Narrative: Tet Offensive', cohort: 'cohort8', task: 'Tet Offensive explained in depth: strategy, surprise, and media impact on history podcasts.' },
+  { name: 'C8 Narrative: Spanish Civil War', cohort: 'cohort8', task: 'Spanish Civil War overview from expert podcasts: factions, foreign intervention, outcome.' },
+  { name: 'C8 Narrative: Partition of India', cohort: 'cohort8', task: 'Partition of India in 1947 — detailed retelling from podcasts covering violence and migration.' },
+  { name: 'C8 Narrative: Bronze Age collapse', cohort: 'cohort8', task: 'Bronze Age collapse theories and evidence across history podcasts.' },
+  { name: 'C8 Narrative: Peloponnesian War', cohort: 'cohort8', task: 'Peloponnesian War: causes, Pericles, Sicilian expedition — synthesis from history podcasts.' },
+
+  { name: 'C8 Impossible: Musk on Acquired', cohort: 'cohort8', task: 'What did Elon Musk say on the Acquired podcast as a guest? Quote him.' },
+  { name: 'C8 Impossible: Naval on All-In', cohort: 'cohort8', task: 'What did Naval Ravikant say on All-In this year? Pull his clips.' },
+  { name: 'C8 Impossible: Swift on Rogan', cohort: 'cohort8', task: 'What did Taylor Swift say on Joe Rogan about her music and politics?' },
+  { name: 'C8 Impossible: Satoshi on Bankless', cohort: 'cohort8', task: 'What did Satoshi Nakamoto say on Bankless about Ethereum?' },
+  { name: 'C8 Impossible: Dimon on WBD', cohort: 'cohort8', task: 'What did Jamie Dimon say about Bitcoin on What Bitcoin Did with Peter McCormack?' },
+  { name: 'C8 Impossible: Jobs on Lex AI', cohort: 'cohort8', task: 'What did Steve Jobs say on Lex Fridman about artificial intelligence?' },
+
+  { name: 'C8 Synth: curiosity before decline', cohort: 'cohort8', task: 'Why do civilizations lose intellectual curiosity before decline? Synthesize arguments from history podcasts.' },
+  { name: 'C8 Synth: nuclear war rational', cohort: 'cohort8', task: 'Is nuclear war ever rational? Summarize the strongest for and against from podcast debates.' },
+  { name: 'C8 Synth: debt jubilee vs austerity', cohort: 'cohort8', task: 'Debt jubilees versus austerity across ancient and modern empires — what do podcast historians and economists argue?' },
+  { name: 'C8 Synth: hyperinflation compare', cohort: 'cohort8', task: 'Compare hyperinflation in Venezuela, Zimbabwe, and Weimar Germany as explained on podcasts.' },
+  { name: 'C8 Synth: coastal vs heartland', cohort: 'cohort8', task: 'Coastal elite versus heartland economy narratives across political and culture podcasts.' },
+  { name: 'C8 Synth: AI replacing CEOs', cohort: 'cohort8', task: 'Predictions about AI replacing CEOs — synthesize across business and tech podcasts.' },
+  { name: 'C8 Synth: UBI pro and con', cohort: 'cohort8', task: 'Universal basic income: strongest pro and strongest con from podcasters, with clips.' },
+  { name: 'C8 Synth: Fed independence', cohort: 'cohort8', task: 'Federal Reserve independence versus political pressure — compare takes across macro and news podcasts.' },
+  { name: 'C8 Synth: Ukraine peace 2025–26', cohort: 'cohort8', task: 'Ukraine war peace talks and endgame scenarios in 2025–2026 — what are podcasts saying?' },
+  { name: 'C8 Synth: Ozempic society', cohort: 'cohort8', task: 'Ozempic and GLP-1 drugs — societal effects on health, beauty, and inequality across podcasts.' },
+  { name: 'C8 Synth: remote work dead', cohort: 'cohort8', task: 'Remote work is dead versus here to stay — cross-show synthesis with named podcasts.' },
+  { name: 'C8 Synth: EA after FTX', cohort: 'cohort8', task: 'Effective altruism after FTX — reckoning and reform arguments on podcasts.' },
+
+  { name: 'C8 Thin: German Bitcoin pods', cohort: 'cohort8', task: 'Find German-language podcast episodes about Bitcoin in our corpus, if any.' },
+  { name: 'C8 Thin: Antarctic economics', cohort: 'cohort8', task: 'Economics of Antarctic research stations — anything on EconTalk or similar?' },
+  { name: 'C8 Thin: Faraday EMP', cohort: 'cohort8', task: 'Faraday cages and EMP preparedness — niche podcast coverage.' },
+  { name: 'C8 Thin: curling strategy', cohort: 'cohort8', task: 'Deep dive on curling strategy and analytics on any podcast.' },
+  { name: 'C8 Thin: marble racing', cohort: 'cohort8', task: 'Competitive marble racing commentary or fandom on podcasts.' },
+  { name: 'C8 Thin: FDA reform', cohort: 'cohort8', task: 'Reforming the FDA and drug approval timelines — podcast arguments.' },
+  { name: 'C8 Thin: quantum winter', cohort: 'cohort8', task: 'Quantum computing winter versus hype — podcast takes from physicists and VCs.' },
+  { name: 'C8 Thin: college worth it', cohort: 'cohort8', task: 'Is college still worth it? Strongest podcast arguments on both sides.' },
+
+  { name: 'C8 Research: carbon capture', cohort: 'cohort8', task: 'Make a research session about carbon capture and climate tech debates on podcasts.', mode: 'fast' },
+  { name: 'C8 Research: consciousness quantum', cohort: 'cohort8', task: 'Make a research session on Lex Fridman guests discussing consciousness versus quantum mysticism.', mode: 'fast' },
+
+  { name: 'C8 Stress: Levchin Hoffman AI', cohort: 'cohort8', task: 'What have Max Levchin and Reid Hoffman said about AI on podcasts?' },
+  { name: 'C8 Stress: tariffs BP Tim Dillon', cohort: 'cohort8', task: 'Compare Breaking Points and Tim Dillon on tariffs and trade policy.' },
+  { name: 'C8 Stress: NATO 1990s promises', cohort: 'cohort8', task: 'NATO expansion and 1990s verbal promises to Russia — podcast synthesis of competing narratives.' },
+  { name: 'C8 Stress: Lightning jamming', cohort: 'cohort8', task: 'Lightning network jamming attacks and routing failures — what did major Bitcoin podcasts explain?' },
 ];
 
 // ===== Helpers =====

@@ -4,6 +4,24 @@
  * Reads the most recent N agent logs and classifies each by failure mode.
  *
  * Usage: node tests/analyze-regression.js [--last N] [--since "ISO-timestamp"]
+ *
+ * --- Failure classes we watch for (aligns with agent quality reviews) ---
+ * CRITICAL
+ *   empty           — no finalText
+ *   dsml_leak       — tool-call / DSML markup leaked into user-facing prose
+ *   tier3_fired     — synthesis recovery exhausted; canned fallback used
+ * HIGH
+ *   truncated_clip  — answer ends inside an unfinished {{clip:…}} token
+ *   truncated_prose — answer ends without sentence-terminal punctuation (heuristic;
+ *                     long answers can false-positive vs production evaluateSynthesisOutput)
+ *   narration_prefix — short answer opens with planner filler ("Let me search…")
+ * MEDIUM
+ *   narration_prefix_substantive — narration prefix on an otherwise long answer
+ *   recovered_tier1 | recovered_tier2 — primary synthesis failed; backup succeeded
+ * LOW
+ *   forced_synthesis — loop exited on cost/latency/max-rounds cap (informational)
+ *   short_response   — brief answer without recovery (may be honest thin coverage)
+ * CLEAN — none of the above
  */
 
 const fs = require('fs');
