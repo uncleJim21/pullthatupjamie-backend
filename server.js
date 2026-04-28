@@ -2163,18 +2163,15 @@ app.listen(PORT, async () => {
     console.log('All systems initialized successfully');
 
     // High-visibility banner showing what the /api/chat/workflow ("pull") agent
-    // will route to by default. Surfaces whether AGENT_MODEL env actually
-    // resolved (caught a recent bug where a server restart was missed).
+    // will route to by default.
     try {
       const { AGENT_MODELS, DEFAULT_AGENT_MODEL, EXECUTION_PROFILES, DEFAULT_EXECUTION_PROFILE } = require('./constants/agentModels');
       const m = AGENT_MODELS[DEFAULT_AGENT_MODEL];
       const p = EXECUTION_PROFILES[DEFAULT_EXECUTION_PROFILE];
       const envRaw = process.env.AGENT_MODEL;
       const envState = !envRaw
-        ? '\x1b[33mnot set\x1b[0m  (using hard-coded fallback "fast")'
-        : AGENT_MODELS[envRaw]
-          ? `\x1b[32m${envRaw} (active)\x1b[0m`
-          : `\x1b[31m${envRaw} (UNRECOGNIZED — fell back to "fast")\x1b[0m`;
+        ? '\x1b[32mnot set\x1b[0m  (good — the var is deprecated)'
+        : `\x1b[33m${envRaw} (DEPRECATED — ignored, please remove from .env)\x1b[0m`;
       const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
       const bold = (s) => `\x1b[1m${s}\x1b[0m`;
       console.log('');

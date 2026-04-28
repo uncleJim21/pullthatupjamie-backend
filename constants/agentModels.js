@@ -173,9 +173,24 @@ const AGENT_MODELS = {
   },
 };
 
-const DEFAULT_AGENT_MODEL = process.env.AGENT_MODEL && AGENT_MODELS[process.env.AGENT_MODEL]
-  ? process.env.AGENT_MODEL
-  : 'fast';
+// Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash
+// alias — see the AGENT_MODELS.quality entry above). The only way to reach
+// Haiku is to pass `model: 'fast'` explicitly in the request body.
+//
+// 2026-04-28: AGENT_MODEL env is DEPRECATED and ignored. To change the default
+// model going forward, edit the value below or remap the `quality` slot in
+// AGENT_MODELS. We log a one-time warning on boot if AGENT_MODEL is still set
+// so stale env files surface visibly instead of silently doing nothing.
+const DEFAULT_AGENT_MODEL = 'quality';
+
+if (process.env.AGENT_MODEL) {
+  console.warn(
+    `[agentModels] AGENT_MODEL="${process.env.AGENT_MODEL}" is set but DEPRECATED — ` +
+    `the default is now hard-coded to "${DEFAULT_AGENT_MODEL}". ` +
+    `Remove the AGENT_MODEL line from your .env to silence this warning. ` +
+    `To switch the default, edit constants/agentModels.js or remap the "quality" slot.`
+  );
+}
 
 const DEFAULT_EXECUTION_PROFILE = process.env.AGENT_EXECUTION_PROFILE && EXECUTION_PROFILES[process.env.AGENT_EXECUTION_PROFILE]
   ? process.env.AGENT_EXECUTION_PROFILE

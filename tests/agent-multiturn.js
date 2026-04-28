@@ -92,7 +92,7 @@ function parseSSE(raw) {
 
 async function runTurn(message, history, { compactOff }) {
   const start = Date.now();
-  const agentModel = process.env.AGENT_MODEL || 'fast';
+  const agentModel = 'quality';
 
   const headers = {
     'Content-Type': 'application/json',

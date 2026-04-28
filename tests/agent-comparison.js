@@ -262,7 +262,7 @@ function defaultModelsForProvider(provider) {
 async function runAgentQuery(task, { model, provider, executionProfile } = {}) {
   const start = Date.now();
 
-  const agentModel = model || process.env.AGENT_MODEL || 'fast';
+  const agentModel = model || 'quality';
 
   const headers = {
     'Content-Type': 'application/json',
@@ -426,8 +426,8 @@ async function main() {
         ? [modelFilter]
         : providerFilter
           ? defaultModelsForProvider(providerFilter)
-          : [q.mode || process.env.AGENT_MODEL || 'fast'];
-    const runTargets = requestedModels.length > 0 ? requestedModels : ['fast'];
+          : [q.mode || 'quality'];
+    const runTargets = requestedModels.length > 0 ? requestedModels : ['quality'];
     const forcedProvider = providerFilter && providerFilter !== 'all' ? providerFilter : null;
 
     for (const modelKey of runTargets) {
