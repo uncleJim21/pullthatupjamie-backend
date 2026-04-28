@@ -250,8 +250,8 @@ const QUOTA_CONFIG_PRODUCTION = {
 
   // Pull (LLM-orchestrated corpus query, $0.10 per pull)
   [ENTITLEMENT_TYPES.PULL]: {
-    [TIERS.anonymous]: { maxUsage: 2, periodLengthDays: 7 },       // 1/week
-    [TIERS.registered]: { maxUsage: 10, periodLengthDays: 30 },    // 10/month
+    [TIERS.anonymous]: { maxUsage: 7, periodLengthDays: 30 },       // 7/month
+    [TIERS.registered]: { maxUsage: 15, periodLengthDays: 30 },    // 10/month
     [TIERS.subscriber]: { maxUsage: 50, periodLengthDays: 30 },    // 50/month
     [TIERS.admin]: { maxUsage: 250, periodLengthDays: 30 }         // 250/month (safety cap, was unlimited)
   }
