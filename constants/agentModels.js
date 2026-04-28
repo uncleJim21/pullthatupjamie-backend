@@ -76,13 +76,23 @@ const AGENT_MODELS = {
     outputPer1M: 5.0,
     label: 'Haiku 4.5',
   },
+  // 2026-04-28: `quality` is now an alias to DeepSeek V4-Flash (Direct). The
+  // public surface has consolidated on DeepSeek as the only orchestrator
+  // path and the frontend hardcodes `model: "quality"` in the request body.
+  // Keep the key name + slot intact so we can flip back to Anthropic Sonnet
+  // (or any other "premium" tier) by restoring the original config below
+  // without coordinating a frontend release.
+  //
+  // Original Sonnet config preserved for future revert:
+  //   provider: 'anthropic', id: 'claude-sonnet-4-6',
+  //   inputPer1M: 3.0, outputPer1M: 15.0, label: 'Sonnet 4.6'
   quality: {
     key: 'quality',
-    provider: 'anthropic',
-    id: 'claude-sonnet-4-6',
-    inputPer1M: 3.0,
-    outputPer1M: 15.0,
-    label: 'Sonnet 4.6',
+    provider: 'deepseek',
+    id: process.env.DEEPSEEK_FLASH_MODEL || 'deepseek-v4-flash',
+    inputPer1M: parseFloat(process.env.DEEPSEEK_FLASH_INPUT_PER_1M || '0.14'),
+    outputPer1M: parseFloat(process.env.DEEPSEEK_FLASH_OUTPUT_PER_1M || '0.28'),
+    label: 'DeepSeek V4-Flash (Direct)',
   },
   gemma: {
     key: 'gemma',
