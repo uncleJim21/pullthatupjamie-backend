@@ -296,13 +296,49 @@ Tool execution has ended for this turn. Your only job now is to write the final 
  * Intent param accepted for forward compatibility; for now we emit one shape
  * regardless (synthesis is the same job for every intent).
  */
-function buildSynthesisPrompt(/* intent */) {
-  return [
+/**
+ * Build a synthesis-pass system prompt, optionally tuned to the wall-clock
+ * budget remaining. When `guidance` is provided the prompt picks up an
+ * extra section telling the model how long an answer to write — critical
+ * for tight-budget cases (synthesis fired late, only 5-10s left to write).
+ * Without size guidance the model writes a "thorough" answer regardless
+ * and gets aborted mid-sentence when the deadline hits.
+ *
+ * `guidance` shape: { lengthHint: string, urgency: 'normal'|'tight'|'urgent' }.
+ * Produced by latencyTracker.synthesisGuidance(synthesisBudgetMs).
+ */
+function buildSynthesisPrompt(intent, guidance) {
+  const sections = [
     PROMPT_SECTIONS.base,
     buildCurrentDateSection(),
     PROMPT_SECTIONS.synthesisGuard,
-    PROMPT_SECTIONS.responseFormat,
-  ].join('\n');
+  ];
+  if (guidance) sections.push(buildSynthesisLengthSection(guidance));
+  sections.push(PROMPT_SECTIONS.responseFormat);
+  return sections.join('\n');
+}
+
+/**
+ * Section that pegs synthesis output size to the time budget. Speaks in
+ * plain "you have ~Ns to write this, target M words" terms because the
+ * model can size its own output if you tell it explicitly. Without this
+ * it defaults to the verbose response-format spec and overruns.
+ */
+function buildSynthesisLengthSection({ lengthHint, urgency }) {
+  if (!lengthHint) return '';
+  const urgencyTag = urgency === 'urgent'
+    ? 'TIGHT BUDGET — '
+    : urgency === 'tight'
+      ? 'LIMITED BUDGET — '
+      : '';
+  return `
+## SYNTHESIS LENGTH BUDGET
+
+${urgencyTag}target output size for this answer: **${lengthHint}**.
+
+This overrides the default verbosity in the response-format section below. ${urgency === 'urgent' ? 'You will be cut off mid-sentence if you go long. Stay short, complete every sentence, end with terminal punctuation.' : urgency === 'tight' ? 'Keep paragraphs lean. Prioritize the user\'s question over depth.' : 'You have plenty of room — write a thorough answer.'}
+
+Do not mention this budget or any limit to the user.`;
 }
 
 PROMPT_SECTIONS.strictSynthesisGuard = `
@@ -326,13 +362,15 @@ Write the answer now. Plain prose only.`;
  * narration leaks ("Let me grab more context..."), tool-call markup, and
  * fabricated citations. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
  */
-function buildStrictSynthesisPrompt(/* intent */) {
-  return [
+function buildStrictSynthesisPrompt(intent, guidance) {
+  const sections = [
     PROMPT_SECTIONS.base,
     buildCurrentDateSection(),
     PROMPT_SECTIONS.strictSynthesisGuard,
-    PROMPT_SECTIONS.responseFormat,
-  ].join('\n');
+  ];
+  if (guidance) sections.push(buildSynthesisLengthSection(guidance));
+  sections.push(PROMPT_SECTIONS.responseFormat);
+  return sections.join('\n');
 }
 
 const TIER3_FALLBACK_MESSAGE = 'I gathered some results for your question but had trouble assembling them into a clean response. Try rephrasing or narrowing the question and I\'ll take another swing.';

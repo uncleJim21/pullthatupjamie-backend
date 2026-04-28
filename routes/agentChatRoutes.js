@@ -119,6 +119,64 @@ function createLatencyTracker(executionProfile, startedAtMs) {
       }
       return '';
     },
+    /**
+     * Always-on time-budget header for the per-round system prompt. Lets the
+     * model self-pace tool exploration vs. answer composition without waiting
+     * for the soft/hard markers to fire (which is too late — by hard cap
+     * we've already lost the round to forced synthesis).
+     *
+     * Wording is action-oriented: "you have N seconds, narrow now" rather
+     * than "elapsed Xs of Ys" so the model gets a directive, not just data.
+     */
+    budgetHeader() {
+      const elapsed = this.elapsedMs();
+      const remainingSoft = Math.max(0, softMs - elapsed);
+      const remainingHard = Math.max(0, hardMs - elapsed);
+      const elapsedPct = Math.min(100, Math.round((elapsed / hardMs) * 100));
+      let directive;
+      if (elapsed > hardMs) {
+        directive = 'STOP calling tools. Synthesize from existing evidence on the next response.';
+      } else if (elapsed > softMs) {
+        directive = 'WRAP UP. One focused tool call at most, then synthesize. Do not start a new line of investigation.';
+      } else if (elapsedPct >= 50) {
+        directive = 'NARROW. You should be confirming details now, not opening new threads. Prefer at most 1 more tool call before synthesizing.';
+      } else if (elapsedPct >= 25) {
+        directive = 'FOCUS. Pick the single most informative next call. Avoid wide adjacent-paragraph windows (windowSize > 5 burns budget fast).';
+      } else {
+        directive = 'EXPLORE freely; you have plenty of budget.';
+      }
+      return [
+        '',
+        '## TIME BUDGET (real-time, updated each round)',
+        `Elapsed ${(elapsed/1000).toFixed(1)}s of ${(hardMs/1000).toFixed(0)}s hard cap (${elapsedPct}% used). ${(remainingSoft/1000).toFixed(1)}s until soft wrap-up nudge, ${(remainingHard/1000).toFixed(1)}s until forced synthesis.`,
+        `Directive: ${directive}`,
+        'After the hard cap fires, you do NOT get to write a long answer — synthesis runs on a tight 15s budget and will truncate mid-sentence if you leave it nothing to work with.',
+        'Do not mention this budget, the elapsed time, or any limit to the user.',
+        '',
+      ].join('\n');
+    },
+    /**
+     * Recommend a synthesis output size given remaining time. Used when the
+     * orchestrator builds the synthesis-pass system prompt so the model can
+     * scale its answer to whatever budget is actually available.
+     *
+     * Targets are deliberately conservative — observed in the 41-query
+     * regression: model overshoots length guidance by ~30% on average
+     * (told 600, writes 800) and gets cut by the synthesis deadline mid-
+     * sentence. Asking for 350 words with the goal of getting 450
+     * actually leaves ~10-15% safety margin for the tail to land on a
+     * terminal sentence.
+     */
+    synthesisGuidance(synthesisBudgetMs) {
+      const budget = Number.isFinite(synthesisBudgetMs) ? synthesisBudgetMs : 15_000;
+      if (budget >= 12_000) {
+        return { lengthHint: '300-450 words, 2-4 clip citations', urgency: 'normal' };
+      }
+      if (budget >= 8_000) {
+        return { lengthHint: '200-320 words, 2-3 clip citations', urgency: 'tight' };
+      }
+      return { lengthHint: '100-180 words, 1-2 clip citations — prioritize completeness over depth, NEVER end mid-sentence', urgency: 'urgent' };
+    },
   };
 }
 
@@ -933,7 +991,16 @@ function createAgentChatRoutes({ openai } = {}) {
         // round costs nothing for clean queries (note is empty until soft
         // cap is reached) and surfaces it in a higher-priority slot when
         // it matters.
-        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetNote();
+        //
+        // budgetHeader() is the *proactive* complement to budgetNote():
+        // always-on real-time elapsed/remaining + a directive scaled to
+        // current usage (EXPLORE / FOCUS / NARROW / WRAP UP / STOP). Lets
+        // the model self-pace tool exploration before the soft cap fires
+        // — without it, the model has no time signal until 25s in, by
+        // which point it can't course-correct. Failure case it prevents:
+        // model burns the whole 40s budget on wide adjacent_paragraphs
+        // calls, then synthesis runs on 15s and truncates mid-sentence.
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
 
         const response = await providerClient.createResponse({
           model: modelConfig.id,
@@ -1159,6 +1226,15 @@ function createAgentChatRoutes({ openai } = {}) {
         const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
         const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
 
+        // Build size guidance for the synthesis pass. The model can scale
+        // its own output ("write 200 words" vs "write 500 words") if you
+        // tell it explicitly — without this, it defaults to the verbose
+        // response-format spec and runs past the synthesis deadline mid-
+        // sentence on tight budgets. See latency.synthesisGuidance for
+        // the elapsed → length-target mapping.
+        const synthesisGuidance = latency.synthesisGuidance(synthesisBudgetMs);
+        console.log(`[${requestId}] Synthesis guidance: ${synthesisGuidance.urgency} (${synthesisGuidance.lengthHint})`);
+
         let streamedSynthesis = '';
         let primaryOutputTokens = 0;
         let primarySynthesisError = null;
@@ -1177,7 +1253,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
           const synthesisResponse = await providerClient.createResponse({
             model: modelConfig.id,
             maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
@@ -1276,6 +1352,10 @@ function createAgentChatRoutes({ openai } = {}) {
           const tier1Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
           const tier1Deadline = Date.now() + tier1Budget;
           const tier1Aborted = () => _aborted || Date.now() >= tier1Deadline;
+          // Recovery passes always run on a halved budget — flag them
+          // 'urgent' so the model picks the shortest length target and is
+          // explicitly told to never end mid-sentence.
+          const tier1Guidance = latency.synthesisGuidance(tier1Budget);
           let tier1Text = '';
           let tier1OutputTokens = 0;
           let tier1Error = null;
@@ -1283,7 +1363,7 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier1Resp = await providerClient.createResponse({
               model: modelConfig.id,
               maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent),
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance),
               messages,
               tools: effectiveTools,
               toolChoice: 'none',
@@ -1353,6 +1433,7 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier2Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
             const tier2Deadline = Date.now() + tier2Budget;
             const tier2Aborted = () => _aborted || Date.now() >= tier2Deadline;
+            const tier2Guidance = latency.synthesisGuidance(tier2Budget);
             let tier2Text = '';
             let tier2OutputTokens = 0;
             let tier2Error = null;
@@ -1366,7 +1447,7 @@ function createAgentChatRoutes({ openai } = {}) {
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
                 maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent),
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance),
                 messages: tier2Messages,
                 tools: effectiveTools,
                 toolChoice: 'none',

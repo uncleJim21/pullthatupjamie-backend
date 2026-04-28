@@ -105,6 +105,15 @@ const TEST_QUERIES = [
   { name: 'Proper-noun: x402 (numeric)',     cohort: 'cohort6', task: 'what is x402 used for?' },
   { name: 'Proper-noun: zaprite control',    cohort: 'cohort6', task: 'what has been said about zaprite' },
   { name: 'Proper-noun: nostr control',      cohort: 'cohort6', task: 'what about nostr on podcasts' },
+
+  // --- Cohort 7: Latency / synthesis-budget stress regressions ---
+  // Empires query observed 2026-04-28: 5 rounds of get_adjacent_paragraphs
+  // (windowSize 8/10/12/8) burned the 40s budget; synthesis ran on 15s and
+  // truncated mid-sentence at "...spending balloons during an". Validates
+  // the time-budget header (always-on per-round) + adaptive synthesis
+  // length guidance (short/lean answer when remaining budget is tight).
+  // Add new latency-stress cases here as they're discovered in the wild.
+  { name: 'Empires Patterns (synth-budget stress)', cohort: 'cohort7', task: 'What patterns repeat in the fall of great empires across history?' },
 ];
 
 // ===== Helpers =====
