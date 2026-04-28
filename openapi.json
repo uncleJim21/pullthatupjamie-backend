@@ -961,7 +961,7 @@
           "Pull"
         ],
         "summary": "Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)",
-        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). PRICING: $0.10 per call, deducted from the prepaid L402 balance. AUTH: accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). INVOICE AMOUNT: if you call without credentials to receive a 402 challenge, the invoice is auto-sized to cover approximately one call at the current BTC/USD rate (cost + ~15% buffer). Pass `?amountSats=N` (min 10, max 500,000) to prefund multiple calls. STATELESS CLIENT FLOW: the default invoice size means you can safely pay once, make one call, and discard the macaroon — no credential management required. Replaying the URL with `?amountSats` on the retry is harmless (the query param is silently ignored when a valid credential is present; the existing balance is debited).",
+        "description": "Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery, research-session assembly) across one or more rounds, then composes a final answer with quoted passages and episode metadata. MODEL ROUTING: Optional `model` field accepts `quality` (default — DeepSeek V4-Flash, recommended for nearly all callers) or `fast` (Haiku 4.5, lower-cost). Omit for the default. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions, session? }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (`{ tool, input, round }`), `tool_result` (`{ tool, resultCount, latencyMs, round, meta? }` — optional `meta` carries lexical/vector breakdown for `search_quotes`), `session_created` (`{ sessionId, url, itemCount }` when the agent assembles a research session), `suggested_action` (next-step chip), `text_delta` (incremental answer chunk), `text_done` (authoritative final text), `done` (terminal envelope with rounds, tokens, cost, latency), and `error` (mid-stream failure). See the SSE schema example below for full payload shapes. PRICING: $0.10 per call, deducted from the prepaid L402 balance. AUTH: accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). INVOICE AMOUNT: if you call without credentials to receive a 402 challenge, the invoice is auto-sized to cover approximately one call at the current BTC/USD rate (cost + ~15% buffer). Pass `?amountSats=N` (min 10, max 500,000) to prefund multiple calls. STATELESS CLIENT FLOW: the default invoice size means you can safely pay once, make one call, and discard the macaroon — no credential management required. Replaying the URL with `?amountSats` on the retry is harmless (the query param is silently ignored when a valid credential is present; the existing balance is debited).",
         "parameters": [
           {
             "name": "amountSats",
@@ -984,6 +984,13 @@
                 "message": {
                   "type": "string",
                   "example": "What did Luke Gromen say about debt deflation this month?"
+                },
+                "model": {
+                  "type": "string",
+                  "enum": ["quality", "fast"],
+                  "default": "quality",
+                  "description": "Optional routing hint. `quality` (default) is the production path — currently DeepSeek V4-Flash, recommended for nearly all use cases including multi-step research, person/episode resolution, and research-session curation. `fast` falls through to a smaller helper model (Haiku 4.5) for budget-sensitive or latency-tight callers; expect lower fidelity on multi-step tasks. If omitted, `quality` is used. Internal model keys (e.g. `deepseek-v4-flash-direct`, `sonnet-4-6`) are accepted but not part of the public contract — pass `quality` or `fast` for stable behavior.",
+                  "example": "quality"
                 },
                 "sessionId": {
                   "type": "string",
@@ -1047,12 +1054,12 @@
                 }
               }
             },
-            "description": "Only the message field is required. stream defaults to false (single JSON response once the agent finishes); set true or send Accept: text/event-stream to receive an SSE stream of intermediate events. sessionId enables multi-turn continuity (auto-generated if omitted). history supplies prior turns (most recent last, each entry is role + content). context is optional pre-resolved hints from a prior suggested follow-up action."
+            "description": "Only the message field is required. model defaults to `quality` (DeepSeek V4-Flash) — pass `fast` for the cheaper Haiku-backed path. stream defaults to false (single JSON response once the agent finishes); set true or send Accept: text/event-stream to receive an SSE stream of intermediate events. sessionId enables multi-turn continuity (auto-generated if omitted). history supplies prior turns (most recent last, each entry is role + content). context is optional pre-resolved hints from a prior suggested follow-up action."
           }
         ],
         "responses": {
           "200": {
-            "description": "Agent response. Default (stream=false): single application/json body with { sessionId, text, suggestedActions } after the full agent loop completes. Streaming mode (stream=true OR Accept: text/event-stream): text/event-stream connection with incremental events (status, tool_call, tool_result, text_delta, text_done, suggested_action, done).",
+            "description": "Agent response. Default (stream=false): single application/json body with { sessionId, text, suggestedActions, session? } after the full agent loop completes (session is populated only when the agent built a research session). Streaming mode (stream=true OR Accept: text/event-stream): text/event-stream connection with incremental events (status, tool_call, tool_result, session_created, suggested_action, text_delta, text_done, done, error).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1069,23 +1076,47 @@
                     },
                     "suggestedActions": {
                       "type": "array",
-                      "description": "Optional follow-up chips and/or transcription-card offers.",
+                      "description": "Optional follow-up chips and/or transcription-card offers. Discriminated union on `type`. `submit-on-demand` offers transcription of an untranscribed episode (carries `feedId`, `guid`, `feedGuid`, `episodeTitle`, `image`, `enclosureUrl`, `link`, `reason`). `follow-up-message` is a one-click pre-filled chat message (carries `label`, `message`, optional `context: { guids, feedIds, persons, hint }`, `reason`). `create-clip` is reserved for a future skill. Treat unknown `type` values as no-ops so older clients keep working as new variants ship.",
                       "items": {
                         "type": "object",
                         "properties": {
                           "type": {
                             "type": "string",
                             "enum": [
-                              "follow-up-query",
-                              "submit-on-demand"
+                              "submit-on-demand",
+                              "follow-up-message",
+                              "create-clip"
                             ]
                           },
                           "label": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Short user-facing chip text (used by `follow-up-message`). Prefer this over `message` for display; never render `reason` as a label."
                           },
-                          "payload": {
-                            "type": "object"
-                          }
+                          "message": {
+                            "type": "string",
+                            "description": "Pre-filled chat message body for `follow-up-message`. POST this back to /api/pull as the next turn's `message` (along with `context` if present). Truncate for display; use `label` instead."
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "Internal-ish explanation the agent emits for debuggability — not user-facing copy."
+                          },
+                          "context": {
+                            "type": "object",
+                            "description": "Pre-resolved hints to pass back unchanged on the follow-up turn so the next agent run skips re-resolving entities.",
+                            "properties": {
+                              "guids": { "type": "array", "items": { "type": "string" } },
+                              "feedIds": { "type": "array", "items": { "type": "string" } },
+                              "persons": { "type": "array", "items": { "type": "string" } },
+                              "hint": { "type": "string" }
+                            }
+                          },
+                          "feedId": { "type": "string", "description": "submit-on-demand only." },
+                          "guid": { "type": "string", "description": "submit-on-demand only." },
+                          "feedGuid": { "type": "string", "description": "submit-on-demand only." },
+                          "episodeTitle": { "type": "string", "description": "submit-on-demand only." },
+                          "image": { "type": "string", "description": "submit-on-demand only." },
+                          "enclosureUrl": { "type": "string", "description": "submit-on-demand only." },
+                          "link": { "type": "string", "description": "submit-on-demand only." }
                         }
                       }
                     },
@@ -1111,7 +1142,8 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string",
-                  "example": "event: status\ndata: {\"message\":\"Analyzing your request...\",\"sessionId\":\"agent-1234...\"}\n\nevent: text_delta\ndata: {\"text\":\"Luke Gromen argued...\"}\n\nevent: text_done\ndata: {\"text\":\"Luke Gromen argued the debt deflation dynamic...\"}\n\nevent: done\ndata: {\"sessionId\":\"agent-1234...\"}\n\n"
+                  "description": "SSE event stream. Each frame is `event: <type>\\ndata: <json>\\n\\n`. Event types: `status` (human-readable progress string), `tool_call` (agent invoked a tool: `{ tool, input, round }`), `tool_result` (tool returned: `{ tool, resultCount, latencyMs, round, meta? }` — `meta` is currently populated only for `search_quotes` and carries `{ lexical, vector, mix, expansion, reranker, ... }` for the lexical-vs-semantic breakdown), `session_created` (the agent assembled a research session: `{ sessionId, url, itemCount }`), `suggested_action` (proactive next-step chip — see suggestedActions[] schema in the JSON response), `text_delta` (incremental answer chunk: `{ text }`), `text_done` (authoritative final text: `{ text }`), `done` (terminal envelope — see fields below), `error` (mid-stream failure: `{ error }`). The terminal `done` payload shape is `{ sessionId, provider, model, modelKey, executionProfile, intent, rounds, toolCalls: [{ name, resultCount, latencyMs }], tokens: { input, output }, cost: { claude, tools, total }, latencyMs, naturalCompletion, synthesisExitReason }`. Note on `cost`: field names are retained for backward compatibility — `cost.claude` is the orchestrator-LLM marginal spend (currently DeepSeek when `model=quality`, Haiku when `model=fast`); `cost.tools` is always `0` by design (per-tool flat-fee tracking was removed in the 2026-04 cost-tracker refactor; helper-LLM spend rolls into `cost.total`). Treat unknown event types as no-ops and keep reading.",
+                  "example": "event: status\ndata: {\"message\":\"Analyzing your request...\",\"sessionId\":\"agent-1234...\"}\n\nevent: tool_call\ndata: {\"tool\":\"search_quotes\",\"input\":{\"query\":\"debt deflation\"},\"round\":1}\n\nevent: tool_result\ndata: {\"tool\":\"search_quotes\",\"resultCount\":12,\"latencyMs\":812,\"round\":1,\"meta\":{\"lexical\":{\"hits\":4,\"latencyMs\":120},\"vector\":{\"hits\":10,\"latencyMs\":180},\"mix\":\"hybrid\",\"expansion\":{\"variants\":[\"debt deflation\",\"debt-deflation cycle\"]},\"reranker\":{\"input\":14,\"kept\":12,\"removed\":2}}}\n\nevent: text_delta\ndata: {\"text\":\"Luke Gromen argued...\"}\n\nevent: session_created\ndata: {\"sessionId\":\"abc123\",\"url\":\"https://www.pullthatupjamie.ai/app?researchSessionId=abc123\",\"itemCount\":7}\n\nevent: text_done\ndata: {\"text\":\"Luke Gromen argued the debt deflation dynamic...\"}\n\nevent: done\ndata: {\"sessionId\":\"agent-1234...\",\"provider\":\"deepseek\",\"model\":\"DeepSeek V4-Flash (Direct)\",\"modelKey\":\"quality\",\"executionProfile\":\"default\",\"intent\":\"research_session\",\"rounds\":3,\"toolCalls\":[{\"name\":\"search_quotes\",\"resultCount\":12,\"latencyMs\":812}],\"tokens\":{\"input\":4120,\"output\":880},\"cost\":{\"claude\":0.0081,\"tools\":0,\"total\":0.0093},\"latencyMs\":5240,\"naturalCompletion\":true,\"synthesisExitReason\":\"primary\"}\n\n"
                 }
               }
             }
@@ -1288,7 +1320,7 @@
             }
           },
           "503": {
-            "description": "Agent backend not available (missing or invalid Anthropic API key on server).",
+            "description": "Agent backend is not configured (missing or invalid API key for the active provider). The active provider is determined by the `model` parameter — `quality` (default) requires DEEPSEEK_API_KEY; `fast` requires ANTHROPIC_API_KEY. The error message names the offending env var.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1296,7 +1328,7 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env"
+                      "example": "deepseek provider is not configured or unavailable. Check DEEPSEEK_API_KEY in .env"
                     }
                   },
                   "xml": {
@@ -1310,7 +1342,7 @@
                   "properties": {
                     "error": {
                       "type": "string",
-                      "example": "Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env"
+                      "example": "deepseek provider is not configured or unavailable. Check DEEPSEEK_API_KEY in .env"
                     }
                   },
                   "xml": {
