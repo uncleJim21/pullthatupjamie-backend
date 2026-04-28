@@ -23,7 +23,7 @@
  *   node tests/cohort-stats-report.js   # aggregate tables: newest log per TEST_QUERIES task, all cohorts
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
- * --cohort cohortN only run queries from the specified cohort (cohort1–cohort8)
+ * --cohort cohortN only run queries from the specified cohort (cohort1–cohort9)
  * --query N        run a single query by 1-based index
  * --queries N,M,P  run a specific subset of queries by 1-based indices
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
@@ -178,6 +178,46 @@ const TEST_QUERIES = [
   { name: 'C8 Stress: tariffs BP Tim Dillon', cohort: 'cohort8', task: 'Compare Breaking Points and Tim Dillon on tariffs and trade policy.' },
   { name: 'C8 Stress: NATO 1990s promises', cohort: 'cohort8', task: 'NATO expansion and 1990s verbal promises to Russia — podcast synthesis of competing narratives.' },
   { name: 'C8 Stress: Lightning jamming', cohort: 'cohort8', task: 'Lightning network jamming attacks and routing failures — what did major Bitcoin podcasts explain?' },
+
+  // --- Cohort 9: Research session wording stress ---
+  // Targets the research_session intent path specifically. Covers:
+  //   - Path A: feed/host scoped + time window (the original Shawn Ryan failure)
+  //   - Path B: broad topical compilations
+  //   - Phrasing variations the classifier must catch (playlist, supercut,
+  //     clip pack, send-to-friend, save these, compile, curate, anthology, ...)
+  //   - Verifies the model picks get_feed_episodes for shape A (not a fan-out
+  //     of search_quotes) and that create_research_session is reached before
+  //     the latency cap fires.
+  // All entries use mode:'fast' so the test exercises the deepseek-v4-flash
+  // path the Pull endpoint currently ships.
+
+  // Path A — feed/host + time window (the failing case)
+  { name: 'C9 PathA: Shawn Ryan last month',         cohort: 'cohort9', task: "make me a playlist of Shawn Ryan's last month", mode: 'fast' },
+  { name: 'C9 PathA: Lex Fridman April',             cohort: 'cohort9', task: 'give me a research session of all of Lex Fridman in April', mode: 'fast' },
+  { name: 'C9 PathA: Huberman this month',           cohort: 'cohort9', task: 'compile every Huberman Lab episode from this month into a session', mode: 'fast' },
+  { name: 'C9 PathA: Joe Rogan recent',              cohort: 'cohort9', task: "build me a playlist of Joe Rogan's most recent episodes I can binge later", mode: 'fast' },
+  { name: 'C9 PathA: All-In last 30 days',           cohort: 'cohort9', task: 'curate the All-In podcast over the last 30 days as a clip pack', mode: 'fast' },
+
+  // Path A — host + topic + time window
+  { name: 'C9 PathA: Saylor Bitcoin recent',         cohort: 'cohort9', task: 'put together a research session of recent Michael Saylor takes on Bitcoin', mode: 'fast' },
+  { name: 'C9 PathA: TFTC mining latest',            cohort: 'cohort9', task: "send me a clip pack of TFTC's latest takes on Bitcoin mining", mode: 'fast' },
+
+  // Path B — broad topical compilation
+  { name: 'C9 PathB: Bitcoin custody',               cohort: 'cohort9', task: 'compile a research session of clips about Bitcoin self custody and hardware wallets', mode: 'fast' },
+  { name: 'C9 PathB: stoic philosophy',              cohort: 'cohort9', task: 'put together a playlist of clips on stoic philosophy and modern life', mode: 'fast' },
+  { name: 'C9 PathB: AI doomers',                    cohort: 'cohort9', task: 'curate a clip pack of AI doomers vs accelerationists I can save and revisit', mode: 'fast' },
+  { name: 'C9 PathB: macro debt cycle',              cohort: 'cohort9', task: "build a research session on the long-term debt cycle that I can share with my team", mode: 'fast' },
+
+  // Phrasing variations (classifier stress)
+  { name: 'C9 Phrasing: supercut',                   cohort: 'cohort9', task: 'make a supercut of the funniest Tim Dillon rants', mode: 'fast' },
+  { name: 'C9 Phrasing: highlight reel',             cohort: 'cohort9', task: 'highlight reel of Joe Rogan on UFOs from the last year', mode: 'fast' },
+  { name: 'C9 Phrasing: anthology for friend',       cohort: 'cohort9', task: "make me an anthology of clips about psychedelics and depression I can send to a friend", mode: 'fast' },
+  { name: 'C9 Phrasing: save these for later',       cohort: 'cohort9', task: 'save me a bundle of the best Bitcoin onboarding episodes', mode: 'fast' },
+  { name: 'C9 Phrasing: episodes to listen',         cohort: 'cohort9', task: 'queue up the episodes I should listen to about hyperinflation history', mode: 'fast' },
+
+  // Adversarial — research-session shape with thin corpus / impossible cross-show
+  { name: 'C9 Adv: thin corpus marble racing',       cohort: 'cohort9', task: 'compile a research session of marble racing podcast clips', mode: 'fast' },
+  { name: 'C9 Adv: impossible Satoshi compilation',  cohort: 'cohort9', task: 'make a playlist of every Satoshi Nakamoto interview clip', mode: 'fast' },
 ];
 
 // ===== Helpers =====

@@ -9,7 +9,9 @@
  * output tokens, successful synthesis emitted 341-742. We also
  * watch for residual tool-call markup (Chamath-style: model emitted
  * 403 tokens of DSML — high token count but bad content) and
- * narration-only short outputs ("Let me grab more context...").
+ * narration-only short outputs ("Let me grab more context..."). Long
+ * answers that end mid-{{clip:…}} still pass when above SUBSTANTIVE_TEXT_FLOOR
+ * so we do not replace a useful partial with Tier 3.
  *
  * Drives the Tier 1/2/3 recovery flow in agentChatRoutes.js. See
  * docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
@@ -106,6 +108,13 @@ function evaluateSynthesisOutput({ text, outputTokens } = {}) {
   }
 
   if (TRUNCATED_CLIP_RE.test(text)) {
+    // Same idea as truncated_prose below: a long synthesis that dies cutting
+    // off mid-{{clip:…}} is still far more valuable than Tier 2/3 recovery
+    // (which often has less budget and returns worse or generic text). Only
+    // treat mid-clip truncation as a hard failure for shorter outputs.
+    if (trimmed.length >= SUBSTANTIVE_TEXT_FLOOR) {
+      return { ok: true };
+    }
     return {
       ok: false,
       trigger: 'truncated_clip',

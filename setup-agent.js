@@ -227,26 +227,66 @@ PROMPT_SECTIONS.responseFormat = [
 PROMPT_SECTIONS.sessionCuration = `
 ## Research session creation
 
-You have a **create_research_session** tool. When the user asks to build a research session, playlist, or collection:
+You have a **create_research_session** tool. The session URL is the deliverable; everything before it is gathering ingredients. Without that call the response is incomplete.
 
-1. **Search broadly (MINIMUM 2 rounds)**: Run 3-4 search_quotes calls in round 1 with varied queries. After reviewing results, run 1-2 more targeted searches in round 2 to fill gaps or deepen coverage. Use find_person/get_person_episodes if the topic centers on a specific person. Do NOT skip to session creation after a single search round.
-2. **Curate**: Aim for **8-15** high-quality, diverse clips. Prefer clips from different episodes/feeds for breadth. Drop low-relevance results (similarity < 0.80 if visible). Avoid duplicate content from the same speaker saying the same thing on different shows. If you have fewer than 8 strong clips after searching, run additional searches before creating the session.
-3. **Create**: Call create_research_session with the curated pineconeIds (use the shareLink value from search results). Provide a descriptive title.
-4. **Respond — STRICT FORMAT**: The frontend renders the markdown link as a styled card. The link text becomes the card title. You MUST put the session title as the link text. No heading above. No generic link text.
-   - WRONG: \`## Your Playlist: Title\\n[Open the Playlist Here](url)\`
-   - WRONG: \`## Title\\n[View your research session](url)\`
-   - WRONG: \`[Click here to view](url)\`
-   - RIGHT: \`**[Huberman Lab: Hormone Management for Weight Loss](url)**\`
-   - RIGHT: \`**[Luke Gromen on Debt and Dollar Collapse](url)**\`
-   Follow the link with a bulleted list (3-5 bullets) summarizing the key topics covered. Each bullet should name a specific guest or episode and what they discuss — be concrete, not vague.
-   - WRONG: "Covers hormone optimization, metabolism, and body composition across multiple episodes"
-   - RIGHT:
-     - Kurt Angle on nearly dying from a 20lb water cut before the Olympics
-     - Derek (MPMD) breaking down how dehydration tanks kidney function
-     - Joe's pitch for hydration testing to replace weigh-ins
-   Nothing else before the link.
+### Two common request shapes — pick the path that fits
 
-The session URL is the primary deliverable — the user will explore clips interactively there.`;
+These are recommendations based on what's typically efficient. Deviate when the situation calls for it.
+
+**Shape A — feed/host scoped + time window.** Examples: *"playlist of Shawn Ryan's last month"*, *"all of Lex Fridman's April episodes"*, *"recent Joe Rogan episodes about psychedelics"*.
+
+The strongest path is usually:
+
+1. **Resolve the feedId.** If the host/show is in the **Feed ID Lookup** table at the top of this prompt, use that feedId directly — do **not** call \`discover_podcasts\` to "confirm" it. Skip straight to step 2. Only call \`discover_podcasts(query="<host or show>")\` when the show is NOT in the lookup table, or when you genuinely need to find an external untranscribed feed.
+2. \`get_feed_episodes(feedId, minDate, maxDate, limit=<see below>)\` — returns the precise time-windowed episode list (titles, dates, guids). This is the right tool when **episodes** are the unit of selection. \`search_quotes\` returns paragraphs and forces you to reverse-engineer the episode list from snippets — that fan-out is the most common time-waster on shape-A asks.
+   - **Set \`limit\` based on the time window in ONE call.** The cap is 100. Long windows: ask for what you need up front. Examples:
+     - "last week" / "this week" → \`limit=10\`
+     - "last month" → \`limit=20\`
+     - "last 3 months" / a quarter → \`limit=40\`
+     - "last 6 months" → \`limit=60\`
+     - "last year" / "this year" → \`limit=100\`
+   - **Do NOT paginate by re-calling \`get_feed_episodes\` with smaller \`maxDate\` values across rounds.** That burns 3-4 rounds for nothing. One call with the right limit is always better.
+3. **Sample, don't enumerate.** Pick a curated subset of episodes — the most representative ones for the user's ask — then in ONE round call \`search_quotes\` for each chosen episode with \`limit=2\`. Heuristic for how many to pick:
+   - Window ≤ 30 days → pick 3-6 episodes (typically every episode in the window if there are few).
+   - Window 30-90 days → pick 5-8 episodes spread across the window.
+   - Window > 90 days → pick 8-12 episodes spread evenly across the window. **Never try to clip every episode in a year-long feed.**
+   - GOOD: 6 parallel calls — \`search_quotes(guids=["g1"], query="<theme>", limit=2)\`, \`search_quotes(guids=["g2"], ...)\`, etc., for 6 chosen episodes.
+   - BAD: 50 parallel calls covering every episode the feed returned.
+   - BAD: \`limit=1\` per episode — you need at least 2 candidates per episode so the reranker can drop a noisy top hit.
+   - BAD: a single \`search_quotes(guids=[g1,...,g9], limit=10)\` — results skew toward whichever episode is closest to your theme, leaving others uncovered.
+4. \`create_research_session(pineconeIds=[ordered])\` — the deliverable. **Do not stop without calling this.** The session URL is what the user is here for.
+
+This typically completes in 3-4 rounds, even for "last year". The three failure modes to avoid: (a) calling \`discover_podcasts\` for a show that's already in the Feed ID Lookup; (b) paginating \`get_feed_episodes\` across rounds instead of asking for the right \`limit\` in one call; (c) trying to clip every episode instead of sampling.
+
+**Shape B — broad topical.** Examples: *"compile clips about Bitcoin custody"*, *"research session on stoic philosophy"*.
+
+The strongest path is usually:
+
+1. 2-4 parallel \`search_quotes\` calls in round 1 with varied phrasings.
+2. 1-2 follow-up \`search_quotes\` in round 2 to fill gaps.
+3. \`find_person\` when the topic centers on a known voice; then re-search scoped to their guids.
+4. \`create_research_session\` with 8-15 curated pineconeIds.
+
+### Deviate from shape A when:
+- The user names specific guests or episode titles — skip discover_podcasts, search_quotes scoped directly to those guids.
+- \`discover_podcasts\` shows the feed has no transcripts — call \`suggest_action(submit-on-demand)\` and explain.
+- The window is very narrow (e.g. "this week") and one \`search_quotes\` scoped to feedId+minDate already gives you what you need.
+
+### Time-window heuristic
+Resolve relative phrases against today's date (see "Today's date" section above). "This week" / "last week" = last 7-14 days. "Last month" = last 30 days. "April" / a named month = that calendar month. "Recent" = last 60 days. "Latest" = last 14 days. "Last 6 months" = last 180 days. "Last year" / "this year" = last 365 days.
+
+### Curate, don't max out
+Shape A: one clip per episode chosen, sized to the window (3-6 for ≤30 days, 5-8 for 30-90 days, 8-12 for >90 days). Shape B: 8-15 clips. Drop low-relevance results and same-speaker duplicates.
+
+### Format reminder
+The frontend renders the session as a styled card. The link text becomes the card title — write something concrete, not "Click here":
+- WRONG: \`## Your Playlist\\n[Open the Playlist Here](url)\`
+- RIGHT: \`**[Shawn Ryan Show: April 2026 Episodes](url)**\`
+- RIGHT: \`**[Huberman Lab: Hormone Management for Weight Loss](url)**\`
+
+Follow the link with 3-5 bulleted summary lines. Each bullet names a specific guest, episode, or angle — be concrete.
+
+The synthesis-pass prompt locks down the exact final shape; during tool calls just remember to actually call \`create_research_session\` before you stop.`;
 
 PROMPT_SECTIONS.transcribeTools = `
 ## Your tools
@@ -271,6 +311,49 @@ This profile handles two scenarios. Read the user's message carefully:
 4. Only suggest discover_podcasts / submit-on-demand if the user's topic has meaningful untranscribed coverage beyond what they already have.
 
 Do NOT narrate the system ("emitting cards", "upsell", etc.) — just describe the show/episode content.`;
+
+PROMPT_SECTIONS.researchSessionSynthesisGuard = `
+## RESEARCH SESSION SYNTHESIS — strict format (overrides everything else)
+
+You are writing the final response to a research session / playlist / clip-collection request. The session URL is the deliverable; the bullets only describe what is inside the session — they are not the deliverable themselves.
+
+OUTPUT SHAPE — match this exactly, nothing else:
+
+1. ONE line: a markdown link styled as the session title.
+   - Form: \`**[<concise descriptive title>](<session url>)**\`
+   - The session url is the \`url\` field returned by the most recent \`create_research_session\` tool result in the conversation history above. Use it verbatim. Do not invent or modify URLs.
+   - No \`##\` heading above the link. No "Here is your playlist". No emoji.
+2. ONE blank line.
+3. EXACTLY 3-5 bullet lines. Each bullet MUST follow this shape:
+   - \`- **<2-6 word lead-in>** — <single concrete sentence, max ~25 words>\`
+   - The lead-in is bold. The em-dash has a single space on each side.
+   - The sentence names a SPECIFIC guest, episode, angle, or claim drawn from the search results / episodes already in the conversation.
+   - No "also", "moreover", or compound clauses. One idea per bullet.
+4. Nothing after the last bullet. No closing paragraph. No "let me know if...". No clip tokens (\`{{clip:...}}\`). No quote blocks. No timestamps or dates in parentheses.
+
+If there is NO create_research_session tool result in the conversation history (the session was never created), still produce ONLY the 3-5 bullet lines using the same \`- **lead-in** — sentence\` shape, and OMIT the title link entirely. Do NOT invent a URL.
+
+EXAMPLE 1 — show as subject:
+
+**[UTXO's WiSP: Building Bitcoin Social for Mass Adoption](https://pullthatupjamie.ai/?researchSessionId=68ff84c0a9d8c1d4b3e7a2f1)**
+
+- **Design for the non-technical user** — UTXO refuses to build for crypto ideologues; WiSP targets people who don't know what relays or private keys are, but just want money to work.
+- **"Send Money" over "Zaps"** — Renaming features and displaying dollar amounts normalizes Bitcoin as actual money, not a speculative asset; deliberately targets how real users think.
+- **Decentralized without sacrificing speed** — Using the Nostr outbox model actually makes the app *faster* than traditional client-server architectures by connecting to 70 relays and responding with the fastest.
+- **Encrypted seed backup automation** — WiSP automatically backs up encrypted nsecs to relays, preventing user loss while maintaining interoperability with Primal.
+- **Local AI spam filtering + Nostr as infrastructure** — Runs lightweight neural models on-device for privacy, and unlocks programmability for bots and tools without expensive API gates.
+
+EXAMPLE 2 — person + time window:
+
+**[Shawn Ryan Show: April 2026 Episodes](https://pullthatupjamie.ai/?researchSessionId=68ff84c0a9d8c1d4b3e7a2f2)**
+
+- **Andy Lowery on Epirus Leonidas** — The CEO demonstrates a directed-energy drone-killing system live and explains the cost asymmetry of microwave defense versus cheap drone swarms.
+- **Jason Magnavice, SEAL Team 6** — DEVGRU Red Squadron veteran shares combat stories and the mindset behind the military's most sensitive missions.
+- **Nick Shirley on Medi-Cal** — Independent journalist walks through the math behind California's $222B Medicaid crisis and the fraud driving the deficit.
+- **Meg Appelgate on troubled-teen industry** — Survivor exposes how parents are misled about for-profit teen-treatment facilities and the oversight legislation she helped pass.
+- **Pete Blaber on Roberts Ridge** — Former Delta Force commander's two-part conversation covering Takur Ghar, Pablo Escobar, and Pat Tillman.
+
+Write the answer now in this exact shape. Plain text only, no tool-call markup.`;
 
 PROMPT_SECTIONS.synthesisGuard = `
 ## SYNTHESIS PASS — these rules override everything above
@@ -309,6 +392,20 @@ Tool execution has ended for this turn. Your only job now is to write the final 
  * Produced by latencyTracker.synthesisGuidance(synthesisBudgetMs).
  */
 function buildSynthesisPrompt(intent, guidance) {
+  // Research-session intent uses a dedicated strict-format prompt with
+  // few-shot examples (see PROMPT_SECTIONS.researchSessionSynthesisGuard).
+  // The generic responseFormat section is intentionally skipped because
+  // its essay-mode rules conflict with the bullet card shape we want.
+  if (intent === 'research_session') {
+    const sections = [
+      PROMPT_SECTIONS.base,
+      buildCurrentDateSection(),
+      PROMPT_SECTIONS.researchSessionSynthesisGuard,
+    ];
+    if (guidance) sections.push(buildSynthesisLengthSection(guidance));
+    return sections.join('\n');
+  }
+
   const sections = [
     PROMPT_SECTIONS.base,
     buildCurrentDateSection(),
@@ -364,6 +461,20 @@ Write the answer now. Plain prose only.`;
  * fabricated citations. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
  */
 function buildStrictSynthesisPrompt(intent, guidance) {
+  // Research-session intent uses the same strict format guard for Tier 1/2
+  // recovery — the rules are already maximally prescriptive (3-5 bullets,
+  // exact link shape, no narration). No extra strictness needed beyond
+  // the format itself.
+  if (intent === 'research_session') {
+    const sections = [
+      PROMPT_SECTIONS.base,
+      buildCurrentDateSection(),
+      PROMPT_SECTIONS.researchSessionSynthesisGuard,
+    ];
+    if (guidance) sections.push(buildSynthesisLengthSection(guidance));
+    return sections.join('\n');
+  }
+
   const sections = [
     PROMPT_SECTIONS.base,
     buildCurrentDateSection(),

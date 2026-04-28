@@ -15,8 +15,13 @@ const EXECUTION_PROFILES = {
     maxToolRounds: 6,
     costBudgetSoft: 0.055,
     costBudgetHard: 0.08,
-    latencyBudgetSoftMs: 25_000,
-    latencyBudgetHardMs: 40_000,
+    // DIAGNOSTIC (2026-04-28): budgets blown out to 1000s so we can observe
+    // the agent's natural completion time on long-window research-session
+    // queries without tripping the latency cap. Tighten these back down once
+    // we have measured baselines for each request shape. Tracked in
+    // docs/WIP/WIP.md (or successor) as "find true wall-clock baseline".
+    latencyBudgetSoftMs: 900_000,
+    latencyBudgetHardMs: 1_000_000,
     label: 'Default',
   },
   'deep-turns': {
@@ -26,6 +31,39 @@ const EXECUTION_PROFILES = {
     latencyBudgetSoftMs: 60_000,
     latencyBudgetHardMs: 90_000,
     label: 'Deep Turns',
+  },
+};
+
+// Helper LLM prices (per 1M tokens) for non-orchestrator calls that nevertheless
+// hit external paid APIs and contribute to the request's true wall cost:
+//   - gpt-4o-mini:    reranker (utils/clipReranker.js) + proper-noun query
+//                     expansion (services/properNounLLMExpansion.js).
+//   - text-embedding-ada-002: vector embedding for every search_quotes call.
+//   - claude-haiku-4-5: triage classifier + Tier 2 synthesis fallback.
+//
+// Anything that hits OUR OWN infra (Pinecone, MongoDB, MongoDB Atlas search,
+// internal HTTP services, Podcast Index passthroughs) is $0 marginal — we pay
+// flat-rate for those and counting them as per-call cost is fiction. The legacy
+// TOOL_COSTS table in utils/agentToolHandler.js conflated infra usage with real
+// money; we kept it as a counter, but its dollar values are not used anywhere.
+//
+// Numbers verified against vendor pricing pages on 2026-04-28. If a vendor
+// changes prices, update here and re-run a benchmark to refresh budgets.
+const HELPER_LLM_PRICES = {
+  'gpt-4o-mini': {
+    inputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_INPUT_PER_1M || '0.15'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_OUTPUT_PER_1M || '0.60'),
+    label: 'gpt-4o-mini',
+  },
+  'text-embedding-ada-002': {
+    inputPer1M: parseFloat(process.env.OPENAI_ADA_002_INPUT_PER_1M || '0.10'),
+    outputPer1M: 0,
+    label: 'text-embedding-ada-002',
+  },
+  'claude-haiku-4-5-20251001': {
+    inputPer1M: parseFloat(process.env.ANTHROPIC_HAIKU_INPUT_PER_1M || '1.0'),
+    outputPer1M: parseFloat(process.env.ANTHROPIC_HAIKU_OUTPUT_PER_1M || '5.0'),
+    label: 'Haiku 4.5',
   },
 };
 
@@ -233,5 +271,6 @@ module.exports = {
   DEFAULT_AGENT_MODEL,
   EXECUTION_PROFILES,
   DEFAULT_EXECUTION_PROFILE,
+  HELPER_LLM_PRICES,
   resolveModelSelection,
 };

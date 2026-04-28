@@ -22,25 +22,20 @@ const { getAdjacentParagraphs } = require('../agent-tools/pineconeTools.js');
 const { createResearchSessionDirect } = require('../services/researchSessionService');
 const { resolveOwner } = require('../utils/resolveOwner');
 
-const TOOL_COSTS = {
-  search_quotes:              0.004,
-  search_chapters:            0.004,
-  list_episode_chapters:      0.002,
-  discover_podcasts:          0.005,
-  find_person:                0.001,
-  get_person_episodes:        0.001,
-  get_episode:                0.001,
-  get_feed:                   0.001,
-  get_feed_episodes:          0.001,
-  get_adjacent_paragraphs:    0.001,
-  create_research_session:    0.002,
-  suggest_action:             0,
-};
-
-const LIMITS = {
-  maxToolCallsPerSession: 20,
-  maxCostPerSession:      1.00,
-};
+// Removed 2026-04-28: per-tool flat-fee table previously fed createCostTracker.
+// Internal infra (Pinecone, MongoDB, Atlas, our HTTP services) is $0 marginal —
+// see HELPER_LLM_PRICES in constants/agentModels.js for what's actually billed.
+//
+// Also removed: `LIMITS.maxToolCallsPerSession` and the in-memory `sessionStore`
+// counter. The cap was a process-wide, never-expiring 20-tool budget keyed by
+// sessionId, which (a) leaked across follow-up turns in a single conversation
+// (a long first turn left a starving budget for turn 2 onward) and (b) was
+// surfaced verbatim to the LLM as an "API call limit" error stub which it
+// then parroted to the user. Per-request work is now bounded by:
+//   - executionProfile.maxToolRounds  (orchestrator round cap)
+//   - executionProfile.costBudgetHard (real-money cap, see createCostTracker)
+//   - executionProfile.latencyBudgetHardMs (wall-clock cap)
+// Cross-turn abuse protection lives at the HTTP edge, not in the tool layer.
 
 const RESULT_HARD_CAP = 20;
 const MIN_SEQUENCE_INDEX = 3;
@@ -58,17 +53,6 @@ const SLIM_EPISODE_FIELDS = new Set([
   'title', 'guid', 'feedId', 'publishedDate', 'creator',
   'guests', 'duration', 'episodeCount', 'matchedGuest',
 ]);
-
-// --- In-memory session tracking (POC — use Redis in production) ---
-
-const sessionStore = new Map();
-
-function getSession(sessionId) {
-  if (!sessionStore.has(sessionId)) {
-    sessionStore.set(sessionId, { toolCalls: 0, cost: 0, started: Date.now() });
-  }
-  return sessionStore.get(sessionId);
-}
 
 // --- Helpers ---
 
@@ -133,7 +117,7 @@ function truncateResults(data) {
 
 // --- Per-tool dispatch ---
 
-async function handleSearchQuotes(input, { openai }) {
+async function handleSearchQuotes(input, { openai, recordHelperLlmUsage }) {
   const { query, guid, guids, feedIds, limit, minDate, maxDate } = input;
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
@@ -150,7 +134,7 @@ async function handleSearchQuotes(input, { openai }) {
   printLog(`[TOOL] search_quotes: query="${q}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
   const data = await searchQuotes({
     query: q, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
-  }, { openai });
+  }, { openai, recordHelperLlmUsage });
   filterFluffResults(data);
 
   if (data.results && data.results.length > 2 && openai) {
@@ -161,18 +145,40 @@ async function handleSearchQuotes(input, { openai }) {
     }));
     try {
       const reranked = await rerankClips({ query: q, clips, openai });
+      if (typeof recordHelperLlmUsage === 'function' && reranked.usage) {
+        recordHelperLlmUsage(
+          reranked.usage.model,
+          reranked.usage.input_tokens || 0,
+          reranked.usage.output_tokens || 0,
+        );
+      }
+      const inputCount = clips.length;
+      let keptCount = inputCount;
       if (reranked.clips.length > 0) {
         const rerankTexts = new Set(reranked.clips.map(c => c.quote));
         data.results = data.results.filter(r => rerankTexts.has(r.quote));
+        keptCount = data.results.length;
         printLog(`[TOOL] Reranker: ${clips.length} -> ${data.results.length} clips`);
+      }
+      if (data._meta) {
+        data._meta.reranker = {
+          activated: true,
+          input: inputCount,
+          kept: keptCount,
+          removed: inputCount - keptCount,
+        };
       }
     } catch (rerankErr) {
       printLog(`[TOOL] Reranker failed (non-fatal): ${rerankErr.message}`);
+      if (data._meta) data._meta.reranker = { activated: false, error: rerankErr.message };
     }
+  } else if (data._meta) {
+    data._meta.reranker = { activated: false, reason: 'too few clips to rerank' };
   }
 
   truncateResults(data);
   if (data.results) data.results = data.results.slice(0, clampedLimit);
+  if (data._meta) data._meta.afterClamp = data.results?.length || 0;
   printLog(`[TOOL] search_quotes: ${data.results?.length || 0} results`);
   return data;
 }
@@ -324,6 +330,10 @@ async function handleGetFeed(input) {
 }
 
 const VERBOSE_EPISODE_LIMIT = 5;
+// Episode listing supports a higher cap than other tools because the model
+// often needs to see a year+ of episodes for research-session curation, and
+// the slim payload (~150 chars/episode) keeps token cost bounded even at 100.
+const EPISODE_LIST_HARD_CAP = 100;
 
 async function handleGetFeedEpisodes(input) {
   const { feedId, limit, minDate, maxDate, verbose } = input;
@@ -333,13 +343,15 @@ async function handleGetFeedEpisodes(input) {
     return { error: 'get_feed_episodes requires a `feedId`.', episodes: [] };
   }
   const defaultLimit = verbose ? VERBOSE_EPISODE_LIMIT : 10;
-  const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : RESULT_HARD_CAP;
+  const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : EPISODE_LIST_HARD_CAP;
   const clampedLimit = Math.min(Math.max(1, limit || defaultLimit), hardCap);
 
   printLog(`[TOOL] get_feed_episodes: feedId="${fid}", limit=${clampedLimit}, verbose=${!!verbose}`);
   const data = await getFeedEpisodes({ feedId: fid, limit: clampedLimit, minDate, maxDate });
   const normalized = { episodes: data.data || [], pagination: data.pagination };
-  truncateResults(normalized);
+  if (normalized.episodes && normalized.episodes.length > hardCap) {
+    normalized.episodes = normalized.episodes.slice(0, hardCap);
+  }
   if (!verbose && normalized.episodes) {
     normalized.episodes = normalized.episodes.map(slimEpisode);
   }
@@ -422,41 +434,30 @@ const TOOL_DISPATCH = {
 /**
  * Execute a tool call from the Claude agent.
  *
+ * Per-request work is bounded by the route's executionProfile (max rounds,
+ * cost budget, latency budget). There is intentionally NO cross-turn /
+ * cross-session counter here — that previously caused user-facing "API call
+ * limit" parroting (see 2026-04-28 fix). Cross-turn abuse protection belongs
+ * at the HTTP edge.
+ *
  * @param {string} toolName
  * @param {object} toolInput
  * @param {object} opts
  * @param {object} opts.openai - OpenAI client (for embeddings + reranker)
- * @param {string} opts.sessionId - Session ID for rate limiting
+ * @param {string} [opts.sessionId] - Session ID (currently unused at this
+ *        layer; preserved in signature for downstream handlers / future use)
+ * @param {function} [opts.recordHelperLlmUsage] - Callback (modelId, inputTokens, outputTokens) =>
+ *        invoked by helpers (reranker, embedding, query expansion) so the
+ *        caller can attribute their real spend to the request's cost tracker.
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache, recordHelperLlmUsage }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
   }
 
-  const toolCost = TOOL_COSTS[toolName] || 0;
-  const session = getSession(sessionId || 'default');
-
-  if (session.toolCalls >= LIMITS.maxToolCallsPerSession) {
-    return {
-      error: 'Session tool-call limit reached',
-      limit: LIMITS.maxToolCallsPerSession,
-      used: session.toolCalls,
-    };
-  }
-  if (session.cost + toolCost > LIMITS.maxCostPerSession) {
-    return {
-      error: 'Session cost limit reached',
-      limit: LIMITS.maxCostPerSession,
-      current: session.cost,
-    };
-  }
-
-  session.toolCalls++;
-  session.cost += toolCost;
-
   try {
-    return await handler(toolInput, { openai, req, clipCache });
+    return await handler(toolInput, { openai, req, clipCache, recordHelperLlmUsage });
   } catch (err) {
     const msg = err && (err.message || String(err));
     printLog(`[TOOL] ${toolName} threw (recovered): ${msg}`);
@@ -468,4 +469,4 @@ async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, c
   }
 }
 
-module.exports = { executeAgentTool, TOOL_COSTS };
+module.exports = { executeAgentTool };

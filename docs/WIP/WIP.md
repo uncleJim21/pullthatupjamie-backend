@@ -36,7 +36,7 @@ Ephemeral backlog for tracking cross-session work. New chat threads should check
 ## Parked
 
 - [ ] Agent: `create-clip` suggest_action flow (currently stubbed in tool definition, no frontend handling)
-- [ ] Production session store (replace in-memory `sessionStore` Map with Redis) — revisit if agent-to-agent requires server-side history
+- [ ] Production session store (replace in-memory `sessionStore` Map with Redis) — revisit if agent-to-agent requires server-side history. NOTE 2026-04-28: the `sessionStore` Map in `utils/agentToolHandler.js` was deleted because it caused cross-turn budget starvation and user-facing "API call limit" parroting. If we ever reintroduce a per-session counter, it must (a) live at the HTTP edge, not in the tool layer, and (b) never surface its error stub to the LLM.
 
 ## Done
 

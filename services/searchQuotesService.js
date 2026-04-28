@@ -83,7 +83,7 @@ function mergeVectorAndLexical(vectorResults, lexicalResults, limit) {
   return merged;
 }
 
-async function searchQuotes(params, { openai }) {
+async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
   let {
     query, feedIds = [], limit = 5, minDate = null, maxDate = null,
     episodeName = null, guid = null, guids: guidsParam = [], smartMode = false,
@@ -156,14 +156,36 @@ async function searchQuotes(params, { openai }) {
   // until variants resolve so the lexical query benefits from them.
   const expansionPromise = llmExpansionActivated
     ? expandProperNounQuery(query, { openai }, { requestId })
-    : Promise.resolve([]);
+    : Promise.resolve({ variants: [], usage: null });
 
   const embeddingPromise = openai.embeddings.create({ model: 'text-embedding-ada-002', input: query });
 
-  const [embeddingResponse, expansionVariants] = await Promise.all([
+  const [embeddingResponse, expansionResult] = await Promise.all([
     embeddingPromise,
     expansionPromise,
   ]);
+
+  const expansionVariants = Array.isArray(expansionResult)
+    ? expansionResult
+    : (expansionResult?.variants || []);
+
+  // Record real-money helper spend on this search:
+  //   - text-embedding-ada-002 always fires (input-only billing).
+  //   - gpt-4o-mini expansion fires only when llmExpansionActivated.
+  if (typeof recordHelperLlmUsage === 'function') {
+    const embedTokens = embeddingResponse?.usage?.total_tokens || embeddingResponse?.usage?.prompt_tokens || 0;
+    if (embedTokens > 0) {
+      recordHelperLlmUsage('text-embedding-ada-002', embedTokens, 0);
+    }
+    const expansionUsage = !Array.isArray(expansionResult) && expansionResult?.usage;
+    if (expansionUsage) {
+      recordHelperLlmUsage(
+        expansionUsage.model || 'gpt-4o-mini',
+        expansionUsage.input_tokens || 0,
+        expansionUsage.output_tokens || 0,
+      );
+    }
+  }
 
   const lexicalRaw = lexicalActivated
     ? await atlasTextSearch({
@@ -278,6 +300,34 @@ async function searchQuotes(params, { openai }) {
     response.originalQuery = originalQuery;
     response.triage = triageResult.triage;
   }
+
+  // SSE-side breakdown. Underscored so `compactToolResult` (which reshapes
+  // results-only fields) drops it before the LLM sees the tool result; the
+  // route plucks `_meta` for the `tool_result` event and then strips it.
+  // Reranker stats are appended later by handleSearchQuotes once it runs.
+  const sourceMix = lexicalActivated
+    ? merged.reduce((acc, r) => { acc[r.source] = (acc[r.source] || 0) + 1; return acc; }, {})
+    : null;
+  response._meta = {
+    query,
+    lexical: lexicalActivated
+      ? {
+          activated: true,
+          hits: Array.isArray(lexicalRaw) ? lexicalRaw.length : 0,
+          latencyMs: lexicalLatencyMs,
+          expansionVariants: Array.isArray(expansionVariants) ? expansionVariants : [],
+          expansionActivated: !!llmExpansionActivated,
+        }
+      : { activated: false },
+    vector: {
+      hits: Array.isArray(minimalResults) ? minimalResults.length : 0,
+    },
+    mix: sourceMix,
+    overlap: lexicalActivated ? merged.filter(r => r.source === 'both').length : 0,
+    afterMerge: results.length,
+    triage: triageResult?.triage || null,
+  };
+
   return response;
 }
 

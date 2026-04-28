@@ -11,8 +11,8 @@ const {
   TIER3_FALLBACK_MESSAGE,
 } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
-const { resolveModelSelection, AGENT_MODELS } = require('../constants/agentModels');
-const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
+const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES } = require('../constants/agentModels');
+const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
@@ -39,15 +39,28 @@ const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
 /**
  * Running cost tracker scoped to a single agent request.
- * Separates LLM and tool costs using model-specific pricing.
+ *
+ * Tracks ONLY external paid API spend:
+ *   - llm:     the orchestrator model (DeepSeek / Haiku / Sonnet / etc.)
+ *   - helpers: small helper LLMs and embeddings invoked from within tool
+ *              execution + classifier + Tier 2 fallback (gpt-4o-mini reranker
+ *              + expansion, text-embedding-ada-002, Haiku classifier, Haiku
+ *              fallback). Each call resolves its model through HELPER_LLM_PRICES.
+ *   - tools:   call counter only. Internal infra (Pinecone, MongoDB, Atlas,
+ *              etc.) is $0 marginal and intentionally NOT priced — earlier
+ *              flat per-tool fees were a fiction that polluted the dollar
+ *              total. Kept as a counter so we still know how many tools fired.
+ *
+ * `total` = llm.cost + helpers.cost. Internal infra contributes nothing.
  */
 function createCostTracker(modelConfig, executionProfile) {
   const costBudgetSoft = executionProfile?.costBudgetSoft ?? 0.055;
   const costBudgetHard = executionProfile?.costBudgetHard ?? 0.08;
   const tracker = {
-    llm:   { inputTokens: 0, outputTokens: 0, cost: 0 },
-    tools: { calls: 0, cost: 0 },
-    get total() { return this.llm.cost + this.tools.cost; },
+    llm:     { inputTokens: 0, outputTokens: 0, cost: 0, modelKey: modelConfig?.key, modelLabel: modelConfig?.label },
+    helpers: { calls: 0, cost: 0, byModel: {} },
+    tools:   { calls: 0 },
+    get total() { return this.llm.cost + this.helpers.cost; },
 
     addLlmUsage(inputTokens, outputTokens) {
       this.llm.inputTokens += inputTokens;
@@ -56,13 +69,45 @@ function createCostTracker(modelConfig, executionProfile) {
                     + (this.llm.outputTokens * modelConfig.outputPer1M / 1_000_000);
     },
 
-    addToolCall(toolName) {
+    /**
+     * Record usage for a helper LLM / embedding call (e.g. gpt-4o-mini
+     * reranker, text-embedding-ada-002, Haiku classifier). Resolves price via
+     * HELPER_LLM_PRICES; unknown models still increment the call counter so
+     * we can spot omissions, but their cost is recorded as 0 (with a warning
+     * log so we don't silently miss new helper additions).
+     */
+    addHelperLlmUsage(modelId, inputTokens, outputTokens) {
+      const price = HELPER_LLM_PRICES[modelId];
+      const safeInput = Number.isFinite(inputTokens) ? inputTokens : 0;
+      const safeOutput = Number.isFinite(outputTokens) ? outputTokens : 0;
+      let callCost = 0;
+      if (price) {
+        callCost = (safeInput * price.inputPer1M / 1_000_000)
+                 + (safeOutput * price.outputPer1M / 1_000_000);
+      } else if (modelId) {
+        printLog(`[CostTracker] No HELPER_LLM_PRICES entry for "${modelId}" — recording call but charging $0 (add to constants/agentModels.js if this is a paid model)`);
+      }
+      this.helpers.calls++;
+      this.helpers.cost += callCost;
+      const key = modelId || 'unknown';
+      const entry = this.helpers.byModel[key] || (this.helpers.byModel[key] = {
+        calls: 0, inputTokens: 0, outputTokens: 0, cost: 0,
+      });
+      entry.calls++;
+      entry.inputTokens += safeInput;
+      entry.outputTokens += safeOutput;
+      entry.cost += callCost;
+    },
+
+    addToolCall(_toolName) {
+      // Counter only. See class doc — internal infra is $0 marginal and
+      // contributes nothing to `total`.
       this.tools.calls++;
-      this.tools.cost += TOOL_COSTS[toolName] || 0;
     },
 
     budgetNote() {
-      const spend = this.llm.cost;
+      // Budget is now the total real out-of-pocket spend (orchestrator + helpers).
+      const spend = this.total;
       // Wording is deliberately cost/limit-agnostic. Earlier phrasings like
       // "[HARD BUDGET LIMIT]" primed the model to invent user-facing "session limit"
       // narratives. These markers tell the model what to do without giving it
@@ -77,9 +122,34 @@ function createCostTracker(modelConfig, executionProfile) {
     },
 
     summary() {
+      const helpersByModel = {};
+      for (const [k, v] of Object.entries(this.helpers.byModel)) {
+        helpersByModel[k] = {
+          calls: v.calls,
+          inputTokens: v.inputTokens,
+          outputTokens: v.outputTokens,
+          cost: parseFloat(v.cost.toFixed(6)),
+        };
+      }
       return {
+        // Legacy field name preserved for log compatibility — semantically
+        // this is the orchestrator model's cost (whatever modelConfig was).
         claude: parseFloat(this.llm.cost.toFixed(6)),
-        tools: parseFloat(this.tools.cost.toFixed(4)),
+        llm: {
+          modelKey: this.llm.modelKey,
+          modelLabel: this.llm.modelLabel,
+          inputTokens: this.llm.inputTokens,
+          outputTokens: this.llm.outputTokens,
+          cost: parseFloat(this.llm.cost.toFixed(6)),
+        },
+        helpers: {
+          calls: this.helpers.calls,
+          cost: parseFloat(this.helpers.cost.toFixed(6)),
+          byModel: helpersByModel,
+        },
+        // Legacy field name. Now $0 by design — kept so existing dashboards
+        // / log parsers don't break. `tools.calls` is the real number.
+        tools: 0,
         total: parseFloat(this.total.toFixed(6)),
       };
     },
@@ -276,6 +346,54 @@ function measureMessages(messages) {
     }
   }
   return { userChars, assistantChars, toolResultChars, totalChars: userChars + assistantChars + toolResultChars };
+}
+
+// Per-tool result-count map. Each handler in utils/agentToolHandler.js returns a
+// distinct shape; deriving the count by sniffing field names (e.g. result.results,
+// result.chapters) is fragile and silently maps to 0 when a tool's array key
+// doesn't match any branch (search_chapters returns its array at `result.data`,
+// which previously fell through every branch and reported 0 results in the SSE
+// `tool_result` event even when 10 chapters were found).
+function computeToolResultCount(toolName, result) {
+  if (!result || typeof result !== 'object') return 0;
+  switch (toolName) {
+    case 'search_quotes':
+    case 'discover_podcasts':
+      return result.results?.length || 0;
+
+    case 'search_chapters':
+      return result.data?.length || 0;
+
+    case 'find_person':
+      return (result.people?.length || 0) + (result.hostedFeeds?.length || 0);
+
+    case 'get_person_episodes':
+    case 'get_feed_episodes':
+      return result.episodes?.length || 0;
+
+    case 'list_episode_chapters':
+      return result.chapters?.length || 0;
+
+    case 'get_episode':
+      return result.episode ? 1 : 0;
+
+    case 'get_feed':
+      return result.feed ? 1 : 0;
+
+    case 'get_adjacent_paragraphs':
+      return (result.before?.length || 0)
+        + (result.current ? 1 : 0)
+        + (result.after?.length || 0);
+
+    case 'create_research_session':
+      return result.sessionId ? (result.itemCount || 1) : 0;
+
+    case 'suggest_action':
+      return result.action ? 1 : 0;
+
+    default:
+      return 0;
+  }
 }
 
 function compactToolResult(toolName, result) {
@@ -921,6 +1039,15 @@ function createAgentChatRoutes({ openai } = {}) {
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
       const costs = createCostTracker(modelConfig, executionProfile);
+      // Classifier (Haiku) ran before the cost tracker existed, so backfill its
+      // usage now that we have the channel.
+      if (classifierTokens) {
+        costs.addHelperLlmUsage(
+          CLASSIFIER_MODEL,
+          classifierTokens.input_tokens || 0,
+          classifierTokens.output_tokens || 0,
+        );
+      }
       const latency = createLatencyTracker(executionProfile, startTime);
       let round = 0;
       let hasExecutedTools = false;
@@ -1050,26 +1177,63 @@ function createAgentChatRoutes({ openai } = {}) {
         hasExecutedTools = true;
         const toolResults = [];
 
-        for (const toolUse of toolUseBlocks) {
-          const toolStart = Date.now();
-          console.log(`[${requestId}] Executing tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 150)})`);
+        // ---- Parallel tool execution within a single round ----
+        // The LLM emits multiple tool_use blocks per response intending them as
+        // parallel work. We run them concurrently with Promise.all to avoid the
+        // serialization tax (e.g. 9 search_quotes × 3s sequential = 27s vs ~4s
+        // wall when parallelized). All shared-state mutation (clipCache,
+        // discoverResults, episodeCache, toolCalls, toolResults, costs) is
+        // applied *after* the gather, in input order, so emit/log ordering and
+        // cost/latency bookkeeping stay deterministic.
+        //
+        // Pre-emit `tool_call` events synchronously so the UI can show all
+        // tools as "in flight" before any await. Each handler still wraps its
+        // own try/catch and resolves to a result object — Promise.all is safe
+        // (no rejecting paths).
 
+        // Decide adjacent-paragraph blocking up front to preserve cap semantics
+        // under parallel execution. If the round contains more get_adjacent_paragraphs
+        // calls than remaining slots, the overflow gets a blocked stub.
+        const apBlocked = new Set();
+        let apSlotsRemaining = Math.max(0, adjacentParagraphCap - adjacentParagraphCount);
+        for (let i = 0; i < toolUseBlocks.length; i++) {
+          if (toolUseBlocks[i].name !== 'get_adjacent_paragraphs') continue;
+          if (apSlotsRemaining > 0) {
+            apSlotsRemaining--;
+            adjacentParagraphCount++;
+          } else {
+            apBlocked.add(i);
+          }
+        }
+
+        for (const toolUse of toolUseBlocks) {
+          console.log(`[${requestId}] Executing tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 150)})`);
           emit('tool_call', {
             tool: toolUse.name,
             input: toolUse.input,
             round,
           });
+        }
 
+        // Bound to this request's cost tracker. Helpers (reranker, embedding,
+        // proper-noun expansion) call into this so their real spend lands in
+        // the same `helpers` channel as the classifier and Tier 2 fallback.
+        const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
+          costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
+        };
+
+        const settled = await Promise.all(toolUseBlocks.map(async (toolUse, i) => {
+          const toolStart = Date.now();
           let result;
           try {
             if (toolUse.name === 'suggest_action') {
               result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
             } else if (toolUse.name === 'create_research_session') {
-              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
               if (result.sessionId && result.url) {
                 emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
               }
-            } else if (toolUse.name === 'get_adjacent_paragraphs' && adjacentParagraphCount >= adjacentParagraphCap) {
+            } else if (apBlocked.has(i)) {
               // Hard ceiling reached. Return a blocked stub instead of executing —
               // saves real time on the upstream call and (more importantly) gives
               // the model an explicit signal that it has enough context and
@@ -1081,8 +1245,7 @@ function createAgentChatRoutes({ openai } = {}) {
               };
               console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
             } else {
-              if (toolUse.name === 'get_adjacent_paragraphs') adjacentParagraphCount++;
-              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
             }
           } catch (toolErr) {
             printLog(`[${requestId}] Tool ${toolUse.name} exception (recovered for LLM): ${toolErr.message}`);
@@ -1092,7 +1255,13 @@ function createAgentChatRoutes({ openai } = {}) {
               hint: 'Fix tool arguments or try another tool. If this was search_quotes, ensure `query` is a non-empty string.',
             };
           }
+          return { toolUse, result, toolLatency: Date.now() - toolStart };
+        }));
 
+        // Process settled results in input order: preserves emit order, log
+        // ordering, cache writes, and the toolCalls ↔ toolResults alignment
+        // that the agentLog round entry below depends on.
+        for (const { toolUse, result, toolLatency } of settled) {
           if (toolUse.name === 'search_quotes' && result.results) {
             const dupes = [];
             for (const r of result.results) {
@@ -1124,18 +1293,19 @@ function createAgentChatRoutes({ openai } = {}) {
           if (toolUse.name === 'get_person_episodes' && result.episodes) {
             for (const ep of result.episodes) cacheEpisode(ep);
           }
-          const toolLatency = Date.now() - toolStart;
 
-          const resultCount = result.results?.length
-            || result.episodes?.length
-            || (result.people?.length || 0) + (result.hostedFeeds?.length || 0)
-            || result.chapters?.length
-            || (result.episode ? 1 : 0)
-            || (result.feed ? 1 : 0)
-            || (result.sessionId ? result.itemCount || 1 : 0)
-            || (result.before?.length != null ? result.before.length + (result.current ? 1 : 0) + (result.after?.length || 0) : 0)
-            || 0;
-
+          const resultCount = computeToolResultCount(toolUse.name, result);
+          // `_meta` is a side-channel populated by some handlers (currently
+          // search_quotes) describing what actually happened internally —
+          // lexical vs vector hits, expansion variants, reranker stats, etc.
+          // Surface it on the SSE event so the UI can render the real
+          // breakdown instead of a single generic "Searching quotes" line,
+          // then strip it from the result so the LLM never sees it (it's
+          // visible-only telemetry, not search content).
+          const resultMeta = result && typeof result === 'object' ? result._meta : null;
+          if (result && typeof result === 'object' && '_meta' in result) {
+            delete result._meta;
+          }
           const resultSize = JSON.stringify(result).length;
           console.log(`[${requestId}] Tool ${toolUse.name}: ${resultCount} results, ${resultSize} chars JSON, ${toolLatency}ms`);
 
@@ -1144,6 +1314,7 @@ function createAgentChatRoutes({ openai } = {}) {
             resultCount,
             latencyMs: toolLatency,
             round,
+            ...(resultMeta ? { meta: resultMeta } : {}),
           });
 
           toolCalls.push({
@@ -1231,7 +1402,11 @@ function createAgentChatRoutes({ openai } = {}) {
         //      preserved and the loop exits cleanly.
         //   2. `timeoutMs` passed to the provider, which becomes the fetch's
         //      AbortController timeout, killing non-streaming or hung calls.
-        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '15000', 10);
+        // DIAGNOSTIC (2026-04-28): default raised from 15s to 300s so primary
+        // synthesis always runs to completion when measuring true wall-clock
+        // performance under unbounded loop budgets. Bring this back to ~15s
+        // once we have baselines and have decided on per-intent budgets.
+        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '300000', 10);
         const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
         const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
 
@@ -1465,10 +1640,13 @@ function createAgentChatRoutes({ openai } = {}) {
                 onTextDelta: () => { /* silent */ },
                 requestId,
               });
-              // Track the cross-provider call's token usage against this
-              // request's cost budget so observability stays honest, even
-              // though the cost-per-token differs from the primary model.
-              costs.addLlmUsage(
+              // Tier 2 runs on Haiku, NOT the orchestrator model. Bill it
+              // against the helpers channel at Haiku rates so the dollar
+              // total reflects what actually leaves our account. (Previously
+              // this used addLlmUsage which incorrectly priced Haiku tokens
+              // at the orchestrator's per-1M rate.)
+              costs.addHelperLlmUsage(
+                haikuConfig.id,
                 tier2Resp.usage?.input_tokens || 0,
                 tier2Resp.usage?.output_tokens || 0,
               );
@@ -1524,6 +1702,52 @@ function createAgentChatRoutes({ openai } = {}) {
           }
         }
 
+        // Never replace a large primary synthesis with the generic Tier 3 line.
+        // Primary can fail quality for reasons we still don't want to throw away
+        // (e.g. edge cases beside truncated_clip). If we'd show Tier 3 but
+        // primary already streamed substantial prose, ship that partial.
+        const substantiveFloor = parseInt(process.env.AGENT_SYNTHESIS_SUBSTANTIVE_FLOOR || '1500', 10);
+        if (finalSynthText === TIER3_FALLBACK_MESSAGE
+            && typeof sanitizedPrimary === 'string'
+            && sanitizedPrimary.trim().length >= substantiveFloor) {
+          printLog(`[${requestId}] Tier 3 suppressed: delivering primary synthesis partial (${sanitizedPrimary.length}c) instead of generic fallback`);
+          finalSynthText = sanitizedPrimary;
+          if (recoveryRecord?.tier3) {
+            recoveryRecord.tier3 = {
+              used: false,
+              suppressedForPrimaryPartial: true,
+              primaryChars: sanitizedPrimary.length,
+            };
+          }
+        }
+
+        // Tier 3 suppression v2: when primary synthesis emitted ~nothing (deadline
+        // killed it before any visible text), the original UX was to wipe all the
+        // intermediate text the model streamed during tool rounds and replace it
+        // with the canned 166-char fallback. Clients that render `text_done` as
+        // authoritative therefore "took back" hundreds of chars of breadcrumbs
+        // the user already saw. If we have substantive intermediate narration,
+        // keep it and just append a soft "ran out of time" notice instead.
+        const intermediateText = accumulatedTextByRound.map(r => r.text).join('\n\n').trim();
+        // Floor lowered 2026-04-28: even a single sentence of breadcrumbs
+        // ("Great, I have the full year of episodes...") is better than the
+        // canned 166-char apology overwriting it. Set to 1 to mean "any
+        // non-empty intermediate text wins".
+        const intermediateFloor = parseInt(process.env.AGENT_TIER3_INTERMEDIATE_FLOOR || '50', 10);
+        if (finalSynthText === TIER3_FALLBACK_MESSAGE
+            && intermediateText.length >= intermediateFloor) {
+          const softNotice = "\n\nI ran out of time before pulling this all together. Try again or refine the ask and I'll have another go.";
+          printLog(`[${requestId}] Tier 3 suppressed v2: keeping ${intermediateText.length}c of intermediate narration + soft notice instead of canned fallback`);
+          finalSynthText = intermediateText + softNotice;
+          if (recoveryRecord?.tier3) {
+            recoveryRecord.tier3 = {
+              used: false,
+              suppressedForIntermediateText: true,
+              intermediateChars: intermediateText.length,
+            };
+          }
+        }
+
         // ===== Commit the final synthesis text =====
         // We're in the synthesis branch, which only fires when
         // `naturalCompletion === false` — i.e. the loop exited because we
@@ -1559,11 +1783,26 @@ function createAgentChatRoutes({ openai } = {}) {
 
       const latencyMs = Date.now() - startTime;
 
-      const { claude: claudeCost, tools: toolCost, total: totalCost } = costs.summary();
+      const summary = costs.summary();
+      const { claude: claudeCost, tools: toolCost, total: totalCost } = summary;
 
       const finalMetrics = measureMessages(messages);
       printLog(`[${requestId}] Token budget breakdown: system=~${Math.ceil(effectiveSystemPrompt.length/4)}tok, user=~${Math.ceil(finalMetrics.userChars/4)}tok, assistant=~${Math.ceil(finalMetrics.assistantChars/4)}tok, toolResults=~${Math.ceil(finalMetrics.toolResultChars/4)}tok | actual=${costs.llm.inputTokens}in+${costs.llm.outputTokens}out`);
-      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens, $${claudeCost.toFixed(4)} LLM + $${toolCost.toFixed(4)} tools = $${totalCost.toFixed(4)}, ${latencyMs}ms`);
+
+      // Real-money cost breakdown. `tools` (internal infra) is intentionally
+      // $0 by design — see createCostTracker doc.
+      const helpersByModel = summary.helpers?.byModel || {};
+      const helperEntries = Object.entries(helpersByModel)
+        .map(([modelId, m]) => `${modelId} ${m.calls}x $${m.cost.toFixed(4)}`)
+        .join(', ');
+      const helpersBreakdown = helperEntries ? ` [${helperEntries}]` : '';
+      const orchestratorLabel = costs.llm.modelLabel || costs.llm.modelKey || 'orchestrator';
+      printLog(
+        `[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens` +
+        `, $${claudeCost.toFixed(4)} ${orchestratorLabel} + $${(summary.helpers?.cost || 0).toFixed(4)} helpers${helpersBreakdown}` +
+        ` = $${totalCost.toFixed(4)}, ${latencyMs}ms` +
+        ` (internal infra: $${toolCost.toFixed(4)} by design)`
+      );
 
       agentLog.completedAt = new Date().toISOString();
       agentLog.summary = {

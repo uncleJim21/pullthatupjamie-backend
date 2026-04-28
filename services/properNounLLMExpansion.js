@@ -99,27 +99,32 @@ function parseLLMOutput(content) {
  * @param {string} query — the original user query
  * @param {{ openai: import('openai').OpenAI }} deps
  * @param {{ requestId?: string }} [opts]
- * @returns {Promise<string[]>} variants array (excludes original; may be [])
+ * @returns {Promise<{ variants: string[], usage: { model: string, input_tokens: number, output_tokens: number } | null }>}
+ *
+ * Cache hits and skipped paths return `{ variants, usage: null }` since no
+ * external API call was made. Live calls return the real OpenAI usage block
+ * so the caller can attribute it against the request's cost tracker.
  */
 async function expandProperNounQuery(query, { openai }, opts = {}) {
   const requestId = opts.requestId || null;
   const tag = requestId ? `[${requestId}][PN-LLM-EXPAND]` : '[PN-LLM-EXPAND]';
 
-  if (!query || typeof query !== 'string' || !query.trim()) return [];
+  if (!query || typeof query !== 'string' || !query.trim()) return { variants: [], usage: null };
   if (!openai || typeof openai.chat?.completions?.create !== 'function') {
     printLog(`${tag} skipped — openai client unavailable`);
-    return [];
+    return { variants: [], usage: null };
   }
 
   const cacheKey = query.trim().toLowerCase();
   const cached = getFromCache(cacheKey);
   if (cached) {
     printLog(`${tag} cache hit query="${query}" variants=${JSON.stringify(cached)}`);
-    return cached;
+    return { variants: cached, usage: null };
   }
 
   const started = Date.now();
   let variants = [];
+  let usage = null;
 
   try {
     const response = await Promise.race([
@@ -138,6 +143,13 @@ async function expandProperNounQuery(query, { openai }, opts = {}) {
     const content = response?.choices?.[0]?.message?.content || '';
     const parsed = parseLLMOutput(content);
     variants = sanitizeVariants(parsed, query);
+    if (response?.usage) {
+      usage = {
+        model: MODEL,
+        input_tokens: response.usage.prompt_tokens || 0,
+        output_tokens: response.usage.completion_tokens || 0,
+      };
+    }
     const elapsed = Date.now() - started;
     printLog(`${tag} ok query="${query}" variants=${JSON.stringify(variants)} latency=${elapsed}ms`);
   } catch (err) {
@@ -147,7 +159,7 @@ async function expandProperNounQuery(query, { openai }, opts = {}) {
   }
 
   setInCache(cacheKey, variants);
-  return variants;
+  return { variants, usage };
 }
 
 module.exports = {

@@ -14,8 +14,13 @@ const SEARCH_TOOLS = ALL_TOOL_NAMES; // everything
 const RESEARCH_SESSION_TOOLS = [
   'search_quotes',
   'search_chapters',
+  'discover_podcasts',
   'find_person',
   'get_person_episodes',
+  'get_feed',
+  'get_feed_episodes',
+  'get_episode',
+  'list_episode_chapters',
   'create_research_session',
   'suggest_action',
 ];
@@ -68,6 +73,7 @@ const PROFILES = {
       return [
         PROMPT_SECTIONS.base,
         buildCurrentDateSection(),
+        PROMPT_SECTIONS.searchTools,
         PROMPT_SECTIONS.searchCrafting,
         PROMPT_SECTIONS.sessionCuration,
         PROMPT_SECTIONS.tokenStewardship,
@@ -98,14 +104,19 @@ const DEFAULT_INTENT = 'search';
 const CLASSIFIER_PROMPT = `Classify the user's intent into exactly one category. Respond with ONLY a JSON object: {"intent":"<value>"}
 
 Categories:
-- "research_session": User explicitly asks to CREATE a research session, playlist, collection, or compilation of clips. Must be an explicit creation request, not just a search.
+- "research_session": The user wants a **curated multi-clip or multi-episode artifact** they can keep, revisit, or share — not a one-off answer. Treat as research_session when they ask to **build, make, create, put together, compile, bundle, curate, aggregate, assemble, collect, line up, queue, or give** a **playlist, research session, clip pack, supercut, highlight reel, binge list, anthology, reading/listening list of clips, digest of clips, or "episodes to watch/listen"** for a topic or show (optionally with a time window: "this month", "last month", "recent", "latest episodes"). Phrases like **"for my team"**, **"I can send to a friend"**, **"shareable"**, **"save this"** (when tied to multiple clips/episodes) also count. **Err on the side of research_session** when the deliverable sounds like **more than a single narrative answer** — e.g. ordered list of episodes with clips to explore in-app.
 - "transcribe": User explicitly asks to TRANSCRIBE, INGEST, or ADD a podcast/episode. Must be an explicit FUTURE-TENSE transcription request (imperative: "transcribe X", "ingest Y", "get Z transcribed"). Past-tense mentions ("I transcribed", "already transcribed", "just transcribed") are NOT transcribe intent — they're context for a follow-up search. If the same message contains a follow-up question ("what did they say", "summarize", "tell me about"), always prefer "search".
-- "search": Everything else — questions, searches, lookups, comparisons, topic exploration, AND any message that references an already-transcribed episode with a follow-up question. This is the default.
+- "search": Single-pass questions — explain, compare, summarize, "what did X say about Y", topic exploration, one episode deep dive, or a follow-up after transcription **without** asking for a saved playlist/session/clip bundle. This is the default when unsure **unless** the user clearly wants a **multi-item curated artifact** as above.
 
 Examples:
 - "Make me a research session on AI" → {"intent":"research_session"}
 - "Build a playlist about Bitcoin" → {"intent":"research_session"}
+- "Make me a playlist of Shawn Ryan's last month" → {"intent":"research_session"}
+- "Curate the best clips on inflation from the last 90 days" → {"intent":"research_session"}
 - "Put together clips of Huberman on sleep" → {"intent":"research_session"}
+- "Compile a highlight reel of Rogan on UFOs" → {"intent":"research_session"}
+- "Line up recent All-In takes on AI regulation I can share" → {"intent":"research_session"}
+- "Aggregate podcast takes on UBI into one place" → {"intent":"research_session"}
 - "Transcribe the latest Lex Fridman episode" → {"intent":"transcribe"}
 - "Can you ingest the All-In podcast?" → {"intent":"transcribe"}
 - "Get Corporate Gossip transcribed" → {"intent":"transcribe"}
