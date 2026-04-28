@@ -18,7 +18,7 @@ const path = require('path');
 const { TEST_QUERIES } = require('./agent-comparison');
 const { classify, severityRank } = require('./analyze-regression');
 
-const COHORTS = ['cohort1', 'cohort2', 'cohort3', 'cohort4', 'cohort5', 'cohort6', 'cohort7', 'cohort8'];
+const COHORTS = ['cohort1', 'cohort2', 'cohort3', 'cohort4', 'cohort5', 'cohort6', 'cohort7', 'cohort8', 'cohort9'];
 
 function severityOrder(sev) {
   return { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, CLEAN: 4 }[sev] ?? 5;

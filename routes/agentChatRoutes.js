@@ -16,7 +16,7 @@ const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
-const { sanitizeAgentText, hasToolCallMarkup } = require('../utils/agent/sanitizeOutput');
+const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
@@ -949,18 +949,45 @@ function createAgentChatRoutes({ openai } = {}) {
       return out;
     };
 
+    // Stateful streaming sanitizer scoped to this request. Buffers any
+    // in-flight tool-call markup across `text_delta` chunks so an open tag
+    // in chunk N and its matching close in chunk N+M are recognized as a
+    // single block and stripped together — without holding back legitimate
+    // text. text_done supersedes streamed deltas, so we just clear the
+    // carry there.
+    const streamSanitizer = createStreamSanitizer();
+    let streamSanitizerLeakLogged = false;
+
     const emit = (eventType, data) => {
-      // Defensive sanitization for text events: strip provider-specific
-      // tool-call markup (DSML, function_calls XML, etc.) before it ever
-      // reaches the client. This is a safety net in case a model ignores
-      // the synthesis-prompt instructions and inlines tool DSL as plaintext.
-      // Any drop is logged once so we know if a model is misbehaving in prod.
-      if ((eventType === 'text_delta' || eventType === 'text_done')
-          && data && typeof data.text === 'string'
-          && hasToolCallMarkup(data.text)) {
-        const cleaned = sanitizeAgentText(data.text);
-        console.warn(`[${requestId}] Stripped tool-call markup from ${eventType}: ${data.text.length} → ${cleaned.length} chars`);
-        data = { ...data, text: cleaned };
+      if (eventType === 'text_delta'
+          && data && typeof data.text === 'string') {
+        const safe = streamSanitizer.feed(data.text);
+        if (!streamSanitizerLeakLogged && safe.length !== data.text.length) {
+          console.warn(`[${requestId}] Stream sanitizer trimmed text_delta: ${data.text.length} → ${safe.length} chars (further drops will be silent for this request)`);
+          streamSanitizerLeakLogged = true;
+        }
+        if (!safe.length) return; // entire delta is in-flight markup carry
+        data = { ...data, text: safe };
+      } else if (eventType === 'text_done'
+          && data && typeof data.text === 'string') {
+        // text_done carries the full canonical final. Drop any per-delta
+        // carry (its content is included in `data.text`) and run the
+        // regular sanitizer for any markup the streaming pass missed.
+        streamSanitizer.flush();
+        if (hasToolCallMarkup(data.text)) {
+          const cleaned = sanitizeAgentText(data.text);
+          console.warn(`[${requestId}] Stripped tool-call markup from text_done: ${data.text.length} → ${cleaned.length} chars`);
+          data = { ...data, text: cleaned };
+        }
+      } else if (eventType === 'error') {
+        // Surface any held-back content before the error so the user sees
+        // partial work product rather than dropping it on the floor.
+        const tail = streamSanitizer.flush();
+        if (tail && streaming) {
+          try {
+            res.write(`event: text_delta\ndata: ${JSON.stringify({ text: tail })}\n\n`);
+          } catch (_) { /* client disconnected */ }
+        }
       }
       const payload = sanitize(eventType, data);
       if (streaming) {
