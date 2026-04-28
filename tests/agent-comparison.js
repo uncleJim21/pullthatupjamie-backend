@@ -20,6 +20,7 @@
  *
  * Usage:
  *   node tests/agent-comparison.js [--query N] [--queries N,M,P] [--cohort cohortN] [--save] [--provider anthropic|tinfoil|all] [--model key] [--models key1,key2] [--profile default|deep-turns] ["custom query 1" ...]
+ *   node tests/cohort-stats-report.js   # aggregate tables: newest log per TEST_QUERIES task, all cohorts
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
  * --cohort cohortN only run queries from the specified cohort (cohort1–cohort8)
@@ -545,7 +546,11 @@ function truncate(str, len) {
   return str.length > len ? str.substring(0, len - 1) + '…' : str;
 }
 
-main().catch(err => {
-  console.error('Comparison test failed:', err);
-  process.exit(1);
-});
+module.exports = { TEST_QUERIES };
+
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Comparison test failed:', err);
+    process.exit(1);
+  });
+}

@@ -165,4 +165,8 @@ function main() {
   }
 }
 
-main();
+module.exports = { classify, severityRank };
+
+if (require.main === module) {
+  main();
+}
