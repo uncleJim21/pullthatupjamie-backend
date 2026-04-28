@@ -2161,6 +2161,31 @@ app.listen(PORT, async () => {
     }
 
     console.log('All systems initialized successfully');
+
+    // High-visibility banner showing what the /api/chat/workflow ("pull") agent
+    // will route to by default.
+    try {
+      const { AGENT_MODELS, DEFAULT_AGENT_MODEL, EXECUTION_PROFILES, DEFAULT_EXECUTION_PROFILE } = require('./constants/agentModels');
+      const m = AGENT_MODELS[DEFAULT_AGENT_MODEL];
+      const p = EXECUTION_PROFILES[DEFAULT_EXECUTION_PROFILE];
+      const envRaw = process.env.AGENT_MODEL;
+      const envState = !envRaw
+        ? '\x1b[32mnot set\x1b[0m  (good — the var is deprecated)'
+        : `\x1b[33m${envRaw} (DEPRECATED — ignored, please remove from .env)\x1b[0m`;
+      const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
+      const bold = (s) => `\x1b[1m${s}\x1b[0m`;
+      console.log('');
+      console.log(cyan('┌─ Pull agent default ───────────────────────────────────────────'));
+      console.log(`${cyan('│')} Model:    ${bold(m.label)}  [${m.key}]`);
+      console.log(`${cyan('│')} Provider: ${m.provider}  (model id: ${m.id})`);
+      console.log(`${cyan('│')} Pricing:  $${m.inputPer1M}/M in, $${m.outputPer1M}/M out`);
+      console.log(`${cyan('│')} Profile:  ${p.label}  rounds≤${p.maxToolRounds}, cost≤$${p.costBudgetHard}, latency≤${p.latencyBudgetHardMs}ms`);
+      console.log(`${cyan('│')} AGENT_MODEL env: ${envState}`);
+      console.log(cyan('└────────────────────────────────────────────────────────────────'));
+      console.log('');
+    } catch (bannerErr) {
+      console.warn('[startup-banner] failed to render default-model banner:', bannerErr.message);
+    }
   } catch (error) {
     console.error('Error during initialization:', error);
     // Don't exit the process, just log the error and continue without backups

@@ -19,11 +19,13 @@
  *   - No separate gateway needed (inlined)
  *
  * Usage:
- *   node tests/agent-comparison.js [--query N] [--cohort cohortN] [--save] ["custom query 1" ...]
+ *   node tests/agent-comparison.js [--query N] [--queries N,M,P] [--cohort cohortN] [--save] [--provider anthropic|tinfoil|all] [--model key] [--models key1,key2] [--profile default|deep-turns] ["custom query 1" ...]
+ *   node tests/cohort-stats-report.js   # aggregate tables: newest log per TEST_QUERIES task, all cohorts
  *
  * --save           writes full output to tests/output/<timestamp>.md (gitignored)
- * --cohort cohortN only run queries from the specified cohort (cohort1, cohort2, cohort3)
+ * --cohort cohortN only run queries from the specified cohort (cohort1–cohort9)
  * --query N        run a single query by 1-based index
+ * --queries N,M,P  run a specific subset of queries by 1-based indices
  * Positional args (quoted strings) override the built-in TEST_QUERIES list
  */
 
@@ -93,6 +95,129 @@ const TEST_QUERIES = [
   { name: 'find_person Fallback',           cohort: 'cohort5', task: 'Roland from Alby talking about self custody' },
   { name: 'Never Dead-End',                 cohort: 'cohort5', task: 'what did Satoshi Nakamoto say on Joe Rogan' },
   { name: 'Research Session Quality',       cohort: 'cohort5', task: 'Make me a research session about Huberman on hormones and weight loss', mode: 'fast' },
+
+  // --- Cohort 6: Proper-noun adversarial / LLM expansion validation ---
+  // Validates PROPER_NOUN_LLM_EXPANSION_ENABLED. First two are ASR-phonetic-mismatch
+  // targets (lncurl.lol → "ellen curl"). Last three are control queries that should
+  // NOT regress when expansion is on (zaprite, nostr) and a numeric-suffix coined
+  // term where the gate currently does NOT fire (x402 — flagged in WIP.md F2).
+  { name: 'Proper-noun: lncurl.lol',         cohort: 'cohort6', task: 'what is lncurl.lol and what is it used for?' },
+  { name: 'Proper-noun: ellen curl homophone', cohort: 'cohort6', task: 'tell me about ellen curl' },
+  { name: 'Proper-noun: x402 (numeric)',     cohort: 'cohort6', task: 'what is x402 used for?' },
+  { name: 'Proper-noun: zaprite control',    cohort: 'cohort6', task: 'what has been said about zaprite' },
+  { name: 'Proper-noun: nostr control',      cohort: 'cohort6', task: 'what about nostr on podcasts' },
+
+  // --- Cohort 7: Latency / synthesis-budget stress regressions ---
+  // Empires query observed 2026-04-28: 5 rounds of get_adjacent_paragraphs
+  // (windowSize 8/10/12/8) burned the 40s budget; synthesis ran on 15s and
+  // truncated mid-sentence at "...spending balloons during an". Validates
+  // the time-budget header (always-on per-round) + adaptive synthesis
+  // length guidance (short/lean answer when remaining budget is tight).
+  // Add new latency-stress cases here as they're discovered in the wild.
+  { name: 'Empires Patterns (synth-budget stress)', cohort: 'cohort7', task: 'What patterns repeat in the fall of great empires across history?' },
+
+  // --- Cohort 8: Stress on prior weak spots (cross-show, VC/macro, long narrative,
+  // impossible guest-host, broad synthesis, thin corpus, research session) ---
+  { name: 'C8 Cross: Pool vs Shapiro immigration', cohort: 'cohort8', task: 'Compare what Tim Pool and Ben Shapiro have said about immigration policy in the last year on their shows.' },
+  { name: 'C8 Cross: DW vs All-In China', cohort: 'cohort8', task: 'Compare DW News and All-In on China tech decoupling and supply chains.' },
+  { name: 'C8 Cross: Pivot vs Prof G layoffs', cohort: 'cohort8', task: 'Compare Pivot and Prof G on tech layoffs, hiring, and the job market for engineers.' },
+  { name: 'C8 Cross: Lex vs Huberman dopamine', cohort: 'cohort8', task: 'Compare Lex Fridman and Andrew Huberman on dopamine, motivation, and digital distraction.' },
+  { name: 'C8 Cross: Rogan vs Lex UFOs', cohort: 'cohort8', task: 'Compare Joe Rogan and Lex Fridman on UFO disclosure, whistleblowers, and government transparency.' },
+  { name: 'C8 Cross: WBD vs TFTC Lightning', cohort: 'cohort8', task: 'Compare What Bitcoin Did and TFTC on Lightning routing reliability and failures.' },
+  { name: 'C8 Cross: Today Explained vs Daily SCOTUS', cohort: 'cohort8', task: 'Compare Today Explained and The Daily on the Supreme Court term and major cases.' },
+  { name: 'C8 Cross: Hard Fork vs Pivot Meta', cohort: 'cohort8', task: 'Compare Hard Fork and Pivot on Meta, social media, and antitrust.' },
+  { name: 'C8 VC: Sacks JCal AI regulation', cohort: 'cohort8', task: 'What have David Sacks and Jason Calacanis said about AI regulation across All-In episodes?' },
+  { name: 'C8 VC: Founders Fund defense tech', cohort: 'cohort8', task: 'What have Founders Fund–affiliated voices said about defense tech, drones, and Anduril on podcasts?' },
+  { name: 'C8 VC: Thiel vs a16z elites', cohort: 'cohort8', task: 'Contrast Peter Thiel and Marc Andreessen on democracy, elites, and technocracy using podcast clips.' },
+  { name: 'C8 VC: YC valuations 2025–26', cohort: 'cohort8', task: 'What are Y Combinator partners saying about startup valuations in 2025 and 2026 on podcasts?' },
+
+  { name: 'C8 Narrative: 2008 crisis weekend', cohort: 'cohort8', task: 'Find a detailed narrative of the 2008 financial crisis weekend (Lehman, AIG, Fed) from podcasts.' },
+  { name: 'C8 Narrative: D-Day', cohort: 'cohort8', task: 'Find a detailed retelling of D-Day from history podcasts with specific moments and decisions.' },
+  { name: 'C8 Narrative: Chernobyl', cohort: 'cohort8', task: 'Chernobyl meltdown explained in narrative depth: timeline, mistakes, and aftermath on podcasts.' },
+  { name: 'C8 Narrative: Constantinople 1453', cohort: 'cohort8', task: 'Fall of Constantinople in 1453 — detailed expert narrative from history podcasts.' },
+  { name: 'C8 Narrative: Prohibition', cohort: 'cohort8', task: 'Prohibition-era bootlegging and organized crime told as a long narrative on podcasts.' },
+  { name: 'C8 Narrative: Tet Offensive', cohort: 'cohort8', task: 'Tet Offensive explained in depth: strategy, surprise, and media impact on history podcasts.' },
+  { name: 'C8 Narrative: Spanish Civil War', cohort: 'cohort8', task: 'Spanish Civil War overview from expert podcasts: factions, foreign intervention, outcome.' },
+  { name: 'C8 Narrative: Partition of India', cohort: 'cohort8', task: 'Partition of India in 1947 — detailed retelling from podcasts covering violence and migration.' },
+  { name: 'C8 Narrative: Bronze Age collapse', cohort: 'cohort8', task: 'Bronze Age collapse theories and evidence across history podcasts.' },
+  { name: 'C8 Narrative: Peloponnesian War', cohort: 'cohort8', task: 'Peloponnesian War: causes, Pericles, Sicilian expedition — synthesis from history podcasts.' },
+
+  { name: 'C8 Impossible: Musk on Acquired', cohort: 'cohort8', task: 'What did Elon Musk say on the Acquired podcast as a guest? Quote him.' },
+  { name: 'C8 Impossible: Naval on All-In', cohort: 'cohort8', task: 'What did Naval Ravikant say on All-In this year? Pull his clips.' },
+  { name: 'C8 Impossible: Swift on Rogan', cohort: 'cohort8', task: 'What did Taylor Swift say on Joe Rogan about her music and politics?' },
+  { name: 'C8 Impossible: Satoshi on Bankless', cohort: 'cohort8', task: 'What did Satoshi Nakamoto say on Bankless about Ethereum?' },
+  { name: 'C8 Impossible: Dimon on WBD', cohort: 'cohort8', task: 'What did Jamie Dimon say about Bitcoin on What Bitcoin Did with Peter McCormack?' },
+  { name: 'C8 Impossible: Jobs on Lex AI', cohort: 'cohort8', task: 'What did Steve Jobs say on Lex Fridman about artificial intelligence?' },
+
+  { name: 'C8 Synth: curiosity before decline', cohort: 'cohort8', task: 'Why do civilizations lose intellectual curiosity before decline? Synthesize arguments from history podcasts.' },
+  { name: 'C8 Synth: nuclear war rational', cohort: 'cohort8', task: 'Is nuclear war ever rational? Summarize the strongest for and against from podcast debates.' },
+  { name: 'C8 Synth: debt jubilee vs austerity', cohort: 'cohort8', task: 'Debt jubilees versus austerity across ancient and modern empires — what do podcast historians and economists argue?' },
+  { name: 'C8 Synth: hyperinflation compare', cohort: 'cohort8', task: 'Compare hyperinflation in Venezuela, Zimbabwe, and Weimar Germany as explained on podcasts.' },
+  { name: 'C8 Synth: coastal vs heartland', cohort: 'cohort8', task: 'Coastal elite versus heartland economy narratives across political and culture podcasts.' },
+  { name: 'C8 Synth: AI replacing CEOs', cohort: 'cohort8', task: 'Predictions about AI replacing CEOs — synthesize across business and tech podcasts.' },
+  { name: 'C8 Synth: UBI pro and con', cohort: 'cohort8', task: 'Universal basic income: strongest pro and strongest con from podcasters, with clips.' },
+  { name: 'C8 Synth: Fed independence', cohort: 'cohort8', task: 'Federal Reserve independence versus political pressure — compare takes across macro and news podcasts.' },
+  { name: 'C8 Synth: Ukraine peace 2025–26', cohort: 'cohort8', task: 'Ukraine war peace talks and endgame scenarios in 2025–2026 — what are podcasts saying?' },
+  { name: 'C8 Synth: Ozempic society', cohort: 'cohort8', task: 'Ozempic and GLP-1 drugs — societal effects on health, beauty, and inequality across podcasts.' },
+  { name: 'C8 Synth: remote work dead', cohort: 'cohort8', task: 'Remote work is dead versus here to stay — cross-show synthesis with named podcasts.' },
+  { name: 'C8 Synth: EA after FTX', cohort: 'cohort8', task: 'Effective altruism after FTX — reckoning and reform arguments on podcasts.' },
+
+  { name: 'C8 Thin: German Bitcoin pods', cohort: 'cohort8', task: 'Find German-language podcast episodes about Bitcoin in our corpus, if any.' },
+  { name: 'C8 Thin: Antarctic economics', cohort: 'cohort8', task: 'Economics of Antarctic research stations — anything on EconTalk or similar?' },
+  { name: 'C8 Thin: Faraday EMP', cohort: 'cohort8', task: 'Faraday cages and EMP preparedness — niche podcast coverage.' },
+  { name: 'C8 Thin: curling strategy', cohort: 'cohort8', task: 'Deep dive on curling strategy and analytics on any podcast.' },
+  { name: 'C8 Thin: marble racing', cohort: 'cohort8', task: 'Competitive marble racing commentary or fandom on podcasts.' },
+  { name: 'C8 Thin: FDA reform', cohort: 'cohort8', task: 'Reforming the FDA and drug approval timelines — podcast arguments.' },
+  { name: 'C8 Thin: quantum winter', cohort: 'cohort8', task: 'Quantum computing winter versus hype — podcast takes from physicists and VCs.' },
+  { name: 'C8 Thin: college worth it', cohort: 'cohort8', task: 'Is college still worth it? Strongest podcast arguments on both sides.' },
+
+  { name: 'C8 Research: carbon capture', cohort: 'cohort8', task: 'Make a research session about carbon capture and climate tech debates on podcasts.', mode: 'fast' },
+  { name: 'C8 Research: consciousness quantum', cohort: 'cohort8', task: 'Make a research session on Lex Fridman guests discussing consciousness versus quantum mysticism.', mode: 'fast' },
+
+  { name: 'C8 Stress: Levchin Hoffman AI', cohort: 'cohort8', task: 'What have Max Levchin and Reid Hoffman said about AI on podcasts?' },
+  { name: 'C8 Stress: tariffs BP Tim Dillon', cohort: 'cohort8', task: 'Compare Breaking Points and Tim Dillon on tariffs and trade policy.' },
+  { name: 'C8 Stress: NATO 1990s promises', cohort: 'cohort8', task: 'NATO expansion and 1990s verbal promises to Russia — podcast synthesis of competing narratives.' },
+  { name: 'C8 Stress: Lightning jamming', cohort: 'cohort8', task: 'Lightning network jamming attacks and routing failures — what did major Bitcoin podcasts explain?' },
+
+  // --- Cohort 9: Research session wording stress ---
+  // Targets the research_session intent path specifically. Covers:
+  //   - Path A: feed/host scoped + time window (the original Shawn Ryan failure)
+  //   - Path B: broad topical compilations
+  //   - Phrasing variations the classifier must catch (playlist, supercut,
+  //     clip pack, send-to-friend, save these, compile, curate, anthology, ...)
+  //   - Verifies the model picks get_feed_episodes for shape A (not a fan-out
+  //     of search_quotes) and that create_research_session is reached before
+  //     the latency cap fires.
+  // All entries use mode:'fast' so the test exercises the deepseek-v4-flash
+  // path the Pull endpoint currently ships.
+
+  // Path A — feed/host + time window (the failing case)
+  { name: 'C9 PathA: Shawn Ryan last month',         cohort: 'cohort9', task: "make me a playlist of Shawn Ryan's last month", mode: 'fast' },
+  { name: 'C9 PathA: Lex Fridman April',             cohort: 'cohort9', task: 'give me a research session of all of Lex Fridman in April', mode: 'fast' },
+  { name: 'C9 PathA: Huberman this month',           cohort: 'cohort9', task: 'compile every Huberman Lab episode from this month into a session', mode: 'fast' },
+  { name: 'C9 PathA: Joe Rogan recent',              cohort: 'cohort9', task: "build me a playlist of Joe Rogan's most recent episodes I can binge later", mode: 'fast' },
+  { name: 'C9 PathA: All-In last 30 days',           cohort: 'cohort9', task: 'curate the All-In podcast over the last 30 days as a clip pack', mode: 'fast' },
+
+  // Path A — host + topic + time window
+  { name: 'C9 PathA: Saylor Bitcoin recent',         cohort: 'cohort9', task: 'put together a research session of recent Michael Saylor takes on Bitcoin', mode: 'fast' },
+  { name: 'C9 PathA: TFTC mining latest',            cohort: 'cohort9', task: "send me a clip pack of TFTC's latest takes on Bitcoin mining", mode: 'fast' },
+
+  // Path B — broad topical compilation
+  { name: 'C9 PathB: Bitcoin custody',               cohort: 'cohort9', task: 'compile a research session of clips about Bitcoin self custody and hardware wallets', mode: 'fast' },
+  { name: 'C9 PathB: stoic philosophy',              cohort: 'cohort9', task: 'put together a playlist of clips on stoic philosophy and modern life', mode: 'fast' },
+  { name: 'C9 PathB: AI doomers',                    cohort: 'cohort9', task: 'curate a clip pack of AI doomers vs accelerationists I can save and revisit', mode: 'fast' },
+  { name: 'C9 PathB: macro debt cycle',              cohort: 'cohort9', task: "build a research session on the long-term debt cycle that I can share with my team", mode: 'fast' },
+
+  // Phrasing variations (classifier stress)
+  { name: 'C9 Phrasing: supercut',                   cohort: 'cohort9', task: 'make a supercut of the funniest Tim Dillon rants', mode: 'fast' },
+  { name: 'C9 Phrasing: highlight reel',             cohort: 'cohort9', task: 'highlight reel of Joe Rogan on UFOs from the last year', mode: 'fast' },
+  { name: 'C9 Phrasing: anthology for friend',       cohort: 'cohort9', task: "make me an anthology of clips about psychedelics and depression I can send to a friend", mode: 'fast' },
+  { name: 'C9 Phrasing: save these for later',       cohort: 'cohort9', task: 'save me a bundle of the best Bitcoin onboarding episodes', mode: 'fast' },
+  { name: 'C9 Phrasing: episodes to listen',         cohort: 'cohort9', task: 'queue up the episodes I should listen to about hyperinflation history', mode: 'fast' },
+
+  // Adversarial — research-session shape with thin corpus / impossible cross-show
+  { name: 'C9 Adv: thin corpus marble racing',       cohort: 'cohort9', task: 'compile a research session of marble racing podcast clips', mode: 'fast' },
+  { name: 'C9 Adv: impossible Satoshi compilation',  cohort: 'cohort9', task: 'make a playlist of every Satoshi Nakamoto interview clip', mode: 'fast' },
 ];
 
 // ===== Helpers =====
@@ -122,10 +247,22 @@ function parseSSE(raw) {
   return events;
 }
 
-async function runAgentQuery(task, mode) {
+function parseCsv(input) {
+  if (!input || typeof input !== 'string') return [];
+  return input.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function defaultModelsForProvider(provider) {
+  if (provider === 'anthropic') return ['fast'];
+  if (provider === 'tinfoil') return ['gemma'];
+  if (provider === 'all') return ['fast', 'gemma'];
+  return [];
+}
+
+async function runAgentQuery(task, { model, provider, executionProfile } = {}) {
   const start = Date.now();
 
-  const agentModel = mode || process.env.AGENT_MODEL || 'fast';
+  const agentModel = model || 'quality';
 
   const headers = {
     'Content-Type': 'application/json',
@@ -134,24 +271,59 @@ async function runAgentQuery(task, mode) {
   if (JWT) headers['Authorization'] = `Bearer ${JWT}`;
   else headers['X-Free-Tier'] = 'true';
 
+  const payload = { message: task, model: agentModel, includeMetrics: true, stream: true };
+  if (provider) payload.provider = provider;
+  if (executionProfile) payload.executionProfile = executionProfile;
+
   const resp = await fetch(`${JAMIE_URL}/api/pull`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ message: task, model: agentModel, stream: true }),
+    body: JSON.stringify(payload),
   });
 
   const raw = await resp.text();
   const latencyMs = Date.now() - start;
+  let parsedJson = null;
+  try { parsedJson = JSON.parse(raw); } catch {}
+
+  if (!resp.ok) {
+    const msg = parsedJson?.error || parsedJson?.message || raw.substring(0, 200);
+    throw new Error(`HTTP ${resp.status}: ${msg}`);
+  }
+
   const events = parseSSE(raw);
+
+  // Fallback for JSON mode or non-SSE responses.
+  if (events.length === 0 && parsedJson && typeof parsedJson === 'object') {
+    return {
+      engine: `agent (${parsedJson?.metrics?.model || agentModel})`,
+      modelKey: parsedJson?.metrics?.modelKey || agentModel,
+      provider: parsedJson?.metrics?.provider || provider || 'unknown',
+      executionProfile: parsedJson?.metrics?.executionProfile || executionProfile || 'default',
+      latencyMs,
+      summary: parsedJson?.text || '',
+      fullSummaryLength: (parsedJson?.text || '').length,
+      toolOrder: (parsedJson?.metrics?.toolCalls || []).map(tc => `${tc.name}(${tc.resultCount ?? '?'} results)`),
+      rounds: parsedJson?.metrics?.rounds || 0,
+      cost: parsedJson?.metrics?.cost || {},
+      tokens: parsedJson?.metrics?.tokens || {},
+      hasClipTokens: (parsedJson?.text || '').includes('{{clip:'),
+      error: parsedJson?.error || null,
+    };
+  }
 
   const textDoneEvent = events.find(e => e.event === 'text_done');
   const textDeltaEvents = events.filter(e => e.event === 'text_delta');
   const toolCallEvents = events.filter(e => e.event === 'tool_call');
   const toolResultEvents = events.filter(e => e.event === 'tool_result');
   const doneEvent = events.find(e => e.event === 'done');
+  const errorEvent = events.find(e => e.event === 'error');
 
   const fullText = textDoneEvent?.data?.text || textDeltaEvents.map(e => e.data?.text || '').join('');
   const modelLabel = doneEvent?.data?.model || agentModel;
+  const modelKey = doneEvent?.data?.modelKey || agentModel;
+  const providerLabel = doneEvent?.data?.provider || provider || 'unknown';
+  const profile = doneEvent?.data?.executionProfile || executionProfile || 'default';
   const toolOrder = toolCallEvents.map(e => {
     const matchingResult = toolResultEvents.find(r => r.data?.tool === e.data?.tool && r.data?.round === e.data?.round);
     return `${e.data.tool}(${matchingResult?.data?.resultCount ?? '?'} results)`;
@@ -159,6 +331,9 @@ async function runAgentQuery(task, mode) {
 
   return {
     engine: `agent (${modelLabel})`,
+    modelKey,
+    provider: providerLabel,
+    executionProfile: profile,
     latencyMs,
     summary: fullText,
     fullSummaryLength: fullText.length,
@@ -167,6 +342,7 @@ async function runAgentQuery(task, mode) {
     cost: doneEvent?.data?.cost || {},
     tokens: doneEvent?.data?.tokens || {},
     hasClipTokens: fullText.includes('{{clip:'),
+    error: errorEvent?.data?.error || null,
   };
 }
 
@@ -175,21 +351,45 @@ async function runAgentQuery(task, mode) {
 async function main() {
   const args = process.argv.slice(2);
   const shouldSave = args.includes('--save');
+  const getFlagValue = (flag) => {
+    const idx = args.indexOf(flag);
+    if (idx === -1) return null;
+    return args[idx + 1] || null;
+  };
 
-  const cohortFilter = args.includes('--cohort')
-    ? args[args.indexOf('--cohort') + 1]
-    : null;
+  const cohortFilter = getFlagValue('--cohort');
+  const providerFilter = getFlagValue('--provider');
+  const modelFilter = getFlagValue('--model');
+  const modelsFilter = parseCsv(getFlagValue('--models'));
+  const executionProfile = getFlagValue('--profile');
 
-  const queryIndex = args.includes('--query')
-    ? parseInt(args[args.indexOf('--query') + 1], 10) - 1
-    : null;
+  const queryIndexRaw = getFlagValue('--query');
+  const queryIndex = queryIndexRaw ? parseInt(queryIndexRaw, 10) - 1 : null;
+  const queriesFlagRaw = getFlagValue('--queries');
+  const queriesIndices = queriesFlagRaw
+    ? parseCsv(queriesFlagRaw)
+        .map(s => parseInt(s, 10))
+        .filter(n => Number.isInteger(n) && n >= 1 && n <= TEST_QUERIES.length)
+        .map(n => n - 1)
+    : [];
 
-  const flagArgs = new Set(['--query', '--cohort']);
-  const positionalQueries = args.filter(a => !a.startsWith('--') && !flagArgs.has(args[args.indexOf(a) - 1]));
+  const valueFlags = new Set(['--query', '--queries', '--cohort', '--provider', '--model', '--models', '--profile']);
+  const positionalQueries = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--save') continue;
+    if (valueFlags.has(arg)) {
+      i++;
+      continue;
+    }
+    if (!arg.startsWith('--')) positionalQueries.push(arg);
+  }
   
   let queries;
   if (positionalQueries.length > 0) {
     queries = positionalQueries.map((q, i) => ({ name: `Custom #${i + 1}`, cohort: 'custom', task: q }));
+  } else if (queriesIndices.length > 0) {
+    queries = queriesIndices.map(i => TEST_QUERIES[i]);
   } else if (queryIndex !== null && queryIndex >= 0 && queryIndex < TEST_QUERIES.length) {
     queries = [TEST_QUERIES[queryIndex]];
   } else if (cohortFilter) {
@@ -210,6 +410,9 @@ async function main() {
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log(`  JWT: ${JWT ? JWT.substring(0, 20) + '...' : '\x1b[33mNOT SET\x1b[0m'}`);
   if (cohortFilter) console.log(`  Cohort: \x1b[33m${cohortFilter}\x1b[0m (${queries.length} queries)`);
+  if (providerFilter) console.log(`  Provider filter: \x1b[33m${providerFilter}\x1b[0m`);
+  if (modelFilter || modelsFilter.length > 0) console.log(`  Model filter: \x1b[33m${[modelFilter, ...modelsFilter].filter(Boolean).join(', ')}\x1b[0m`);
+  if (executionProfile) console.log(`  Execution profile: \x1b[33m${executionProfile}\x1b[0m`);
   if (shouldSave) console.log('  Saving full output to tests/output/');
   console.log();
 
@@ -217,48 +420,70 @@ async function main() {
     console.log(`━━━ ${q.name} ━━━`);
     console.log(`Query: "${q.task}"\n`);
 
-    const ag = await runAgentQuery(q.task, q.mode).catch(err => ({ engine: 'agent', error: err.message }));
+    const requestedModels = modelsFilter.length > 0
+      ? modelsFilter
+      : modelFilter
+        ? [modelFilter]
+        : providerFilter
+          ? defaultModelsForProvider(providerFilter)
+          : [q.mode || 'quality'];
+    const runTargets = requestedModels.length > 0 ? requestedModels : ['quality'];
+    const forcedProvider = providerFilter && providerFilter !== 'all' ? providerFilter : null;
 
-    const agentLabel = ag.engine || 'Agent';
-    const agLlmCost = ag.cost?.claude;
-    const agToolCost = ag.cost?.tools;
-    const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
+    for (const modelKey of runTargets) {
+      const ag = await runAgentQuery(q.task, {
+        model: modelKey,
+        provider: forcedProvider,
+        executionProfile,
+      }).catch(err => ({
+        engine: `agent (${modelKey})`,
+        modelKey,
+        provider: forcedProvider || 'unknown',
+        executionProfile: executionProfile || 'default',
+        error: err.message,
+      }));
 
-    console.log('┌─────────────────────┬────────────────────────────┐');
-    console.log(`│ Metric              │ ${pad(agentLabel, 26)} │`);
-    console.log('├─────────────────────┼────────────────────────────┤');
+      const agentLabel = ag.engine || 'Agent';
+      const agLlmCost = ag.cost?.claude;
+      const agToolCost = ag.cost?.tools;
+      const agLlmDetail = ag.tokens?.input ? `${ag.tokens.input}in/${ag.tokens.output}out` : '?';
 
-    const rows = [
-      ['Latency', `${ag.latencyMs || '?'}ms`],
-      ['Tool order', truncate((ag.toolOrder || []).join(' → '), 26)],
-      ['Rounds', `${ag.rounds || '?'}`],
-      ['Summary length', `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
-      ['{{clip:}} tokens', ag.hasClipTokens ? 'Yes' : 'No'],
-      ['LLM cost', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
-      ['Tool cost', agToolCost != null ? `$${agToolCost.toFixed(4)}` : '?'],
-      ['Total cost', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
-      ['Tokens', agLlmDetail],
-    ];
+      console.log(`Model target: ${modelKey} | Provider: ${ag.provider || '?'} | Profile: ${ag.executionProfile || 'default'}`);
+      console.log('┌─────────────────────┬────────────────────────────┐');
+      console.log(`│ Metric              │ ${pad(agentLabel, 26)} │`);
+      console.log('├─────────────────────┼────────────────────────────┤');
 
-    for (const [label, val] of rows) {
-      console.log(`│ ${pad(label, 19)} │ ${pad(val, 26)} │`);
+      const rows = [
+        ['Latency', `${ag.latencyMs || '?'}ms`],
+        ['Tool order', truncate((ag.toolOrder || []).join(' → '), 26)],
+        ['Rounds', `${ag.rounds || '?'}`],
+        ['Summary length', `${ag.fullSummaryLength || (ag.summary || '').length} chars`],
+        ['{{clip:}} tokens', ag.hasClipTokens ? 'Yes' : 'No'],
+        ['LLM cost', agLlmCost != null ? `$${agLlmCost.toFixed(5)}` : '?'],
+        ['Tool cost', agToolCost != null ? `$${agToolCost.toFixed(4)}` : '?'],
+        ['Total cost', ag.cost?.total != null ? `$${ag.cost.total.toFixed(5)}` : '?'],
+        ['Tokens', agLlmDetail],
+      ];
+
+      for (const [label, val] of rows) {
+        console.log(`│ ${pad(label, 19)} │ ${pad(val, 26)} │`);
+      }
+
+      console.log('└─────────────────────┴────────────────────────────┘');
+
+      if (ag.tokens?.input) {
+        const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || modelKey;
+        console.log(`\n  LLM: ${agModelName} — ${ag.tokens.input}in/${ag.tokens.output}out — $${(ag.cost?.claude || 0).toFixed(6)}`);
+      }
+
+      console.log('\n--- Summary (first 300 chars) ---');
+      console.log((ag.summary || ag.error || '(none)').substring(0, 300));
+
+      if (ag.error) console.log(`\nERROR: ${ag.error}`);
+      console.log('\n');
+
+      allResults.push({ query: q, ag, run: { modelKey, provider: forcedProvider || ag.provider, executionProfile: executionProfile || ag.executionProfile } });
     }
-
-    console.log('└─────────────────────┴────────────────────────────┘');
-
-    if (ag.tokens?.input) {
-      const agModelName = ag.engine?.replace('agent (', '').replace(')', '') || 'claude';
-      console.log(`\n  LLM: ${agModelName} — ${ag.tokens.input}in/${ag.tokens.output}out — $${(ag.cost?.claude || 0).toFixed(6)}`);
-    }
-
-    console.log('\n--- Summary (first 300 chars) ---');
-    console.log((ag.summary || ag.error || '(none)').substring(0, 300));
-
-    if (ag.error) console.log(`\nERROR: ${ag.error}`);
-
-    console.log('\n');
-
-    allResults.push({ query: q, ag });
   }
 
   if (shouldSave && allResults.length > 0) {
@@ -272,12 +497,13 @@ async function main() {
 
     let md = `# Agent Benchmark\n\n`;
     md += `**Date:** ${new Date().toISOString()}\n`;
-    md += `**Agent model:** ${agModel}\n`;
+    md += `**Primary run label:** ${agModel}\n`;
     md += `**Endpoint:** POST /api/pull\n\n`;
 
-    for (const { query, ag } of allResults) {
+    for (const { query, ag, run } of allResults) {
       md += `---\n\n## ${query.name}${query.cohort ? ` [${query.cohort}]` : ''}\n\n`;
       md += `**Query:** "${query.task}"\n\n`;
+      md += `**Run target:** model=${run?.modelKey || ag.modelKey || 'unknown'}, provider=${run?.provider || ag.provider || 'unknown'}, profile=${run?.executionProfile || ag.executionProfile || 'default'}\n\n`;
 
       md += `| Metric | Value |\n|--------|-------|\n`;
       md += `| Latency | ${ag.latencyMs || '?'}ms |\n`;
@@ -330,6 +556,22 @@ async function main() {
     md += `| Produced summary (>50 chars) | ${agHasSummary}/${allResults.length} |\n`;
     md += `| Included {{clip:}} tokens | ${agClipTokens}/${allResults.length} |\n`;
 
+    const grouped = new Map();
+    for (const r of allResults) {
+      const key = `${r.run?.provider || r.ag.provider || 'unknown'}|${r.run?.modelKey || r.ag.modelKey || 'unknown'}|${r.run?.executionProfile || r.ag.executionProfile || 'default'}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(r);
+    }
+
+    md += `\n### By Model/Profile\n\n`;
+    md += `| Provider | Model | Profile | Runs | Mean Cost | Mean Latency |\n|---|---|---:|---:|---:|---:|\n`;
+    for (const [key, rows] of grouped.entries()) {
+      const [provider, model, profile] = key.split('|');
+      const costs = rows.map(r => r.ag.cost?.total).filter(c => c != null && c > 0);
+      const latencies = rows.map(r => r.ag.latencyMs).filter(Boolean);
+      md += `| ${provider} | ${model} | ${profile} | ${rows.length} | $${avg(costs).toFixed(5)} | ${avg(latencies).toFixed(0)}ms |\n`;
+    }
+
     fs.writeFileSync(filepath, md);
     console.log(`\x1b[32m✔ Full output saved to ${filepath}\x1b[0m\n`);
   }
@@ -344,7 +586,11 @@ function truncate(str, len) {
   return str.length > len ? str.substring(0, len - 1) + '…' : str;
 }
 
-main().catch(err => {
-  console.error('Comparison test failed:', err);
-  process.exit(1);
-});
+module.exports = { TEST_QUERIES };
+
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Comparison test failed:', err);
+    process.exit(1);
+  });
+}

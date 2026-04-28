@@ -22,25 +22,20 @@ const { getAdjacentParagraphs } = require('../agent-tools/pineconeTools.js');
 const { createResearchSessionDirect } = require('../services/researchSessionService');
 const { resolveOwner } = require('../utils/resolveOwner');
 
-const TOOL_COSTS = {
-  search_quotes:              0.004,
-  search_chapters:            0.004,
-  list_episode_chapters:      0.002,
-  discover_podcasts:          0.005,
-  find_person:                0.001,
-  get_person_episodes:        0.001,
-  get_episode:                0.001,
-  get_feed:                   0.001,
-  get_feed_episodes:          0.001,
-  get_adjacent_paragraphs:    0.001,
-  create_research_session:    0.002,
-  suggest_action:             0,
-};
-
-const LIMITS = {
-  maxToolCallsPerSession: 20,
-  maxCostPerSession:      1.00,
-};
+// Removed 2026-04-28: per-tool flat-fee table previously fed createCostTracker.
+// Internal infra (Pinecone, MongoDB, Atlas, our HTTP services) is $0 marginal —
+// see HELPER_LLM_PRICES in constants/agentModels.js for what's actually billed.
+//
+// Also removed: `LIMITS.maxToolCallsPerSession` and the in-memory `sessionStore`
+// counter. The cap was a process-wide, never-expiring 20-tool budget keyed by
+// sessionId, which (a) leaked across follow-up turns in a single conversation
+// (a long first turn left a starving budget for turn 2 onward) and (b) was
+// surfaced verbatim to the LLM as an "API call limit" error stub which it
+// then parroted to the user. Per-request work is now bounded by:
+//   - executionProfile.maxToolRounds  (orchestrator round cap)
+//   - executionProfile.costBudgetHard (real-money cap, see createCostTracker)
+//   - executionProfile.latencyBudgetHardMs (wall-clock cap)
+// Cross-turn abuse protection lives at the HTTP edge, not in the tool layer.
 
 const RESULT_HARD_CAP = 20;
 const MIN_SEQUENCE_INDEX = 3;
@@ -58,17 +53,6 @@ const SLIM_EPISODE_FIELDS = new Set([
   'title', 'guid', 'feedId', 'publishedDate', 'creator',
   'guests', 'duration', 'episodeCount', 'matchedGuest',
 ]);
-
-// --- In-memory session tracking (POC — use Redis in production) ---
-
-const sessionStore = new Map();
-
-function getSession(sessionId) {
-  if (!sessionStore.has(sessionId)) {
-    sessionStore.set(sessionId, { toolCalls: 0, cost: 0, started: Date.now() });
-  }
-  return sessionStore.get(sessionId);
-}
 
 // --- Helpers ---
 
@@ -133,15 +117,24 @@ function truncateResults(data) {
 
 // --- Per-tool dispatch ---
 
-async function handleSearchQuotes(input, { openai }) {
+async function handleSearchQuotes(input, { openai, recordHelperLlmUsage }) {
   const { query, guid, guids, feedIds, limit, minDate, maxDate } = input;
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
 
-  printLog(`[TOOL] search_quotes: query="${query}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
+  const q = typeof query === 'string' ? query.trim() : (query != null && query !== '' ? String(query).trim() : '');
+  if (!q) {
+    printLog(`[TOOL] search_quotes: rejected empty/missing query (raw=${JSON.stringify(query)})`);
+    return {
+      error: 'search_quotes requires a non-empty `query` string (the model omitted it or passed only whitespace). Retry with a concrete phrase from the user question.',
+      results: [],
+    };
+  }
+
+  printLog(`[TOOL] search_quotes: query="${q}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
   const data = await searchQuotes({
-    query, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
-  }, { openai });
+    query: q, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
+  }, { openai, recordHelperLlmUsage });
   filterFluffResults(data);
 
   if (data.results && data.results.length > 2 && openai) {
@@ -150,16 +143,42 @@ async function handleSearchQuotes(input, { openai }) {
       creator: r.creator || r.episode,
       episode: r.episode,
     }));
-    const reranked = await rerankClips({ query, clips, openai });
-    if (reranked.clips.length > 0) {
-      const rerankTexts = new Set(reranked.clips.map(c => c.quote));
-      data.results = data.results.filter(r => rerankTexts.has(r.quote));
-      printLog(`[TOOL] Reranker: ${clips.length} -> ${data.results.length} clips`);
+    try {
+      const reranked = await rerankClips({ query: q, clips, openai });
+      if (typeof recordHelperLlmUsage === 'function' && reranked.usage) {
+        recordHelperLlmUsage(
+          reranked.usage.model,
+          reranked.usage.input_tokens || 0,
+          reranked.usage.output_tokens || 0,
+        );
+      }
+      const inputCount = clips.length;
+      let keptCount = inputCount;
+      if (reranked.clips.length > 0) {
+        const rerankTexts = new Set(reranked.clips.map(c => c.quote));
+        data.results = data.results.filter(r => rerankTexts.has(r.quote));
+        keptCount = data.results.length;
+        printLog(`[TOOL] Reranker: ${clips.length} -> ${data.results.length} clips`);
+      }
+      if (data._meta) {
+        data._meta.reranker = {
+          activated: true,
+          input: inputCount,
+          kept: keptCount,
+          removed: inputCount - keptCount,
+        };
+      }
+    } catch (rerankErr) {
+      printLog(`[TOOL] Reranker failed (non-fatal): ${rerankErr.message}`);
+      if (data._meta) data._meta.reranker = { activated: false, error: rerankErr.message };
     }
+  } else if (data._meta) {
+    data._meta.reranker = { activated: false, reason: 'too few clips to rerank' };
   }
 
   truncateResults(data);
   if (data.results) data.results = data.results.slice(0, clampedLimit);
+  if (data._meta) data._meta.afterClamp = data.results?.length || 0;
   printLog(`[TOOL] search_quotes: ${data.results?.length || 0} results`);
   return data;
 }
@@ -167,9 +186,14 @@ async function handleSearchQuotes(input, { openai }) {
 async function handleSearchChapters(input) {
   const { search, feedIds, limit, page = 1 } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const s = typeof search === 'string' ? search.trim() : (search != null && search !== '' ? String(search).trim() : '');
+  if (!s) {
+    printLog('[TOOL] search_chapters: rejected empty search');
+    return { error: 'search_chapters requires a non-empty `search` string.', data: [] };
+  }
 
-  printLog(`[TOOL] search_chapters: search="${search}", limit=${clampedLimit}`);
-  const data = await searchChapters({ search, feedIds, limit: clampedLimit, page });
+  printLog(`[TOOL] search_chapters: search="${s}", limit=${clampedLimit}`);
+  const data = await searchChapters({ search: s, feedIds, limit: clampedLimit, page });
   truncateResults(data);
   printLog(`[TOOL] search_chapters: ${data.data?.length || 0} results`);
   return data;
@@ -178,9 +202,14 @@ async function handleSearchChapters(input) {
 async function handleDiscoverPodcasts(input) {
   const { query, limit } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const q = typeof query === 'string' ? query.trim() : (query != null && query !== '' ? String(query).trim() : '');
+  if (!q) {
+    printLog(`[TOOL] discover_podcasts: rejected empty/missing query`);
+    return { error: 'discover_podcasts requires a non-empty `query` string.', results: [] };
+  }
 
-  printLog(`[TOOL] discover_podcasts: query="${query}", limit=${clampedLimit}`);
-  const data = await discoverPodcasts({ query, limit: clampedLimit });
+  printLog(`[TOOL] discover_podcasts: query="${q}", limit=${clampedLimit}`);
+  const data = await discoverPodcasts({ query: q, limit: clampedLimit });
   truncateResults(data);
   printLog(`[TOOL] discover_podcasts: ${data.results?.length || 0} results`);
   return data;
@@ -217,8 +246,17 @@ function buildSearchStrategy(people, hostedFeeds) {
 
 async function handleFindPerson(input) {
   const { name } = input;
-  printLog(`[TOOL] find_person: name="${name}"`);
-  const data = await findPeople({ search: name, limit: RESULT_HARD_CAP });
+  const n = typeof name === 'string' ? name.trim() : (name != null && name !== '' ? String(name).trim() : '');
+  if (!n) {
+    printLog(`[TOOL] find_person: rejected empty/missing name`);
+    return {
+      error: 'find_person requires a non-empty `name` string.',
+      people: [],
+      hostedFeeds: [],
+    };
+  }
+  printLog(`[TOOL] find_person: name="${n}"`);
+  const data = await findPeople({ search: n, limit: RESULT_HARD_CAP });
   const normalized = {
     people: data.data || [],
     hostedFeeds: data.hostedFeeds || [],
@@ -234,9 +272,14 @@ async function handleFindPerson(input) {
 async function handleGetPersonEpisodes(input) {
   const { name, limit, verbose } = input;
   const clampedLimit = clampLimit(limit, 5);
+  const n = typeof name === 'string' ? name.trim() : (name != null && name !== '' ? String(name).trim() : '');
+  if (!n) {
+    printLog(`[TOOL] get_person_episodes: rejected empty name`);
+    return { error: 'get_person_episodes requires a non-empty `name`.', episodes: [] };
+  }
 
-  printLog(`[TOOL] get_person_episodes: name="${name}", limit=${clampedLimit}`);
-  const data = await getPersonEpisodes({ name, limit: clampedLimit });
+  printLog(`[TOOL] get_person_episodes: name="${n}", limit=${clampedLimit}`);
+  const data = await getPersonEpisodes({ name: n, limit: clampedLimit });
   const normalized = { episodes: data.data || [], pagination: data.pagination, query: data.query };
   truncateResults(normalized);
   if (!verbose && normalized.episodes) {
@@ -260,8 +303,13 @@ async function handleListEpisodeChapters(input) {
 
 async function handleGetEpisode(input) {
   const { guid } = input;
-  printLog(`[TOOL] get_episode: guid="${guid}"`);
-  const data = await getEpisode({ guid });
+  const g = typeof guid === 'string' ? guid.trim() : (guid != null && guid !== '' ? String(guid).trim() : '');
+  if (!g) {
+    printLog(`[TOOL] get_episode: rejected empty guid`);
+    return { error: 'get_episode requires a non-empty episode `guid`.', episode: null };
+  }
+  printLog(`[TOOL] get_episode: guid="${g}"`);
+  const data = await getEpisode({ guid: g });
   const normalized = { episode: data?.data || data };
   printLog(`[TOOL] get_episode: ${normalized.episode?.title || 'found'}`);
   return normalized;
@@ -269,25 +317,41 @@ async function handleGetEpisode(input) {
 
 async function handleGetFeed(input) {
   const { feedId } = input;
-  printLog(`[TOOL] get_feed: feedId="${feedId}"`);
-  const data = await getFeed({ feedId });
+  const fid = feedId != null && feedId !== '' ? String(feedId).trim() : '';
+  if (!fid) {
+    printLog(`[TOOL] get_feed: rejected empty feedId`);
+    return { error: 'get_feed requires a `feedId`.', feed: null };
+  }
+  printLog(`[TOOL] get_feed: feedId="${fid}"`);
+  const data = await getFeed({ feedId: fid });
   const normalized = { feed: data?.data || data };
   printLog(`[TOOL] get_feed: ${normalized.feed?.title || 'found'}`);
   return normalized;
 }
 
 const VERBOSE_EPISODE_LIMIT = 5;
+// Episode listing supports a higher cap than other tools because the model
+// often needs to see a year+ of episodes for research-session curation, and
+// the slim payload (~150 chars/episode) keeps token cost bounded even at 100.
+const EPISODE_LIST_HARD_CAP = 100;
 
 async function handleGetFeedEpisodes(input) {
   const { feedId, limit, minDate, maxDate, verbose } = input;
+  const fid = feedId != null && feedId !== '' ? String(feedId).trim() : '';
+  if (!fid) {
+    printLog(`[TOOL] get_feed_episodes: rejected empty feedId`);
+    return { error: 'get_feed_episodes requires a `feedId`.', episodes: [] };
+  }
   const defaultLimit = verbose ? VERBOSE_EPISODE_LIMIT : 10;
-  const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : RESULT_HARD_CAP;
+  const hardCap = verbose ? VERBOSE_EPISODE_LIMIT : EPISODE_LIST_HARD_CAP;
   const clampedLimit = Math.min(Math.max(1, limit || defaultLimit), hardCap);
 
-  printLog(`[TOOL] get_feed_episodes: feedId="${feedId}", limit=${clampedLimit}, verbose=${!!verbose}`);
-  const data = await getFeedEpisodes({ feedId, limit: clampedLimit, minDate, maxDate });
+  printLog(`[TOOL] get_feed_episodes: feedId="${fid}", limit=${clampedLimit}, verbose=${!!verbose}`);
+  const data = await getFeedEpisodes({ feedId: fid, limit: clampedLimit, minDate, maxDate });
   const normalized = { episodes: data.data || [], pagination: data.pagination };
-  truncateResults(normalized);
+  if (normalized.episodes && normalized.episodes.length > hardCap) {
+    normalized.episodes = normalized.episodes.slice(0, hardCap);
+  }
   if (!verbose && normalized.episodes) {
     normalized.episodes = normalized.episodes.map(slimEpisode);
   }
@@ -297,10 +361,20 @@ async function handleGetFeedEpisodes(input) {
 
 async function handleGetAdjacentParagraphs(input) {
   const { paragraphId, windowSize } = input;
+  const pid = typeof paragraphId === 'string' ? paragraphId.trim() : (paragraphId != null && paragraphId !== '' ? String(paragraphId).trim() : '');
+  if (!pid) {
+    printLog(`[TOOL] get_adjacent_paragraphs: rejected empty paragraphId`);
+    return {
+      error: 'get_adjacent_paragraphs requires a non-empty `paragraphId` (shareLink from search_quotes).',
+      before: [],
+      current: null,
+      after: [],
+    };
+  }
   const clampedWindow = Math.min(Math.max(1, windowSize || 3), 10);
 
-  printLog(`[TOOL] get_adjacent_paragraphs: id="${paragraphId}", window=${clampedWindow}`);
-  const data = await getAdjacentParagraphs(paragraphId, clampedWindow);
+  printLog(`[TOOL] get_adjacent_paragraphs: id="${pid}", window=${clampedWindow}`);
+  const data = await getAdjacentParagraphs(pid, clampedWindow);
   const normalized = {
     before: data.before || [],
     current: data.current || null,
@@ -313,6 +387,10 @@ async function handleGetAdjacentParagraphs(input) {
 
 async function handleCreateResearchSession(input, { req, clipCache }) {
   const { pineconeIds, title } = input;
+  if (!Array.isArray(pineconeIds) || pineconeIds.length === 0) {
+    printLog('[TOOL] create_research_session: rejected empty pineconeIds');
+    return { error: 'create_research_session requires a non-empty `pineconeIds` array (shareLinks from search_quotes).' };
+  }
   printLog(`[TOOL] create_research_session: ${pineconeIds?.length || 0} clips, title="${title || 'auto'}", cached=${clipCache?.size || 0}`);
 
   let userId = null;
@@ -356,40 +434,39 @@ const TOOL_DISPATCH = {
 /**
  * Execute a tool call from the Claude agent.
  *
+ * Per-request work is bounded by the route's executionProfile (max rounds,
+ * cost budget, latency budget). There is intentionally NO cross-turn /
+ * cross-session counter here — that previously caused user-facing "API call
+ * limit" parroting (see 2026-04-28 fix). Cross-turn abuse protection belongs
+ * at the HTTP edge.
+ *
  * @param {string} toolName
  * @param {object} toolInput
  * @param {object} opts
  * @param {object} opts.openai - OpenAI client (for embeddings + reranker)
- * @param {string} opts.sessionId - Session ID for rate limiting
+ * @param {string} [opts.sessionId] - Session ID (currently unused at this
+ *        layer; preserved in signature for downstream handlers / future use)
+ * @param {function} [opts.recordHelperLlmUsage] - Callback (modelId, inputTokens, outputTokens) =>
+ *        invoked by helpers (reranker, embedding, query expansion) so the
+ *        caller can attribute their real spend to the request's cost tracker.
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache, recordHelperLlmUsage }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
   }
 
-  const toolCost = TOOL_COSTS[toolName] || 0;
-  const session = getSession(sessionId || 'default');
-
-  if (session.toolCalls >= LIMITS.maxToolCallsPerSession) {
+  try {
+    return await handler(toolInput, { openai, req, clipCache, recordHelperLlmUsage });
+  } catch (err) {
+    const msg = err && (err.message || String(err));
+    printLog(`[TOOL] ${toolName} threw (recovered): ${msg}`);
     return {
-      error: 'Session tool-call limit reached',
-      limit: LIMITS.maxToolCallsPerSession,
-      used: session.toolCalls,
+      error: msg,
+      toolExecutionFailed: true,
+      hint: 'Fix arguments or try a different tool, then continue. Empty search_quotes.query causes embedding API errors — always pass a non-empty string.',
     };
   }
-  if (session.cost + toolCost > LIMITS.maxCostPerSession) {
-    return {
-      error: 'Session cost limit reached',
-      limit: LIMITS.maxCostPerSession,
-      current: session.cost,
-    };
-  }
-
-  session.toolCalls++;
-  session.cost += toolCost;
-
-  return handler(toolInput, { openai, req, clipCache });
 }
 
-module.exports = { executeAgentTool, TOOL_COSTS };
+module.exports = { executeAgentTool };

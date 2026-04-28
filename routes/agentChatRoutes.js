@@ -3,11 +3,21 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 const { printLog } = require('../constants.js');
-const { SYSTEM_PROMPT, TOOL_DEFINITIONS } = require('../setup-agent');
+const {
+  SYSTEM_PROMPT,
+  TOOL_DEFINITIONS,
+  buildSynthesisPrompt,
+  buildStrictSynthesisPrompt,
+  TIER3_FALLBACK_MESSAGE,
+} = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
-const { executeAgentTool, TOOL_COSTS } = require('../utils/agentToolHandler');
+const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES } = require('../constants/agentModels');
+const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
+const { createProvider } = require('../utils/agent/providers');
+const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer } = require('../utils/agent/sanitizeOutput');
+const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -25,20 +35,32 @@ function writeAgentLog(requestId, sessionId, logData) {
   }
 }
 
-const MAX_TOOL_ROUNDS = 6;
-const COST_BUDGET_SOFT = 0.055;  // triggers "wrap up" guidance based on LLM cost only
-const COST_BUDGET_HARD = 0.08;   // hard ceiling — forces loop exit, LLM cost only
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
 
 /**
  * Running cost tracker scoped to a single agent request.
- * Separates LLM and tool costs using model-specific pricing.
+ *
+ * Tracks ONLY external paid API spend:
+ *   - llm:     the orchestrator model (DeepSeek / Haiku / Sonnet / etc.)
+ *   - helpers: small helper LLMs and embeddings invoked from within tool
+ *              execution + classifier + Tier 2 fallback (gpt-4o-mini reranker
+ *              + expansion, text-embedding-ada-002, Haiku classifier, Haiku
+ *              fallback). Each call resolves its model through HELPER_LLM_PRICES.
+ *   - tools:   call counter only. Internal infra (Pinecone, MongoDB, Atlas,
+ *              etc.) is $0 marginal and intentionally NOT priced — earlier
+ *              flat per-tool fees were a fiction that polluted the dollar
+ *              total. Kept as a counter so we still know how many tools fired.
+ *
+ * `total` = llm.cost + helpers.cost. Internal infra contributes nothing.
  */
-function createCostTracker(modelConfig) {
+function createCostTracker(modelConfig, executionProfile) {
+  const costBudgetSoft = executionProfile?.costBudgetSoft ?? 0.055;
+  const costBudgetHard = executionProfile?.costBudgetHard ?? 0.08;
   const tracker = {
-    llm:   { inputTokens: 0, outputTokens: 0, cost: 0 },
-    tools: { calls: 0, cost: 0 },
-    get total() { return this.llm.cost + this.tools.cost; },
+    llm:     { inputTokens: 0, outputTokens: 0, cost: 0, modelKey: modelConfig?.key, modelLabel: modelConfig?.label },
+    helpers: { calls: 0, cost: 0, byModel: {} },
+    tools:   { calls: 0 },
+    get total() { return this.llm.cost + this.helpers.cost; },
 
     addLlmUsage(inputTokens, outputTokens) {
       this.llm.inputTokens += inputTokens;
@@ -47,35 +69,185 @@ function createCostTracker(modelConfig) {
                     + (this.llm.outputTokens * modelConfig.outputPer1M / 1_000_000);
     },
 
-    addToolCall(toolName) {
+    /**
+     * Record usage for a helper LLM / embedding call (e.g. gpt-4o-mini
+     * reranker, text-embedding-ada-002, Haiku classifier). Resolves price via
+     * HELPER_LLM_PRICES; unknown models still increment the call counter so
+     * we can spot omissions, but their cost is recorded as 0 (with a warning
+     * log so we don't silently miss new helper additions).
+     */
+    addHelperLlmUsage(modelId, inputTokens, outputTokens) {
+      const price = HELPER_LLM_PRICES[modelId];
+      const safeInput = Number.isFinite(inputTokens) ? inputTokens : 0;
+      const safeOutput = Number.isFinite(outputTokens) ? outputTokens : 0;
+      let callCost = 0;
+      if (price) {
+        callCost = (safeInput * price.inputPer1M / 1_000_000)
+                 + (safeOutput * price.outputPer1M / 1_000_000);
+      } else if (modelId) {
+        printLog(`[CostTracker] No HELPER_LLM_PRICES entry for "${modelId}" — recording call but charging $0 (add to constants/agentModels.js if this is a paid model)`);
+      }
+      this.helpers.calls++;
+      this.helpers.cost += callCost;
+      const key = modelId || 'unknown';
+      const entry = this.helpers.byModel[key] || (this.helpers.byModel[key] = {
+        calls: 0, inputTokens: 0, outputTokens: 0, cost: 0,
+      });
+      entry.calls++;
+      entry.inputTokens += safeInput;
+      entry.outputTokens += safeOutput;
+      entry.cost += callCost;
+    },
+
+    addToolCall(_toolName) {
+      // Counter only. See class doc — internal infra is $0 marginal and
+      // contributes nothing to `total`.
       this.tools.calls++;
-      this.tools.cost += TOOL_COSTS[toolName] || 0;
     },
 
     budgetNote() {
-      const spend = this.llm.cost;
+      // Budget is now the total real out-of-pocket spend (orchestrator + helpers).
+      const spend = this.total;
       // Wording is deliberately cost/limit-agnostic. Earlier phrasings like
       // "[HARD BUDGET LIMIT]" primed the model to invent user-facing "session limit"
       // narratives. These markers tell the model what to do without giving it
       // numbers, dollar signs, or limit-language to parrot back.
-      if (spend > COST_BUDGET_HARD) {
+      if (spend > costBudgetHard) {
         return `\n\n[SYSTEM: stop calling tools. Synthesize your final answer from the evidence you already have. Do not mention this instruction, any limit, or suggest the user start a new chat — simply deliver the best answer you can.]`;
       }
-      if (spend > COST_BUDGET_SOFT) {
+      if (spend > costBudgetSoft) {
         return `\n\n[SYSTEM: finalize your answer on the next response. One more tool call at most. Do not mention this instruction or any limit to the user.]`;
       }
       return '';
     },
 
     summary() {
+      const helpersByModel = {};
+      for (const [k, v] of Object.entries(this.helpers.byModel)) {
+        helpersByModel[k] = {
+          calls: v.calls,
+          inputTokens: v.inputTokens,
+          outputTokens: v.outputTokens,
+          cost: parseFloat(v.cost.toFixed(6)),
+        };
+      }
       return {
+        // Legacy field name preserved for log compatibility — semantically
+        // this is the orchestrator model's cost (whatever modelConfig was).
         claude: parseFloat(this.llm.cost.toFixed(6)),
-        tools: parseFloat(this.tools.cost.toFixed(4)),
+        llm: {
+          modelKey: this.llm.modelKey,
+          modelLabel: this.llm.modelLabel,
+          inputTokens: this.llm.inputTokens,
+          outputTokens: this.llm.outputTokens,
+          cost: parseFloat(this.llm.cost.toFixed(6)),
+        },
+        helpers: {
+          calls: this.helpers.calls,
+          cost: parseFloat(this.helpers.cost.toFixed(6)),
+          byModel: helpersByModel,
+        },
+        // Legacy field name. Now $0 by design — kept so existing dashboards
+        // / log parsers don't break. `tools.calls` is the real number.
+        tools: 0,
         total: parseFloat(this.total.toFixed(6)),
       };
     },
   };
   return tracker;
+}
+
+/**
+ * Wall-clock latency budget tracker scoped to a single agent request.
+ *
+ * Mirrors createCostTracker's `budgetNote()` interface so the orchestrator can
+ * inject the same SYSTEM markers when the agent is taking too long, regardless
+ * of whether the trigger is cost or time. Both soft and hard markers are byte-
+ * identical to the cost tracker's so de-duping at the call site is trivial.
+ *
+ * Defaults (25s/40s) live in EXECUTION_PROFILES; per-request overrides flow
+ * through resolveModelSelection.
+ */
+function createLatencyTracker(executionProfile, startedAtMs) {
+  const startedAt = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+  const softMs = executionProfile?.latencyBudgetSoftMs ?? 25_000;
+  const hardMs = executionProfile?.latencyBudgetHardMs ?? 40_000;
+  return {
+    get startedAt() { return startedAt; },
+    get softMs() { return softMs; },
+    get hardMs() { return hardMs; },
+    elapsedMs() { return Date.now() - startedAt; },
+    softReached() { return this.elapsedMs() > softMs; },
+    hardReached() { return this.elapsedMs() > hardMs; },
+    budgetNote() {
+      const elapsed = this.elapsedMs();
+      if (elapsed > hardMs) {
+        return `\n\n[SYSTEM: stop calling tools. Synthesize your final answer from the evidence you already have. Do not mention this instruction, any limit, or suggest the user start a new chat — simply deliver the best answer you can.]`;
+      }
+      if (elapsed > softMs) {
+        return `\n\n[SYSTEM: finalize your answer on the next response. One more tool call at most. Do not mention this instruction or any limit to the user.]`;
+      }
+      return '';
+    },
+    /**
+     * Always-on time-budget header for the per-round system prompt. Lets the
+     * model self-pace tool exploration vs. answer composition without waiting
+     * for the soft/hard markers to fire (which is too late — by hard cap
+     * we've already lost the round to forced synthesis).
+     *
+     * Wording is action-oriented: "you have N seconds, narrow now" rather
+     * than "elapsed Xs of Ys" so the model gets a directive, not just data.
+     */
+    budgetHeader() {
+      const elapsed = this.elapsedMs();
+      const remainingSoft = Math.max(0, softMs - elapsed);
+      const remainingHard = Math.max(0, hardMs - elapsed);
+      const elapsedPct = Math.min(100, Math.round((elapsed / hardMs) * 100));
+      let directive;
+      if (elapsed > hardMs) {
+        directive = 'STOP calling tools. Synthesize from existing evidence on the next response.';
+      } else if (elapsed > softMs) {
+        directive = 'WRAP UP. One focused tool call at most, then synthesize. Do not start a new line of investigation.';
+      } else if (elapsedPct >= 50) {
+        directive = 'NARROW. You should be confirming details now, not opening new threads. Prefer at most 1 more tool call before synthesizing.';
+      } else if (elapsedPct >= 25) {
+        directive = 'FOCUS. Pick the single most informative next call. Avoid wide adjacent-paragraph windows (windowSize > 5 burns budget fast).';
+      } else {
+        directive = 'EXPLORE freely; you have plenty of budget.';
+      }
+      return [
+        '',
+        '## TIME BUDGET (real-time, updated each round)',
+        `Elapsed ${(elapsed/1000).toFixed(1)}s of ${(hardMs/1000).toFixed(0)}s hard cap (${elapsedPct}% used). ${(remainingSoft/1000).toFixed(1)}s until soft wrap-up nudge, ${(remainingHard/1000).toFixed(1)}s until forced synthesis.`,
+        `Directive: ${directive}`,
+        'After the hard cap fires, you do NOT get to write a long answer — synthesis runs on a tight 15s budget and will truncate mid-sentence if you leave it nothing to work with.',
+        'Do not mention this budget, the elapsed time, or any limit to the user.',
+        '',
+      ].join('\n');
+    },
+    /**
+     * Recommend a synthesis output size given remaining time. Used when the
+     * orchestrator builds the synthesis-pass system prompt so the model can
+     * scale its answer to whatever budget is actually available.
+     *
+     * Targets are deliberately conservative — observed in the 41-query
+     * regression: model overshoots length guidance by ~30% on average
+     * (told 600, writes 800) and gets cut by the synthesis deadline mid-
+     * sentence. Asking for 350 words with the goal of getting 450
+     * actually leaves ~10-15% safety margin for the tail to land on a
+     * terminal sentence.
+     */
+    synthesisGuidance(synthesisBudgetMs) {
+      const budget = Number.isFinite(synthesisBudgetMs) ? synthesisBudgetMs : 15_000;
+      if (budget >= 12_000) {
+        return { lengthHint: '300-450 words, 2-4 clip citations', urgency: 'normal' };
+      }
+      if (budget >= 8_000) {
+        return { lengthHint: '200-320 words, 2-3 clip citations', urgency: 'tight' };
+      }
+      return { lengthHint: '100-180 words, 1-2 clip citations — prioritize completeness over depth, NEVER end mid-sentence', urgency: 'urgent' };
+    },
+  };
 }
 
 // --- Step F: Tool result compaction ---
@@ -174,6 +346,54 @@ function measureMessages(messages) {
     }
   }
   return { userChars, assistantChars, toolResultChars, totalChars: userChars + assistantChars + toolResultChars };
+}
+
+// Per-tool result-count map. Each handler in utils/agentToolHandler.js returns a
+// distinct shape; deriving the count by sniffing field names (e.g. result.results,
+// result.chapters) is fragile and silently maps to 0 when a tool's array key
+// doesn't match any branch (search_chapters returns its array at `result.data`,
+// which previously fell through every branch and reported 0 results in the SSE
+// `tool_result` event even when 10 chapters were found).
+function computeToolResultCount(toolName, result) {
+  if (!result || typeof result !== 'object') return 0;
+  switch (toolName) {
+    case 'search_quotes':
+    case 'discover_podcasts':
+      return result.results?.length || 0;
+
+    case 'search_chapters':
+      return result.data?.length || 0;
+
+    case 'find_person':
+      return (result.people?.length || 0) + (result.hostedFeeds?.length || 0);
+
+    case 'get_person_episodes':
+    case 'get_feed_episodes':
+      return result.episodes?.length || 0;
+
+    case 'list_episode_chapters':
+      return result.chapters?.length || 0;
+
+    case 'get_episode':
+      return result.episode ? 1 : 0;
+
+    case 'get_feed':
+      return result.feed ? 1 : 0;
+
+    case 'get_adjacent_paragraphs':
+      return (result.before?.length || 0)
+        + (result.current ? 1 : 0)
+        + (result.after?.length || 0);
+
+    case 'create_research_session':
+      return result.sessionId ? (result.itemCount || 1) : 0;
+
+    case 'suggest_action':
+      return result.action ? 1 : 0;
+
+    default:
+      return 0;
+  }
 }
 
 function compactToolResult(toolName, result) {
@@ -312,6 +532,46 @@ function compactAssistantMessage(text) {
   return parts.join('\n');
 }
 
+/**
+ * Strip provider-private content blocks from assistant messages so the
+ * conversation can be safely forwarded to Anthropic in the Tier 2
+ * cross-provider re-synthesis step.
+ *
+ * Why: when the primary provider is DeepSeek (or anything with a private
+ * reasoning channel), assistant turns may contain blocks like
+ *   { type: 'thinking', text: '...' }
+ * which are *not* Anthropic-native — Anthropic's `thinking` block requires
+ * a `thinking` field (plus a `signature`), and unknown types 400 the
+ * request. We keep only the Anthropic-supported block shapes:
+ *   - text:        { type: 'text', text: string }
+ *   - tool_use:    { type: 'tool_use', id, name, input }
+ *   - tool_result: { type: 'tool_result', tool_use_id, content } (user role)
+ * String-content messages pass through unchanged.
+ */
+function sanitizeMessagesForAnthropic(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const ALLOWED_ASSISTANT_TYPES = new Set(['text', 'tool_use']);
+  const ALLOWED_USER_TYPES = new Set(['text', 'tool_result', 'image']);
+
+  return messages.map((msg) => {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (typeof msg.content === 'string') return msg;
+    if (!Array.isArray(msg.content)) return msg;
+
+    const allowed = msg.role === 'assistant' ? ALLOWED_ASSISTANT_TYPES : ALLOWED_USER_TYPES;
+    const cleanContent = msg.content.filter(block => block && allowed.has(block.type));
+
+    // Anthropic rejects assistant turns with empty content arrays. If we
+    // stripped everything (e.g. a turn that was only a thinking block),
+    // replace with a placeholder text block so the conversation stays valid.
+    if (msg.role === 'assistant' && cleanContent.length === 0) {
+      return { role: 'assistant', content: [{ type: 'text', text: '[reasoning omitted]' }] };
+    }
+
+    return { ...msg, content: cleanContent };
+  });
+}
+
 function compactHistory(history) {
   if (history.length <= 2) return history;
 
@@ -369,11 +629,6 @@ async function buildFeedLookup() {
   }
 }
 
-const AGENT_MODELS = {
-  fast:    { id: 'claude-haiku-4-5-20251001', inputPer1M: 1.00, outputPer1M: 5.00, label: 'Haiku 4.5' },
-  quality: { id: 'claude-sonnet-4-6',         inputPer1M: 3.00, outputPer1M: 15.00, label: 'Sonnet 4.6' },
-};
-const DEFAULT_AGENT_MODEL = 'fast';
 const CLASSIFIER_MODEL = AGENT_MODELS.fast.id;
 
 let anthropic;
@@ -574,84 +829,6 @@ function handleSuggestAction(toolInput, emit, { episodeCache, suggestedGuids, re
 }
 
 /**
- * Consume a streaming Claude response, emitting text_delta SSE events for
- * final (non-tool-use) rounds. Returns a shape compatible with the
- * non-streaming messages.create() response.
- */
-async function consumeStream(stream, { emit, aborted, requestId }) {
-  const contentBlocks = [];
-  let stopReason = null;
-  let inputTokens = 0;
-  let outputTokens = 0;
-
-  let currentBlockType = null;
-  let currentBlockText = '';
-  let currentToolInput = '';
-  let currentToolId = '';
-  let currentToolName = '';
-  let hasToolUse = false;
-
-  for await (const event of stream) {
-    if (aborted()) break;
-
-    switch (event.type) {
-      case 'message_start':
-        inputTokens = event.message?.usage?.input_tokens || 0;
-        break;
-
-      case 'content_block_start':
-        currentBlockType = event.content_block.type;
-        currentBlockText = '';
-        currentToolInput = '';
-        if (currentBlockType === 'tool_use') {
-          hasToolUse = true;
-          currentToolId = event.content_block.id;
-          currentToolName = event.content_block.name;
-        }
-        break;
-
-      case 'content_block_delta':
-        if (event.delta.type === 'text_delta') {
-          currentBlockText += event.delta.text;
-          if (!hasToolUse && !aborted()) {
-            emit('text_delta', { text: event.delta.text });
-          }
-        } else if (event.delta.type === 'input_json_delta') {
-          currentToolInput += event.delta.partial_json;
-        }
-        break;
-
-      case 'content_block_stop':
-        if (currentBlockType === 'text') {
-          contentBlocks.push({ type: 'text', text: currentBlockText });
-        } else if (currentBlockType === 'tool_use') {
-          let parsedInput = {};
-          try { parsedInput = JSON.parse(currentToolInput); } catch { /* empty input */ }
-          contentBlocks.push({
-            type: 'tool_use',
-            id: currentToolId,
-            name: currentToolName,
-            input: parsedInput,
-          });
-        }
-        currentBlockType = null;
-        break;
-
-      case 'message_delta':
-        stopReason = event.delta?.stop_reason || stopReason;
-        outputTokens = event.usage?.output_tokens || outputTokens;
-        break;
-    }
-  }
-
-  return {
-    content: contentBlocks,
-    stop_reason: stopReason,
-    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-  };
-}
-
-/**
  * @param {object} deps
  * @param {object} deps.openai - OpenAI client (for clip reranker)
  */
@@ -660,13 +837,9 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
-    // TEMPORARILY DEPRECATED: fast vs quality mode selection.
-    // The `model` field in req.body is intentionally ignored — all requests
-    // use DEFAULT_AGENT_MODEL. To re-enable dual-mode, restore:
-    //   const modelKey = (req.body.model === 'quality') ? 'quality' : DEFAULT_AGENT_MODEL;
-    // and re-expose the `model` param in the frontend / API docs.
-    const modelKey = DEFAULT_AGENT_MODEL;
-    const modelConfig = AGENT_MODELS[modelKey];
+    const { modelKey, modelConfig, executionProfile, profileKey } = resolveModelSelection(req.body || {});
+    const maxToolRounds = executionProfile.maxToolRounds;
+    const providerClient = createProvider(modelConfig.provider);
     const sessionId = req.body.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestId = `AGENT-${sessionId.slice(-8)}`;
     const startTime = Date.now();
@@ -674,18 +847,36 @@ function createAgentChatRoutes({ openai } = {}) {
     const triageEnabled = process.env.AGENT_TRIAGE_ENABLED !== 'false';
     const compactResults = req.body.compactResults !== undefined ? req.body.compactResults !== false : process.env.AGENT_COMPACT_RESULTS !== 'false';
     const compactHistoryEnabled = req.body.compactHistory !== undefined ? req.body.compactHistory !== false : process.env.AGENT_COMPACT_HISTORY !== 'false';
+    // When the orchestrator loop exits without a natural finish (cost/latency
+    // hard cap, max-rounds), fire one final tool-less LLM call to synthesize an
+    // answer from the evidence already gathered. Default true; override via
+    // body.synthesizeOnExit=false to preserve the legacy hard-cap behavior
+    // (loop exits silently with no text emitted).
+    const synthesizeOnExit = req.body.synthesizeOnExit !== undefined
+      ? req.body.synthesizeOnExit !== false
+      : process.env.AGENT_SYNTHESIZE_ON_EXIT !== 'false';
     // Internal-only flag driven by env. When false (default / production),
     // SSE emits are stripped of model, cost, tokens, intent, tool inputs,
     // round numbers, etc. Set AGENT_INCLUDE_METRICS=true in .env on internal
     // environments (local dev, benchmarks) to receive the full payload.
-    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true';
+    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true' || req.body?.includeMetrics === true;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
     }
 
-    if (!anthropicKeyValid) {
-      return res.status(503).json({ error: 'Anthropic API key is not configured or invalid. Check ANTHROPIC_API_KEY in .env' });
+    const providerReady = await providerClient.validate();
+    if (!providerReady) {
+      const envKeyByProvider = {
+        tinfoil: 'TINFOIL_API_KEY',
+        openrouter: 'OPENROUTER_API_KEY',
+        deepseek: 'DEEPSEEK_API_KEY',
+        anthropic: 'ANTHROPIC_API_KEY',
+      };
+      const envKey = envKeyByProvider[modelConfig.provider] || 'ANTHROPIC_API_KEY';
+      return res.status(503).json({
+        error: `${modelConfig.provider} provider is not configured or unavailable. Check ${envKey} in .env`,
+      });
     }
 
     const rawHistory = req.body.history || [];
@@ -712,7 +903,7 @@ function createAgentChatRoutes({ openai } = {}) {
           ? req._defaultStream
           : true;
 
-    printLog(`[${requestId}] POST ${req.path} — model=${modelConfig.label}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
+    printLog(`[${requestId}] POST ${req.path} — provider=${modelConfig.provider}, model=${modelConfig.label} (${modelKey}), profile=${profileKey}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
 
     if (streaming) {
       res.writeHead(200, {
@@ -734,11 +925,17 @@ function createAgentChatRoutes({ openai } = {}) {
 
     // Fields stripped from SSE payloads when includeMetrics=false (default).
     // Keys = event type, values = set of top-level fields to drop.
+    //
+    // NOTE: tool_call.input / tool_call.round / tool_result.resultCount /
+    // tool_result.latencyMs / tool_result.round are NOT stripped — the
+    // frontend uses them for subtitle rendering ("Searching defense tech..."),
+    // result-count chips ("[7 results]"), and round-keyed call/result
+    // matching in multi-round runs. These match the OpenAPI spec for these
+    // events. Only `status.intent` and the rich `done` summary remain gated
+    // (those are genuine internal telemetry).
     const INTERNAL_FIELDS = {
-      status:      new Set(['intent']),
-      tool_call:   new Set(['input', 'round']),
-      tool_result: new Set(['resultCount', 'latencyMs', 'round']),
-      done:        new Set(['model', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
+      status: new Set(['intent']),
+      done:   new Set(['provider', 'model', 'modelKey', 'executionProfile', 'intent', 'rounds', 'toolCalls', 'tokens', 'cost', 'latencyMs']),
     };
 
     const sanitize = (eventType, data) => {
@@ -752,7 +949,46 @@ function createAgentChatRoutes({ openai } = {}) {
       return out;
     };
 
+    // Stateful streaming sanitizer scoped to this request. Buffers any
+    // in-flight tool-call markup across `text_delta` chunks so an open tag
+    // in chunk N and its matching close in chunk N+M are recognized as a
+    // single block and stripped together — without holding back legitimate
+    // text. text_done supersedes streamed deltas, so we just clear the
+    // carry there.
+    const streamSanitizer = createStreamSanitizer();
+    let streamSanitizerLeakLogged = false;
+
     const emit = (eventType, data) => {
+      if (eventType === 'text_delta'
+          && data && typeof data.text === 'string') {
+        const safe = streamSanitizer.feed(data.text);
+        if (!streamSanitizerLeakLogged && safe.length !== data.text.length) {
+          console.warn(`[${requestId}] Stream sanitizer trimmed text_delta: ${data.text.length} → ${safe.length} chars (further drops will be silent for this request)`);
+          streamSanitizerLeakLogged = true;
+        }
+        if (!safe.length) return; // entire delta is in-flight markup carry
+        data = { ...data, text: safe };
+      } else if (eventType === 'text_done'
+          && data && typeof data.text === 'string') {
+        // text_done carries the full canonical final. Drop any per-delta
+        // carry (its content is included in `data.text`) and run the
+        // regular sanitizer for any markup the streaming pass missed.
+        streamSanitizer.flush();
+        if (hasToolCallMarkup(data.text)) {
+          const cleaned = sanitizeAgentText(data.text);
+          console.warn(`[${requestId}] Stripped tool-call markup from text_done: ${data.text.length} → ${cleaned.length} chars`);
+          data = { ...data, text: cleaned };
+        }
+      } else if (eventType === 'error') {
+        // Surface any held-back content before the error so the user sees
+        // partial work product rather than dropping it on the floor.
+        const tail = streamSanitizer.flush();
+        if (tail && streaming) {
+          try {
+            res.write(`event: text_delta\ndata: ${JSON.stringify({ text: tail })}\n\n`);
+          } catch (_) { /* client disconnected */ }
+        }
+      }
       const payload = sanitize(eventType, data);
       if (streaming) {
         try {
@@ -793,12 +1029,13 @@ function createAgentChatRoutes({ openai } = {}) {
 
       let intent = DEFAULT_INTENT;
       let classifierTokens = null;
-      if (triageEnabled && !bypassTriage) {
+      const classifierAvailable = anthropicKeyValid;
+      if (triageEnabled && !bypassTriage && classifierAvailable) {
         const result = await classifyIntent(message, history);
         intent = result.intent;
         classifierTokens = result.classifierTokens;
       } else {
-        printLog(`[${requestId}] Triage bypassed (enabled=${triageEnabled}, bypassTriage=${bypassTriage})`);
+        printLog(`[${requestId}] Triage bypassed (enabled=${triageEnabled}, bypassTriage=${bypassTriage}, classifierAvailable=${classifierAvailable})`);
       }
 
       const profile = PROFILES[intent];
@@ -828,13 +1065,39 @@ function createAgentChatRoutes({ openai } = {}) {
       const messages = [...effectiveHistory, { role: 'user', content: message }];
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
       let toolCalls = [];
-      const costs = createCostTracker(modelConfig);
+      const costs = createCostTracker(modelConfig, executionProfile);
+      // Classifier (Haiku) ran before the cost tracker existed, so backfill its
+      // usage now that we have the channel.
+      if (classifierTokens) {
+        costs.addHelperLlmUsage(
+          CLASSIFIER_MODEL,
+          classifierTokens.input_tokens || 0,
+          classifierTokens.output_tokens || 0,
+        );
+      }
+      const latency = createLatencyTracker(executionProfile, startTime);
       let round = 0;
       let hasExecutedTools = false;
+      // Hoisted so the post-loop synthesis path can tell whether the loop
+      // exited via a natural `break` (model said it was done) or via the guard
+      // (cost/latency hard cap, max rounds).
+      let naturalCompletion = false;
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
       const episodeCache = new Map();
+
+      // Per-session ceiling on `get_adjacent_paragraphs`. Rationale: the
+      // 2026-04-27 regression (e.g. "PayPal Mafia members" query) showed
+      // DeepSeek over-pulling adjacent context — 7 calls in a single
+      // session — and burning the latency budget before producing prose.
+      // The cap is a hard ceiling that doesn't depend on prompt
+      // compliance: once exhausted, calls return a "blocked" stub instead
+      // of executing, which both saves time and signals to the model to
+      // synthesize. Most clean queries used 0-3 expansions, so 4 is
+      // generous; tune via env if needed.
+      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '4', 10);
+      let adjacentParagraphCount = 0;
 
       const cacheEpisode = (ep, feedFallback = {}) => {
         if (!ep || !ep.guid) return;
@@ -855,9 +1118,14 @@ function createAgentChatRoutes({ openai } = {}) {
         finalText: null, error: null,
       };
 
-      while (round < MAX_TOOL_ROUNDS && !_aborted && costs.llm.cost < COST_BUDGET_HARD) {
+      while (
+        round < maxToolRounds
+        && !_aborted
+        && costs.llm.cost < executionProfile.costBudgetHard
+        && !latency.hardReached()
+      ) {
         round++;
-        console.log(`[${requestId}] === ROUND ${round} START ===`);
+        console.log(`[${requestId}] === ROUND ${round} START === (elapsed ${latency.elapsedMs()}ms)`);
 
         if (hasExecutedTools) {
           emit('status', { message: 'Composing your answer...', sessionId });
@@ -868,16 +1136,36 @@ function createAgentChatRoutes({ openai } = {}) {
         const totalInputChars = systemChars + msgMetrics.totalChars;
         printLog(`[${requestId}] Round ${round} input: system=${systemChars}c (~${Math.ceil(systemChars/4)}tok), messages=${msgMetrics.totalChars}c (user=${msgMetrics.userChars}, assistant=${msgMetrics.assistantChars}, toolResults=${msgMetrics.toolResultChars}), total=~${Math.ceil(totalInputChars/4)}tok est`);
 
-        const stream = await anthropic.messages.create({
+        // Belt-and-suspenders for the latency soft/hard cap nudge.
+        // `latency.budgetNote()` is already appended to every tool_result
+        // content (see ~30 lines down), but burying it inside JSON-ish
+        // tool-result payloads gives it weak attention weight on some
+        // models (DeepSeek under pressure observed ignoring it).
+        // Mirroring the same SYSTEM marker into the system prompt for the
+        // round costs nothing for clean queries (note is empty until soft
+        // cap is reached) and surfaces it in a higher-priority slot when
+        // it matters.
+        //
+        // budgetHeader() is the *proactive* complement to budgetNote():
+        // always-on real-time elapsed/remaining + a directive scaled to
+        // current usage (EXPLORE / FOCUS / NARROW / WRAP UP / STOP). Lets
+        // the model self-pace tool exploration before the soft cap fires
+        // — without it, the model has no time signal until 25s in, by
+        // which point it can't course-correct. Failure case it prevents:
+        // model burns the whole 40s budget on wide adjacent_paragraphs
+        // calls, then synthesis runs on 15s and truncates mid-sentence.
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
+
+        const response = await providerClient.createResponse({
           model: modelConfig.id,
-          max_tokens: 4096,
-          system: effectiveSystemPrompt,
+          maxTokens: 4096,
+          system: roundSystemPrompt,
           messages,
           tools: effectiveTools,
-          stream: true,
+          aborted,
+          onTextDelta: (text) => emit('text_delta', { text }),
+          requestId,
         });
-
-        const response = await consumeStream(stream, { emit, aborted, requestId });
 
         console.log(`[${requestId}] Claude response: stop_reason="${response.stop_reason}", content_blocks=${response.content.length}, types=[${response.content.map(b => b.type).join(',')}]`);
         console.log(`[${requestId}] Tokens this round: input=${response.usage?.input_tokens}, output=${response.usage?.output_tokens}`);
@@ -898,6 +1186,7 @@ function createAgentChatRoutes({ openai } = {}) {
         }
 
         if (isFinalResponse) {
+          naturalCompletion = true;
           const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
           console.log(`[${requestId}] Final text streamed: ${fullText.length} chars across ${accumulatedTextByRound.length} round(s) (round ${round} contributed ${roundText.length} chars)`);
           agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
@@ -915,28 +1204,91 @@ function createAgentChatRoutes({ openai } = {}) {
         hasExecutedTools = true;
         const toolResults = [];
 
-        for (const toolUse of toolUseBlocks) {
-          const toolStart = Date.now();
-          console.log(`[${requestId}] Executing tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 150)})`);
+        // ---- Parallel tool execution within a single round ----
+        // The LLM emits multiple tool_use blocks per response intending them as
+        // parallel work. We run them concurrently with Promise.all to avoid the
+        // serialization tax (e.g. 9 search_quotes × 3s sequential = 27s vs ~4s
+        // wall when parallelized). All shared-state mutation (clipCache,
+        // discoverResults, episodeCache, toolCalls, toolResults, costs) is
+        // applied *after* the gather, in input order, so emit/log ordering and
+        // cost/latency bookkeeping stay deterministic.
+        //
+        // Pre-emit `tool_call` events synchronously so the UI can show all
+        // tools as "in flight" before any await. Each handler still wraps its
+        // own try/catch and resolves to a result object — Promise.all is safe
+        // (no rejecting paths).
 
+        // Decide adjacent-paragraph blocking up front to preserve cap semantics
+        // under parallel execution. If the round contains more get_adjacent_paragraphs
+        // calls than remaining slots, the overflow gets a blocked stub.
+        const apBlocked = new Set();
+        let apSlotsRemaining = Math.max(0, adjacentParagraphCap - adjacentParagraphCount);
+        for (let i = 0; i < toolUseBlocks.length; i++) {
+          if (toolUseBlocks[i].name !== 'get_adjacent_paragraphs') continue;
+          if (apSlotsRemaining > 0) {
+            apSlotsRemaining--;
+            adjacentParagraphCount++;
+          } else {
+            apBlocked.add(i);
+          }
+        }
+
+        for (const toolUse of toolUseBlocks) {
+          console.log(`[${requestId}] Executing tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 150)})`);
           emit('tool_call', {
             tool: toolUse.name,
             input: toolUse.input,
             round,
           });
+        }
 
+        // Bound to this request's cost tracker. Helpers (reranker, embedding,
+        // proper-noun expansion) call into this so their real spend lands in
+        // the same `helpers` channel as the classifier and Tier 2 fallback.
+        const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
+          costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
+        };
+
+        const settled = await Promise.all(toolUseBlocks.map(async (toolUse, i) => {
+          const toolStart = Date.now();
           let result;
-          if (toolUse.name === 'suggest_action') {
-            result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
-          } else if (toolUse.name === 'create_research_session') {
-            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache });
-            if (result.sessionId && result.url) {
-              emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
+          try {
+            if (toolUse.name === 'suggest_action') {
+              result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
+            } else if (toolUse.name === 'create_research_session') {
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
+              if (result.sessionId && result.url) {
+                emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
+              }
+            } else if (apBlocked.has(i)) {
+              // Hard ceiling reached. Return a blocked stub instead of executing —
+              // saves real time on the upstream call and (more importantly) gives
+              // the model an explicit signal that it has enough context and
+              // should synthesize. See `adjacentParagraphCap` declaration above
+              // for rationale.
+              result = {
+                blocked: true,
+                reason: `Adjacent-paragraph budget exhausted (${adjacentParagraphCount}/${adjacentParagraphCap}). Stop expanding context — synthesize the answer from the search_quotes results you already have.`,
+              };
+              console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
+            } else {
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
             }
-          } else {
-            result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId });
+          } catch (toolErr) {
+            printLog(`[${requestId}] Tool ${toolUse.name} exception (recovered for LLM): ${toolErr.message}`);
+            result = {
+              error: String(toolErr.message || toolErr),
+              toolExecutionFailed: true,
+              hint: 'Fix tool arguments or try another tool. If this was search_quotes, ensure `query` is a non-empty string.',
+            };
           }
+          return { toolUse, result, toolLatency: Date.now() - toolStart };
+        }));
 
+        // Process settled results in input order: preserves emit order, log
+        // ordering, cache writes, and the toolCalls ↔ toolResults alignment
+        // that the agentLog round entry below depends on.
+        for (const { toolUse, result, toolLatency } of settled) {
           if (toolUse.name === 'search_quotes' && result.results) {
             const dupes = [];
             for (const r of result.results) {
@@ -968,18 +1320,19 @@ function createAgentChatRoutes({ openai } = {}) {
           if (toolUse.name === 'get_person_episodes' && result.episodes) {
             for (const ep of result.episodes) cacheEpisode(ep);
           }
-          const toolLatency = Date.now() - toolStart;
 
-          const resultCount = result.results?.length
-            || result.episodes?.length
-            || (result.people?.length || 0) + (result.hostedFeeds?.length || 0)
-            || result.chapters?.length
-            || (result.episode ? 1 : 0)
-            || (result.feed ? 1 : 0)
-            || (result.sessionId ? result.itemCount || 1 : 0)
-            || (result.before?.length != null ? result.before.length + (result.current ? 1 : 0) + (result.after?.length || 0) : 0)
-            || 0;
-
+          const resultCount = computeToolResultCount(toolUse.name, result);
+          // `_meta` is a side-channel populated by some handlers (currently
+          // search_quotes) describing what actually happened internally —
+          // lexical vs vector hits, expansion variants, reranker stats, etc.
+          // Surface it on the SSE event so the UI can render the real
+          // breakdown instead of a single generic "Searching quotes" line,
+          // then strip it from the result so the LLM never sees it (it's
+          // visible-only telemetry, not search content).
+          const resultMeta = result && typeof result === 'object' ? result._meta : null;
+          if (result && typeof result === 'object' && '_meta' in result) {
+            delete result._meta;
+          }
           const resultSize = JSON.stringify(result).length;
           console.log(`[${requestId}] Tool ${toolUse.name}: ${resultCount} results, ${resultSize} chars JSON, ${toolLatency}ms`);
 
@@ -988,6 +1341,7 @@ function createAgentChatRoutes({ openai } = {}) {
             resultCount,
             latencyMs: toolLatency,
             round,
+            ...(resultMeta ? { meta: resultMeta } : {}),
           });
 
           toolCalls.push({
@@ -998,7 +1352,11 @@ function createAgentChatRoutes({ openai } = {}) {
           });
 
           costs.addToolCall(toolUse.name);
-          const budgetNote = costs.budgetNote();
+          const costNote = costs.budgetNote();
+          const latencyNote = latency.budgetNote();
+          const budgetNote = costNote === latencyNote
+            ? costNote
+            : Array.from(new Set([costNote, latencyNote].filter(Boolean))).join('');
 
           const llmResult = compactResults ? compactToolResult(toolUse.name, result) : result;
           if (compactResults) {
@@ -1037,15 +1395,441 @@ function createAgentChatRoutes({ openai } = {}) {
         messages.push({ role: 'user', content: toolResults });
         console.log(`[${requestId}] === ROUND ${round} END ===`);
       }
-      console.log(`[${requestId}] === LOOP EXITED === round=${round}`);
+      console.log(`[${requestId}] === LOOP EXITED === round=${round}, natural=${naturalCompletion}`);
+
+      // --- Forced final synthesis on non-natural exit ---
+      // When the loop exits via guard (cost/latency hard cap or max rounds)
+      // rather than the model's own `stop_reason`, the user gets no `text_done`
+      // and the request returns empty text. To avoid that, fire one last
+      // tool-less LLM call so the model can synthesize from whatever evidence
+      // is already in `messages` (the final user turn already carries the
+      // SYSTEM "stop calling tools" marker on its tool results).
+      //
+      // Skipped when the user aborted (don't burn tokens for a closed connection)
+      // or when synthesizeOnExit is explicitly disabled via API/env.
+      let synthesisExitReason = null;
+      if (!naturalCompletion && !_aborted && synthesizeOnExit) {
+        synthesisExitReason = costs.llm.cost >= executionProfile.costBudgetHard
+          ? 'cost_hard_cap'
+          : latency.hardReached()
+            ? 'latency_hard_cap'
+            : round >= maxToolRounds
+              ? 'max_rounds'
+              : 'unknown';
+        console.log(`[${requestId}] === SYNTHESIS START === reason=${synthesisExitReason}, elapsed=${latency.elapsedMs()}ms`);
+        emit('status', { message: 'Composing your answer...', sessionId });
+
+        // Bound the synthesis call by its own short deadline. By the time we
+        // get here we already have all the tool results in `messages` —
+        // synthesis is just composing prose, it should not run another 25s
+        // and blow past the latency hard cap. Default 15s, env-overridable.
+        // The deadline is enforced two ways:
+        //   1. Wrapped `aborted` predicate that streaming providers check
+        //      per chunk, so partial text already streamed to the client is
+        //      preserved and the loop exits cleanly.
+        //   2. `timeoutMs` passed to the provider, which becomes the fetch's
+        //      AbortController timeout, killing non-streaming or hung calls.
+        // DIAGNOSTIC (2026-04-28): default raised from 15s to 300s so primary
+        // synthesis always runs to completion when measuring true wall-clock
+        // performance under unbounded loop budgets. Bring this back to ~15s
+        // once we have baselines and have decided on per-intent budgets.
+        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '300000', 10);
+        const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
+        const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
+
+        // Build size guidance for the synthesis pass. The model can scale
+        // its own output ("write 200 words" vs "write 500 words") if you
+        // tell it explicitly — without this, it defaults to the verbose
+        // response-format spec and runs past the synthesis deadline mid-
+        // sentence on tight budgets. See latency.synthesisGuidance for
+        // the elapsed → length-target mapping.
+        const synthesisGuidance = latency.synthesisGuidance(synthesisBudgetMs);
+        console.log(`[${requestId}] Synthesis guidance: ${synthesisGuidance.urgency} (${synthesisGuidance.lengthHint})`);
+
+        let streamedSynthesis = '';
+        let primaryOutputTokens = 0;
+        let primarySynthesisError = null;
+        try {
+          // Use a synthesis-only prompt that explicitly forbids tool-call
+          // markup. The default search prompt advertises tools and tells the
+          // model to use them — when paired with `tools: []`, some providers
+          // (DeepSeek observed in production) react by emitting their native
+          // tool-call DSL as plaintext, which then leaks straight to the user.
+          // The synthesis prompt overrides those rules and reasserts: write
+          // plain prose, cite only what's already in evidence, no markup.
+          //
+          // Belt-and-suspenders: in addition to the prompt, we keep the
+          // tool schemas attached and pass `toolChoice: 'none'`. DeepSeek's
+          // documented behavior is that 'none' explicitly forbids tool
+          // invocation while keeping the request shape consistent with
+          // earlier rounds — empirically critical to stop it from inlining
+          // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
+          const synthesisResponse = await providerClient.createResponse({
+            model: modelConfig.id,
+            maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+            system: synthesisSystemPrompt,
+            messages,
+            tools: effectiveTools,
+            toolChoice: 'none',
+            aborted: synthesisAborted,
+            timeoutMs: synthesisBudgetMs,
+            onTextDelta: (text) => {
+              streamedSynthesis += text;
+              emit('text_delta', { text });
+            },
+            requestId,
+          });
+
+          costs.addLlmUsage(
+            synthesisResponse.usage?.input_tokens || 0,
+            synthesisResponse.usage?.output_tokens || 0,
+          );
+          primaryOutputTokens = synthesisResponse.usage?.output_tokens || 0;
+
+          // Some providers (e.g. DeepSeek non-streaming) don't fire onTextDelta;
+          // pull the text off the content blocks and emit it as one delta so
+          // streaming clients still see it before text_done.
+          const blocksText = (synthesisResponse.content || [])
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('');
+          if (!streamedSynthesis && blocksText) {
+            streamedSynthesis = blocksText;
+            emit('text_delta', { text: blocksText });
+          }
+
+          agentLog.rounds.push({
+            round: round + 1,
+            type: 'synthesis',
+            tokens: synthesisResponse.usage,
+            reason: synthesisExitReason,
+          });
+        } catch (err) {
+          primarySynthesisError = err;
+          console.error(`[${requestId}] === SYNTHESIS FAILED === ${err.message}`);
+        }
+
+        // ===== Synthesis quality gate + Tier 1/2/3 recovery =====
+        //
+        // The primary synthesis above streams text_delta events live to the
+        // client. If the result is unusable (DSML markup, narration-only
+        // preamble, mid-token truncation, suspiciously short), we run up to
+        // two recovery passes and then fall back to a hardcoded apology.
+        // Recovery passes are silent (no text_delta) so the canonical
+        // `text_done` payload is what matters for clients that re-render on
+        // text_done. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
+        const sanitizedPrimary = sanitizeAgentText(streamedSynthesis);
+
+        // When primary synthesis throws (typically the synthesis-budget
+        // timeout firing mid-stream), we may still have substantial clean
+        // prose already streamed to the client. Re-running synthesis with
+        // an even tighter budget will almost certainly time out again, so
+        // skip recovery if the streamed text is content-clean. We pass
+        // outputTokens: undefined so the low-tokens gate is suppressed
+        // (we never got a final usage block), and rely on the content
+        // checks (markup / narration / truncation / empty) to flag bad
+        // partial streams.
+        const primaryQuality = primarySynthesisError
+          ? evaluateSynthesisOutput({ text: sanitizedPrimary, outputTokens: undefined })
+          : evaluateSynthesisOutput({ text: sanitizedPrimary, outputTokens: primaryOutputTokens });
+
+        // Annotate the trigger for observability when an exception happened
+        // *and* the text failed content checks (the worst-of-both case).
+        if (primarySynthesisError && !primaryQuality.ok) {
+          primaryQuality.trigger = `exception+${primaryQuality.trigger}`;
+          primaryQuality.reason = `${primarySynthesisError.message} | ${primaryQuality.reason}`;
+        }
+
+        let finalSynthText = sanitizedPrimary;
+        const recoveryRecord = primaryQuality.ok ? null : {
+          primary: {
+            trigger: primaryQuality.trigger,
+            reason: primaryQuality.reason,
+            outputTokens: primaryOutputTokens,
+            textLen: sanitizedPrimary.length,
+          },
+        };
+
+        if (!primaryQuality.ok) {
+          console.log(`[${requestId}] Synthesis quality FAILED: trigger=${primaryQuality.trigger}, reason=${primaryQuality.reason}, tokens=${primaryOutputTokens}, len=${sanitizedPrimary.length}`);
+          emit('status', { message: 'Refining your answer...', sessionId });
+
+          // ===== Tier 1: strict re-synthesis on the same provider =====
+          // Same model, hardened prompt, temperature: 0 for determinism,
+          // halved time budget, tool_choice still 'none'. Silent — no
+          // text_delta emits, just collect text and evaluate.
+          const tier1Start = Date.now();
+          const tier1Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
+          const tier1Deadline = Date.now() + tier1Budget;
+          const tier1Aborted = () => _aborted || Date.now() >= tier1Deadline;
+          // Recovery passes always run on a halved budget — flag them
+          // 'urgent' so the model picks the shortest length target and is
+          // explicitly told to never end mid-sentence.
+          const tier1Guidance = latency.synthesisGuidance(tier1Budget);
+          let tier1Text = '';
+          let tier1OutputTokens = 0;
+          let tier1Error = null;
+          try {
+            const tier1Resp = await providerClient.createResponse({
+              model: modelConfig.id,
+              maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance),
+              messages,
+              tools: effectiveTools,
+              toolChoice: 'none',
+              temperature: 0,
+              aborted: tier1Aborted,
+              timeoutMs: tier1Budget,
+              onTextDelta: () => { /* silent */ },
+              requestId,
+            });
+            costs.addLlmUsage(
+              tier1Resp.usage?.input_tokens || 0,
+              tier1Resp.usage?.output_tokens || 0,
+            );
+            tier1OutputTokens = tier1Resp.usage?.output_tokens || 0;
+            tier1Text = sanitizeAgentText(
+              (tier1Resp.content || [])
+                .filter(b => b.type === 'text')
+                .map(b => b.text)
+                .join('')
+            );
+          } catch (err) {
+            tier1Error = err;
+            console.error(`[${requestId}] Tier 1 re-synthesis FAILED: ${err.message}`);
+          }
+          const tier1Quality = tier1Error
+            ? { ok: false, trigger: 'exception', reason: tier1Error.message }
+            : evaluateSynthesisOutput({ text: tier1Text, outputTokens: tier1OutputTokens });
+          recoveryRecord.tier1 = {
+            ok: tier1Quality.ok,
+            trigger: tier1Quality.trigger || null,
+            reason: tier1Quality.reason || null,
+            outputTokens: tier1OutputTokens,
+            textLen: tier1Text.length,
+            elapsedMs: Date.now() - tier1Start,
+            model: modelConfig.id,
+          };
+          agentLog.rounds.push({
+            round: round + 1,
+            type: 'synthesis_tier1',
+            ok: tier1Quality.ok,
+            trigger: tier1Quality.trigger || null,
+            outputTokens: tier1OutputTokens,
+            elapsedMs: Date.now() - tier1Start,
+          });
+
+          if (tier1Quality.ok) {
+            console.log(`[${requestId}] Tier 1 recovered: ${tier1Text.length} chars, ${tier1OutputTokens} tokens, ${Date.now() - tier1Start}ms`);
+            finalSynthText = tier1Text;
+          } else {
+            console.log(`[${requestId}] Tier 1 also failed: trigger=${tier1Quality.trigger}, reason=${tier1Quality.reason}. Trying Tier 2 (Haiku).`);
+            emit('status', { message: 'Trying a different model...', sessionId });
+
+            // ===== Tier 2: cross-provider re-synthesis on Anthropic Haiku =====
+            // Different model family, different tool DSL — sidesteps
+            // DeepSeek-specific failure modes (DSML leaks, narration). Same
+            // strict prompt. Silent.
+            //
+            // Conversation-format note: when the primary provider is DeepSeek
+            // (or any model that emits private reasoning blocks), the
+            // assistant turns in `messages` may contain content blocks of
+            // type 'thinking' shaped for that provider. Anthropic's API
+            // rejects those with `messages.N.content.M.thinking.thinking:
+            // Field required`. Strip non-Anthropic-native blocks before
+            // forwarding so the cross-provider call doesn't 400 out.
+            const tier2Messages = sanitizeMessagesForAnthropic(messages);
+            const tier2Start = Date.now();
+            const tier2Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
+            const tier2Deadline = Date.now() + tier2Budget;
+            const tier2Aborted = () => _aborted || Date.now() >= tier2Deadline;
+            const tier2Guidance = latency.synthesisGuidance(tier2Budget);
+            let tier2Text = '';
+            let tier2OutputTokens = 0;
+            let tier2Error = null;
+            const haikuConfig = AGENT_MODELS.fast;
+            try {
+              const haikuClient = createProvider(haikuConfig.provider);
+              const haikuReady = await haikuClient.validate();
+              if (!haikuReady) {
+                throw new Error(`Haiku provider (${haikuConfig.provider}) not configured — missing API key`);
+              }
+              const tier2Resp = await haikuClient.createResponse({
+                model: haikuConfig.id,
+                maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance),
+                messages: tier2Messages,
+                tools: effectiveTools,
+                toolChoice: 'none',
+                temperature: 0,
+                aborted: tier2Aborted,
+                onTextDelta: () => { /* silent */ },
+                requestId,
+              });
+              // Tier 2 runs on Haiku, NOT the orchestrator model. Bill it
+              // against the helpers channel at Haiku rates so the dollar
+              // total reflects what actually leaves our account. (Previously
+              // this used addLlmUsage which incorrectly priced Haiku tokens
+              // at the orchestrator's per-1M rate.)
+              costs.addHelperLlmUsage(
+                haikuConfig.id,
+                tier2Resp.usage?.input_tokens || 0,
+                tier2Resp.usage?.output_tokens || 0,
+              );
+              tier2OutputTokens = tier2Resp.usage?.output_tokens || 0;
+              tier2Text = sanitizeAgentText(
+                (tier2Resp.content || [])
+                  .filter(b => b.type === 'text')
+                  .map(b => b.text)
+                  .join('')
+              );
+            } catch (err) {
+              tier2Error = err;
+              console.error(`[${requestId}] Tier 2 cross-provider FAILED: ${err.message}`);
+            }
+            const tier2Quality = tier2Error
+              ? { ok: false, trigger: 'exception', reason: tier2Error.message }
+              : evaluateSynthesisOutput({ text: tier2Text, outputTokens: tier2OutputTokens });
+            recoveryRecord.tier2 = {
+              ok: tier2Quality.ok,
+              trigger: tier2Quality.trigger || null,
+              reason: tier2Quality.reason || null,
+              outputTokens: tier2OutputTokens,
+              textLen: tier2Text.length,
+              elapsedMs: Date.now() - tier2Start,
+              model: haikuConfig.id,
+              provider: haikuConfig.provider,
+            };
+            agentLog.rounds.push({
+              round: round + 1,
+              type: 'synthesis_tier2',
+              ok: tier2Quality.ok,
+              trigger: tier2Quality.trigger || null,
+              outputTokens: tier2OutputTokens,
+              elapsedMs: Date.now() - tier2Start,
+              model: haikuConfig.id,
+            });
+
+            if (tier2Quality.ok) {
+              console.log(`[${requestId}] Tier 2 recovered (${haikuConfig.id}): ${tier2Text.length} chars, ${tier2OutputTokens} tokens, ${Date.now() - tier2Start}ms`);
+              finalSynthText = tier2Text;
+            } else {
+              // ===== Tier 3: hardcoded graceful degradation =====
+              console.log(`[${requestId}] Tier 2 also failed: trigger=${tier2Quality.trigger}. Falling back to Tier 3 hardcoded message.`);
+              finalSynthText = TIER3_FALLBACK_MESSAGE;
+              recoveryRecord.tier3 = { used: true, message: TIER3_FALLBACK_MESSAGE };
+              agentLog.rounds.push({
+                round: round + 1,
+                type: 'synthesis_tier3',
+                ok: true,
+                fallback: 'hardcoded',
+              });
+            }
+          }
+        }
+
+        // Never replace a large primary synthesis with the generic Tier 3 line.
+        // Primary can fail quality for reasons we still don't want to throw away
+        // (e.g. edge cases beside truncated_clip). If we'd show Tier 3 but
+        // primary already streamed substantial prose, ship that partial.
+        const substantiveFloor = parseInt(process.env.AGENT_SYNTHESIS_SUBSTANTIVE_FLOOR || '1500', 10);
+        if (finalSynthText === TIER3_FALLBACK_MESSAGE
+            && typeof sanitizedPrimary === 'string'
+            && sanitizedPrimary.trim().length >= substantiveFloor) {
+          printLog(`[${requestId}] Tier 3 suppressed: delivering primary synthesis partial (${sanitizedPrimary.length}c) instead of generic fallback`);
+          finalSynthText = sanitizedPrimary;
+          if (recoveryRecord?.tier3) {
+            recoveryRecord.tier3 = {
+              used: false,
+              suppressedForPrimaryPartial: true,
+              primaryChars: sanitizedPrimary.length,
+            };
+          }
+        }
+
+        // Tier 3 suppression v2: when primary synthesis emitted ~nothing (deadline
+        // killed it before any visible text), the original UX was to wipe all the
+        // intermediate text the model streamed during tool rounds and replace it
+        // with the canned 166-char fallback. Clients that render `text_done` as
+        // authoritative therefore "took back" hundreds of chars of breadcrumbs
+        // the user already saw. If we have substantive intermediate narration,
+        // keep it and just append a soft "ran out of time" notice instead.
+        const intermediateText = accumulatedTextByRound.map(r => r.text).join('\n\n').trim();
+        // Floor lowered 2026-04-28: even a single sentence of breadcrumbs
+        // ("Great, I have the full year of episodes...") is better than the
+        // canned 166-char apology overwriting it. Set to 1 to mean "any
+        // non-empty intermediate text wins".
+        const intermediateFloor = parseInt(process.env.AGENT_TIER3_INTERMEDIATE_FLOOR || '50', 10);
+        if (finalSynthText === TIER3_FALLBACK_MESSAGE
+            && intermediateText.length >= intermediateFloor) {
+          const softNotice = "\n\nI ran out of time before pulling this all together. Try again or refine the ask and I'll have another go.";
+          printLog(`[${requestId}] Tier 3 suppressed v2: keeping ${intermediateText.length}c of intermediate narration + soft notice instead of canned fallback`);
+          finalSynthText = intermediateText + softNotice;
+          if (recoveryRecord?.tier3) {
+            recoveryRecord.tier3 = {
+              used: false,
+              suppressedForIntermediateText: true,
+              intermediateChars: intermediateText.length,
+            };
+          }
+        }
+
+        // ===== Commit the final synthesis text =====
+        // We're in the synthesis branch, which only fires when
+        // `naturalCompletion === false` — i.e. the loop exited because we
+        // hit a cap, not because the model said it was done. Any text
+        // emitted in earlier rounds was therefore intermediate narration
+        // ("Let me grab one more...") that the model intended to follow
+        // with another tool call. Drop it before pushing the synthesis
+        // output so the canonical `text_done` payload contains only the
+        // final synthesis prose, not the discarded thinking-out-loud
+        // preamble.
+        if (finalSynthText && finalSynthText.length > 0) {
+          accumulatedTextByRound.length = 0;
+          accumulatedTextByRound.push({ round: round + 1, text: finalSynthText });
+        }
+
+        const fullText = accumulatedTextByRound.length > 0
+          ? accumulatedTextByRound.map(r => r.text).join('\n\n')
+          : '';
+        if (fullText) {
+          agentLog.finalText = fullText;
+          if (recoveryRecord) {
+            agentLog.synthesisRecovery = recoveryRecord;
+          }
+          emit('text_done', { text: fullText });
+        }
+        const synthesisElapsedTotal = Date.now() - (synthesisDeadlineMs - synthesisBudgetMs);
+        const deadlineHit = Date.now() >= synthesisDeadlineMs;
+        const recoveryTier = recoveryRecord
+          ? (recoveryRecord.tier3 ? 'tier3' : (recoveryRecord.tier2?.ok ? 'tier2' : (recoveryRecord.tier1?.ok ? 'tier1' : 'none')))
+          : 'primary';
+        console.log(`[${requestId}] === SYNTHESIS DONE === recovery=${recoveryTier}, ${fullText.length} total chars, ${synthesisElapsedTotal}ms${deadlineHit ? ' (primary deadline hit)' : ''}`);
+      }
 
       const latencyMs = Date.now() - startTime;
 
-      const { claude: claudeCost, tools: toolCost, total: totalCost } = costs.summary();
+      const summary = costs.summary();
+      const { claude: claudeCost, tools: toolCost, total: totalCost } = summary;
 
       const finalMetrics = measureMessages(messages);
       printLog(`[${requestId}] Token budget breakdown: system=~${Math.ceil(effectiveSystemPrompt.length/4)}tok, user=~${Math.ceil(finalMetrics.userChars/4)}tok, assistant=~${Math.ceil(finalMetrics.assistantChars/4)}tok, toolResults=~${Math.ceil(finalMetrics.toolResultChars/4)}tok | actual=${costs.llm.inputTokens}in+${costs.llm.outputTokens}out`);
-      printLog(`[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens, $${claudeCost.toFixed(4)} LLM + $${toolCost.toFixed(4)} tools = $${totalCost.toFixed(4)}, ${latencyMs}ms`);
+
+      // Real-money cost breakdown. `tools` (internal infra) is intentionally
+      // $0 by design — see createCostTracker doc.
+      const helpersByModel = summary.helpers?.byModel || {};
+      const helperEntries = Object.entries(helpersByModel)
+        .map(([modelId, m]) => `${modelId} ${m.calls}x $${m.cost.toFixed(4)}`)
+        .join(', ');
+      const helpersBreakdown = helperEntries ? ` [${helperEntries}]` : '';
+      const orchestratorLabel = costs.llm.modelLabel || costs.llm.modelKey || 'orchestrator';
+      printLog(
+        `[${requestId}] Complete: ${round} rounds, ${toolCalls.length} tool calls, ${costs.llm.inputTokens}+${costs.llm.outputTokens} tokens` +
+        `, $${claudeCost.toFixed(4)} ${orchestratorLabel} + $${(summary.helpers?.cost || 0).toFixed(4)} helpers${helpersBreakdown}` +
+        ` = $${totalCost.toFixed(4)}, ${latencyMs}ms` +
+        ` (internal infra: $${toolCost.toFixed(4)} by design)`
+      );
 
       agentLog.completedAt = new Date().toISOString();
       agentLog.summary = {
@@ -1054,6 +1838,8 @@ function createAgentChatRoutes({ openai } = {}) {
         tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
         cost: costs.summary(),
         latencyMs,
+        naturalCompletion,
+        synthesisExitReason,
       };
       writeAgentLog(requestId, sessionId, agentLog);
 
@@ -1146,7 +1932,10 @@ function createAgentChatRoutes({ openai } = {}) {
 
       emit('done', {
         sessionId,
+        provider: modelConfig.provider,
         model: modelConfig.label,
+        modelKey,
+        executionProfile: profileKey,
         intent,
         rounds: round,
         toolCalls: toolCalls.map(tc => ({ name: tc.name, resultCount: tc.resultCount, latencyMs: tc.latencyMs })),
@@ -1157,6 +1946,8 @@ function createAgentChatRoutes({ openai } = {}) {
           total: totalCost,
         },
         latencyMs,
+        naturalCompletion,
+        synthesisExitReason,
       });
 
       if (streaming) {
@@ -1170,13 +1961,18 @@ function createAgentChatRoutes({ openai } = {}) {
         if (buffered.session) responseBody.session = buffered.session;
         if (includeMetrics) {
           responseBody.metrics = {
+            provider: modelConfig.provider,
             model: modelConfig.label,
+            modelKey,
+            executionProfile: profileKey,
             intent,
             rounds: round,
             toolCalls: buffered.toolCalls,
             tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
             cost: { claude: claudeCost, tools: toolCost, total: totalCost },
             latencyMs,
+            naturalCompletion,
+            synthesisExitReason,
           };
         }
         res.status(200).json(responseBody);
