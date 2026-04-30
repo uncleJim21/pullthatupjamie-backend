@@ -12,7 +12,7 @@ const entitlementSchema = new mongoose.Schema({
   identifierType: {
     type: String,
     required: true,
-    enum: ['ip', 'mongoUserId', 'user', 'jwt', 'email', 'serviceKey', 'prepaid', 'custom'], // 'mongoUserId' is preferred for authenticated users
+    enum: ['ip', 'mongoUserId', 'user', 'jwt', 'email', 'serviceKey', 'prepaid', 'npub', 'custom'], // 'mongoUserId' is preferred for authenticated users; 'npub' is a 64-char hex Nostr pubkey funded via NIP-57 zaps (Nostr bot)
     index: true
   },
   

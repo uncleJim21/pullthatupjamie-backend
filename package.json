@@ -14,7 +14,12 @@
     "skills:build": "node scripts/skills/build-smithery.js && node scripts/skills/build-clawhub-zip.js",
     "skills:build:smithery": "node scripts/skills/build-smithery.js",
     "skills:build:clawhub": "node scripts/skills/build-clawhub-zip.js",
-    "nostr:check-zaps": "node scripts/check-zap-receipts.js"
+    "nostr:check-zaps": "node scripts/check-zap-receipts.js",
+    "nostr:watch-mentions": "node scripts/nostr-watch-mentions.js",
+    "nostr:watch-zaps": "node scripts/nostr-watch-zaps.js",
+    "nostr:process-mentions": "node scripts/nostr-process-mentions.js",
+    "nostr:decrypt-private-zap": "node scripts/nostr-decrypt-private-zap.js",
+    "test:zap-validator": "node tests/zap-receipt-validator.test.js"
   },
   "author": "uj21",
   "license": "ISC",
