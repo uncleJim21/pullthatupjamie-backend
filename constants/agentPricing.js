@@ -46,7 +46,7 @@ function getAgentCostMicroUsd(entitlementType) {
 
 /**
  * Compute a right-sized default 402 invoice amount (in sats) for a priced
- * endpoint, covering exactly one call plus a small safety buffer.
+ * endpoint, covering exactly one call plus ~2% safety headroom (AGENT_DEFAULT_SATS_BUFFER).
  *
  * Returns null when the endpoint is not priced or no BTC rate is available
  * (caller should fall back to DEFAULT_CREDIT_PURCHASE_SATS).
