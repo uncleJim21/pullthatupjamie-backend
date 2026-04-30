@@ -172,6 +172,8 @@ Agents POST to `/api/pull` with a natural-language `message` and an `Authorizati
 ### How does L402 authentication work?
 L402 combines HTTP `402 Payment Required` with Bitcoin Lightning. The agent makes a request, receives a 402 with a Lightning invoice, pays it (via Alby NWC, lnget, or any Lightning wallet), and retries with the proof of payment as the `Authorization` header. One macaroon covers every Jamie endpoint until the balance runs out.
 
+When you do not pass `?amountSats`, the default Lightning invoice is **auto-sized per endpoint**: sats are chosen from the endpoint’s list price in `creditInfo.pricingMicroUsd` at the current BTC/USD rate, plus a **~2%** buffer for cached-rate drift, then rounded up to whole sats. Each successful call still debits exactly that list price; the buffer only affects how much prepaid credit you receive in that top-up.
+
 ### What does it cost?
 - 🔍 Search & discovery endpoints: fractions of a cent per call (~$0.004–$0.005)
 - 🤖 `/api/pull` agent endpoint: ~$0.10 per call (bounded, not per-token)

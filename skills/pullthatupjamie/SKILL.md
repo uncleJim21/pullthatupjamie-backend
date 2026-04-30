@@ -39,7 +39,7 @@ Jamie is a **retrieval/vector DB as a service for podcasts**. Instead of:
 - Web searching and getting SEO spam, listicles, and low-quality summaries
 - Multiple search iterations across unreliable sources
 
-You run a single semantic search ($0.002, returns in under 2s) and get the **exact clip** with timestamp, audio deeplink, and transcript. Every result is timestamped to the second — you're not handing users a 2-hour episode and saying "it's in there somewhere." You're linking them to the exact 30-second moment where the expert makes the point. 500 sats ($0.33) covers an entire deep research session of 150+ searches.
+You run a single semantic search ($0.002, returns in under 2s) and get the **exact clip** with timestamp, audio deeplink, and transcript. Every result is timestamped to the second — you're not handing users a 2-hour episode and saying "it's in there somewhere." You're linking them to the exact 30-second moment where the expert makes the point. At $0.002 per search, prepaid credit goes far. When you hit paywall without `?amountSats`, the default Lightning invoice targets about **one** call on that endpoint: list price from `creditInfo.pricingMicroUsd` converted to sats at spot BTC, plus a **~2%** buffer for cached-rate drift (rounded up to whole sats). Pass **`?amountSats=N`** when you want a larger top-up in a single payment.
 
 **Don't see the podcast you need?** Use `POST /api/discover-podcasts` ($0.005) to search the full Podcast Index catalog, then submit episodes for transcription via `POST /api/on-demand/submitOnDemandRun` ($0.45). Once processed, episodes get timestamped chaptering and become searchable at paragraph level.
 
@@ -76,7 +76,7 @@ Every paid request goes through the same L402 flow: hit an endpoint, receive a 4
 **Key points:**
 - **Credential works across all endpoints:** The same `macaroon:preimage` works on `/search-quotes`, `/search-chapters`, `/make-clip`, `/jamie-assist`, etc. until the balance is depleted.
 - **Response headers on every paid request:** `X-Credits-Remaining-USD` and `X-Credits-Cost-USD` tell you your balance and what the call cost.
-- **Custom amount:** The default invoice is 500 sats (~$0.33). To request a different amount, add `?amountSats=N` to any request (min 10, max 500,000 sats). The 402 response will contain an invoice for that amount.
+- **Default Lightning invoice:** If you omit `?amountSats`, the server auto-sizes sats for roughly **one** call at this endpoint's list USD price (see `creditInfo.pricingMicroUsd`) at the current BTC rate, plus **~2%** drift headroom—the 402 body shows `amountSats` / `creditInfo.defaultSats`. **`?amountSats=N`** sets a custom top-up instead (min 10, max 500,000 sats).
 - **Balance endpoint:** `GET /api/agent/balance` with your L402 credential returns your full balance breakdown.
 - **When credits run out:** The next request returns a fresh 402 challenge. Pay it to continue. If using lnget, this is automatic.
 
@@ -121,7 +121,7 @@ curl -s -X POST \
 Credits are auto-activated on first use. **Reuse this same credential on all subsequent requests** to any pullthatupjamie.ai endpoint until depleted.
 
 #### Custom Credit Amount
-To deposit more (or less) than the default 500 sats, add `?amountSats=N` to any request:
+To deposit more Lightning credit than the auto-sized default, add `?amountSats=N` to any request:
 ```bash
 curl -s -D- -X POST -H "Content-Type: application/json" \
   -d '{"query": "bitcoin energy consumption"}' \
@@ -160,7 +160,7 @@ Check `X-Credits-Remaining-USD` in response headers during workflows, or call `G
 **Paid tier credentials:** The L402 credential (macaroon + preimage) is a sensitive bearer token. It should be:
 - Stored securely (env vars or encrypted config, not in plaintext logs)
 - Never shared with untrusted agents or services
-- Backed by a wallet with limited funds (e.g., 500-1000 sats)
+- Backed by a wallet with limited funds (use small test amounts or scale up with `?amountSats` as needed)
 
 **All API calls proxied:** All operations route through `https://www.pullthatupjamie.ai`. RSS feed parsing, search, and ingestion are handled server-side. No direct external URL fetching by the agent.
 
@@ -170,9 +170,8 @@ Check `X-Credits-Remaining-USD` in response headers during workflows, or call `G
 - API base: `https://www.pullthatupjamie.ai` (must include `www.` — bare domain redirects and breaks API calls)
 - **Free tier requires `X-Free-Tier: true` header.** Without it, paid endpoints return 402 immediately. Corpus endpoints work without any headers.
 - **Credit reuse is optional.** You can pay per query (each 402 = one credit used once) or deposit more and reuse the same `L402 macaroon:preimage` credential across all endpoints. Either way works.
-- Custom amount: append `?amountSats=N` to any request (min 10, max 500,000). No separate purchase endpoint.
+- Custom amount: append `?amountSats=N` to any request (min 10, max 500,000). Per-call charges follow `pricingMicroUsd`; larger top-ups BUY more USD balance at BTC spot (see 402/`balance`).
 - Alby CLI: `pay-invoice` with `-i` flag (not `pay`)
-- 500 sats gets ~150+ searches. Start there.
 - Monitor balance via `X-Credits-Remaining-USD` response header or `GET /api/agent/balance`.
 - Research session creation takes 30-45 seconds. Be patient.
 - Clip creation takes 30-120 seconds. Poll `/api/clip-status/:lookupHash` every 5 seconds.
