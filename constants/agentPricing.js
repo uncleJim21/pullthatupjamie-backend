@@ -30,8 +30,8 @@ const DEFAULT_CREDIT_PURCHASE_SATS = parseInt(process.env.DEFAULT_CREDIT_PURCHAS
 
 // Safety buffer applied when auto-sizing per-endpoint default invoices.
 // Absorbs BTC price drift between the cached rate used for sizing (up to ~60 min old)
-// and the time the user actually pays. 1.15 = 15% extra headroom.
-const AGENT_DEFAULT_SATS_BUFFER = 1.15;
+// and the time the user actually pays. 1.02 = 2% extra headroom.
+const AGENT_DEFAULT_SATS_BUFFER = 1.02;
 
 /**
  * Get the microdollar cost for a given entitlement type.
