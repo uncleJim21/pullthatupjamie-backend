@@ -20,8 +20,29 @@
  * whitespace boundary plus an ellipsis.
  */
 
-const { finalizeEvent } = require('nostr-tools');
+const { finalizeEvent, nip19 } = require('nostr-tools');
 const { getBotSecretKey } = require('./nostrBotIdentity');
+
+/**
+ * Render a hex pubkey as a Nostr-21 mention URI that clients
+ * actually recognize as a mention (`nostr:npub1...`). Damus,
+ * Primal, Amethyst etc. all replace this with an inline clickable
+ * mention card showing the user's name + avatar. Without the
+ * `nostr:` prefix and bech32 encoding, the bare `@<hex>` is just
+ * literal text — no notification, no rendering.
+ *
+ * The `p` tag in event.tags is what actually drives notifications;
+ * the `nostr:npub1...` in content is what makes it visually
+ * obvious who the message is for.
+ */
+function pubkeyToNostrMention(hex) {
+  if (!hex || typeof hex !== 'string') return '';
+  try {
+    return `nostr:${nip19.npubEncode(hex)}`;
+  } catch (_) {
+    return '';
+  }
+}
 
 const SHARE_BASE_URL = 'https://pullthatupjamie.ai/share';
 // Nostr kind:1 has no protocol-level character limit; this cap is
@@ -165,9 +186,16 @@ function buildReplyEvent({ mentionEvent, text, relayHint = '' }) {
  */
 function buildInsufficientBalanceReply({ mentionEvent, lnAddress, costUsd, balanceUsd, relayHint = '' }) {
   const lines = [];
-  lines.push(`@${mentionEvent.pubkey.substring(0, 8)}… you don't have enough balance for a Jamie pull yet.`);
+  const mention = pubkeyToNostrMention(mentionEvent.pubkey);
+  // Lead with a proper Nostr-21 mention so the user sees a
+  // clickable inline card (and so they don't see a hex prefix that
+  // looks broken). If encoding somehow fails we fall back to
+  // skipping the mention prefix entirely — the `p` tag still drives
+  // the notification.
+  const greet = mention ? `${mention} you don't have enough balance for a Jamie Pull yet.` : `You don't have enough balance for a Jamie Pull yet.`;
+  lines.push(greet);
   if (typeof costUsd === 'number') {
-    lines.push(`Each pull costs about $${costUsd.toFixed(2)}.`);
+    lines.push(`Each Jamie Pull costs about $${costUsd.toFixed(2)}.`);
   }
   if (typeof balanceUsd === 'number' && balanceUsd > 0) {
     lines.push(`Current balance: $${balanceUsd.toFixed(4)}.`);
@@ -176,7 +204,7 @@ function buildInsufficientBalanceReply({ mentionEvent, lnAddress, costUsd, balan
   }
   if (lnAddress) {
     lines.push(
-      `Zap me at ${lnAddress} (any amount) and I'll credit your npub. Public OR private ("only Jamie sees") zaps both work — but **anonymous** zaps can't be tied to you, so they won't credit. Try again once funds arrive.`,
+      `Zap me at ${lnAddress} (any amount) and I'll credit your npub. Public OR private ("only Jamie sees") zaps both work — but anonymous zaps can't be tied to you, so they won't credit. Try again once funds arrive.`,
     );
   } else {
     lines.push(
@@ -189,6 +217,7 @@ function buildInsufficientBalanceReply({ mentionEvent, lnAddress, costUsd, balan
 module.exports = {
   buildReplyEvent,
   buildInsufficientBalanceReply,
+  pubkeyToNostrMention,
   // Exported for unit tests:
   renderClipTokens,
   stripUnsupportedMarkdown,

@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
+const { nip19 } = require('nostr-tools');
 const { NostrMention } = require('../models/NostrMention');
-const { getBotPubkeyHex } = require('./nostrBotIdentity');
+const { getBotPubkeyHex, getBotNpub } = require('./nostrBotIdentity');
 
 /**
  * NostrMentionWatcher
@@ -54,6 +55,7 @@ class NostrMentionWatcher {
    */
   async poll() {
     const botPubkey = getBotPubkeyHex();
+    const botNpub = getBotNpub();
     const now = Math.floor(Date.now() / 1000);
     const since = await this._computeSince(botPubkey, now);
 
@@ -79,6 +81,7 @@ class NostrMentionWatcher {
     let newCount = 0;
     let duplicateCount = 0;
     let skippedSelf = 0;
+    let threadPropagation = 0;
     let invalid = 0;
 
     for (const ev of events) {
@@ -88,6 +91,20 @@ class NostrMentionWatcher {
       }
       if (ev.pubkey === botPubkey) {
         skippedSelf++;
+        continue;
+      }
+      // The bot is `p`-tagged, but is the user actually addressing
+      // the bot? NIP-10 says clients propagate `p` tags up the
+      // thread for notification courtesy, which means *every* reply
+      // anywhere in a thread the bot was once part of will p-tag
+      // the bot. Without this filter, mid-thread side conversations
+      // get ingested as new mentions and burn the bot's compute.
+      // The convention everyone uses to disambiguate "I'm tagging
+      // you" from "you're upstream in this thread" is: the bot's
+      // identifier must appear in the content text, not just in a
+      // p tag.
+      if (!this._isDirectMention(ev, botPubkey, botNpub)) {
+        threadPropagation++;
         continue;
       }
       const inserted = await this._persistMention(ev);
@@ -100,15 +117,59 @@ class NostrMentionWatcher {
       newCount,
       duplicateCount,
       skippedSelf,
+      threadPropagation,
       invalid,
       totalUnique: events.length,
       since,
       relays: this.relays.length,
     };
     console.log(
-      `[NostrMentionWatcher.metrics] new=${newCount} dup=${duplicateCount} self=${skippedSelf} invalid=${invalid} total=${events.length} relays=${this.relays.length}`,
+      `[NostrMentionWatcher.metrics] new=${newCount} dup=${duplicateCount} self=${skippedSelf} threadProp=${threadPropagation} invalid=${invalid} total=${events.length} relays=${this.relays.length}`,
     );
     return summary;
+  }
+
+  /**
+   * "Direct mention" detector. Returns true iff the bot's pubkey
+   * (npub or hex) appears in the event's content text in any of:
+   *   - `nostr:npub1...`     (NIP-21 mention URI — standard)
+   *   - `npub1...`           (bare bech32, no `nostr:` prefix)
+   *   - `nostr:nprofile1...` (we decode each match and compare pubkey)
+   *   - 64-char hex pubkey   (rare but defensive)
+   *
+   * Returns false when the bot only appears via a `p` tag (i.e.,
+   * the event is just inheriting the bot from an upstream thread
+   * participant).
+   *
+   * Substring checks are case-insensitive. Bech32 is lowercase
+   * canonical so this is safe.
+   */
+  _isDirectMention(ev, botPubkeyHex, botNpub) {
+    const content = String(ev.content || '').toLowerCase();
+    if (!content) return false;
+    if (botNpub && content.includes(botNpub.toLowerCase())) return true;
+    if (botPubkeyHex && content.includes(botPubkeyHex.toLowerCase())) return true;
+    // Decode any nprofile1... refs and check inner pubkey. nprofiles
+    // include relay hints so two nprofiles for the same pubkey will
+    // have different bech32 strings — substring matching won't catch
+    // them. We only need this branch when the user clicks "mention"
+    // in a client that auto-encodes nprofiles (Amethyst sometimes does).
+    const nprofileMatches = content.match(/nostr:nprofile1[a-z0-9]+/gi);
+    if (nprofileMatches) {
+      for (const ref of nprofileMatches) {
+        try {
+          const decoded = nip19.decode(ref.replace(/^nostr:/i, ''));
+          if (
+            decoded.type === 'nprofile' &&
+            decoded.data &&
+            String(decoded.data.pubkey).toLowerCase() === botPubkeyHex.toLowerCase()
+          ) {
+            return true;
+          }
+        } catch (_) { /* ignore invalid nprofile */ }
+      }
+    }
+    return false;
   }
 
   async _computeSince(botPubkey, now) {
