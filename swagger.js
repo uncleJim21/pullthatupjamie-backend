@@ -54,7 +54,7 @@ const doc = {
     },
     {
       name: 'Agent Auth',
-      description: 'L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N to any request for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget.'
+      description: 'L402 Lightning-based prepaid credit system for agent API access. Hit any paid endpoint without auth to receive a 402 challenge with a Lightning invoice. Default invoice (no ?amountSats) is auto-sized per endpoint to roughly one call at the list USD price and current BTC rate, with a ~2% buffer for rate-cache drift, rounded up to whole sats. After payment, use Authorization: L402 <macaroon>:<preimage> for all subsequent requests — the same credential works across all endpoints until the balance is depleted. Add ?amountSats=N for a custom credit amount (min 10, max 500,000 sats). Each API call deducts its USD-equivalent cost from the prepaid balance. Compatible with lnget.'
     },
     {
       name: 'Pull',

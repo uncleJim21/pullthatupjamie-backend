@@ -17,8 +17,9 @@
  *   - Balance is tracked in microdollars (1 microdollar = $0.000001)
  * 
  * Flow:
- *   1. Agent hits any protected endpoint → 402 with default invoice
- *      (optional: append ?amountSats=N for a custom credit amount)
+ *   1. Agent hits any protected endpoint → 402 with default invoice (auto-sized
+ *      per endpoint: ~one call at list USD + ~2% BTC drift buffer; optional
+ *      ?amountSats=N for a custom credit amount)
  *   2. Agent pays invoice, retries with Authorization: L402 <macaroon>:<preimage>
  *   3. Server auto-activates credits and serves the request
  *   4. GET /balance returns remaining USD balance

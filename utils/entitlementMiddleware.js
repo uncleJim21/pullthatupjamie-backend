@@ -65,9 +65,10 @@ async function send402Challenge(req, res, options = {}) {
     console.log('[L402-DEBUG] BTC/USD rate:', btcUsdRate);
 
     // Size the default invoice to cover exactly one call for this endpoint
-    // (plus a small buffer) when the caller tells us which endpoint they're
-    // protecting. Falls back to the global DEFAULT_CREDIT_PURCHASE_SATS when
-    // the endpoint is unpriced or no entitlementType was supplied.
+    // (list USD price at spot BTC + ~2% drift buffer, see AGENT_DEFAULT_SATS_BUFFER)
+    // when the caller tells us which endpoint they're protecting. Falls back to
+    // DEFAULT_CREDIT_PURCHASE_SATS when the endpoint is unpriced or no
+    // entitlementType was supplied.
     let defaultSats = DEFAULT_CREDIT_PURCHASE_SATS;
     if (options.entitlementType) {
       const endpointDefault = computeDefaultSatsForEndpoint(options.entitlementType, btcUsdRate);
