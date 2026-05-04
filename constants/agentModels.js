@@ -80,6 +80,11 @@ const HELPER_LLM_PRICES = {
     outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
     label: 'Qwen3 Next 80B (OpenRouter)',
   },
+  'gpt-5-nano': {
+    inputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_INPUT_PER_1M || '0.05'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_OUTPUT_PER_1M || '0.40'),
+    label: 'GPT-5 nano (OpenAI)',
+  },
 };
 
 const AGENT_MODELS = {
@@ -206,6 +211,19 @@ const AGENT_MODELS = {
     outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
     label: 'Qwen3 Next 80B (OpenRouter)',
   },
+  'gpt-5-nano': {
+    key: 'gpt-5-nano',
+    provider: 'openai',
+    id: process.env.OPENAI_GPT5_NANO_MODEL || 'gpt-5-nano',
+    inputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_INPUT_PER_1M || '0.05'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_OUTPUT_PER_1M || '0.40'),
+    label: 'GPT-5 nano (OpenAI)',
+    // nano has internal reasoning that eats into max_completion_tokens before
+    // producing visible output. Give it headroom and cap reasoning effort to
+    // 'low' so it doesn't spend the whole budget thinking before writing.
+    maxSynthesisTokens: parseInt(process.env.OPENAI_GPT5_NANO_MAX_SYNTHESIS_TOKENS || '32000', 10),
+    reasoningEffort: process.env.OPENAI_GPT5_NANO_REASONING_EFFORT || 'low',
+  },
 };
 
 // Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash
@@ -253,6 +271,9 @@ const LEGACY_MODEL_ALIASES = {
   'gemma-4-or': 'gemma4-31b-or',
   'qwen3-80b': 'qwen3-next-80b',
   qwen3: 'qwen3-next-80b',
+  'gpt5-nano': 'gpt-5-nano',
+  'gpt5nano': 'gpt-5-nano',
+  nano: 'gpt-5-nano',
   qwen: 'qwen3-next-80b',
 };
 

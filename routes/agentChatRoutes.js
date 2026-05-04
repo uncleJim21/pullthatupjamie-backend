@@ -1168,7 +1168,7 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] === ROUND ${round} START === (elapsed ${latency.elapsedMs()}ms)`);
 
         if (hasExecutedTools) {
-          emit('status', { message: 'Composing your answer...', sessionId });
+          emit('status', { message: 'Thinking & Researching...', sessionId });
         }
 
         const msgMetrics = measureMessages(messages);
@@ -1196,6 +1196,12 @@ function createAgentChatRoutes({ openai } = {}) {
         // calls, then synthesis runs on 15s and truncates mid-sentence.
         const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
 
+        // Buffer text_delta chunks during the round; only forward to the client
+        // if this turns out to be a final response (stop_reason !== 'tool_use').
+        // DeepSeek frequently emits transitional narration ("Let me dig deeper…")
+        // before issuing tool calls. Streaming that narration live would show the
+        // user sycophantic filler that gets discarded once the tool calls execute.
+        const roundTextDeltaBuffer = [];
         const response = await providerClient.createResponse({
           model: modelConfig.id,
           maxTokens: 4096,
@@ -1203,7 +1209,7 @@ function createAgentChatRoutes({ openai } = {}) {
           messages,
           tools: effectiveTools,
           aborted,
-          onTextDelta: (text) => emit('text_delta', { text }),
+          onTextDelta: (text) => roundTextDeltaBuffer.push(text),
           requestId,
         });
 
@@ -1216,6 +1222,14 @@ function createAgentChatRoutes({ openai } = {}) {
         messages.push({ role: 'assistant', content: assistantContent });
 
         const isFinalResponse = response.stop_reason !== 'tool_use';
+
+        // Flush buffered text_delta events to the client only for final rounds.
+        // For tool_use rounds the buffer is silently discarded.
+        if (isFinalResponse && roundTextDeltaBuffer.length > 0) {
+          for (const chunk of roundTextDeltaBuffer) {
+            emit('text_delta', { text: chunk });
+          }
+        }
 
         const roundText = assistantContent
           .filter(b => b.type === 'text')
@@ -1469,11 +1483,11 @@ function createAgentChatRoutes({ openai } = {}) {
         //      preserved and the loop exits cleanly.
         //   2. `timeoutMs` passed to the provider, which becomes the fetch's
         //      AbortController timeout, killing non-streaming or hung calls.
-        // DIAGNOSTIC (2026-04-28): default raised from 15s to 300s so primary
-        // synthesis always runs to completion when measuring true wall-clock
-        // performance under unbounded loop budgets. Bring this back to ~15s
-        // once we have baselines and have decided on per-intent budgets.
-        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '300000', 10);
+        // Default 45s: enough for Qwen3 to stream a complete synthesis even on
+        // large contexts (40+ tool-call rounds), without holding the user hostage
+        // for a non-answer. The diagnostic 300s value was for benchmarking only.
+        // Override via AGENT_SYNTHESIS_BUDGET_MS if you need a different ceiling.
+        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '45000', 10);
         const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
         const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
 
@@ -1505,6 +1519,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
           const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
+          console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
           // the conversation history may carry provider-private content
@@ -1520,13 +1535,14 @@ function createAgentChatRoutes({ openai } = {}) {
           }
           const synthesisResponse = await synthesisProviderClient.createResponse({
             model: synthesisModelConfig.id,
-            maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+            maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
             messages: synthesisMessages,
             tools: effectiveTools,
             toolChoice: 'none',
             aborted: synthesisAborted,
             timeoutMs: synthesisBudgetMs,
+            ...(synthesisModelConfig.reasoningEffort ? { reasoningEffort: synthesisModelConfig.reasoningEffort } : {}),
             onTextDelta: (text) => {
               streamedSynthesis += text;
               emit('text_delta', { text });
@@ -1646,7 +1662,7 @@ function createAgentChatRoutes({ openai } = {}) {
           try {
             const tier1Resp = await synthesisProviderClient.createResponse({
               model: synthesisModelConfig.id,
-              maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+              maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
               system: buildStrictSynthesisPrompt(intent, tier1Guidance),
               messages: tier1Messages,
               tools: effectiveTools,
@@ -1654,6 +1670,7 @@ function createAgentChatRoutes({ openai } = {}) {
               temperature: 0,
               aborted: tier1Aborted,
               timeoutMs: tier1Budget,
+              ...(synthesisModelConfig.reasoningEffort ? { reasoningEffort: synthesisModelConfig.reasoningEffort } : {}),
               onTextDelta: () => { /* silent */ },
               requestId,
             });
@@ -1741,7 +1758,7 @@ function createAgentChatRoutes({ openai } = {}) {
               }
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
-                maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+                maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
                 system: buildStrictSynthesisPrompt(intent, tier2Guidance),
                 messages: tier2Messages,
                 tools: effectiveTools,
