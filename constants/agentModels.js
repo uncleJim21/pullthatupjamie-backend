@@ -65,6 +65,21 @@ const HELPER_LLM_PRICES = {
     outputPer1M: parseFloat(process.env.ANTHROPIC_HAIKU_OUTPUT_PER_1M || '5.0'),
     label: 'Haiku 4.5',
   },
+  // Synthesis-only candidates — billed via addHelperLlmUsage when
+  // AGENT_SYNTHESIS_MODEL routes the final synthesis pass to one of these
+  // instead of the orchestrator. Pricing matches the AGENT_MODELS entries
+  // below; keys are the OpenRouter model IDs that costTracker looks up at
+  // runtime.
+  'google/gemma-4-31b-it': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_INPUT_PER_1M || '0.13'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_OUTPUT_PER_1M || '0.38'),
+    label: 'Gemma 4 31B (OpenRouter)',
+  },
+  'qwen/qwen3-next-80b-a3b-instruct': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_INPUT_PER_1M || '0.09'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
+    label: 'Qwen3 Next 80B (OpenRouter)',
+  },
 };
 
 const AGENT_MODELS = {
@@ -171,6 +186,26 @@ const AGENT_MODELS = {
     outputPer1M: parseFloat(process.env.DEEPSEEK_PRO_OUTPUT_PER_1M || '0.87'),
     label: 'DeepSeek V4-Pro (Direct)',
   },
+  // Synthesis-only candidates routed through OpenRouter. Cheap, instruction-
+  // tuned, no DSML in-band protocol — designed to be used as the final
+  // synthesis pass while DeepSeek drives tool calls. See
+  // AGENT_SYNTHESIS_MODEL handling in routes/agentChatRoutes.js.
+  'gemma4-31b-or': {
+    key: 'gemma4-31b-or',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_GEMMA4_31B_MODEL || 'google/gemma-4-31b-it',
+    inputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_INPUT_PER_1M || '0.13'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_OUTPUT_PER_1M || '0.38'),
+    label: 'Gemma 4 31B (OpenRouter)',
+  },
+  'qwen3-next-80b': {
+    key: 'qwen3-next-80b',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_QWEN3_80B_MODEL || 'qwen/qwen3-next-80b-a3b-instruct',
+    inputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_INPUT_PER_1M || '0.09'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
+    label: 'Qwen3 Next 80B (OpenRouter)',
+  },
 };
 
 // Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash
@@ -214,6 +249,11 @@ const LEGACY_MODEL_ALIASES = {
   'deepseek-direct': 'deepseek-v4-flash-direct',
   'deepseek-flash-direct': 'deepseek-v4-flash-direct',
   'deepseek-pro-direct': 'deepseek-v4-pro-direct',
+  'gemma4-or': 'gemma4-31b-or',
+  'gemma-4-or': 'gemma4-31b-or',
+  'qwen3-80b': 'qwen3-next-80b',
+  qwen3: 'qwen3-next-80b',
+  qwen: 'qwen3-next-80b',
 };
 
 /**
@@ -298,4 +338,5 @@ module.exports = {
   DEFAULT_EXECUTION_PROFILE,
   HELPER_LLM_PRICES,
   resolveModelSelection,
+  normalizeModelKey,
 };

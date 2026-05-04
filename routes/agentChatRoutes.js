@@ -11,7 +11,7 @@ const {
   TIER3_FALLBACK_MESSAGE,
 } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
-const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES } = require('../constants/agentModels');
+const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES, normalizeModelKey } = require('../constants/agentModels');
 const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
@@ -879,6 +879,44 @@ function createAgentChatRoutes({ openai } = {}) {
       });
     }
 
+    // Synthesis routing: when AGENT_SYNTHESIS_MODEL is set, the final
+    // synthesis pass (and Tier 1 strict re-synthesis) runs on a different
+    // model than the orchestrator. Tool calls still flow through the
+    // orchestrator (DeepSeek today); only the prose-composition step swaps.
+    // When unset, synthesisProviderClient === providerClient and the cost
+    // tracker bills synthesis at the orchestrator rate as before. See
+    // docs/AGENT_SYNTHESIS_PASS.md for the rationale.
+    let synthesisModelKey = null;
+    let synthesisModelConfig = modelConfig;
+    let synthesisProviderClient = providerClient;
+    let synthesisIsDistinct = false;
+    if (process.env.AGENT_SYNTHESIS_MODEL) {
+      const resolved = normalizeModelKey(process.env.AGENT_SYNTHESIS_MODEL);
+      if (resolved && AGENT_MODELS[resolved]) {
+        synthesisModelKey = resolved;
+        synthesisModelConfig = AGENT_MODELS[resolved];
+        synthesisIsDistinct = synthesisModelConfig.id !== modelConfig.id;
+        if (synthesisIsDistinct) {
+          synthesisProviderClient = createProvider(synthesisModelConfig.provider);
+          const synthReady = await synthesisProviderClient.validate();
+          if (!synthReady) {
+            const envKeyByProvider = {
+              tinfoil: 'TINFOIL_API_KEY',
+              openrouter: 'OPENROUTER_API_KEY',
+              deepseek: 'DEEPSEEK_API_KEY',
+              anthropic: 'ANTHROPIC_API_KEY',
+            };
+            const envKey = envKeyByProvider[synthesisModelConfig.provider] || 'ANTHROPIC_API_KEY';
+            return res.status(503).json({
+              error: `synthesis provider ${synthesisModelConfig.provider} is not configured or unavailable. Check ${envKey} in .env (AGENT_SYNTHESIS_MODEL=${process.env.AGENT_SYNTHESIS_MODEL})`,
+            });
+          }
+        }
+      } else {
+        console.warn(`[${requestId}] AGENT_SYNTHESIS_MODEL="${process.env.AGENT_SYNTHESIS_MODEL}" did not resolve to a registered model — using orchestrator (${modelConfig.label}) for synthesis`);
+      }
+    }
+
     const rawHistory = req.body.history || [];
     const history = Array.isArray(rawHistory)
       ? rawHistory
@@ -1112,6 +1150,8 @@ function createAgentChatRoutes({ openai } = {}) {
       };
       agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
+        synthesisModel: synthesisIsDistinct ? synthesisModelConfig.label : null,
+        synthesisModelKey: synthesisIsDistinct ? synthesisModelKey : null,
         query: message, startedAt: new Date().toISOString(),
         classifierTokens,
         rounds: [],
@@ -1465,11 +1505,24 @@ function createAgentChatRoutes({ openai } = {}) {
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
           const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
-          const synthesisResponse = await providerClient.createResponse({
-            model: modelConfig.id,
+          // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
+          // synthesis pass to a different provider than the orchestrator,
+          // the conversation history may carry provider-private content
+          // blocks (DeepSeek `thinking`) that the synthesizer's API can
+          // reject. The Tier 2 sanitizer is Anthropic-shaped but the rule
+          // is the same for every cross-vendor hop: keep only the OAI/
+          // Anthropic-common block types. Apply when the provider differs.
+          const synthesisMessages = (synthesisIsDistinct && synthesisModelConfig.provider !== modelConfig.provider)
+            ? sanitizeMessagesForAnthropic(messages)
+            : messages;
+          if (synthesisIsDistinct) {
+            console.log(`[${requestId}] Synthesis routing: orchestrator=${modelConfig.label} → synthesizer=${synthesisModelConfig.label} (provider=${synthesisModelConfig.provider})`);
+          }
+          const synthesisResponse = await synthesisProviderClient.createResponse({
+            model: synthesisModelConfig.id,
             maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
-            messages,
+            messages: synthesisMessages,
             tools: effectiveTools,
             toolChoice: 'none',
             aborted: synthesisAborted,
@@ -1481,10 +1534,22 @@ function createAgentChatRoutes({ openai } = {}) {
             requestId,
           });
 
-          costs.addLlmUsage(
-            synthesisResponse.usage?.input_tokens || 0,
-            synthesisResponse.usage?.output_tokens || 0,
-          );
+          // Cost: if synthesis is on a distinct model, bill it through the
+          // helpers channel (same pattern as Tier 2 Haiku) so the dollar
+          // total reflects per-model pricing instead of pricing the
+          // synthesizer's tokens at the orchestrator's rate.
+          if (synthesisIsDistinct) {
+            costs.addHelperLlmUsage(
+              synthesisModelConfig.id,
+              synthesisResponse.usage?.input_tokens || 0,
+              synthesisResponse.usage?.output_tokens || 0,
+            );
+          } else {
+            costs.addLlmUsage(
+              synthesisResponse.usage?.input_tokens || 0,
+              synthesisResponse.usage?.output_tokens || 0,
+            );
+          }
           primaryOutputTokens = synthesisResponse.usage?.output_tokens || 0;
 
           // Some providers (e.g. DeepSeek non-streaming) don't fire onTextDelta;
@@ -1504,6 +1569,8 @@ function createAgentChatRoutes({ openai } = {}) {
             type: 'synthesis',
             tokens: synthesisResponse.usage,
             reason: synthesisExitReason,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           });
         } catch (err) {
           primarySynthesisError = err;
@@ -1555,10 +1622,12 @@ function createAgentChatRoutes({ openai } = {}) {
           console.log(`[${requestId}] Synthesis quality FAILED: trigger=${primaryQuality.trigger}, reason=${primaryQuality.reason}, tokens=${primaryOutputTokens}, len=${sanitizedPrimary.length}`);
           emit('status', { message: 'Refining your answer...', sessionId });
 
-          // ===== Tier 1: strict re-synthesis on the same provider =====
-          // Same model, hardened prompt, temperature: 0 for determinism,
-          // halved time budget, tool_choice still 'none'. Silent — no
-          // text_delta emits, just collect text and evaluate.
+          // ===== Tier 1: strict re-synthesis on the same synthesizer =====
+          // Same model that ran the primary synthesis (orchestrator by
+          // default; AGENT_SYNTHESIS_MODEL when set), hardened prompt,
+          // temperature: 0 for determinism, halved time budget,
+          // tool_choice still 'none'. Silent — no text_delta emits, just
+          // collect text and evaluate.
           const tier1Start = Date.now();
           const tier1Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
           const tier1Deadline = Date.now() + tier1Budget;
@@ -1570,12 +1639,16 @@ function createAgentChatRoutes({ openai } = {}) {
           let tier1Text = '';
           let tier1OutputTokens = 0;
           let tier1Error = null;
+          // Same cross-provider sanitization as the primary synthesis call.
+          const tier1Messages = (synthesisIsDistinct && synthesisModelConfig.provider !== modelConfig.provider)
+            ? sanitizeMessagesForAnthropic(messages)
+            : messages;
           try {
-            const tier1Resp = await providerClient.createResponse({
-              model: modelConfig.id,
+            const tier1Resp = await synthesisProviderClient.createResponse({
+              model: synthesisModelConfig.id,
               maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
               system: buildStrictSynthesisPrompt(intent, tier1Guidance),
-              messages,
+              messages: tier1Messages,
               tools: effectiveTools,
               toolChoice: 'none',
               temperature: 0,
@@ -1584,10 +1657,18 @@ function createAgentChatRoutes({ openai } = {}) {
               onTextDelta: () => { /* silent */ },
               requestId,
             });
-            costs.addLlmUsage(
-              tier1Resp.usage?.input_tokens || 0,
-              tier1Resp.usage?.output_tokens || 0,
-            );
+            if (synthesisIsDistinct) {
+              costs.addHelperLlmUsage(
+                synthesisModelConfig.id,
+                tier1Resp.usage?.input_tokens || 0,
+                tier1Resp.usage?.output_tokens || 0,
+              );
+            } else {
+              costs.addLlmUsage(
+                tier1Resp.usage?.input_tokens || 0,
+                tier1Resp.usage?.output_tokens || 0,
+              );
+            }
             tier1OutputTokens = tier1Resp.usage?.output_tokens || 0;
             tier1Text = sanitizeAgentText(
               (tier1Resp.content || [])
@@ -1609,7 +1690,8 @@ function createAgentChatRoutes({ openai } = {}) {
             outputTokens: tier1OutputTokens,
             textLen: tier1Text.length,
             elapsedMs: Date.now() - tier1Start,
-            model: modelConfig.id,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           };
           agentLog.rounds.push({
             round: round + 1,
@@ -1618,6 +1700,8 @@ function createAgentChatRoutes({ openai } = {}) {
             trigger: tier1Quality.trigger || null,
             outputTokens: tier1OutputTokens,
             elapsedMs: Date.now() - tier1Start,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           });
 
           if (tier1Quality.ok) {
