@@ -104,7 +104,7 @@ const DEFAULT_INTENT = 'search';
 const CLASSIFIER_PROMPT = `Classify the user's intent into exactly one category. Respond with ONLY a JSON object: {"intent":"<value>"}
 
 Categories:
-- "research_session": The user wants a **curated multi-clip or multi-episode artifact** they can keep, revisit, or share — not a one-off answer. Treat as research_session when they ask to **build, make, create, put together, compile, bundle, curate, aggregate, assemble, collect, line up, queue, or give** a **playlist, research session, clip pack, supercut, highlight reel, binge list, anthology, reading/listening list of clips, digest of clips, or "episodes to watch/listen"** for a topic or show (optionally with a time window: "this month", "last month", "recent", "latest episodes"). Phrases like **"for my team"**, **"I can send to a friend"**, **"shareable"**, **"save this"** (when tied to multiple clips/episodes) also count. **Err on the side of research_session** when the deliverable sounds like **more than a single narrative answer** — e.g. ordered list of episodes with clips to explore in-app.
+- "research_session": The user wants a **curated multi-clip or multi-episode artifact** they can keep, revisit, or share — not a one-off answer. Treat as research_session when they ask to **build, make, create, put together, bundle, curate, aggregate, assemble, collect, line up, queue, or give** a **playlist, research session, clip pack, supercut, highlight reel, binge list, anthology, reading/listening list of clips, digest of clips, or "episodes to watch/listen"** for a topic or show (optionally with a time window: "this month", "last month", "recent", "latest episodes"). Phrases like **"for my team"**, **"I can send to a friend"**, **"shareable"**, **"save this"** (when tied to multiple clips/episodes) also count. **Do NOT classify as research_session** when the user asks to compile, compare, summarize, or analyze views/opinions/positions — those are analytical questions that want a written answer with quotes, not a saved artifact.
 - "transcribe": User explicitly asks to TRANSCRIBE, INGEST, or ADD a podcast/episode. Must be an explicit FUTURE-TENSE transcription request (imperative: "transcribe X", "ingest Y", "get Z transcribed"). Past-tense mentions ("I transcribed", "already transcribed", "just transcribed") are NOT transcribe intent — they're context for a follow-up search. If the same message contains a follow-up question ("what did they say", "summarize", "tell me about"), always prefer "search".
 - "search": Single-pass questions — explain, compare, summarize, "what did X say about Y", topic exploration, one episode deep dive, or a follow-up after transcription **without** asking for a saved playlist/session/clip bundle. This is the default when unsure **unless** the user clearly wants a **multi-item curated artifact** as above.
 
@@ -125,6 +125,9 @@ Examples:
 - "Already transcribed that one — now tell me the top takeaways" → {"intent":"search"}
 - "What did Huberman say about creatine?" → {"intent":"search"}
 - "Palmer Luckey on Joe Rogan" → {"intent":"search"}
-- "Compare Bitcoin views on TFTC vs WBD" → {"intent":"search"}`;
+- "Compare Bitcoin views on TFTC vs WBD" → {"intent":"search"}
+- "Compile each host's position on AI regulation and note where they've changed their mind" → {"intent":"search"}
+- "Summarize and compile what all four All-In hosts have said about crypto" → {"intent":"search"}
+- "Aggregate every macro analyst view on GDP growth in 2026" → {"intent":"search"}`;
 
 module.exports = { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT };

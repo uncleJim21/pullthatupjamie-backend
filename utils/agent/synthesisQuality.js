@@ -57,6 +57,9 @@ const NARRATION_PREFIX_RE = /^\s*(let me\b|i'?ll\b|i'?m going to\b|i'?m about to
 // closing braces). Caused by maxTokens cutting the response mid-UUID.
 const TRUNCATED_CLIP_RE = /\{\{clip:[^}]*$/;
 
+// Clip-presence check. A completed clip token looks like {{clip:...}}.
+const CLIP_TOKEN_RE = /\{\{clip:[^}]+\}\}/;
+
 // Mid-prose truncation: text doesn't end with terminal punctuation, a
 // closing quote/bracket, or a markdown emphasis marker. Catches the
 // "...spending balloons during an" / "...the Syrian Empire," shape where

@@ -1,46 +1,15 @@
 /**
- * OpenRouter provider adapter (OpenAI-compatible chat completions).
+ * Direct OpenAI provider adapter (OpenAI chat completions).
  *
- * OpenRouter is a routing broker — it forwards requests to upstream providers
- * (Novita, Fireworks, DeepInfra, etc.) and passes pricing through. We use it
- * here as a way to access models like DeepSeek V4 that aren't yet hosted on
- * Tinfoil.
- *
- * Tradeoff vs Tinfoil: cheaper / earlier access to new models, but no
- * confidential-enclave guarantees — every request is plaintext-visible to
- * OpenRouter and the upstream provider it routes to. If the same model
- * eventually lands on Tinfoil, register it there as a separate model entry
- * (e.g. `deepseek-v4-flash-tinfoil`) so callers can pick the routing they want.
+ * Uses OPENAI_API_KEY directly — no intermediary broker. Supports streaming
+ * via the SSE-based chunk protocol and honors the same onTextDelta / aborted /
+ * timeoutMs interface as the other providers so the agent loop is agnostic.
  */
 
 const crypto = require('crypto');
 
-const DEFAULT_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.OPENROUTER_REQUEST_TIMEOUT_MS || '90000', 10);
-const DEFAULT_REFERER = process.env.OPENROUTER_HTTP_REFERER || 'https://pullthatupjamie.ai';
-const DEFAULT_TITLE = process.env.OPENROUTER_X_TITLE || 'PullThatUpJamie';
-
-// Reasoning control for models that support inline reasoning (DeepSeek V4, etc.).
-// `exclude` drops the reasoning tokens from the response payload (we still pay for them).
-// Effort values supported by OpenRouter: 'low' | 'medium' | 'high'.
-const DEFAULT_REASONING_EFFORT = process.env.OPENROUTER_REASONING_EFFORT || null;
-const DEFAULT_REASONING_EXCLUDE = process.env.OPENROUTER_REASONING_EXCLUDE === 'true';
-
-// Upstream provider routing — OpenRouter brokers to multiple hosts (Together,
-// DeepInfra, Novita, etc.). Tool-call support varies by upstream and changes
-// over time; the public `supports_tool_parameter` flag is often wrong.
-// Empirical (2026-04 on DeepSeek V4 family):
-//   - Together hosts V4-Pro and accepts tools (404s for V4-Flash since it
-//     doesn't host that model — order naturally falls through).
-//   - DeepInfra hosts V4-Flash and tries tools but is chronically pool-limited.
-//   - Novita hosts V4-Flash but rejects tool requests.
-// Comma-separated env list controls preference; set OPENROUTER_PROVIDER_ONLY=true
-// to *only* use those hosts (no fallback chain).
-const PROVIDER_ORDER = (process.env.OPENROUTER_PROVIDER_ORDER || 'Together,DeepInfra,Novita,SiliconFlow')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-const PROVIDER_ONLY = process.env.OPENROUTER_PROVIDER_ONLY === 'true';
+const DEFAULT_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.OPENAI_REQUEST_TIMEOUT_MS || '90000', 10);
 
 function convertToolsToOpenAi(tools = []) {
   return tools.map(t => ({
@@ -111,8 +80,8 @@ function normalizeOpenAiResponse(payload) {
     content.push({ type: 'text', text: message.content });
   } else if (Array.isArray(message.content)) {
     const text = message.content
-      .filter(part => part?.type === 'text' && typeof part.text === 'string')
-      .map(part => part.text)
+      .filter(p => p?.type === 'text' && typeof p.text === 'string')
+      .map(p => p.text)
       .join('\n');
     if (text.trim()) content.push({ type: 'text', text });
   }
@@ -120,9 +89,7 @@ function normalizeOpenAiResponse(payload) {
   if (Array.isArray(message.tool_calls)) {
     for (const tc of message.tool_calls) {
       let parsedInput = {};
-      try {
-        parsedInput = JSON.parse(tc.function?.arguments || '{}');
-      } catch {}
+      try { parsedInput = JSON.parse(tc.function?.arguments || '{}'); } catch {}
       content.push({
         type: 'tool_use',
         id: tc.id || `tool_${crypto.randomUUID()}`,
@@ -142,26 +109,18 @@ function normalizeOpenAiResponse(payload) {
     usage: {
       input_tokens: payload?.usage?.prompt_tokens || 0,
       output_tokens: payload?.usage?.completion_tokens || 0,
-      // OpenRouter returns actual upstream cost in USD when available.
-      // We expose it for diagnostics; the route still recomputes from the rate card.
-      provider_reported_cost_usd: payload?.usage?.cost ?? null,
+      provider_reported_cost_usd: null,
       reasoning_tokens: payload?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
     },
   };
 }
 
-/**
- * Parse an OpenAI-compatible SSE stream and return a normalized response.
- * Calls onTextDelta(chunk) for each text token as it arrives.
- * Respects the aborted() predicate — if it returns true mid-stream, stops
- * consuming and returns whatever was accumulated so far.
- */
 async function parseOpenAiStream(resp, onTextDelta, aborted) {
   const decoder = new TextDecoder();
   let sseBuffer = '';
 
   let fullText = '';
-  const toolCallAccumulator = {}; // keyed by index
+  const toolCallAccumulator = {};
   let finishReason = null;
   let usage = null;
 
@@ -170,8 +129,6 @@ async function parseOpenAiStream(resp, onTextDelta, aborted) {
       if (aborted && aborted()) break;
 
       sseBuffer += decoder.decode(rawChunk, { stream: true });
-
-      // SSE events are separated by \n\n; keep any partial line in the buffer.
       const events = sseBuffer.split('\n\n');
       sseBuffer = events.pop();
 
@@ -193,13 +150,11 @@ async function parseOpenAiStream(resp, onTextDelta, aborted) {
 
           const delta = choice.delta || {};
 
-          // Text token
           if (typeof delta.content === 'string' && delta.content) {
             fullText += delta.content;
             if (typeof onTextDelta === 'function') onTextDelta(delta.content);
           }
 
-          // Tool call token accumulation
           if (Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0;
@@ -215,11 +170,9 @@ async function parseOpenAiStream(resp, onTextDelta, aborted) {
       }
     }
   } catch (err) {
-    // Stream interrupted (abort / network error). Return whatever we have.
     if (err?.name !== 'AbortError') throw err;
   }
 
-  // Assemble normalized response
   const content = [];
   if (fullText.trim()) content.push({ type: 'text', text: fullText });
 
@@ -243,13 +196,13 @@ async function parseOpenAiStream(resp, onTextDelta, aborted) {
     usage: {
       input_tokens: usage?.prompt_tokens || 0,
       output_tokens: usage?.completion_tokens || 0,
-      provider_reported_cost_usd: usage?.cost ?? null,
+      provider_reported_cost_usd: null,
       reasoning_tokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
     },
   };
 }
 
-class OpenRouterProvider {
+class OpenAIProvider {
   constructor() {
     this.baseUrl = DEFAULT_BASE_URL.replace(/\/$/, '');
     this._validated = null;
@@ -257,33 +210,18 @@ class OpenRouterProvider {
 
   authHeaders() {
     return {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY || ''}`,
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY || ''}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': DEFAULT_REFERER,
-      'X-Title': DEFAULT_TITLE,
     };
   }
 
   async validate() {
     if (this._validated !== null) return this._validated;
-    if (!process.env.OPENROUTER_API_KEY) {
-      this._validated = false;
-      return this._validated;
-    }
-
-    try {
-      const resp = await fetch(`${this.baseUrl}/models`, {
-        method: 'GET',
-        headers: this.authHeaders(),
-      });
-      this._validated = resp.ok;
-    } catch {
-      this._validated = false;
-    }
+    this._validated = !!process.env.OPENAI_API_KEY;
     return this._validated;
   }
 
-  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted, timeoutMs, requestId }) {
+  async createResponse({ model, maxTokens, system, messages, tools, toolChoice, onTextDelta, aborted, timeoutMs, reasoningEffort, requestId }) {
     const openAiMessages = [
       { role: 'system', content: system },
       ...convertMessagesToOpenAi(messages),
@@ -293,18 +231,15 @@ class OpenRouterProvider {
     const payload = {
       model,
       messages: openAiMessages,
-      max_tokens: maxTokens,
+      max_completion_tokens: maxTokens,
       stream: useStreaming,
-      // Ask OpenRouter to include token usage in the final stream chunk.
       ...(useStreaming ? { stream_options: { include_usage: true } } : {}),
+      // reasoning_effort caps internal chain-of-thought tokens, preventing the
+      // model from consuming the entire token budget on reasoning before writing
+      // any visible output. 'low' is fast and sufficient for synthesis tasks.
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     };
 
-    // See docs/AGENT_SYNTHESIS_PASS.md for the rationale:
-    //   • toolChoice === 'none' (synthesis pass): force `tool_choice: 'none'`
-    //     and include tool schemas so the model stays anchored to the same
-    //     tool-aware request shape it saw in earlier rounds.
-    //   • Otherwise: only attach tools+'auto' when at least one tool is
-    //     supplied (empty tools + 'auto' is rejected by upstream providers).
     const convertedTools = convertToolsToOpenAi(tools);
     if (toolChoice === 'none') {
       payload.tool_choice = 'none';
@@ -312,18 +247,6 @@ class OpenRouterProvider {
     } else if (convertedTools.length > 0) {
       payload.tools = convertedTools;
       payload.tool_choice = 'auto';
-    }
-
-    if (DEFAULT_REASONING_EFFORT || DEFAULT_REASONING_EXCLUDE) {
-      payload.reasoning = {};
-      if (DEFAULT_REASONING_EFFORT) payload.reasoning.effort = DEFAULT_REASONING_EFFORT;
-      if (DEFAULT_REASONING_EXCLUDE) payload.reasoning.exclude = true;
-    }
-
-    if (PROVIDER_ORDER.length > 0) {
-      payload.provider = PROVIDER_ONLY
-        ? { only: PROVIDER_ORDER }
-        : { order: PROVIDER_ORDER, allow_fallbacks: true };
     }
 
     const url = `${this.baseUrl}/chat/completions`;
@@ -343,7 +266,7 @@ class OpenRouterProvider {
     } catch (err) {
       clearTimeout(timeout);
       if (err?.name === 'AbortError') {
-        throw new Error(`OpenRouter request timed out after ${effectiveTimeout}ms (${requestId || 'no-req-id'})`);
+        throw new Error(`OpenAI request timed out after ${effectiveTimeout}ms (${requestId || 'no-req-id'})`);
       }
       throw err;
     }
@@ -351,7 +274,7 @@ class OpenRouterProvider {
 
     if (!resp.ok) {
       const body = await resp.text();
-      throw new Error(`OpenRouter request failed (${resp.status}) after ${Date.now() - started}ms: ${body.substring(0, 300)}`);
+      throw new Error(`OpenAI request failed (${resp.status}) after ${Date.now() - started}ms: ${body.substring(0, 300)}`);
     }
 
     if (!useStreaming) {
@@ -363,4 +286,4 @@ class OpenRouterProvider {
   }
 }
 
-module.exports = OpenRouterProvider;
+module.exports = OpenAIProvider;
