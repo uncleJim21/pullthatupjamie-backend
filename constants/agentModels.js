@@ -85,6 +85,11 @@ const HELPER_LLM_PRICES = {
     outputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_OUTPUT_PER_1M || '0.40'),
     label: 'GPT-5 nano (OpenAI)',
   },
+  'moonshotai/kimi-k2.6': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_INPUT_PER_1M || '0.74'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_OUTPUT_PER_1M || '3.49'),
+    label: 'Kimi K2.6 (OpenRouter)',
+  },
 };
 
 const AGENT_MODELS = {
@@ -224,6 +229,23 @@ const AGENT_MODELS = {
     maxSynthesisTokens: parseInt(process.env.OPENAI_GPT5_NANO_MAX_SYNTHESIS_TOKENS || '32000', 10),
     reasoningEffort: process.env.OPENAI_GPT5_NANO_REASONING_EFFORT || 'low',
   },
+  'kimi-k2-6-or': {
+    key: 'kimi-k2-6-or',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_KIMI_K26_MODEL || 'moonshotai/kimi-k2.6',
+    inputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_INPUT_PER_1M || '0.74'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_OUTPUT_PER_1M || '3.49'),
+    label: 'Kimi K2.6 (OpenRouter)',
+  },
+  'gpt-4o-mini': {
+    key: 'gpt-4o-mini',
+    provider: 'openai',
+    id: process.env.OPENAI_GPT4O_MINI_MODEL || 'gpt-4o-mini',
+    inputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_INPUT_PER_1M || '0.15'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_OUTPUT_PER_1M || '0.60'),
+    label: 'GPT-4o mini (OpenAI)',
+    maxSynthesisTokens: parseInt(process.env.OPENAI_GPT4O_MINI_MAX_SYNTHESIS_TOKENS || '4096', 10),
+  },
 };
 
 // Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash
@@ -275,6 +297,12 @@ const LEGACY_MODEL_ALIASES = {
   'gpt5nano': 'gpt-5-nano',
   nano: 'gpt-5-nano',
   qwen: 'qwen3-next-80b',
+  'gpt4o-mini': 'gpt-4o-mini',
+  'gpt4omini': 'gpt-4o-mini',
+  mini: 'gpt-4o-mini',
+  'kimi-k2.6-or': 'kimi-k2-6-or',
+  'kimi-or': 'kimi-k2-6-or',
+  'kimi-openrouter': 'kimi-k2-6-or',
 };
 
 /**

@@ -16,7 +16,7 @@ const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
-const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer } = require('../utils/agent/sanitizeOutput');
+const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, scrubClipIds } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
@@ -950,6 +950,11 @@ function createAgentChatRoutes({ openai } = {}) {
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
+      // Disable Nagle's algorithm so each res.write() flushes its own TCP
+      // packet immediately rather than being coalesced with subsequent writes.
+      // Without this, synthesis tokens (which arrive via async for-await) still
+      // get bundled into one burst before being sent to the client.
+      res.socket?.setNoDelay(true);
     }
 
     // Non-streaming accumulator. Populated by emit() when !streaming.
@@ -1132,9 +1137,9 @@ function createAgentChatRoutes({ openai } = {}) {
       // The cap is a hard ceiling that doesn't depend on prompt
       // compliance: once exhausted, calls return a "blocked" stub instead
       // of executing, which both saves time and signals to the model to
-      // synthesize. Most clean queries used 0-3 expansions, so 4 is
-      // generous; tune via env if needed.
-      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '4', 10);
+      // synthesize. Complex research queries can justify more expansions
+      // when DeepSeek issues parallel batches; tune via env if needed.
+      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '12', 10);
       let adjacentParagraphCount = 0;
 
       const cacheEpisode = (ep, feedFallback = {}) => {
@@ -1196,11 +1201,12 @@ function createAgentChatRoutes({ openai } = {}) {
         // calls, then synthesis runs on 15s and truncates mid-sentence.
         const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
 
-        // Buffer text_delta chunks during the round; only forward to the client
-        // if this turns out to be a final response (stop_reason !== 'tool_use').
-        // DeepSeek frequently emits transitional narration ("Let me dig deeper…")
-        // before issuing tool calls. Streaming that narration live would show the
-        // user sycophantic filler that gets discarded once the tool calls execute.
+        // Buffer all text deltas for this round. We never stream the orchestrator
+        // live because we need to inspect the full text before deciding what to do:
+        //   • Tool-use rounds: discard (it's all narration — "Let me search for…")
+        //   • Final round with clips: trickle to client then emit text_done
+        //   • Final round without clips (but search evidence exists): route to
+        //     synthesis so the dedicated model can cite clips properly
         const roundTextDeltaBuffer = [];
         const response = await providerClient.createResponse({
           model: modelConfig.id,
@@ -1223,14 +1229,6 @@ function createAgentChatRoutes({ openai } = {}) {
 
         const isFinalResponse = response.stop_reason !== 'tool_use';
 
-        // Flush buffered text_delta events to the client only for final rounds.
-        // For tool_use rounds the buffer is silently discarded.
-        if (isFinalResponse && roundTextDeltaBuffer.length > 0) {
-          for (const chunk of roundTextDeltaBuffer) {
-            emit('text_delta', { text: chunk });
-          }
-        }
-
         const roundText = assistantContent
           .filter(b => b.type === 'text')
           .map(b => b.text)
@@ -1239,21 +1237,60 @@ function createAgentChatRoutes({ openai } = {}) {
           accumulatedTextByRound.push({ round, text: roundText });
         }
 
-        if (isFinalResponse) {
+        const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
+
+        // Short-circuit: if every tool call in this round is suggest_action
+        // (purely cosmetic — it just queues a follow-up chip in the UI), we
+        // should NOT spin up another LLM round. DeepSeek commonly writes a
+        // complete answer AND appends a suggest_action in the same response,
+        // which makes stop_reason='tool_use' even though the answer is done.
+        // Without this guard we buffer+discard the full answer and produce a
+        // much worse synthesis in the next round.
+        const onlySuggestActions = toolUseBlocks.length > 0
+          && toolUseBlocks.every(b => b.name === 'suggest_action');
+
+        // effectiveFinal: treat as the last round if the model stopped cleanly
+        // OR if the only remaining tool calls are decorative suggest_actions.
+        const effectiveFinal = isFinalResponse || (onlySuggestActions && roundText.length > 200);
+
+        if (effectiveFinal) {
+          // Execute any suggest_action calls inline (they just emit UI chips).
+          if (onlySuggestActions) {
+            for (const toolUse of toolUseBlocks) {
+              handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
+            }
+          }
+
+          const hasClips = /\{\{clip:[^}]+\}\}/.test(roundText);
+          const hasSearchEvidence = clipCache.size > 0;
+
+          // If search evidence exists but DeepSeek didn't produce any clip
+          // tokens, route to synthesis instead of emitting clip-free prose.
+          if (!hasClips && hasSearchEvidence && synthesisIsDistinct) {
+            naturalCompletion = false;
+            console.log(`[${requestId}] Final text has no clips (${roundText.length} chars, ${clipCache.size} cached clips) → routing to synthesis`);
+            agentLog.rounds.push({ round, type: 'final_rerouted', tokens: response.usage });
+            break;
+          }
+
+          // Trickle-emit the buffered chunks so the client sees progressive
+          // output rather than a single mag-dump. setImmediate yields the event
+          // loop between chunks so TCP can flush each write individually.
           naturalCompletion = true;
-          const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
-          console.log(`[${requestId}] Final text streamed: ${fullText.length} chars across ${accumulatedTextByRound.length} round(s) (round ${round} contributed ${roundText.length} chars)`);
-          agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
-          agentLog.finalText = fullText;
-          emit('text_done', { text: fullText });
+          console.log(`[${requestId}] Final text trickle-emit: ${roundText.length} chars, ${roundTextDeltaBuffer.length} chunks, effectiveFinal=${effectiveFinal} (round ${round})`);
+          agentLog.rounds.push({ round, type: effectiveFinal && !isFinalResponse ? 'final_suggest_shortcircuit' : 'final', tokens: response.usage });
+          agentLog.finalText = roundText;
+          for (const chunk of roundTextDeltaBuffer) {
+            emit('text_delta', { text: chunk });
+            await new Promise(resolve => setImmediate(resolve));
+          }
+          emit('text_done', { text: roundText });
           break;
         }
 
         if (roundText.length > 0) {
-          console.log(`[${requestId}] Intermediate text captured (${roundText.length} chars) for final text_done: "${roundText.substring(0, 80)}..."`);
+          console.log(`[${requestId}] Intermediate text (${roundText.length} chars) buffered+discarded: "${roundText.substring(0, 80)}..."`);
         }
-
-        const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
         console.log(`[${requestId}] ${toolUseBlocks.length} tool_use blocks to execute`);
         hasExecutedTools = true;
         const toolResults = [];
@@ -1518,7 +1555,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache);
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
@@ -1602,7 +1639,7 @@ function createAgentChatRoutes({ openai } = {}) {
         // Recovery passes are silent (no text_delta) so the canonical
         // `text_done` payload is what matters for clients that re-render on
         // text_done. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
-        const sanitizedPrimary = sanitizeAgentText(streamedSynthesis);
+        const sanitizedPrimary = scrubClipIds(sanitizeAgentText(streamedSynthesis), clipCache);
 
         // When primary synthesis throws (typically the synthesis-budget
         // timeout firing mid-stream), we may still have substantial clean
@@ -1687,12 +1724,12 @@ function createAgentChatRoutes({ openai } = {}) {
               );
             }
             tier1OutputTokens = tier1Resp.usage?.output_tokens || 0;
-            tier1Text = sanitizeAgentText(
+            tier1Text = scrubClipIds(sanitizeAgentText(
               (tier1Resp.content || [])
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
                 .join('')
-            );
+            ), clipCache);
           } catch (err) {
             tier1Error = err;
             console.error(`[${requestId}] Tier 1 re-synthesis FAILED: ${err.message}`);
@@ -1779,12 +1816,12 @@ function createAgentChatRoutes({ openai } = {}) {
                 tier2Resp.usage?.output_tokens || 0,
               );
               tier2OutputTokens = tier2Resp.usage?.output_tokens || 0;
-              tier2Text = sanitizeAgentText(
+              tier2Text = scrubClipIds(sanitizeAgentText(
                 (tier2Resp.content || [])
                   .filter(b => b.type === 'text')
                   .map(b => b.text)
                   .join('')
-              );
+              ), clipCache);
             } catch (err) {
               tier2Error = err;
               console.error(`[${requestId}] Tier 2 cross-provider FAILED: ${err.message}`);
