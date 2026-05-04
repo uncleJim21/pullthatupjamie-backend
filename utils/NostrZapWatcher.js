@@ -212,6 +212,8 @@ class NostrZapWatcher {
    * collection would just bloat ops triage without adding value.
    */
   async _processReceipt(receipt, botPubkey) {
+    this._debugDumpReceipt(receipt);
+
     let botSecretKey = null;
     try {
       botSecretKey = getBotSecretKey();
@@ -351,6 +353,97 @@ class NostrZapWatcher {
       if (ok) recovered++;
     }
     return recovered;
+  }
+
+  /**
+   * High-visibility dump of an incoming 9735 + its embedded 9734.
+   * Prints the structured fields you need to tell wallets apart
+   * (Primal vs Damus vs Amethyst vs ...) plus the raw JSON for
+   * forensics. ON by default — set `NOSTR_BOT_DEBUG_RECEIPTS=false`
+   * in `.env` to silence.
+   */
+  _debugDumpReceipt(receipt) {
+    if (process.env.NOSTR_BOT_DEBUG_RECEIPTS === 'false') return;
+
+    const C = {
+      banner: '\x1b[1;45;97m', // bold magenta bg, white fg
+      label: '\x1b[1;36m',     // bold cyan
+      val: '\x1b[1;33m',       // bold yellow
+      warn: '\x1b[1;31m',      // bold red
+      ok: '\x1b[1;32m',        // bold green
+      dim: '\x1b[2m',
+      reset: '\x1b[0m',
+    };
+
+    const findTag = (ev, name) => {
+      if (!ev || !Array.isArray(ev.tags)) return null;
+      const t = ev.tags.find((x) => Array.isArray(x) && x[0] === name);
+      return t ? t.slice(1) : null;
+    };
+
+    let inner = null;
+    try {
+      const desc = (receipt.tags || []).find(
+        (t) => Array.isArray(t) && t[0] === 'description',
+      );
+      if (desc && desc[1]) inner = JSON.parse(desc[1]);
+    } catch (_) { /* leave inner null */ }
+
+    const bolt11Tag = findTag(receipt, 'bolt11');
+    const pTag = findTag(receipt, 'p');
+    const PTag = findTag(receipt, 'P');
+    const innerClient = inner ? findTag(inner, 'client') : null;
+    const innerAnon = inner ? findTag(inner, 'anon') : null;
+    const innerP = inner ? findTag(inner, 'p') : null;
+    const innerE = inner ? findTag(inner, 'e') : null;
+
+    let flavor;
+    if (innerAnon === null) {
+      flavor = `${C.ok}PUBLIC${C.reset} ${C.dim}(no anon tag → sender = inner.pubkey)${C.reset}`;
+    } else if (innerAnon.length === 0 || !innerAnon[0]) {
+      flavor = `${C.warn}ANONYMOUS${C.reset} ${C.dim}(empty anon tag → no recoverable sender; will be skipped)${C.reset}`;
+    } else {
+      flavor = `${C.val}PRIVATE${C.reset} ${C.dim}(anon payload len=${innerAnon[0].length} → decrypt with bot nsec)${C.reset}`;
+    }
+
+    const lines = [
+      '',
+      `${C.banner} ▼ INCOMING ZAP RECEIPT 9735 ▼ ${C.reset}`,
+      `${C.label}receipt.id        ${C.reset} ${C.val}${receipt.id}${C.reset}`,
+      `${C.label}receipt.pubkey    ${C.reset} ${C.val}${receipt.pubkey}${C.reset} ${C.dim}(zapper service that signed 9735)${C.reset}`,
+      `${C.label}receipt.created_at${C.reset} ${C.val}${receipt.created_at}${C.reset} ${C.dim}(${new Date((receipt.created_at || 0) * 1000).toISOString()})${C.reset}`,
+      `${C.label}receipt.bolt11    ${C.reset} ${C.val}${bolt11Tag ? bolt11Tag[0].substring(0, 80) + (bolt11Tag[0].length > 80 ? '…' : '') : '(none)'}${C.reset}`,
+      `${C.label}receipt.tag P     ${C.reset} ${C.val}${PTag ? PTag[0] : '(none)'}${C.reset} ${C.dim}(claimed sender, NIP-57 §B)${C.reset}`,
+      `${C.label}receipt.tag p     ${C.reset} ${C.val}${pTag ? pTag[0] : '(none)'}${C.reset} ${C.dim}(recipient = bot)${C.reset}`,
+      inner
+        ? `${C.label}inner.zap_request${C.reset} ${C.dim}(parsed from description tag)${C.reset}`
+        : `${C.warn}inner.zap_request: MISSING / UNPARSABLE${C.reset}`,
+    ];
+
+    if (inner) {
+      lines.push(
+        `${C.label}  inner.id        ${C.reset} ${C.val}${inner.id || '(none)'}${C.reset}`,
+        `${C.label}  inner.pubkey    ${C.reset} ${C.val}${inner.pubkey || '(none)'}${C.reset} ${C.dim}(real sender for public, ephemeral for anon/private)${C.reset}`,
+        `${C.label}  inner.kind      ${C.reset} ${C.val}${inner.kind}${C.reset}`,
+        `${C.label}  inner.content   ${C.reset} ${C.val}${JSON.stringify(String(inner.content || '').substring(0, 80))}${C.reset}`,
+        `${C.label}  inner.tag client${C.reset} ${C.val}${innerClient ? innerClient.join(' / ') : '(none)'}${C.reset} ${C.dim}(NIP-89 client identifier — useful for spotting Primal/Damus/etc)${C.reset}`,
+        `${C.label}  inner.tag p     ${C.reset} ${C.val}${innerP ? innerP[0] : '(none)'}${C.reset}`,
+        `${C.label}  inner.tag e     ${C.reset} ${C.val}${innerE ? innerE[0] : '(none)'}${C.reset}`,
+        `${C.label}  inner.tag anon  ${C.reset} ${C.val}${innerAnon === null ? '(absent)' : innerAnon.length === 0 ? '(present, EMPTY array)' : '(present, len=' + innerAnon[0].length + ')'}${C.reset}`,
+      );
+    }
+
+    lines.push(
+      `${C.label}flavor inferred   ${C.reset} ${flavor}`,
+      `${C.dim}── raw receipt ──${C.reset}`,
+      JSON.stringify(receipt),
+      inner ? `${C.dim}── raw inner 9734 ──${C.reset}` : '',
+      inner ? JSON.stringify(inner) : '',
+      `${C.banner} ▲ END ZAP RECEIPT 9735 ▲ ${C.reset}`,
+      '',
+    );
+
+    console.log(lines.filter(Boolean).join('\n'));
   }
 
   _queryRelay(relayUrl, botPubkey, since, queryTimeoutMs) {
