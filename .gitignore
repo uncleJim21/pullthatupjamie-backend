@@ -19,3 +19,4 @@ logs/
 
 # Skills build artifacts — ClawHub zips are CI artifacts, not committed
 dist/clawhub/
+/.claude
