@@ -23,6 +23,23 @@ const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
 
+// Lazy-loaded so unit tests / scripts that exercise the router without a
+// Mongo connection don't fail on import. require()ing inside the function
+// is cheap (Node caches the module) and keeps the dual-write opt-out
+// simple — set AGENT_RUN_LOG_MONGO=false to disable.
+function persistAgentLogToMongo(logData) {
+  if (process.env.AGENT_RUN_LOG_MONGO === 'false') return;
+  try {
+    const AgentRunLog = require('../models/AgentRunLog');
+    // Fire-and-forget. Mongo hiccups must not affect the user request.
+    AgentRunLog.create(logData).catch(err => {
+      printLog(`[AGENT-LOG] Mongo write failed: ${err.message}`);
+    });
+  } catch (err) {
+    printLog(`[AGENT-LOG] Mongo persist init failed: ${err.message}`);
+  }
+}
+
 function writeAgentLog(requestId, sessionId, logData) {
   try {
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -34,6 +51,7 @@ function writeAgentLog(requestId, sessionId, logData) {
   } catch (err) {
     printLog(`[AGENT-LOG] Failed to write log: ${err.message}`);
   }
+  persistAgentLogToMongo(logData);
 }
 
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
@@ -1217,8 +1235,18 @@ function createAgentChatRoutes({ openai } = {}) {
       };
       agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
+        modelKey,
+        provider: modelConfig.provider,
         synthesisModel: synthesisIsDistinct ? synthesisModelConfig.label : null,
         synthesisModelKey: synthesisIsDistinct ? synthesisModelKey : null,
+        executionProfile: profileKey,
+        streaming,
+        compactResults,
+        compactHistory: compactHistoryEnabled,
+        bypassTriage,
+        ip: req.ip || null,
+        entitlementType: req.entitlement?.type || null,
+        entitlementSource: req.entitlement?.source || null,
         query: message, startedAt: new Date().toISOString(),
         classifierTokens,
         rounds: [],
