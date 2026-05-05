@@ -52,9 +52,44 @@ const STRIP_BLOCK_PATTERNS = [
 ];
 
 // Indexed clip references that synthesis models sometimes emit instead of the
-// correct {{clip:shareLink}} format. Strip them so they don't render as literal
-// text in the UI. Examples: [[CLIP:0]], [CLIP:1], (clip 2), [[clip:3]]
-const INDEXED_CLIP_RE = /\[\[clip:\d+\]\]|\[clip:\d+\]|\(clip\s*\d+\)/gi;
+// correct {{clip:shareLink}} format. Examples: [[CLIP:0]], [CLIP:1], (clip 2),
+// [[clip:3]], {{clip:0}}.
+//
+// We REPAIR these against clipCache (mapping the integer index to the Nth
+// shareLink in clipCache key-iteration order — same order buildClipManifest
+// uses) and strip whatever can't be repaired. The /i flag matches CLIP/clip;
+// /g lets `replace` walk every occurrence.
+const INDEXED_CLIP_RE = /\[\[\s*clip\s*:\s*(\d+)\s*\]\]|\[\s*clip\s*:\s*(\d+)\s*\]|\(\s*clip\s+(\d+)\s*\)|\{\{\s*clip\s*:\s*(\d+)\s*\}\}/gi;
+
+/**
+ * Repair indexed clip references against the orchestrator's clipCache.
+ *
+ * The synthesis manifest renders clips as `{{clip:<shareLink>}}` ordered by
+ * `clipCache.entries().slice(0,25)`. When models leak `[[CLIP:N]]` instead,
+ * N is an index into that same ordering. We map index → shareLink and emit
+ * the canonical token. Out-of-range indices and bare patterns get stripped
+ * so the user never sees `[[CLIP:0]]` as literal text.
+ *
+ * @param {string} text
+ * @param {Map<string, *>} clipCache  shareLink → metadata, populated by search_quotes
+ * @returns {string}
+ */
+function repairIndexedClipTokens(text, clipCache) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  const ordered = clipCache && clipCache.size > 0
+    ? [...clipCache.keys()].slice(0, 25)
+    : [];
+  return text.replace(INDEXED_CLIP_RE, (match, ...groups) => {
+    // exec capture groups: 4 alternatives × 1 capture each = 4 indices in groups
+    const idxStr = groups.slice(0, 4).find(g => g !== undefined);
+    if (idxStr === undefined) return ''; // shouldn't happen, but be safe
+    const idx = parseInt(idxStr, 10);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= ordered.length) {
+      return ''; // out-of-range: strip rather than emit broken ref
+    }
+    return `{{clip:${ordered[idx]}}}`;
+  });
+}
 
 // Stray-tag patterns: clean up orphan opens/closes left behind after an
 // incomplete or mid-stream truncation.
@@ -87,14 +122,21 @@ function stripMarkupOnly(text) {
   return out;
 }
 
-function sanitizeAgentText(text) {
+function sanitizeAgentText(text, clipCache) {
   if (typeof text !== 'string' || text.length === 0) return text;
-  // Document-level cleanup: strip markup and indexed clip refs, then collapse
-  // empty paragraphs and trim. Do NOT use this on streaming fragments.
-  return stripMarkupOnly(text)
-    .replace(INDEXED_CLIP_RE, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  // Document-level cleanup: strip markup, repair (or strip) indexed clip refs,
+  // then collapse empty paragraphs and trim. Do NOT use this on streaming
+  // fragments. When `clipCache` is provided, indexed refs like `[[CLIP:0]]`
+  // are mapped to the canonical `{{clip:<shareLink>}}` token so the user
+  // sees a working clip pill instead of an empty hole. Without `clipCache`
+  // we still strip broken refs.
+  let out = stripMarkupOnly(text);
+  if (clipCache && clipCache.size > 0) {
+    out = repairIndexedClipTokens(out, clipCache);
+  } else {
+    out = out.replace(INDEXED_CLIP_RE, '');
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function hasToolCallMarkup(text) {
@@ -221,6 +263,60 @@ function sanitizeStreamDelta(pending, delta) {
  *   for (const delta of deltas) socket.write(stream.feed(delta));
  *   socket.write(stream.flush());
  */
+/**
+ * Stateful streaming sanitizer for indexed clip tokens (`[[CLIP:N]]`,
+ * `[CLIP:N]`, `(clip N)`, `{{clip:N}}`).
+ *
+ * Pattern: same one-shot architecture as `createStreamSanitizer` — buffer
+ * across deltas so a token split at the chunk boundary (e.g. `[[CL` in chunk
+ * N, `IP:0]]` in chunk N+1) is recognized as one unit and repaired against
+ * `clipCache`. Without this, raw `[[CLIP:0]]` ships in `text_delta` events
+ * and the frontend renders it literally.
+ *
+ * Returns `{ feed, flush }`. `feed(delta)` returns the safe prefix to emit;
+ * `flush()` drains the carry at end-of-stream.
+ *
+ * Implementation strategy:
+ *   1. Append delta to internal buffer.
+ *   2. Run `repairIndexedClipTokens` on the buffer — every COMPLETE indexed
+ *      ref becomes `{{clip:<shareLink>}}`. Out-of-range ones get stripped.
+ *   3. Detect a trailing PARTIAL-token tail (`[`, `[[`, `[[C`, `(c`, `{{`,
+ *      etc.) that could grow into a complete ref once the next delta
+ *      arrives. Hold that tail back; emit everything before it.
+ *
+ * The partial-tail regex is anchored to the buffer end and matches the
+ * longest progress along any of the four indexed-ref shapes.
+ */
+const PARTIAL_INDEXED_CLIP_TAIL_RE = /(\[\[?\s*[cC]?[lL]?[iI]?[pP]?\s*:?\s*\d*\s*\]?|\(\s*[cC]?[lL]?[iI]?[pP]?\s*\d*\s*|\{\{?\s*[cC]?[lL]?[iI]?[pP]?\s*:?\s*\d*\s*\}?)$/;
+
+function createClipTokenStreamSanitizer(clipCache) {
+  let pending = '';
+  const repair = (text) => repairIndexedClipTokens(text, clipCache);
+  return {
+    feed(delta) {
+      pending += delta || '';
+      if (!pending.length) return '';
+      // Hold back any trailing fragment that could grow into a complete
+      // indexed ref. Cap the holdback at 32 chars so a stray `[` in prose
+      // can't pin the buffer indefinitely.
+      const m = pending.match(PARTIAL_INDEXED_CLIP_TAIL_RE);
+      const holdLen = m && m[0].length <= 32 ? m[0].length : 0;
+      const safe = pending.slice(0, pending.length - holdLen);
+      const carry = pending.slice(pending.length - holdLen);
+      pending = carry;
+      return repair(safe);
+    },
+    flush() {
+      const out = repair(pending);
+      pending = '';
+      return out;
+    },
+    peekPending() {
+      return pending;
+    },
+  };
+}
+
 function createStreamSanitizer() {
   let pending = '';
   return {
@@ -364,6 +460,8 @@ module.exports = {
   hasToolCallMarkup,
   sanitizeStreamDelta,
   createStreamSanitizer,
+  createClipTokenStreamSanitizer,
   createNarrationFilter,
   scrubClipIds,
+  repairIndexedClipTokens,
 };
