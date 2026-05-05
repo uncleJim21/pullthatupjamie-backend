@@ -18,6 +18,7 @@ const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
 const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, scrubClipIds } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
+const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -1119,12 +1120,23 @@ function createAgentChatRoutes({ openai } = {}) {
         );
       }
       const latency = createLatencyTracker(executionProfile, startTime);
+      // Hoisted so the post-loop AUTO-SESSION path and the in-loop tool
+      // execution path both share the same cost channel.
+      const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
+        costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
+      };
       let round = 0;
       let hasExecutedTools = false;
       // Hoisted so the post-loop synthesis path can tell whether the loop
       // exited via a natural `break` (model said it was done) or via the guard
       // (cost/latency hard cap, max rounds).
       let naturalCompletion = false;
+      // Captured when create_research_session fires successfully. Passed to
+      // buildSynthesisPrompt so synthesis gets the real URL verbatim instead
+      // of having to find it buried in tool results (which leads to hallucination).
+      // If synthesis runs but no session was ever created, we downgrade to the
+      // regular synthesisGuard so the model never sees the research-session shape.
+      let researchSessionUrl = null;
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
@@ -1199,7 +1211,15 @@ function createAgentChatRoutes({ openai } = {}) {
         // which point it can't course-correct. Failure case it prevents:
         // model burns the whole 40s budget on wide adjacent_paragraphs
         // calls, then synthesis runs on 15s and truncates mid-sentence.
-        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
+        // For research_session intent, inject a hard reminder once the model
+        // has passed the midpoint of its round budget. This nudges DeepSeek to
+        // stop searching and call create_research_session before running out of
+        // rounds — without it, it can burn all rounds on searches and never
+        // produce the deliverable.
+        const researchSessionNudge = (intent === 'research_session' && round >= Math.ceil(maxToolRounds * 0.6) && !researchSessionUrl)
+          ? `\n\n[SYSTEM] RESEARCH SESSION REMINDER: You have used ${round} of ${maxToolRounds} rounds. You have gathered ${clipCache.size} clips. You MUST call \`create_research_session\` in the next 1-2 rounds or the session will not be saved. Stop searching and call the tool now.`
+          : '';
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge;
 
         // Buffer all text deltas for this round. We never stream the orchestrator
         // live because we need to inspect the full text before deciding what to do:
@@ -1333,13 +1353,6 @@ function createAgentChatRoutes({ openai } = {}) {
           });
         }
 
-        // Bound to this request's cost tracker. Helpers (reranker, embedding,
-        // proper-noun expansion) call into this so their real spend lands in
-        // the same `helpers` channel as the classifier and Tier 2 fallback.
-        const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
-          costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
-        };
-
         const settled = await Promise.all(toolUseBlocks.map(async (toolUse, i) => {
           const toolStart = Date.now();
           let result;
@@ -1349,6 +1362,7 @@ function createAgentChatRoutes({ openai } = {}) {
             } else if (toolUse.name === 'create_research_session') {
               result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
               if (result.sessionId && result.url) {
+                researchSessionUrl = result.url;
                 emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
               }
             } else if (apBlocked.has(i)) {
@@ -1488,6 +1502,82 @@ function createAgentChatRoutes({ openai } = {}) {
       }
       console.log(`[${requestId}] === LOOP EXITED === round=${round}, natural=${naturalCompletion}`);
 
+      // --- Option C: auto-call create_research_session on max_rounds exit ---
+      // When intent is research_session but DeepSeek burned all rounds searching
+      // without ever calling the tool, we create the session ourselves using the
+      // clips already in clipCache. Steps:
+      //   1. Re-rank all cached clips against the original query (same reranker
+      //      used during search — filters junk, sorts by relevance)
+      //   2. Drop below-threshold clips, take top 12 (hard endpoint limit)
+      //   3. If ≥ 3 survive, call executeAgentTool to create the real session
+      //   4. Capture URL so synthesis uses researchSessionSynthesisGuard + URL
+      //   5. Failures are silent — synthesis degrades to regular clip prose
+      if (
+        !naturalCompletion
+        && !_aborted
+        && intent === 'research_session'
+        && !researchSessionUrl
+        && clipCache.size > 0
+        && round >= maxToolRounds
+      ) {
+        console.log(`[${requestId}] [AUTO-SESSION] research_session intent, no session created, ${clipCache.size} cached clips — attempting auto-call`);
+        try {
+          // Build clip array in the shape rerankClips expects
+          const allCachedClips = [...clipCache.entries()].map(([shareLink, meta]) => ({
+            shareLink,
+            quote: meta.text || meta.quote || '',
+            text: meta.text || meta.quote || '',
+            creator: meta.creator || '',
+            episode: meta.episodeTitle || '',
+          }));
+
+          // If the query names a specific creator, pre-filter to only their clips.
+          // This prevents AUTO-SESSION from mixing in unrelated podcasts that were
+          // incidentally searched during the session (e.g. user asks for whatifalthist
+          // but DeepSeek also searched Modern Wisdom).
+          const queryLower = message.toLowerCase();
+          const creatorFiltered = allCachedClips.filter(c => {
+            const creatorLower = (c.creator || '').toLowerCase();
+            if (!creatorLower) return false;
+            // Match if any word ≥4 chars in creator name appears in the query
+            return creatorLower.split(/\s+/).some(w => w.length >= 4 && queryLower.includes(w));
+          });
+          const clipsForRerank = creatorFiltered.length >= 3 ? creatorFiltered : allCachedClips;
+          console.log(`[${requestId}] [AUTO-SESSION] creator filter: ${allCachedClips.length} → ${clipsForRerank.length} (${creatorFiltered.length >= 3 ? 'creator match' : 'no match, using all'})`);
+
+          const { clips: reranked, usage: rerankUsage } = await rerankClips({
+            query: message,
+            clips: clipsForRerank,
+            openai,
+            minScore: 4,
+          });
+          costs.addHelperLlmUsage(RERANKER_MODEL, rerankUsage.input_tokens, rerankUsage.output_tokens);
+
+          const top12 = reranked.slice(0, 12);
+          console.log(`[${requestId}] [AUTO-SESSION] re-rank: ${allCachedClips.length} → ${reranked.length} kept → ${top12.length} selected`);
+
+          if (top12.length >= 3) {
+            const pineconeIds = top12.map(c => c.shareLink);
+            const sessionResult = await executeAgentTool(
+              'create_research_session',
+              { pineconeIds },
+              { openai, sessionId, req, clipCache, recordHelperLlmUsage }
+            );
+            if (sessionResult.sessionId && sessionResult.url) {
+              researchSessionUrl = sessionResult.url;
+              emit('session_created', { sessionId: sessionResult.sessionId, url: sessionResult.url, itemCount: sessionResult.itemCount });
+              console.log(`[${requestId}] [AUTO-SESSION] session created: ${sessionResult.url} (${top12.length} clips)`);
+            } else {
+              console.warn(`[${requestId}] [AUTO-SESSION] create_research_session returned no URL — falling through to clip prose`);
+            }
+          } else {
+            console.log(`[${requestId}] [AUTO-SESSION] only ${top12.length} clips passed re-rank (min 3) — skipping auto-call`);
+          }
+        } catch (autoSessionErr) {
+          console.error(`[${requestId}] [AUTO-SESSION] failed: ${autoSessionErr.message} — falling through to clip prose`);
+        }
+      }
+
       // --- Forced final synthesis on non-natural exit ---
       // When the loop exits via guard (cost/latency hard cap or max rounds)
       // rather than the model's own `stop_reason`, the user gets no `text_done`
@@ -1555,7 +1645,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl);
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
@@ -1700,7 +1790,7 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier1Resp = await synthesisProviderClient.createResponse({
               model: synthesisModelConfig.id,
               maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent, tier1Guidance),
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl),
               messages: tier1Messages,
               tools: effectiveTools,
               toolChoice: 'none',
@@ -1796,7 +1886,7 @@ function createAgentChatRoutes({ openai } = {}) {
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
                 maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent, tier2Guidance),
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl),
                 messages: tier2Messages,
                 tools: effectiveTools,
                 toolChoice: 'none',

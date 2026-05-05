@@ -51,6 +51,11 @@ const STRIP_BLOCK_PATTERNS = [
   /<function_call>[\s\S]*?<\/function_call>/g,
 ];
 
+// Indexed clip references that synthesis models sometimes emit instead of the
+// correct {{clip:shareLink}} format. Strip them so they don't render as literal
+// text in the UI. Examples: [[CLIP:0]], [CLIP:1], (clip 2), [[clip:3]]
+const INDEXED_CLIP_RE = /\[\[clip:\d+\]\]|\[clip:\d+\]|\(clip\s*\d+\)/gi;
+
 // Stray-tag patterns: clean up orphan opens/closes left behind after an
 // incomplete or mid-stream truncation.
 const STRIP_TAG_PATTERNS = [
@@ -84,10 +89,12 @@ function stripMarkupOnly(text) {
 
 function sanitizeAgentText(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
-  // Document-level cleanup: strip markup, then collapse the empty paragraphs
-  // it leaves behind and trim leading/trailing whitespace so the final
-  // payload reads cleanly. Do NOT use this on streaming fragments.
-  return stripMarkupOnly(text).replace(/\n{3,}/g, '\n\n').trim();
+  // Document-level cleanup: strip markup and indexed clip refs, then collapse
+  // empty paragraphs and trim. Do NOT use this on streaming fragments.
+  return stripMarkupOnly(text)
+    .replace(INDEXED_CLIP_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function hasToolCallMarkup(text) {

@@ -46,6 +46,7 @@ Additional penalties:
 - Clips that are primarily advertising, sponsorship reads, or promotional content (promo codes, URLs to sign up, "brought to you by", discount offers) should score 0-1 regardless of keyword overlap with the query
 - Clips that are just someone else talking ABOUT the topic person (rather than the person speaking) should be scored 3-5 unless the commentary itself is particularly insightful
 - Very short clips with no real content should score 0-2
+- If the question specifically names a podcast, host, or creator (e.g. "whatifalthist", "Lex Fridman", "All-In"), clips NOT from that source should score 0-2 regardless of topical relevance
 
 Return ONLY a JSON array: [{"i":0,"s":7},{"i":1,"s":3},...]`;
 
@@ -63,7 +64,7 @@ ${clipSummaries.join('\n')}`;
       ],
       response_format: { type: 'json_object' },
       temperature: 0.0,
-      max_tokens: 300,
+      max_tokens: 600,
     });
 
     const usage = response.usage || {};
