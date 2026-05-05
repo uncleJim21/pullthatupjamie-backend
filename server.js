@@ -40,6 +40,7 @@ const podcastPreferencesRoutes = require('./routes/podcastPreferencesRoutes');
 const appPreferencesRoutes = require('./routes/appPreferencesRoutes');
 const createOnDemandRoutes = require('./routes/onDemandRuns');
 const adminEntitlementsRoutes = require('./routes/adminEntitlements');
+const createNostrBotAdminRoutes = require('./routes/nostrBotAdminRoutes');
 const { v4: uuidv4 } = require('uuid');
 const DigitalOceanSpacesManager = require('./utils/DigitalOceanSpacesManager');
 const { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
@@ -1703,6 +1704,10 @@ app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
 app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
+// Nostr bot admin (HMAC-protected). Always mounted (DEBUG_MODE-independent)
+// because ops needs balance/queue lookups in prod. Scope `nostr-bot:admin`
+// must be present in the HMAC client's allowed-scope map.
+app.use('/api/admin/nostr-bot', serviceHmac({ requiredScopes: ['nostr-bot:admin'] }), createNostrBotAdminRoutes());
 // /api/chat/agent and /api/chat/workflow were removed 2026-04-27 — they were
 // unauthenticated public mounts of the agent loop. /api/pull is the sole
 // public entry point; it goes through serviceHmac + L402/JWT/free-tier
@@ -2149,6 +2154,106 @@ app.listen(PORT, async () => {
       console.log('[BlogIngestion] Cron registered: every 10 minutes');
     } else {
       console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
+    }
+
+    // Nostr bot — single startup branch handles identity log + all
+    // phase crons (mention watcher, zap watcher, reply worker). Each
+    // sub-phase is also internally guarded so partial wiring during
+    // development is safe. Profile (kind:0) is configured externally.
+    if (process.env.NOSTR_BOT_ENABLED === 'true') {
+      try {
+        const { getBotNpub, getBotLnAddress } = require('./utils/nostrBotIdentity');
+        const npub = getBotNpub();
+        const ln = getBotLnAddress() || '(unset)';
+        console.log(`[NostrBot] enabled — pubkey ${npub} — lud16 ${ln}`);
+      } catch (botErr) {
+        console.error('[NostrBot] failed to load identity:', botErr.message);
+      }
+
+      // Polling interval for ALL three sub-watchers (mentions,
+      // zaps, replies). Configurable via env so we can tune from
+      // 30s default → 5s/1min in different envs without redeploying
+      // code. Below 5s we cap to 5s defensively to keep relays from
+      // ddos'ing themselves. Cron isn't used here because we want
+      // sub-minute granularity.
+      const NOSTR_BOT_POLL_INTERVAL_MS = (() => {
+        const raw = parseInt(process.env.NOSTR_BOT_POLL_INTERVAL_MS, 10);
+        if (Number.isFinite(raw) && raw >= 5000) return raw;
+        return 30000; // default: 30 seconds
+      })();
+      console.log(
+        `[NostrBot] polling interval = ${NOSTR_BOT_POLL_INTERVAL_MS}ms (override via NOSTR_BOT_POLL_INTERVAL_MS, min 5000)`,
+      );
+
+      // Helper: schedule `fn` every `intervalMs` with overlap
+      // protection — if a tick is still running when the next fires,
+      // we skip rather than queue. Each invocation logs its label so
+      // you can grep for a single watcher.
+      const startPollLoop = (label, intervalMs, fn) => {
+        let running = false;
+        const run = async () => {
+          if (running) {
+            console.log(`[${label}] previous tick still running — skipping`);
+            return;
+          }
+          running = true;
+          try {
+            await fn();
+          } catch (err) {
+            console.error(`[${label}] tick error:`, err && err.message ? err.message : err);
+          } finally {
+            running = false;
+          }
+        };
+        // Run once on startup so we don't have to wait an interval
+        // before the first poll. Then every intervalMs after.
+        setImmediate(run);
+        return setInterval(run, intervalMs);
+      };
+
+      // Mention watcher: polls relays for kind:1 events that
+      // #p-tag the bot and persists them as pending mentions in
+      // MongoDB.
+      try {
+        const NostrMentionWatcher = require('./utils/NostrMentionWatcher');
+        const mentionWatcher = new NostrMentionWatcher();
+        startPollLoop('NostrBot.mentions', NOSTR_BOT_POLL_INTERVAL_MS, () => mentionWatcher.poll());
+        console.log(`[NostrBot.mentions] poll loop registered: every ${NOSTR_BOT_POLL_INTERVAL_MS}ms`);
+      } catch (mwErr) {
+        console.error('[NostrBot.mentions] poll registration failed:', mwErr.message);
+      }
+
+      // Zap watcher: polls relays for kind:9735 zap receipts
+      // crediting the bot, validates the NIP-57 chain, and
+      // atomically tops up the sender's npub-keyed pull entitlement
+      // balance. Refuses to run if NOSTR_ZAP_PROVIDER_PUBKEYS is
+      // unset (logs once per tick). Background lookback window is
+      // 12h (defined inside the watcher) for graceful catch-up.
+      try {
+        const NostrZapWatcher = require('./utils/NostrZapWatcher');
+        const zapWatcher = new NostrZapWatcher();
+        startPollLoop('NostrBot.zaps', NOSTR_BOT_POLL_INTERVAL_MS, () => zapWatcher.poll());
+        console.log(`[NostrBot.zaps] poll loop registered: every ${NOSTR_BOT_POLL_INTERVAL_MS}ms`);
+      } catch (zwErr) {
+        console.error('[NostrBot.zaps] poll registration failed:', zwErr.message);
+      }
+
+      // Reply worker: claims pending mentions per tick, gates each
+      // on the author's npub balance, runs the agent (debiting the
+      // entitlement first so a long agent + duplicate tick can't
+      // double-spend), and publishes NIP-10 replies. On insufficient
+      // balance, runs a fast on-demand zap poll before giving up to
+      // mitigate the "user just zapped" race condition.
+      try {
+        const NostrBotReplyService = require('./utils/NostrBotReplyService');
+        const replyWorker = new NostrBotReplyService();
+        startPollLoop('NostrBot.replies', NOSTR_BOT_POLL_INTERVAL_MS, () => replyWorker.tick());
+        console.log(`[NostrBot.replies] poll loop registered: every ${NOSTR_BOT_POLL_INTERVAL_MS}ms`);
+      } catch (rwErr) {
+        console.error('[NostrBot.replies] poll registration failed:', rwErr.message);
+      }
+    } else {
+      console.log('[NostrBot] Disabled — set NOSTR_BOT_ENABLED=true to activate');
     }
 
     // Warm BTC/USD price cache on startup so L402 challenges work immediately

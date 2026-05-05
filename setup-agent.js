@@ -360,12 +360,13 @@ PROMPT_SECTIONS.synthesisGuard = `
 
 Tool execution has ended for this turn. Your only job now is to write the final answer to the user using the evidence already in this conversation.
 
-1. **Use markdown formatting.** Use \`##\` headers to separate sections when the answer covers multiple distinct topics. Use **bold** for emphasis on key claims. Use \`> *"quote"*\` blockquotes for direct quotes. Markdown renders fully for the user — use it to make the answer readable and well-structured.
+1. **Use markdown formatting.** Use \`##\` headers to separate sections only when the answer covers multiple distinct topics the user asked about. Use **bold** for key claims. Use \`> *"quote"*\` blockquotes for direct quotes. Do NOT structure the response as a numbered episode list or playlist unless the user explicitly asked for one — summary and analysis requests get flowing prose, not show-notes templates.
 2. **NEVER emit tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML/tagged structure that resembles a function invocation. The orchestrator will discard it and the user will see garbage.
 3. **Cite clips with the EXACT token format.** For every direct quote you include, place a \`{{clip:PARAGRAPH_ID}}\` token on its own line immediately before the blockquote — PARAGRAPH_ID is the full shareLink from the search result (e.g. \`{{clip:abc123-..._p42}}\`). **NEVER use indexed formats** like \`[[CLIP:0]]\`, \`[CLIP:1]\`, \`(clip 2)\`, or any numbered reference. NEVER use plain markdown blockquotes without a preceding \`{{clip:...}}\` token. Do NOT fabricate IDs. If you have no usable clips, write the answer in plain prose without blockquotes.
-4. **Be honest about gaps.** If the searches above returned little or nothing, say so plainly in user-facing language and suggest a podcast or person they could explore. Don't invent GUIDs, episode titles, dates, quotes, or shareLinks.
-5. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
-6. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process. No closing remarks like "Enjoy!" or "Hope this helps!".`;
+4. **Zero invention.** Only state facts, dates, episode titles, descriptions, and summaries that are explicitly present verbatim in the tool results above. Do NOT write episode descriptions, \"key thoughts\", or \"additional insights\" sections that go beyond what the search results directly contain. If a piece of information is not in the tool results, it does not go in the answer.
+5. **Be honest about gaps.** If the searches returned little usable content for the question, say so plainly — e.g. \"The indexed transcripts for this episode don't contain enough detail to summarize X.\" Don't paper over thin evidence with invented summaries. Suggest what they could explore instead.
+6. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
+7. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process. No closing remarks like "Enjoy!" or "Hope this helps!".`;
 
 /**
  * Build a system prompt for the post-loop synthesis pass.
@@ -400,18 +401,29 @@ Tool execution has ended for this turn. Your only job now is to write the final 
  * Each line: {{clip:SHARE_LINK}} — "first 120 chars of quote…"
  * Capped at 25 clips to stay within synthesis context budget.
  */
-function buildClipManifest(clipCache) {
+function buildClipManifest(clipCache, episodeCache) {
   if (!clipCache || clipCache.size === 0) return '';
   const entries = [...clipCache.entries()].slice(0, 25);
   const lines = entries.map(([shareLink, meta]) => {
     const quote = (meta.text || meta.quote || '').replace(/\s+/g, ' ').trim().substring(0, 120);
-    return `{{clip:${shareLink}}} — "${quote}${quote.length >= 120 ? '…' : ''}"`;
+    // Extract episode GUID by stripping the _pN paragraph suffix
+    const epGuid = shareLink.replace(/_p\d+$/, '');
+    const epMeta = episodeCache?.get(epGuid);
+    const epTitle = epMeta?.episodeTitle || meta.episode || '';
+    const guests = epMeta?.guests;
+    const guestStr = Array.isArray(guests) && guests.length
+      ? ` [guests: ${guests.slice(0, 3).join(', ')}]`
+      : '';
+    const date = epMeta?.publishedDate || meta.date || '';
+    const dateStr = date ? ` [${date}]` : '';
+    const epStr = epTitle ? ` (${epTitle.substring(0, 70)})` : '';
+    return `{{clip:${shareLink}}}${epStr}${guestStr}${dateStr} — "${quote}${quote.length >= 120 ? '…' : ''}"`;
   });
   return `## Clips Available for Citation\n\nUse the exact \`{{clip:ID}}\` tokens below — these are real, playable audio links:\n\n${lines.join('\n')}`;
 }
 
-function buildSynthesisPrompt(intent, guidance, clipCache, researchSessionUrl) {
-  const clipManifest = buildClipManifest(clipCache);
+function buildSynthesisPrompt(intent, guidance, clipCache, researchSessionUrl, episodeCache) {
+  const clipManifest = buildClipManifest(clipCache, episodeCache);
 
   // Research-session intent uses a dedicated strict-format prompt ONLY when a
   // real session URL is available. If create_research_session was never called
