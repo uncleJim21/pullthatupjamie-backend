@@ -364,9 +364,10 @@ Tool execution has ended for this turn. Your only job now is to write the final 
 2. **NEVER emit tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML/tagged structure that resembles a function invocation. The orchestrator will discard it and the user will see garbage.
 3. **Cite clips with the EXACT token format.** For every direct quote you include, place a \`{{clip:PARAGRAPH_ID}}\` token on its own line immediately before the blockquote — PARAGRAPH_ID is the full shareLink from the search result (e.g. \`{{clip:abc123-..._p42}}\`). **NEVER use indexed formats** like \`[[CLIP:0]]\`, \`[CLIP:1]\`, \`(clip 2)\`, or any numbered reference. NEVER use plain markdown blockquotes without a preceding \`{{clip:...}}\` token. Do NOT fabricate IDs. If you have no usable clips, write the answer in plain prose without blockquotes.
 4. **Zero invention.** Only state facts, dates, episode titles, descriptions, and summaries that are explicitly present verbatim in the tool results above. Do NOT write episode descriptions, \"key thoughts\", or \"additional insights\" sections that go beyond what the search results directly contain. If a piece of information is not in the tool results, it does not go in the answer.
-5. **Be honest about gaps.** If the searches returned little usable content for the question, say so plainly — e.g. \"The indexed transcripts for this episode don't contain enough detail to summarize X.\" Don't paper over thin evidence with invented summaries. Suggest what they could explore instead.
-6. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
-7. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process. No closing remarks like "Enjoy!" or "Hope this helps!".`;
+5. **Speaker attribution requires evidence — never assume the asked-about person is the speaker.** Topical relevance is NOT speaker attribution. A clip about a topic the user named does NOT mean the user's named person is the one speaking. Attribute a quote to a named person ONLY when at least one of these is true: (a) the clip's manifest entry lists that person under \`[guests: ...]\`; (b) the search was scoped to that person's episode GUIDs (returned by find_person/get_person_episodes) and the result is from one of those GUIDs; or (c) the tool results contain explicit speaker metadata identifying the speaker. If a clip is marked \`[SPEAKER UNVERIFIED]\` or has no guest list and you cannot establish the speaker through (b) or (c), use neutral framing — "the discussion covers…", "in this episode the host explores…", "the conversation touches on…" — and DO NOT write "X said", "X explains", "X argues", "X discusses", or any phrase that puts words in a specific person's mouth. If the user asked what a specific person said and you have NO clips that meet (a)/(b)/(c), say plainly that the indexed transcripts don't contain a verifiable appearance for that person on this material — DO NOT fabricate one by stitching together topically-related quotes from episodes where they weren't a guest.
+6. **Be honest about gaps.** If the searches returned little usable content for the question, say so plainly — e.g. \"The indexed transcripts for this episode don't contain enough detail to summarize X.\" Don't paper over thin evidence with invented summaries. Suggest what they could explore instead.
+7. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
+8. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process. No closing remarks like "Enjoy!" or "Hope this helps!".`;
 
 /**
  * Build a system prompt for the post-loop synthesis pass.
@@ -404,6 +405,7 @@ Tool execution has ended for this turn. Your only job now is to write the final 
 function buildClipManifest(clipCache, episodeCache) {
   if (!clipCache || clipCache.size === 0) return '';
   const entries = [...clipCache.entries()].slice(0, 25);
+  let unverifiedCount = 0;
   const lines = entries.map(([shareLink, meta]) => {
     const quote = (meta.text || meta.quote || '').replace(/\s+/g, ' ').trim().substring(0, 120);
     // Extract episode GUID by stripping the _pN paragraph suffix
@@ -411,15 +413,27 @@ function buildClipManifest(clipCache, episodeCache) {
     const epMeta = episodeCache?.get(epGuid);
     const epTitle = epMeta?.episodeTitle || meta.episode || '';
     const guests = epMeta?.guests;
-    const guestStr = Array.isArray(guests) && guests.length
-      ? ` [guests: ${guests.slice(0, 3).join(', ')}]`
-      : '';
+    const hasGuests = Array.isArray(guests) && guests.length > 0;
+    // Empty/missing guests metadata means the episode has no tagged speakers
+    // and we cannot verify who actually said this paragraph. Flag it
+    // prominently — synthesis rules below forbid attributing these to a
+    // named person.
+    let guestStr;
+    if (hasGuests) {
+      guestStr = ` [guests: ${guests.slice(0, 3).join(', ')}]`;
+    } else {
+      guestStr = ' [SPEAKER UNVERIFIED — episode has no tagged guests; do NOT attribute this quote to any specific person by name]';
+      unverifiedCount++;
+    }
     const date = epMeta?.publishedDate || meta.date || '';
     const dateStr = date ? ` [${date}]` : '';
     const epStr = epTitle ? ` (${epTitle.substring(0, 70)})` : '';
     return `{{clip:${shareLink}}}${epStr}${guestStr}${dateStr} — "${quote}${quote.length >= 120 ? '…' : ''}"`;
   });
-  return `## Clips Available for Citation\n\nUse the exact \`{{clip:ID}}\` tokens below — these are real, playable audio links:\n\n${lines.join('\n')}`;
+  const header = unverifiedCount > 0
+    ? `## Clips Available for Citation\n\nUse the exact \`{{clip:ID}}\` tokens below — these are real, playable audio links.\n\n**${unverifiedCount} of ${lines.length} clips below are marked SPEAKER UNVERIFIED.** Those clips come from episodes with no tagged guest metadata, so the speaker is unknown. Follow the speaker-attribution rule in the SYNTHESIS PASS section above when citing them.`
+    : `## Clips Available for Citation\n\nUse the exact \`{{clip:ID}}\` tokens below — these are real, playable audio links:`;
+  return `${header}\n\n${lines.join('\n')}`;
 }
 
 function buildSynthesisPrompt(intent, guidance, clipCache, researchSessionUrl, episodeCache) {
@@ -487,9 +501,10 @@ The first synthesis attempt did not produce usable output. This is your last cha
 2. **No tool-call markup.** No \`<...>\` tags, no DSML, XML, JSON, or any structure resembling a function invocation. If you emit anything that looks like a tool call, it will be discarded.
 3. **Do NOT narrate.** Forbidden openers: "Let me", "I'll", "Let's", "Now I'll", "Based on", "Here's what I found", "Excellent", "Interesting", "Hmm", "Perfect", "Great", "OK". Open with the substantive answer directly.
 4. **Cite only what is already in the conversation history above.** For every direct quote, place \`{{clip:PARAGRAPH_ID}}\` on its own line immediately before the blockquote (PARAGRAPH_ID is the shareLink from the search result, e.g. \`{{clip:abc123-..._p42}}\`). Do NOT use plain blockquotes without a preceding \`{{clip:...}}\`. If you have nothing to cite, write plain prose with no blockquotes. Do not fabricate IDs.
-5. **If you genuinely cannot answer from the conversation history, output exactly this single line and nothing else:**
+5. **Speaker attribution requires evidence.** A clip's topical relevance to the user's question is NOT proof of who is speaking. Attribute a quote to a named person ONLY if the clip's manifest entry lists that person under \`[guests: ...]\`, OR the clip came from a person-scoped search (find_person → guids → search_quotes). For clips marked \`[SPEAKER UNVERIFIED]\` or lacking a guest list, use neutral framing ("the discussion covers…", "the host explores…") and never write "X said" / "X explains" / "X discusses". If the user asked what a specific person said and no clip ties to them via guest metadata or a person-scoped search, say plainly that the indexed transcripts don't contain a verifiable appearance — do not stitch topically-related quotes into a fake attribution.
+6. **If you genuinely cannot answer from the conversation history, output exactly this single line and nothing else:**
    \`No transcribed coverage found for this query.\`
-6. **No mention of tools, time limits, retries, or your own process.** Speak as a podcast research expert directly to the user.
+7. **No mention of tools, time limits, retries, or your own process.** Speak as a podcast research expert directly to the user.
 
 Write the answer now.`;
 
