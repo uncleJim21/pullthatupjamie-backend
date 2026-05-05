@@ -1362,7 +1362,7 @@ function createAgentChatRoutes({ openai } = {}) {
             if (toolUse.name === 'suggest_action') {
               result = handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
             } else if (toolUse.name === 'create_research_session') {
-              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage, userMessage: message });
               if (result.sessionId && result.url) {
                 researchSessionUrl = result.url;
                 emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
@@ -1379,7 +1379,7 @@ function createAgentChatRoutes({ openai } = {}) {
               };
               console.log(`[${requestId}] get_adjacent_paragraphs BLOCKED — cap ${adjacentParagraphCap} reached`);
             } else {
-              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
+              result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage, userMessage: message });
             }
           } catch (toolErr) {
             printLog(`[${requestId}] Tool ${toolUse.name} exception (recovered for LLM): ${toolErr.message}`);
@@ -1566,7 +1566,7 @@ function createAgentChatRoutes({ openai } = {}) {
             const sessionResult = await executeAgentTool(
               'create_research_session',
               { pineconeIds },
-              { openai, sessionId, req, clipCache, recordHelperLlmUsage }
+              { openai, sessionId, req, clipCache, recordHelperLlmUsage, userMessage: message }
             );
             if (sessionResult.sessionId && sessionResult.url) {
               researchSessionUrl = sessionResult.url;

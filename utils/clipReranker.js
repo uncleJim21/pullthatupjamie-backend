@@ -8,13 +8,14 @@ const MIN_RELEVANCE_SCORE = 4;
  * relevance to the query, filters out low-scorers, and re-orders by score.
  *
  * @param {object} options
- * @param {string} options.query - The user's original search query
- * @param {Array}  options.clips - Array of clip objects (must have .quote or .text)
+ * @param {string} options.query - The (possibly rewritten) embedding query
+ * @param {Array}  options.clips - Array of clip objects (must have .quote or .text). May include .guests (episode-level tagged guests).
  * @param {object} options.openai - OpenAI client instance
  * @param {number} [options.minScore=4] - Minimum score to keep (0-10)
+ * @param {string} [options.userMessage] - The original user question (NOT the rewritten search query). When provided, the scorer applies a person-mismatch penalty: clips from episodes whose tagged guests don't include a person the user named score 0-3.
  * @returns {{ clips: Array, usage: { model: string, input_tokens: number, output_tokens: number } }}
  */
-async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCORE }) {
+async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCORE, userMessage }) {
   const debugPrefix = '[RERANKER]';
 
   if (!clips || clips.length === 0) {
@@ -30,7 +31,11 @@ async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCOR
     const text = (c.quote || c.text || '').substring(0, 250);
     const speaker = c.creator || 'Unknown';
     const episode = c.episode || '';
-    return `[${i}] (${speaker} — ${episode}) "${text}"`;
+    const guests = Array.isArray(c.guests) ? c.guests : [];
+    const guestStr = guests.length > 0
+      ? ` [guests: ${guests.slice(0, 4).join(', ')}]`
+      : ' [guests: none-tagged]';
+    return `[${i}] (${speaker} — ${episode})${guestStr} "${text}"`;
   });
 
   const systemPrompt = `You are a relevance scorer for podcast transcript clips. Given the user's question and a numbered list of clips, score each clip 0-10 on how directly relevant and substantive it is to answering the question.
@@ -49,9 +54,18 @@ Additional penalties:
 - If the question specifically names a podcast, host, or creator (e.g. "whatifalthist", "Lex Fridman", "All-In"), clips NOT from that source should score 0-2 regardless of topical relevance
 - Closing/farewell exchanges ("where can people find you", "where can I follow you", "thanks for coming on", "that's all for today") should score 0-1 regardless of keyword overlap
 
+Person-mismatch penalty (HARD RULE — apply before any topical score):
+- Each clip carries a [guests: ...] tag listing the episode's tagged guests, OR [guests: none-tagged] when the show/episode has no guest metadata.
+- If the user's question names a specific person (a guest, "what did X say", "X's appearance on Y", "summary of X on Z"), and the clip's [guests: ...] list is non-empty AND does NOT include that person (case-insensitive substring match against any listed guest), score the clip **0-3** regardless of topical fit. Topical relevance is NOT proof the user's named person is the speaker.
+- If the clip is [guests: none-tagged], do NOT apply this penalty — score normally on topical/substantive relevance. Empty guest metadata is ambiguous, not exonerating.
+- This penalty does NOT apply when the user's question is a pure topic query with no named person ("Bitcoin custody", "AI agents").
+
 Return ONLY a JSON array: [{"i":0,"s":7},{"i":1,"s":3},...]`;
 
-  const userMessage = `Question: "${query}"
+  const questionForScorer = (typeof userMessage === 'string' && userMessage.trim().length > 0)
+    ? userMessage.trim()
+    : query;
+  const userPrompt = `Question: "${questionForScorer}"
 
 Clips:
 ${clipSummaries.join('\n')}`;
@@ -61,7 +75,7 @@ ${clipSummaries.join('\n')}`;
       model: RERANKER_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
+        { role: 'user', content: userPrompt },
       ],
       response_format: { type: 'json_object' },
       temperature: 0.0,

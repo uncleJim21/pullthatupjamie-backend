@@ -21,6 +21,7 @@ const {
 const { getAdjacentParagraphs } = require('../agent-tools/pineconeTools.js');
 const { createResearchSessionDirect } = require('../services/researchSessionService');
 const { resolveOwner } = require('../utils/resolveOwner');
+const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 
 // Removed 2026-04-28: per-tool flat-fee table previously fed createCostTracker.
 // Internal infra (Pinecone, MongoDB, Atlas, our HTTP services) is $0 marginal —
@@ -117,7 +118,7 @@ function truncateResults(data) {
 
 // --- Per-tool dispatch ---
 
-async function handleSearchQuotes(input, { openai, recordHelperLlmUsage }) {
+async function handleSearchQuotes(input, { openai, recordHelperLlmUsage, userMessage }) {
   const { query, guid, guids, feedIds, limit, minDate, maxDate } = input;
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
@@ -137,14 +138,47 @@ async function handleSearchQuotes(input, { openai, recordHelperLlmUsage }) {
   }, { openai, recordHelperLlmUsage });
   filterFluffResults(data);
 
+  // Enrich each paragraph result with its episode-level `guests` array. The
+  // service returns paragraph metadata (no guests field); we pull guests from
+  // the episode-type metadata docs in one batch lookup. Reranker + downstream
+  // attribution rules need this signal — without it, every clip looks the
+  // same regardless of which person actually sat on the episode.
+  if (data.results && data.results.length > 0) {
+    try {
+      const epGuids = [...new Set(data.results.map(r => {
+        const sl = r.shareLink || r.shareUrl || '';
+        return sl.replace(/_p\d+$/, '');
+      }).filter(Boolean))];
+      if (epGuids.length > 0) {
+        const epDocs = await JamieVectorMetadata.find({
+          guid: { $in: epGuids },
+          type: 'episode',
+        }).select('guid metadataRaw.guests').lean();
+        const guestsByGuid = new Map();
+        for (const doc of epDocs) {
+          const g = doc.metadataRaw?.guests;
+          guestsByGuid.set(doc.guid, Array.isArray(g) ? g : []);
+        }
+        for (const r of data.results) {
+          const sl = r.shareLink || r.shareUrl || '';
+          const epGuid = sl.replace(/_p\d+$/, '');
+          r.guests = guestsByGuid.get(epGuid) || [];
+        }
+      }
+    } catch (enrichErr) {
+      printLog(`[TOOL] search_quotes guest enrichment failed (non-fatal): ${enrichErr.message}`);
+    }
+  }
+
   if (data.results && data.results.length > 2 && openai) {
     const clips = data.results.map(r => ({
       quote: r.quote,
       creator: r.creator || r.episode,
       episode: r.episode,
+      guests: Array.isArray(r.guests) ? r.guests : [],
     }));
     try {
-      const reranked = await rerankClips({ query: q, clips, openai });
+      const reranked = await rerankClips({ query: q, clips, openai, userMessage });
       if (typeof recordHelperLlmUsage === 'function' && reranked.usage) {
         recordHelperLlmUsage(
           reranked.usage.model,
@@ -460,14 +494,14 @@ const TOOL_DISPATCH = {
  *        invoked by helpers (reranker, embedding, query expansion) so the
  *        caller can attribute their real spend to the request's cost tracker.
  */
-async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache, recordHelperLlmUsage }) {
+async function executeAgentTool(toolName, toolInput, { openai, sessionId, req, clipCache, recordHelperLlmUsage, userMessage }) {
   const handler = TOOL_DISPATCH[toolName];
   if (!handler) {
     return { error: `Unknown tool: ${toolName}` };
   }
 
   try {
-    return await handler(toolInput, { openai, req, clipCache, recordHelperLlmUsage });
+    return await handler(toolInput, { openai, req, clipCache, recordHelperLlmUsage, userMessage });
   } catch (err) {
     const msg = err && (err.message || String(err));
     printLog(`[TOOL] ${toolName} threw (recovered): ${msg}`);
