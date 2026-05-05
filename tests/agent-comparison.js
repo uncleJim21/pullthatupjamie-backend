@@ -218,6 +218,24 @@ const TEST_QUERIES = [
   // Adversarial — research-session shape with thin corpus / impossible cross-show
   { name: 'C9 Adv: thin corpus marble racing',       cohort: 'cohort9', task: 'compile a research session of marble racing podcast clips', mode: 'fast' },
   { name: 'C9 Adv: impossible Satoshi compilation',  cohort: 'cohort9', task: 'make a playlist of every Satoshi Nakamoto interview clip', mode: 'fast' },
+
+  // --- Cohort 10: DSML / synthesis stress (multi-step numerical + wide aggregation) ---
+  // Designed to maximize the conditions that historically push DeepSeek's
+  // synthesis pass into DSML in-band tool-call markup leakage:
+  //   (a) many tool calls before synthesis (search_quotes + adjacent_paragraphs fan-out)
+  //   (b) numerical reasoning / aggregation in the final prose
+  //   (c) tabulating multiple speakers with quantitative attributes
+  // Used to compare baseline DeepSeek synthesis vs. AGENT_SYNTHESIS_MODEL=
+  // gemma4-31b-or / qwen3-next-80b on the same workload.
+  { name: 'C10 BTC price prediction weighted',
+    cohort: 'cohort10',
+    task: 'Find all Bitcoin 2026 price predictions from podcasters, round each to the nearest $10k, then weight them by the relative follower counts or influence of each speaker and give me a weighted average prediction.' },
+  { name: 'C10 Macro consensus weighted',
+    cohort: 'cohort10',
+    task: 'Compile every macro analyst prediction for US GDP growth in 2026 mentioned on podcasts, note who said what, rank them by the seniority/prominence of the speaker, and give me a weighted consensus view.' },
+  { name: 'C10 AI timeline synthesis',
+    cohort: 'cohort10',
+    task: 'Gather every specific AGI or transformative-AI timeline prediction (year or decade) given by guests on Lex Fridman, All-In, and Dwarkesh Patel podcasts. Tabulate speaker, prediction, and year stated, then synthesize where the center of gravity is and who is the outlier.' },
 ];
 
 // ===== Helpers =====

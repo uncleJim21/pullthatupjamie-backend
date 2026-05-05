@@ -51,6 +51,11 @@ const STRIP_BLOCK_PATTERNS = [
   /<function_call>[\s\S]*?<\/function_call>/g,
 ];
 
+// Indexed clip references that synthesis models sometimes emit instead of the
+// correct {{clip:shareLink}} format. Strip them so they don't render as literal
+// text in the UI. Examples: [[CLIP:0]], [CLIP:1], (clip 2), [[clip:3]]
+const INDEXED_CLIP_RE = /\[\[clip:\d+\]\]|\[clip:\d+\]|\(clip\s*\d+\)/gi;
+
 // Stray-tag patterns: clean up orphan opens/closes left behind after an
 // incomplete or mid-stream truncation.
 const STRIP_TAG_PATTERNS = [
@@ -84,10 +89,12 @@ function stripMarkupOnly(text) {
 
 function sanitizeAgentText(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
-  // Document-level cleanup: strip markup, then collapse the empty paragraphs
-  // it leaves behind and trim leading/trailing whitespace so the final
-  // payload reads cleanly. Do NOT use this on streaming fragments.
-  return stripMarkupOnly(text).replace(/\n{3,}/g, '\n\n').trim();
+  // Document-level cleanup: strip markup and indexed clip refs, then collapse
+  // empty paragraphs and trim. Do NOT use this on streaming fragments.
+  return stripMarkupOnly(text)
+    .replace(INDEXED_CLIP_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function hasToolCallMarkup(text) {
@@ -239,9 +246,124 @@ function createStreamSanitizer() {
   };
 }
 
+// Narration phrases that signal a model "thinking aloud" rather than answering.
+// Applied line-by-line to live token streams so sycophantic openers never reach
+// the client even when streaming directly (no buffer-then-flush).
+const NARRATION_LINE_RE = /^\s*(let me\b|i'?ll\b|i'?m going to\b|i'?m about to\b|now let me\b|first,? let me\b|allow me to\b|let'?s grab\b|let'?s see\b|let'?s look\b|let'?s \w|perfect[!.,]|great[!.,]|ok(?:ay)?[,!.]\s|excellent[!.,]|interesting[!.,]|hmm\b|based on (the|my|these|our)\b|here'?s what (i found|i have|we have)\b|now,?\s+i'?ve\b|i (can see|have found|have gathered|have compiled|now have|found)\b|i'?ve (found|gathered|compiled|now got)\b)/i;
+
+// How many characters to buffer at the start of each line before deciding
+// it is not narration. 60 chars covers all known narration openers and is
+// imperceptibly short for the user (~2–4 tokens at typical token sizes).
+const NARRATION_DETECT_WINDOW = 60;
+
+/**
+ * Create a streaming narration filter. Buffers the opening characters of each
+ * line to detect sycophantic/narration prefixes and drops those lines entirely.
+ * Non-narration content is forwarded to `onEmit` character-by-character as
+ * tokens arrive — no end-of-response flush required.
+ *
+ * @param {(text: string) => void} onEmit  called with safe text fragments
+ * @returns {{ feed(chunk: string): void, flush(): void }}
+ */
+function createNarrationFilter(onEmit) {
+  let lineBuf = '';     // characters buffered at line start for narration detection
+  let decided = false;  // true once we've resolved emit/suppress for the current line
+  let suppress = false; // true when current line is narration
+
+  return {
+    feed(chunk) {
+      for (const ch of chunk) {
+        if (ch === '\n') {
+          if (!suppress) {
+            if (lineBuf) onEmit(lineBuf);
+            onEmit('\n');
+          }
+          lineBuf = '';
+          decided = false;
+          suppress = false;
+          continue;
+        }
+
+        if (decided) {
+          if (!suppress) onEmit(ch);
+        } else {
+          lineBuf += ch;
+          if (NARRATION_LINE_RE.test(lineBuf)) {
+            suppress = true;
+            decided = true;
+            lineBuf = '';
+          } else if (lineBuf.length >= NARRATION_DETECT_WINDOW) {
+            // No narration pattern found in the detection window — safe to emit.
+            onEmit(lineBuf);
+            lineBuf = '';
+            decided = true;
+            suppress = false;
+          }
+        }
+      }
+    },
+
+    flush() {
+      if (!suppress && lineBuf) {
+        onEmit(lineBuf);
+        lineBuf = '';
+      }
+    },
+  };
+}
+
+/**
+ * Validate and correct {{clip:ID}} tokens in synthesis output against the
+ * known clipCache (shareLink → metadata map populated by search_quotes results).
+ *
+ * Models like nano occasionally:
+ *   1. Prepend whitespace inside the token: {{clip: https___...}}
+ *   2. Concatenate two paragraph IDs: {{clip:abc_p380_p368}} (hybrid of _p380 and _p368)
+ *   3. Fabricate IDs entirely
+ *
+ * Fix strategy per token:
+ *   a) Trim whitespace from the extracted ID.
+ *   b) If the trimmed ID exists in clipCache → emit as-is.
+ *   c) If not, repeatedly strip the last `_pN` segment and retry until a
+ *      valid prefix is found or we run out of segments.
+ *   d) If no match found → remove the {{clip:...}} token entirely (don't
+ *      silently emit a broken reference that renders as "Loading...").
+ *
+ * @param {string} text       Raw synthesis text containing {{clip:...}} tokens.
+ * @param {Map<string, *>} clipCache  shareLink → metadata from search_quotes.
+ * @returns {string}          Cleaned text with validated/corrected clip tokens.
+ */
+function scrubClipIds(text, clipCache) {
+  if (!clipCache || clipCache.size === 0) return text;
+
+  return text.replace(/\{\{clip:([^}]*)\}\}/g, (match, rawId) => {
+    const id = rawId.trim();
+    if (!id) return ''; // empty token
+
+    // Exact match
+    if (clipCache.has(id)) return `{{clip:${id}}}`;
+
+    // Try stripping trailing _pN segments (handles hybrid IDs like _p380_p368)
+    let candidate = id;
+    while (true) {
+      const stripped = candidate.replace(/_p\d+$/, '');
+      if (stripped === candidate) break; // no more _pN to strip
+      candidate = stripped;
+      if (clipCache.has(candidate)) {
+        return `{{clip:${candidate}}}`;
+      }
+    }
+
+    // No valid ID found — remove the token rather than emit a broken reference.
+    return '';
+  });
+}
+
 module.exports = {
   sanitizeAgentText,
   hasToolCallMarkup,
   sanitizeStreamDelta,
   createStreamSanitizer,
+  createNarrationFilter,
+  scrubClipIds,
 };

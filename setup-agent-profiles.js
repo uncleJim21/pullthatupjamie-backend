@@ -9,7 +9,11 @@ const { PROMPT_SECTIONS, TOOL_DEFINITIONS, buildCurrentDateSection } = require('
 
 const ALL_TOOL_NAMES = TOOL_DEFINITIONS.map(t => t.name);
 
-const SEARCH_TOOLS = ALL_TOOL_NAMES; // everything
+// create_research_session is intentionally excluded from search — it must only
+// be available when the classifier explicitly routed to research_session intent.
+// Allowing it in search lets DeepSeek self-invoke it on discovery queries and
+// produce hallucinated/empty session URLs.
+const SEARCH_TOOLS = ALL_TOOL_NAMES.filter(n => n !== 'create_research_session');
 
 const RESEARCH_SESSION_TOOLS = [
   'search_quotes',
@@ -104,9 +108,9 @@ const DEFAULT_INTENT = 'search';
 const CLASSIFIER_PROMPT = `Classify the user's intent into exactly one category. Respond with ONLY a JSON object: {"intent":"<value>"}
 
 Categories:
-- "research_session": The user wants a **curated multi-clip or multi-episode artifact** they can keep, revisit, or share — not a one-off answer. Treat as research_session when they ask to **build, make, create, put together, compile, bundle, curate, aggregate, assemble, collect, line up, queue, or give** a **playlist, research session, clip pack, supercut, highlight reel, binge list, anthology, reading/listening list of clips, digest of clips, or "episodes to watch/listen"** for a topic or show (optionally with a time window: "this month", "last month", "recent", "latest episodes"). Phrases like **"for my team"**, **"I can send to a friend"**, **"shareable"**, **"save this"** (when tied to multiple clips/episodes) also count. **Err on the side of research_session** when the deliverable sounds like **more than a single narrative answer** — e.g. ordered list of episodes with clips to explore in-app.
+- "research_session": The user explicitly wants a **saved, shareable artifact** (playlist, research session, clip pack, highlight reel, supercut, binge list, anthology, digest of clips). Requires ALL of the following: (1) an **explicit creation/curation verb** — build, make, create, put together, bundle, curate, assemble, collect, line up, queue up, give me a playlist/session/pack; AND (2) an **explicit artifact noun** — playlist, research session, clip pack, highlight reel, supercut, binge list, anthology, digest, clip bundle, or "episodes to watch/listen to". Optionally a time window ("last month", "recent"). Phrases like "for my team", "I can share", "shareable link" tied to a collection also count. **Do NOT classify as research_session** for: find, show, tell me, what are, give me, explore, summarize, compare, analyze — even when followed by "best", "top", "greatest", or "from podcasts". Those are search queries that want a written answer with quotes, not a saved artifact.
 - "transcribe": User explicitly asks to TRANSCRIBE, INGEST, or ADD a podcast/episode. Must be an explicit FUTURE-TENSE transcription request (imperative: "transcribe X", "ingest Y", "get Z transcribed"). Past-tense mentions ("I transcribed", "already transcribed", "just transcribed") are NOT transcribe intent — they're context for a follow-up search. If the same message contains a follow-up question ("what did they say", "summarize", "tell me about"), always prefer "search".
-- "search": Single-pass questions — explain, compare, summarize, "what did X say about Y", topic exploration, one episode deep dive, or a follow-up after transcription **without** asking for a saved playlist/session/clip bundle. This is the default when unsure **unless** the user clearly wants a **multi-item curated artifact** as above.
+- "search": Everything else — explain, find, show, tell me, what did X say, compare, summarize, topic exploration, "best X", "top X", one episode deep dive, or a follow-up after transcription. **Default when unsure.**
 
 Examples:
 - "Make me a research session on AI" → {"intent":"research_session"}
@@ -116,15 +120,22 @@ Examples:
 - "Put together clips of Huberman on sleep" → {"intent":"research_session"}
 - "Compile a highlight reel of Rogan on UFOs" → {"intent":"research_session"}
 - "Line up recent All-In takes on AI regulation I can share" → {"intent":"research_session"}
-- "Aggregate podcast takes on UBI into one place" → {"intent":"research_session"}
+- "Create a clip bundle of the best takes on UBI" → {"intent":"research_session"}
 - "Transcribe the latest Lex Fridman episode" → {"intent":"transcribe"}
 - "Can you ingest the All-In podcast?" → {"intent":"transcribe"}
 - "Get Corporate Gossip transcribed" → {"intent":"transcribe"}
-- "I just transcribed episode abc123. What did they say about tariffs?" → {"intent":"search"}
-- "I transcribed the latest All-In, summarize the key points" → {"intent":"search"}
-- "Already transcribed that one — now tell me the top takeaways" → {"intent":"search"}
+- "Find the best founder origin stories from podcasts" → {"intent":"search"}
+- "Show me the top takes on AI safety" → {"intent":"search"}
+- "What are the best Huberman episodes on sleep?" → {"intent":"search"}
+- "Give me great clips about Bitcoin" → {"intent":"search"}
+- "Best episodes about stoicism" → {"intent":"search"}
 - "What did Huberman say about creatine?" → {"intent":"search"}
 - "Palmer Luckey on Joe Rogan" → {"intent":"search"}
-- "Compare Bitcoin views on TFTC vs WBD" → {"intent":"search"}`;
+- "Compare Bitcoin views on TFTC vs WBD" → {"intent":"search"}
+- "Compile each host's position on AI regulation and note where they've changed their mind" → {"intent":"search"}
+- "Summarize and compile what all four All-In hosts have said about crypto" → {"intent":"search"}
+- "Aggregate every macro analyst view on GDP growth in 2026" → {"intent":"search"}
+- "I just transcribed episode abc123. What did they say about tariffs?" → {"intent":"search"}
+- "Already transcribed that one — now tell me the top takeaways" → {"intent":"search"}`;
 
 module.exports = { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT };

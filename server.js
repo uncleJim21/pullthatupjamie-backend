@@ -2270,7 +2270,7 @@ app.listen(PORT, async () => {
     // High-visibility banner showing what the /api/chat/workflow ("pull") agent
     // will route to by default.
     try {
-      const { AGENT_MODELS, DEFAULT_AGENT_MODEL, EXECUTION_PROFILES, DEFAULT_EXECUTION_PROFILE } = require('./constants/agentModels');
+      const { AGENT_MODELS, DEFAULT_AGENT_MODEL, EXECUTION_PROFILES, DEFAULT_EXECUTION_PROFILE, normalizeModelKey } = require('./constants/agentModels');
       const m = AGENT_MODELS[DEFAULT_AGENT_MODEL];
       const p = EXECUTION_PROFILES[DEFAULT_EXECUTION_PROFILE];
       const envRaw = process.env.AGENT_MODEL;
@@ -2279,12 +2279,19 @@ app.listen(PORT, async () => {
         : `\x1b[33m${envRaw} (DEPRECATED — ignored, please remove from .env)\x1b[0m`;
       const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
       const bold = (s) => `\x1b[1m${s}\x1b[0m`;
+      const synthEnvRaw = process.env.AGENT_SYNTHESIS_MODEL;
+      const synthKey = synthEnvRaw ? normalizeModelKey(synthEnvRaw) : null;
+      const synthModel = synthKey ? AGENT_MODELS[synthKey] : null;
+      const synthLine = synthModel
+        ? `${bold(synthModel.label)}  [${synthKey}]  $${synthModel.inputPer1M}/M in, $${synthModel.outputPer1M}/M out`
+        : `\x1b[2msame as orchestrator (not set)\x1b[0m`;
       console.log('');
       console.log(cyan('┌─ Pull agent default ───────────────────────────────────────────'));
-      console.log(`${cyan('│')} Model:    ${bold(m.label)}  [${m.key}]`);
-      console.log(`${cyan('│')} Provider: ${m.provider}  (model id: ${m.id})`);
-      console.log(`${cyan('│')} Pricing:  $${m.inputPer1M}/M in, $${m.outputPer1M}/M out`);
-      console.log(`${cyan('│')} Profile:  ${p.label}  rounds≤${p.maxToolRounds}, cost≤$${p.costBudgetHard}, latency≤${p.latencyBudgetHardMs}ms`);
+      console.log(`${cyan('│')} Model:     ${bold(m.label)}  [${m.key}]`);
+      console.log(`${cyan('│')} Provider:  ${m.provider}  (model id: ${m.id})`);
+      console.log(`${cyan('│')} Pricing:   $${m.inputPer1M}/M in, $${m.outputPer1M}/M out`);
+      console.log(`${cyan('│')} Profile:   ${p.label}  rounds≤${p.maxToolRounds}, cost≤$${p.costBudgetHard}, latency≤${p.latencyBudgetHardMs}ms`);
+      console.log(`${cyan('│')} Synthesis: ${synthLine}`);
       console.log(`${cyan('│')} AGENT_MODEL env: ${envState}`);
       console.log(cyan('└────────────────────────────────────────────────────────────────'));
       console.log('');

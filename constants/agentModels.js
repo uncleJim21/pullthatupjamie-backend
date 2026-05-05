@@ -65,6 +65,31 @@ const HELPER_LLM_PRICES = {
     outputPer1M: parseFloat(process.env.ANTHROPIC_HAIKU_OUTPUT_PER_1M || '5.0'),
     label: 'Haiku 4.5',
   },
+  // Synthesis-only candidates — billed via addHelperLlmUsage when
+  // AGENT_SYNTHESIS_MODEL routes the final synthesis pass to one of these
+  // instead of the orchestrator. Pricing matches the AGENT_MODELS entries
+  // below; keys are the OpenRouter model IDs that costTracker looks up at
+  // runtime.
+  'google/gemma-4-31b-it': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_INPUT_PER_1M || '0.13'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_OUTPUT_PER_1M || '0.38'),
+    label: 'Gemma 4 31B (OpenRouter)',
+  },
+  'qwen/qwen3-next-80b-a3b-instruct': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_INPUT_PER_1M || '0.09'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
+    label: 'Qwen3 Next 80B (OpenRouter)',
+  },
+  'gpt-5-nano': {
+    inputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_INPUT_PER_1M || '0.05'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_OUTPUT_PER_1M || '0.40'),
+    label: 'GPT-5 nano (OpenAI)',
+  },
+  'moonshotai/kimi-k2.6': {
+    inputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_INPUT_PER_1M || '0.74'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_OUTPUT_PER_1M || '3.49'),
+    label: 'Kimi K2.6 (OpenRouter)',
+  },
 };
 
 const AGENT_MODELS = {
@@ -171,6 +196,56 @@ const AGENT_MODELS = {
     outputPer1M: parseFloat(process.env.DEEPSEEK_PRO_OUTPUT_PER_1M || '0.87'),
     label: 'DeepSeek V4-Pro (Direct)',
   },
+  // Synthesis-only candidates routed through OpenRouter. Cheap, instruction-
+  // tuned, no DSML in-band protocol — designed to be used as the final
+  // synthesis pass while DeepSeek drives tool calls. See
+  // AGENT_SYNTHESIS_MODEL handling in routes/agentChatRoutes.js.
+  'gemma4-31b-or': {
+    key: 'gemma4-31b-or',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_GEMMA4_31B_MODEL || 'google/gemma-4-31b-it',
+    inputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_INPUT_PER_1M || '0.13'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_GEMMA4_31B_OUTPUT_PER_1M || '0.38'),
+    label: 'Gemma 4 31B (OpenRouter)',
+  },
+  'qwen3-next-80b': {
+    key: 'qwen3-next-80b',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_QWEN3_80B_MODEL || 'qwen/qwen3-next-80b-a3b-instruct',
+    inputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_INPUT_PER_1M || '0.09'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_QWEN3_80B_OUTPUT_PER_1M || '1.10'),
+    label: 'Qwen3 Next 80B (OpenRouter)',
+  },
+  'gpt-5-nano': {
+    key: 'gpt-5-nano',
+    provider: 'openai',
+    id: process.env.OPENAI_GPT5_NANO_MODEL || 'gpt-5-nano',
+    inputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_INPUT_PER_1M || '0.05'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT5_NANO_OUTPUT_PER_1M || '0.40'),
+    label: 'GPT-5 nano (OpenAI)',
+    // nano has internal reasoning that eats into max_completion_tokens before
+    // producing visible output. Give it headroom and cap reasoning effort to
+    // 'low' so it doesn't spend the whole budget thinking before writing.
+    maxSynthesisTokens: parseInt(process.env.OPENAI_GPT5_NANO_MAX_SYNTHESIS_TOKENS || '32000', 10),
+    reasoningEffort: process.env.OPENAI_GPT5_NANO_REASONING_EFFORT || 'low',
+  },
+  'kimi-k2-6-or': {
+    key: 'kimi-k2-6-or',
+    provider: 'openrouter',
+    id: process.env.OPENROUTER_KIMI_K26_MODEL || 'moonshotai/kimi-k2.6',
+    inputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_INPUT_PER_1M || '0.74'),
+    outputPer1M: parseFloat(process.env.OPENROUTER_KIMI_K26_OUTPUT_PER_1M || '3.49'),
+    label: 'Kimi K2.6 (OpenRouter)',
+  },
+  'gpt-4o-mini': {
+    key: 'gpt-4o-mini',
+    provider: 'openai',
+    id: process.env.OPENAI_GPT4O_MINI_MODEL || 'gpt-4o-mini',
+    inputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_INPUT_PER_1M || '0.15'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT4O_MINI_OUTPUT_PER_1M || '0.60'),
+    label: 'GPT-4o mini (OpenAI)',
+    maxSynthesisTokens: parseInt(process.env.OPENAI_GPT4O_MINI_MAX_SYNTHESIS_TOKENS || '4096', 10),
+  },
 };
 
 // Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash
@@ -214,6 +289,20 @@ const LEGACY_MODEL_ALIASES = {
   'deepseek-direct': 'deepseek-v4-flash-direct',
   'deepseek-flash-direct': 'deepseek-v4-flash-direct',
   'deepseek-pro-direct': 'deepseek-v4-pro-direct',
+  'gemma4-or': 'gemma4-31b-or',
+  'gemma-4-or': 'gemma4-31b-or',
+  'qwen3-80b': 'qwen3-next-80b',
+  qwen3: 'qwen3-next-80b',
+  'gpt5-nano': 'gpt-5-nano',
+  'gpt5nano': 'gpt-5-nano',
+  nano: 'gpt-5-nano',
+  qwen: 'qwen3-next-80b',
+  'gpt4o-mini': 'gpt-4o-mini',
+  'gpt4omini': 'gpt-4o-mini',
+  mini: 'gpt-4o-mini',
+  'kimi-k2.6-or': 'kimi-k2-6-or',
+  'kimi-or': 'kimi-k2-6-or',
+  'kimi-openrouter': 'kimi-k2-6-or',
 };
 
 /**
@@ -298,4 +387,5 @@ module.exports = {
   DEFAULT_EXECUTION_PROFILE,
   HELPER_LLM_PRICES,
   resolveModelSelection,
+  normalizeModelKey,
 };

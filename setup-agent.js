@@ -335,7 +335,7 @@ If there is NO create_research_session tool result in the conversation history (
 
 EXAMPLE 1 — show as subject:
 
-**[UTXO's WiSP: Building Bitcoin Social for Mass Adoption](https://pullthatupjamie.ai/?researchSessionId=68ff84c0a9d8c1d4b3e7a2f1)**
+**[UTXO's WiSP: Building Bitcoin Social for Mass Adoption](https://www.pullthatupjamie.ai/app?researchSessionId=68ff84c0a9d8c1d4b3e7a2f1)**
 
 - **Design for the non-technical user** — UTXO refuses to build for crypto ideologues; WiSP targets people who don't know what relays or private keys are, but just want money to work.
 - **"Send Money" over "Zaps"** — Renaming features and displaying dollar amounts normalizes Bitcoin as actual money, not a speculative asset; deliberately targets how real users think.
@@ -345,7 +345,7 @@ EXAMPLE 1 — show as subject:
 
 EXAMPLE 2 — person + time window:
 
-**[Shawn Ryan Show: April 2026 Episodes](https://pullthatupjamie.ai/?researchSessionId=68ff84c0a9d8c1d4b3e7a2f2)**
+**[Shawn Ryan Show: April 2026 Episodes](https://www.pullthatupjamie.ai/app?researchSessionId=68ff84c0a9d8c1d4b3e7a2f2)**
 
 - **Andy Lowery on Epirus Leonidas** — The CEO demonstrates a directed-energy drone-killing system live and explains the cost asymmetry of microwave defense versus cheap drone swarms.
 - **Jason Magnavice, SEAL Team 6** — DEVGRU Red Squadron veteran shares combat stories and the mindset behind the military's most sensitive missions.
@@ -360,11 +360,12 @@ PROMPT_SECTIONS.synthesisGuard = `
 
 Tool execution has ended for this turn. Your only job now is to write the final answer to the user using the evidence already in this conversation.
 
-1. **NEVER emit tool calls or tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML / tagged structure that resembles a function invocation. The orchestrator will discard such output and the user will see garbage. Output plain prose only.
-2. **Cite only what you have.** Use quotes, episodes, and shareLinks from earlier tool results above. Format clips per the response-format rules below when you have them. If there are zero usable quotes from this turn's tool results, omit \`{{clip:...}}\` entirely — do NOT fabricate. The minimum-clip floor is suspended when you have nothing to cite.
-3. **Be honest about gaps.** If the searches above returned little or nothing, say so plainly in user-facing language and suggest a podcast or person they could explore. Don't invent GUIDs, episode titles, dates, quotes, or shareLinks.
-4. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
-5. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process.`;
+1. **Use markdown formatting.** Use \`##\` headers to separate sections when the answer covers multiple distinct topics. Use **bold** for emphasis on key claims. Use \`> *"quote"*\` blockquotes for direct quotes. Markdown renders fully for the user — use it to make the answer readable and well-structured.
+2. **NEVER emit tool-call markup.** No \`<invoke>\`, \`<tool_call>\`, \`<tool_calls>\`, \`<function_call>\`, \`<function_calls>\`, \`<parameter>\`, \`<｜DSML｜...>\`, or any XML/tagged structure that resembles a function invocation. The orchestrator will discard it and the user will see garbage.
+3. **Cite clips with the EXACT token format.** For every direct quote you include, place a \`{{clip:PARAGRAPH_ID}}\` token on its own line immediately before the blockquote — PARAGRAPH_ID is the full shareLink from the search result (e.g. \`{{clip:abc123-..._p42}}\`). **NEVER use indexed formats** like \`[[CLIP:0]]\`, \`[CLIP:1]\`, \`(clip 2)\`, or any numbered reference. NEVER use plain markdown blockquotes without a preceding \`{{clip:...}}\` token. Do NOT fabricate IDs. If you have no usable clips, write the answer in plain prose without blockquotes.
+4. **Be honest about gaps.** If the searches above returned little or nothing, say so plainly in user-facing language and suggest a podcast or person they could explore. Don't invent GUIDs, episode titles, dates, quotes, or shareLinks.
+5. **Never narrate the system.** No mention of tool calls, rounds, time, budgets, retries, "I tried searching", "no results were returned", "the corpus", limits, or new chats. Speak as a podcast research expert directly to the user.
+6. **Lead with the answer.** No "Based on the results", "Here's what I found", "Excellent", "Interesting", "Hmm", or commentary on your own process. No closing remarks like "Enjoy!" or "Hope this helps!".`;
 
 /**
  * Build a system prompt for the post-loop synthesis pass.
@@ -391,26 +392,52 @@ Tool execution has ended for this turn. Your only job now is to write the final 
  * `guidance` shape: { lengthHint: string, urgency: 'normal'|'tight'|'urgent' }.
  * Produced by latencyTracker.synthesisGuidance(synthesisBudgetMs).
  */
-function buildSynthesisPrompt(intent, guidance) {
-  // Research-session intent uses a dedicated strict-format prompt with
-  // few-shot examples (see PROMPT_SECTIONS.researchSessionSynthesisGuard).
-  // The generic responseFormat section is intentionally skipped because
-  // its essay-mode rules conflict with the bullet card shape we want.
-  if (intent === 'research_session') {
+/**
+ * Build a condensed clip manifest from the agent's clipCache so the synthesis
+ * model has an explicit, scannable list of available IDs — instead of having
+ * to hunt for shareLinks buried in walls of raw tool-result JSON.
+ *
+ * Each line: {{clip:SHARE_LINK}} — "first 120 chars of quote…"
+ * Capped at 25 clips to stay within synthesis context budget.
+ */
+function buildClipManifest(clipCache) {
+  if (!clipCache || clipCache.size === 0) return '';
+  const entries = [...clipCache.entries()].slice(0, 25);
+  const lines = entries.map(([shareLink, meta]) => {
+    const quote = (meta.text || meta.quote || '').replace(/\s+/g, ' ').trim().substring(0, 120);
+    return `{{clip:${shareLink}}} — "${quote}${quote.length >= 120 ? '…' : ''}"`;
+  });
+  return `## Clips Available for Citation\n\nUse the exact \`{{clip:ID}}\` tokens below — these are real, playable audio links:\n\n${lines.join('\n')}`;
+}
+
+function buildSynthesisPrompt(intent, guidance, clipCache, researchSessionUrl) {
+  const clipManifest = buildClipManifest(clipCache);
+
+  // Research-session intent uses a dedicated strict-format prompt ONLY when a
+  // real session URL is available. If create_research_session was never called
+  // (or failed), we fall through to the regular synthesisGuard so the model
+  // never sees the research-session output shape and cannot hallucinate a URL.
+  if (intent === 'research_session' && researchSessionUrl) {
+    const sessionUrlSection = `## Confirmed Session URL\n\nThe research session was successfully created. Use this URL verbatim — do not modify, truncate, or reconstruct it:\n\n\`${researchSessionUrl}\``;
     const sections = [
       PROMPT_SECTIONS.base,
       buildCurrentDateSection(),
       PROMPT_SECTIONS.researchSessionSynthesisGuard,
+      sessionUrlSection,
     ];
+    if (clipManifest) sections.push(clipManifest);
     if (guidance) sections.push(buildSynthesisLengthSection(guidance));
     return sections.join('\n');
   }
 
+  // No confirmed session URL (either not a research_session intent, or the
+  // create_research_session call never completed). Use regular synthesis.
   const sections = [
     PROMPT_SECTIONS.base,
     buildCurrentDateSection(),
     PROMPT_SECTIONS.synthesisGuard,
   ];
+  if (clipManifest) sections.push(clipManifest);
   if (guidance) sections.push(buildSynthesisLengthSection(guidance));
   sections.push(PROMPT_SECTIONS.responseFormat);
   return sections.join('\n');
@@ -444,14 +471,15 @@ PROMPT_SECTIONS.strictSynthesisGuard = `
 
 The first synthesis attempt did not produce usable output. This is your last chance to write the answer to the user's question. Follow these rules absolutely — the orchestrator will discard your output and replace it with a hardcoded apology if you violate any of them:
 
-1. **Output ONLY plain prose.** No tool-call markup of any kind. No \`<...>\` tags. No DSML, XML, JSON, or any structure that resembles a function invocation. If you emit anything that looks like a tool call, it will be discarded.
-2. **Do NOT narrate.** Forbidden openers: "Let me", "I'll", "Let's", "Now I'll", "Based on", "Here's what I found", "Excellent", "Interesting", "Hmm", "Perfect", "Great", "OK". Open with the substantive answer directly.
-3. **Cite only what is already in the conversation history above.** Use \`{{clip:shareLink}}\` tokens for clips you have, italicized show titles for episodes you've referenced. If you have nothing to cite, omit clips entirely and write the answer in plain prose. Do not fabricate.
-4. **If you genuinely cannot answer from the conversation history, output exactly this single line and nothing else:**
+1. **Use markdown formatting.** Use \`##\` headers for distinct topic sections. Use **bold** for key claims. Use \`> *"quote"*\` blockquotes for direct quotes. Do NOT output flat plain text — markdown renders fully for the user.
+2. **No tool-call markup.** No \`<...>\` tags, no DSML, XML, JSON, or any structure resembling a function invocation. If you emit anything that looks like a tool call, it will be discarded.
+3. **Do NOT narrate.** Forbidden openers: "Let me", "I'll", "Let's", "Now I'll", "Based on", "Here's what I found", "Excellent", "Interesting", "Hmm", "Perfect", "Great", "OK". Open with the substantive answer directly.
+4. **Cite only what is already in the conversation history above.** For every direct quote, place \`{{clip:PARAGRAPH_ID}}\` on its own line immediately before the blockquote (PARAGRAPH_ID is the shareLink from the search result, e.g. \`{{clip:abc123-..._p42}}\`). Do NOT use plain blockquotes without a preceding \`{{clip:...}}\`. If you have nothing to cite, write plain prose with no blockquotes. Do not fabricate IDs.
+5. **If you genuinely cannot answer from the conversation history, output exactly this single line and nothing else:**
    \`No transcribed coverage found for this query.\`
-5. **No mention of tools, time limits, retries, or your own process.** Speak as a podcast research expert directly to the user.
+6. **No mention of tools, time limits, retries, or your own process.** Speak as a podcast research expert directly to the user.
 
-Write the answer now. Plain prose only.`;
+Write the answer now.`;
 
 /**
  * Build the strict-synthesis system prompt used by the Tier 1 recovery pass
@@ -460,16 +488,17 @@ Write the answer now. Plain prose only.`;
  * narration leaks ("Let me grab more context..."), tool-call markup, and
  * fabricated citations. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
  */
-function buildStrictSynthesisPrompt(intent, guidance) {
-  // Research-session intent uses the same strict format guard for Tier 1/2
-  // recovery — the rules are already maximally prescriptive (3-5 bullets,
-  // exact link shape, no narration). No extra strictness needed beyond
-  // the format itself.
-  if (intent === 'research_session') {
+function buildStrictSynthesisPrompt(intent, guidance, researchSessionUrl) {
+  // Research-session intent uses the strict format guard for Tier 1/2 recovery
+  // ONLY when a confirmed session URL exists. Without it, fall through to the
+  // regular strictSynthesisGuard so the model cannot hallucinate a session link.
+  if (intent === 'research_session' && researchSessionUrl) {
+    const sessionUrlSection = `## Confirmed Session URL\n\nThe research session was successfully created. Use this URL verbatim:\n\n\`${researchSessionUrl}\``;
     const sections = [
       PROMPT_SECTIONS.base,
       buildCurrentDateSection(),
       PROMPT_SECTIONS.researchSessionSynthesisGuard,
+      sessionUrlSection,
     ];
     if (guidance) sections.push(buildSynthesisLengthSection(guidance));
     return sections.join('\n');

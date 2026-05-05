@@ -11,13 +11,14 @@ const {
   TIER3_FALLBACK_MESSAGE,
 } = require('../setup-agent');
 const { PROFILES, VALID_INTENTS, DEFAULT_INTENT, CLASSIFIER_PROMPT } = require('../setup-agent-profiles');
-const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES } = require('../constants/agentModels');
+const { resolveModelSelection, AGENT_MODELS, HELPER_LLM_PRICES, normalizeModelKey } = require('../constants/agentModels');
 const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
-const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer } = require('../utils/agent/sanitizeOutput');
+const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, scrubClipIds } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
+const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -879,6 +880,44 @@ function createAgentChatRoutes({ openai } = {}) {
       });
     }
 
+    // Synthesis routing: when AGENT_SYNTHESIS_MODEL is set, the final
+    // synthesis pass (and Tier 1 strict re-synthesis) runs on a different
+    // model than the orchestrator. Tool calls still flow through the
+    // orchestrator (DeepSeek today); only the prose-composition step swaps.
+    // When unset, synthesisProviderClient === providerClient and the cost
+    // tracker bills synthesis at the orchestrator rate as before. See
+    // docs/AGENT_SYNTHESIS_PASS.md for the rationale.
+    let synthesisModelKey = null;
+    let synthesisModelConfig = modelConfig;
+    let synthesisProviderClient = providerClient;
+    let synthesisIsDistinct = false;
+    if (process.env.AGENT_SYNTHESIS_MODEL) {
+      const resolved = normalizeModelKey(process.env.AGENT_SYNTHESIS_MODEL);
+      if (resolved && AGENT_MODELS[resolved]) {
+        synthesisModelKey = resolved;
+        synthesisModelConfig = AGENT_MODELS[resolved];
+        synthesisIsDistinct = synthesisModelConfig.id !== modelConfig.id;
+        if (synthesisIsDistinct) {
+          synthesisProviderClient = createProvider(synthesisModelConfig.provider);
+          const synthReady = await synthesisProviderClient.validate();
+          if (!synthReady) {
+            const envKeyByProvider = {
+              tinfoil: 'TINFOIL_API_KEY',
+              openrouter: 'OPENROUTER_API_KEY',
+              deepseek: 'DEEPSEEK_API_KEY',
+              anthropic: 'ANTHROPIC_API_KEY',
+            };
+            const envKey = envKeyByProvider[synthesisModelConfig.provider] || 'ANTHROPIC_API_KEY';
+            return res.status(503).json({
+              error: `synthesis provider ${synthesisModelConfig.provider} is not configured or unavailable. Check ${envKey} in .env (AGENT_SYNTHESIS_MODEL=${process.env.AGENT_SYNTHESIS_MODEL})`,
+            });
+          }
+        }
+      } else {
+        console.warn(`[${requestId}] AGENT_SYNTHESIS_MODEL="${process.env.AGENT_SYNTHESIS_MODEL}" did not resolve to a registered model — using orchestrator (${modelConfig.label}) for synthesis`);
+      }
+    }
+
     const rawHistory = req.body.history || [];
     const history = Array.isArray(rawHistory)
       ? rawHistory
@@ -912,6 +951,11 @@ function createAgentChatRoutes({ openai } = {}) {
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
+      // Disable Nagle's algorithm so each res.write() flushes its own TCP
+      // packet immediately rather than being coalesced with subsequent writes.
+      // Without this, synthesis tokens (which arrive via async for-await) still
+      // get bundled into one burst before being sent to the client.
+      res.socket?.setNoDelay(true);
     }
 
     // Non-streaming accumulator. Populated by emit() when !streaming.
@@ -1076,12 +1120,23 @@ function createAgentChatRoutes({ openai } = {}) {
         );
       }
       const latency = createLatencyTracker(executionProfile, startTime);
+      // Hoisted so the post-loop AUTO-SESSION path and the in-loop tool
+      // execution path both share the same cost channel.
+      const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
+        costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
+      };
       let round = 0;
       let hasExecutedTools = false;
       // Hoisted so the post-loop synthesis path can tell whether the loop
       // exited via a natural `break` (model said it was done) or via the guard
       // (cost/latency hard cap, max rounds).
       let naturalCompletion = false;
+      // Captured when create_research_session fires successfully. Passed to
+      // buildSynthesisPrompt so synthesis gets the real URL verbatim instead
+      // of having to find it buried in tool results (which leads to hallucination).
+      // If synthesis runs but no session was ever created, we downgrade to the
+      // regular synthesisGuard so the model never sees the research-session shape.
+      let researchSessionUrl = null;
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
@@ -1094,9 +1149,9 @@ function createAgentChatRoutes({ openai } = {}) {
       // The cap is a hard ceiling that doesn't depend on prompt
       // compliance: once exhausted, calls return a "blocked" stub instead
       // of executing, which both saves time and signals to the model to
-      // synthesize. Most clean queries used 0-3 expansions, so 4 is
-      // generous; tune via env if needed.
-      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '4', 10);
+      // synthesize. Complex research queries can justify more expansions
+      // when DeepSeek issues parallel batches; tune via env if needed.
+      const adjacentParagraphCap = parseInt(process.env.AGENT_ADJACENT_PARAGRAPHS_CAP || '12', 10);
       let adjacentParagraphCount = 0;
 
       const cacheEpisode = (ep, feedFallback = {}) => {
@@ -1112,6 +1167,8 @@ function createAgentChatRoutes({ openai } = {}) {
       };
       agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
+        synthesisModel: synthesisIsDistinct ? synthesisModelConfig.label : null,
+        synthesisModelKey: synthesisIsDistinct ? synthesisModelKey : null,
         query: message, startedAt: new Date().toISOString(),
         classifierTokens,
         rounds: [],
@@ -1128,7 +1185,7 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] === ROUND ${round} START === (elapsed ${latency.elapsedMs()}ms)`);
 
         if (hasExecutedTools) {
-          emit('status', { message: 'Composing your answer...', sessionId });
+          emit('status', { message: 'Thinking & Researching...', sessionId });
         }
 
         const msgMetrics = measureMessages(messages);
@@ -1154,8 +1211,23 @@ function createAgentChatRoutes({ openai } = {}) {
         // which point it can't course-correct. Failure case it prevents:
         // model burns the whole 40s budget on wide adjacent_paragraphs
         // calls, then synthesis runs on 15s and truncates mid-sentence.
-        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote();
+        // For research_session intent, inject a hard reminder once the model
+        // has passed the midpoint of its round budget. This nudges DeepSeek to
+        // stop searching and call create_research_session before running out of
+        // rounds — without it, it can burn all rounds on searches and never
+        // produce the deliverable.
+        const researchSessionNudge = (intent === 'research_session' && round >= Math.ceil(maxToolRounds * 0.6) && !researchSessionUrl)
+          ? `\n\n[SYSTEM] RESEARCH SESSION REMINDER: You have used ${round} of ${maxToolRounds} rounds. You have gathered ${clipCache.size} clips. You MUST call \`create_research_session\` in the next 1-2 rounds or the session will not be saved. Stop searching and call the tool now.`
+          : '';
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge;
 
+        // Buffer all text deltas for this round. We never stream the orchestrator
+        // live because we need to inspect the full text before deciding what to do:
+        //   • Tool-use rounds: discard (it's all narration — "Let me search for…")
+        //   • Final round with clips: trickle to client then emit text_done
+        //   • Final round without clips (but search evidence exists): route to
+        //     synthesis so the dedicated model can cite clips properly
+        const roundTextDeltaBuffer = [];
         const response = await providerClient.createResponse({
           model: modelConfig.id,
           maxTokens: 4096,
@@ -1163,7 +1235,7 @@ function createAgentChatRoutes({ openai } = {}) {
           messages,
           tools: effectiveTools,
           aborted,
-          onTextDelta: (text) => emit('text_delta', { text }),
+          onTextDelta: (text) => roundTextDeltaBuffer.push(text),
           requestId,
         });
 
@@ -1185,21 +1257,60 @@ function createAgentChatRoutes({ openai } = {}) {
           accumulatedTextByRound.push({ round, text: roundText });
         }
 
-        if (isFinalResponse) {
+        const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
+
+        // Short-circuit: if every tool call in this round is suggest_action
+        // (purely cosmetic — it just queues a follow-up chip in the UI), we
+        // should NOT spin up another LLM round. DeepSeek commonly writes a
+        // complete answer AND appends a suggest_action in the same response,
+        // which makes stop_reason='tool_use' even though the answer is done.
+        // Without this guard we buffer+discard the full answer and produce a
+        // much worse synthesis in the next round.
+        const onlySuggestActions = toolUseBlocks.length > 0
+          && toolUseBlocks.every(b => b.name === 'suggest_action');
+
+        // effectiveFinal: treat as the last round if the model stopped cleanly
+        // OR if the only remaining tool calls are decorative suggest_actions.
+        const effectiveFinal = isFinalResponse || (onlySuggestActions && roundText.length > 200);
+
+        if (effectiveFinal) {
+          // Execute any suggest_action calls inline (they just emit UI chips).
+          if (onlySuggestActions) {
+            for (const toolUse of toolUseBlocks) {
+              handleSuggestAction(toolUse.input, emit, { episodeCache, suggestedGuids, requestId });
+            }
+          }
+
+          const hasClips = /\{\{clip:[^}]+\}\}/.test(roundText);
+          const hasSearchEvidence = clipCache.size > 0;
+
+          // If search evidence exists but DeepSeek didn't produce any clip
+          // tokens, route to synthesis instead of emitting clip-free prose.
+          if (!hasClips && hasSearchEvidence && synthesisIsDistinct) {
+            naturalCompletion = false;
+            console.log(`[${requestId}] Final text has no clips (${roundText.length} chars, ${clipCache.size} cached clips) → routing to synthesis`);
+            agentLog.rounds.push({ round, type: 'final_rerouted', tokens: response.usage });
+            break;
+          }
+
+          // Trickle-emit the buffered chunks so the client sees progressive
+          // output rather than a single mag-dump. setImmediate yields the event
+          // loop between chunks so TCP can flush each write individually.
           naturalCompletion = true;
-          const fullText = accumulatedTextByRound.map(r => r.text).join('\n\n');
-          console.log(`[${requestId}] Final text streamed: ${fullText.length} chars across ${accumulatedTextByRound.length} round(s) (round ${round} contributed ${roundText.length} chars)`);
-          agentLog.rounds.push({ round, type: 'final', tokens: response.usage });
-          agentLog.finalText = fullText;
-          emit('text_done', { text: fullText });
+          console.log(`[${requestId}] Final text trickle-emit: ${roundText.length} chars, ${roundTextDeltaBuffer.length} chunks, effectiveFinal=${effectiveFinal} (round ${round})`);
+          agentLog.rounds.push({ round, type: effectiveFinal && !isFinalResponse ? 'final_suggest_shortcircuit' : 'final', tokens: response.usage });
+          agentLog.finalText = roundText;
+          for (const chunk of roundTextDeltaBuffer) {
+            emit('text_delta', { text: chunk });
+            await new Promise(resolve => setImmediate(resolve));
+          }
+          emit('text_done', { text: roundText });
           break;
         }
 
         if (roundText.length > 0) {
-          console.log(`[${requestId}] Intermediate text captured (${roundText.length} chars) for final text_done: "${roundText.substring(0, 80)}..."`);
+          console.log(`[${requestId}] Intermediate text (${roundText.length} chars) buffered+discarded: "${roundText.substring(0, 80)}..."`);
         }
-
-        const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
         console.log(`[${requestId}] ${toolUseBlocks.length} tool_use blocks to execute`);
         hasExecutedTools = true;
         const toolResults = [];
@@ -1242,13 +1353,6 @@ function createAgentChatRoutes({ openai } = {}) {
           });
         }
 
-        // Bound to this request's cost tracker. Helpers (reranker, embedding,
-        // proper-noun expansion) call into this so their real spend lands in
-        // the same `helpers` channel as the classifier and Tier 2 fallback.
-        const recordHelperLlmUsage = (modelId, inputTokens, outputTokens) => {
-          costs.addHelperLlmUsage(modelId, inputTokens || 0, outputTokens || 0);
-        };
-
         const settled = await Promise.all(toolUseBlocks.map(async (toolUse, i) => {
           const toolStart = Date.now();
           let result;
@@ -1258,6 +1362,7 @@ function createAgentChatRoutes({ openai } = {}) {
             } else if (toolUse.name === 'create_research_session') {
               result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
               if (result.sessionId && result.url) {
+                researchSessionUrl = result.url;
                 emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
               }
             } else if (apBlocked.has(i)) {
@@ -1397,6 +1502,82 @@ function createAgentChatRoutes({ openai } = {}) {
       }
       console.log(`[${requestId}] === LOOP EXITED === round=${round}, natural=${naturalCompletion}`);
 
+      // --- Option C: auto-call create_research_session on max_rounds exit ---
+      // When intent is research_session but DeepSeek burned all rounds searching
+      // without ever calling the tool, we create the session ourselves using the
+      // clips already in clipCache. Steps:
+      //   1. Re-rank all cached clips against the original query (same reranker
+      //      used during search — filters junk, sorts by relevance)
+      //   2. Drop below-threshold clips, take top 12 (hard endpoint limit)
+      //   3. If ≥ 3 survive, call executeAgentTool to create the real session
+      //   4. Capture URL so synthesis uses researchSessionSynthesisGuard + URL
+      //   5. Failures are silent — synthesis degrades to regular clip prose
+      if (
+        !naturalCompletion
+        && !_aborted
+        && intent === 'research_session'
+        && !researchSessionUrl
+        && clipCache.size > 0
+        && round >= maxToolRounds
+      ) {
+        console.log(`[${requestId}] [AUTO-SESSION] research_session intent, no session created, ${clipCache.size} cached clips — attempting auto-call`);
+        try {
+          // Build clip array in the shape rerankClips expects
+          const allCachedClips = [...clipCache.entries()].map(([shareLink, meta]) => ({
+            shareLink,
+            quote: meta.text || meta.quote || '',
+            text: meta.text || meta.quote || '',
+            creator: meta.creator || '',
+            episode: meta.episodeTitle || '',
+          }));
+
+          // If the query names a specific creator, pre-filter to only their clips.
+          // This prevents AUTO-SESSION from mixing in unrelated podcasts that were
+          // incidentally searched during the session (e.g. user asks for whatifalthist
+          // but DeepSeek also searched Modern Wisdom).
+          const queryLower = message.toLowerCase();
+          const creatorFiltered = allCachedClips.filter(c => {
+            const creatorLower = (c.creator || '').toLowerCase();
+            if (!creatorLower) return false;
+            // Match if any word ≥4 chars in creator name appears in the query
+            return creatorLower.split(/\s+/).some(w => w.length >= 4 && queryLower.includes(w));
+          });
+          const clipsForRerank = creatorFiltered.length >= 3 ? creatorFiltered : allCachedClips;
+          console.log(`[${requestId}] [AUTO-SESSION] creator filter: ${allCachedClips.length} → ${clipsForRerank.length} (${creatorFiltered.length >= 3 ? 'creator match' : 'no match, using all'})`);
+
+          const { clips: reranked, usage: rerankUsage } = await rerankClips({
+            query: message,
+            clips: clipsForRerank,
+            openai,
+            minScore: 4,
+          });
+          costs.addHelperLlmUsage(RERANKER_MODEL, rerankUsage.input_tokens, rerankUsage.output_tokens);
+
+          const top12 = reranked.slice(0, 12);
+          console.log(`[${requestId}] [AUTO-SESSION] re-rank: ${allCachedClips.length} → ${reranked.length} kept → ${top12.length} selected`);
+
+          if (top12.length >= 3) {
+            const pineconeIds = top12.map(c => c.shareLink);
+            const sessionResult = await executeAgentTool(
+              'create_research_session',
+              { pineconeIds },
+              { openai, sessionId, req, clipCache, recordHelperLlmUsage }
+            );
+            if (sessionResult.sessionId && sessionResult.url) {
+              researchSessionUrl = sessionResult.url;
+              emit('session_created', { sessionId: sessionResult.sessionId, url: sessionResult.url, itemCount: sessionResult.itemCount });
+              console.log(`[${requestId}] [AUTO-SESSION] session created: ${sessionResult.url} (${top12.length} clips)`);
+            } else {
+              console.warn(`[${requestId}] [AUTO-SESSION] create_research_session returned no URL — falling through to clip prose`);
+            }
+          } else {
+            console.log(`[${requestId}] [AUTO-SESSION] only ${top12.length} clips passed re-rank (min 3) — skipping auto-call`);
+          }
+        } catch (autoSessionErr) {
+          console.error(`[${requestId}] [AUTO-SESSION] failed: ${autoSessionErr.message} — falling through to clip prose`);
+        }
+      }
+
       // --- Forced final synthesis on non-natural exit ---
       // When the loop exits via guard (cost/latency hard cap or max rounds)
       // rather than the model's own `stop_reason`, the user gets no `text_done`
@@ -1429,11 +1610,11 @@ function createAgentChatRoutes({ openai } = {}) {
         //      preserved and the loop exits cleanly.
         //   2. `timeoutMs` passed to the provider, which becomes the fetch's
         //      AbortController timeout, killing non-streaming or hung calls.
-        // DIAGNOSTIC (2026-04-28): default raised from 15s to 300s so primary
-        // synthesis always runs to completion when measuring true wall-clock
-        // performance under unbounded loop budgets. Bring this back to ~15s
-        // once we have baselines and have decided on per-intent budgets.
-        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '300000', 10);
+        // Default 45s: enough for Qwen3 to stream a complete synthesis even on
+        // large contexts (40+ tool-call rounds), without holding the user hostage
+        // for a non-answer. The diagnostic 300s value was for benchmarking only.
+        // Override via AGENT_SYNTHESIS_BUDGET_MS if you need a different ceiling.
+        const synthesisBudgetMs = parseInt(process.env.AGENT_SYNTHESIS_BUDGET_MS || '45000', 10);
         const synthesisDeadlineMs = Date.now() + synthesisBudgetMs;
         const synthesisAborted = () => _aborted || Date.now() >= synthesisDeadlineMs;
 
@@ -1464,16 +1645,31 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance);
-          const synthesisResponse = await providerClient.createResponse({
-            model: modelConfig.id,
-            maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl);
+          console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
+          // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
+          // synthesis pass to a different provider than the orchestrator,
+          // the conversation history may carry provider-private content
+          // blocks (DeepSeek `thinking`) that the synthesizer's API can
+          // reject. The Tier 2 sanitizer is Anthropic-shaped but the rule
+          // is the same for every cross-vendor hop: keep only the OAI/
+          // Anthropic-common block types. Apply when the provider differs.
+          const synthesisMessages = (synthesisIsDistinct && synthesisModelConfig.provider !== modelConfig.provider)
+            ? sanitizeMessagesForAnthropic(messages)
+            : messages;
+          if (synthesisIsDistinct) {
+            console.log(`[${requestId}] Synthesis routing: orchestrator=${modelConfig.label} → synthesizer=${synthesisModelConfig.label} (provider=${synthesisModelConfig.provider})`);
+          }
+          const synthesisResponse = await synthesisProviderClient.createResponse({
+            model: synthesisModelConfig.id,
+            maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
-            messages,
+            messages: synthesisMessages,
             tools: effectiveTools,
             toolChoice: 'none',
             aborted: synthesisAborted,
             timeoutMs: synthesisBudgetMs,
+            ...(synthesisModelConfig.reasoningEffort ? { reasoningEffort: synthesisModelConfig.reasoningEffort } : {}),
             onTextDelta: (text) => {
               streamedSynthesis += text;
               emit('text_delta', { text });
@@ -1481,10 +1677,22 @@ function createAgentChatRoutes({ openai } = {}) {
             requestId,
           });
 
-          costs.addLlmUsage(
-            synthesisResponse.usage?.input_tokens || 0,
-            synthesisResponse.usage?.output_tokens || 0,
-          );
+          // Cost: if synthesis is on a distinct model, bill it through the
+          // helpers channel (same pattern as Tier 2 Haiku) so the dollar
+          // total reflects per-model pricing instead of pricing the
+          // synthesizer's tokens at the orchestrator's rate.
+          if (synthesisIsDistinct) {
+            costs.addHelperLlmUsage(
+              synthesisModelConfig.id,
+              synthesisResponse.usage?.input_tokens || 0,
+              synthesisResponse.usage?.output_tokens || 0,
+            );
+          } else {
+            costs.addLlmUsage(
+              synthesisResponse.usage?.input_tokens || 0,
+              synthesisResponse.usage?.output_tokens || 0,
+            );
+          }
           primaryOutputTokens = synthesisResponse.usage?.output_tokens || 0;
 
           // Some providers (e.g. DeepSeek non-streaming) don't fire onTextDelta;
@@ -1504,6 +1712,8 @@ function createAgentChatRoutes({ openai } = {}) {
             type: 'synthesis',
             tokens: synthesisResponse.usage,
             reason: synthesisExitReason,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           });
         } catch (err) {
           primarySynthesisError = err;
@@ -1519,7 +1729,7 @@ function createAgentChatRoutes({ openai } = {}) {
         // Recovery passes are silent (no text_delta) so the canonical
         // `text_done` payload is what matters for clients that re-render on
         // text_done. See docs/WIP/SYNTHESIS_FAILURE_RECOVERY_PLAN.md.
-        const sanitizedPrimary = sanitizeAgentText(streamedSynthesis);
+        const sanitizedPrimary = scrubClipIds(sanitizeAgentText(streamedSynthesis), clipCache);
 
         // When primary synthesis throws (typically the synthesis-budget
         // timeout firing mid-stream), we may still have substantial clean
@@ -1555,10 +1765,12 @@ function createAgentChatRoutes({ openai } = {}) {
           console.log(`[${requestId}] Synthesis quality FAILED: trigger=${primaryQuality.trigger}, reason=${primaryQuality.reason}, tokens=${primaryOutputTokens}, len=${sanitizedPrimary.length}`);
           emit('status', { message: 'Refining your answer...', sessionId });
 
-          // ===== Tier 1: strict re-synthesis on the same provider =====
-          // Same model, hardened prompt, temperature: 0 for determinism,
-          // halved time budget, tool_choice still 'none'. Silent — no
-          // text_delta emits, just collect text and evaluate.
+          // ===== Tier 1: strict re-synthesis on the same synthesizer =====
+          // Same model that ran the primary synthesis (orchestrator by
+          // default; AGENT_SYNTHESIS_MODEL when set), hardened prompt,
+          // temperature: 0 for determinism, halved time budget,
+          // tool_choice still 'none'. Silent — no text_delta emits, just
+          // collect text and evaluate.
           const tier1Start = Date.now();
           const tier1Budget = Math.max(5000, Math.floor(synthesisBudgetMs / 2));
           const tier1Deadline = Date.now() + tier1Budget;
@@ -1570,31 +1782,44 @@ function createAgentChatRoutes({ openai } = {}) {
           let tier1Text = '';
           let tier1OutputTokens = 0;
           let tier1Error = null;
+          // Same cross-provider sanitization as the primary synthesis call.
+          const tier1Messages = (synthesisIsDistinct && synthesisModelConfig.provider !== modelConfig.provider)
+            ? sanitizeMessagesForAnthropic(messages)
+            : messages;
           try {
-            const tier1Resp = await providerClient.createResponse({
-              model: modelConfig.id,
-              maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent, tier1Guidance),
-              messages,
+            const tier1Resp = await synthesisProviderClient.createResponse({
+              model: synthesisModelConfig.id,
+              maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl),
+              messages: tier1Messages,
               tools: effectiveTools,
               toolChoice: 'none',
               temperature: 0,
               aborted: tier1Aborted,
               timeoutMs: tier1Budget,
+              ...(synthesisModelConfig.reasoningEffort ? { reasoningEffort: synthesisModelConfig.reasoningEffort } : {}),
               onTextDelta: () => { /* silent */ },
               requestId,
             });
-            costs.addLlmUsage(
-              tier1Resp.usage?.input_tokens || 0,
-              tier1Resp.usage?.output_tokens || 0,
-            );
+            if (synthesisIsDistinct) {
+              costs.addHelperLlmUsage(
+                synthesisModelConfig.id,
+                tier1Resp.usage?.input_tokens || 0,
+                tier1Resp.usage?.output_tokens || 0,
+              );
+            } else {
+              costs.addLlmUsage(
+                tier1Resp.usage?.input_tokens || 0,
+                tier1Resp.usage?.output_tokens || 0,
+              );
+            }
             tier1OutputTokens = tier1Resp.usage?.output_tokens || 0;
-            tier1Text = sanitizeAgentText(
+            tier1Text = scrubClipIds(sanitizeAgentText(
               (tier1Resp.content || [])
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
                 .join('')
-            );
+            ), clipCache);
           } catch (err) {
             tier1Error = err;
             console.error(`[${requestId}] Tier 1 re-synthesis FAILED: ${err.message}`);
@@ -1609,7 +1834,8 @@ function createAgentChatRoutes({ openai } = {}) {
             outputTokens: tier1OutputTokens,
             textLen: tier1Text.length,
             elapsedMs: Date.now() - tier1Start,
-            model: modelConfig.id,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           };
           agentLog.rounds.push({
             round: round + 1,
@@ -1618,6 +1844,8 @@ function createAgentChatRoutes({ openai } = {}) {
             trigger: tier1Quality.trigger || null,
             outputTokens: tier1OutputTokens,
             elapsedMs: Date.now() - tier1Start,
+            model: synthesisModelConfig.id,
+            provider: synthesisModelConfig.provider,
           });
 
           if (tier1Quality.ok) {
@@ -1657,8 +1885,8 @@ function createAgentChatRoutes({ openai } = {}) {
               }
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
-                maxTokens: parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent, tier2Guidance),
+                maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl),
                 messages: tier2Messages,
                 tools: effectiveTools,
                 toolChoice: 'none',
@@ -1678,12 +1906,12 @@ function createAgentChatRoutes({ openai } = {}) {
                 tier2Resp.usage?.output_tokens || 0,
               );
               tier2OutputTokens = tier2Resp.usage?.output_tokens || 0;
-              tier2Text = sanitizeAgentText(
+              tier2Text = scrubClipIds(sanitizeAgentText(
                 (tier2Resp.content || [])
                   .filter(b => b.type === 'text')
                   .map(b => b.text)
                   .join('')
-              );
+              ), clipCache);
             } catch (err) {
               tier2Error = err;
               console.error(`[${requestId}] Tier 2 cross-provider FAILED: ${err.message}`);
