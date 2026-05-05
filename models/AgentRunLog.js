@@ -26,7 +26,8 @@ const AgentRunLogSchema = new mongoose.Schema({
   compactHistory:   { type: Boolean },
   bypassTriage:     { type: Boolean },
 
-  // Caller identity (best-effort; varies by entry point)
+  // Caller identity (best-effort; varies by entry point). `ip` is a salted
+  // SHA-256 truncated to 16 hex chars — never the raw address.
   ip:               { type: String },
   entitlementType:  { type: String, index: true }, // 'pull' | 'free-tier' | etc
   entitlementSource:{ type: String },               // 'nostr-bot' | 'web' | etc
