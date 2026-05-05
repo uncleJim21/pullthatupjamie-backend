@@ -1125,6 +1125,12 @@ function createAgentChatRoutes({ openai } = {}) {
       // exited via a natural `break` (model said it was done) or via the guard
       // (cost/latency hard cap, max rounds).
       let naturalCompletion = false;
+      // Captured when create_research_session fires successfully. Passed to
+      // buildSynthesisPrompt so synthesis gets the real URL verbatim instead
+      // of having to find it buried in tool results (which leads to hallucination).
+      // If synthesis runs but no session was ever created, we downgrade to the
+      // regular synthesisGuard so the model never sees the research-session shape.
+      let researchSessionUrl = null;
       const discoverResults = [];
       const suggestedGuids = new Set();
       const accumulatedTextByRound = [];
@@ -1349,6 +1355,7 @@ function createAgentChatRoutes({ openai } = {}) {
             } else if (toolUse.name === 'create_research_session') {
               result = await executeAgentTool(toolUse.name, toolUse.input, { openai, sessionId, req, clipCache, recordHelperLlmUsage });
               if (result.sessionId && result.url) {
+                researchSessionUrl = result.url;
                 emit('session_created', { sessionId: result.sessionId, url: result.url, itemCount: result.itemCount });
               }
             } else if (apBlocked.has(i)) {
@@ -1555,7 +1562,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl);
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
@@ -1700,7 +1707,7 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier1Resp = await synthesisProviderClient.createResponse({
               model: synthesisModelConfig.id,
               maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent, tier1Guidance),
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl),
               messages: tier1Messages,
               tools: effectiveTools,
               toolChoice: 'none',
@@ -1796,7 +1803,7 @@ function createAgentChatRoutes({ openai } = {}) {
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
                 maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent, tier2Guidance),
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl),
                 messages: tier2Messages,
                 tools: effectiveTools,
                 toolChoice: 'none',
