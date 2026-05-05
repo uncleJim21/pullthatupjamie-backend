@@ -1163,6 +1163,8 @@ function createAgentChatRoutes({ openai } = {}) {
           feedId: existing.feedId || (ep.feedId != null ? String(ep.feedId) : null) || (feedFallback.feedId != null ? String(feedFallback.feedId) : null),
           episodeTitle: existing.episodeTitle || ep.title || ep.episodeTitle || null,
           image: existing.image || ep.image || feedFallback.image || null,
+          guests: existing.guests || ep.guests || null,
+          publishedDate: existing.publishedDate || ep.publishedDate || null,
         });
       };
       agentLog = {
@@ -1425,6 +1427,9 @@ function createAgentChatRoutes({ openai } = {}) {
           if (toolUse.name === 'get_person_episodes' && result.episodes) {
             for (const ep of result.episodes) cacheEpisode(ep);
           }
+          if (toolUse.name === 'get_episode' && result.episode) {
+            cacheEpisode(result.episode);
+          }
 
           const resultCount = computeToolResultCount(toolUse.name, result);
           // `_meta` is a side-channel populated by some handlers (currently
@@ -1645,7 +1650,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl, episodeCache);
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,

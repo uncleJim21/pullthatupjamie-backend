@@ -47,6 +47,7 @@ Additional penalties:
 - Clips that are just someone else talking ABOUT the topic person (rather than the person speaking) should be scored 3-5 unless the commentary itself is particularly insightful
 - Very short clips with no real content should score 0-2
 - If the question specifically names a podcast, host, or creator (e.g. "whatifalthist", "Lex Fridman", "All-In"), clips NOT from that source should score 0-2 regardless of topical relevance
+- Closing/farewell exchanges ("where can people find you", "where can I follow you", "thanks for coming on", "that's all for today") should score 0-1 regardless of keyword overlap
 
 Return ONLY a JSON array: [{"i":0,"s":7},{"i":1,"s":3},...]`;
 

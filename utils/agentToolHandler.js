@@ -219,10 +219,19 @@ function buildSearchStrategy(people, hostedFeeds) {
   const hostedFeedIds = (hostedFeeds || []).slice(0, 5).map(f => String(f.feedId));
 
   const guestGuids = [];
+  const guestFeedIds = new Set();
   for (const p of (people || [])) {
-    if (p.role === 'guest' && Array.isArray(p.recentEpisodes)) {
-      for (const ep of p.recentEpisodes) {
-        if (ep.guid && guestGuids.length < 10) guestGuids.push(ep.guid);
+    if (p.role === 'guest') {
+      if (Array.isArray(p.recentEpisodes)) {
+        for (const ep of p.recentEpisodes) {
+          if (ep.guid && guestGuids.length < 10) guestGuids.push(ep.guid);
+        }
+      }
+      // Collect feeds where this person has appeared as a guest
+      if (Array.isArray(p.feeds)) {
+        for (const f of p.feeds) {
+          if (f.feedId) guestFeedIds.add(String(f.feedId));
+        }
       }
     }
   }
@@ -233,14 +242,15 @@ function buildSearchStrategy(people, hostedFeeds) {
     parts.push(`Host of ${feedNames}. Search with feedIds=[${hostedFeedIds.join(',')}].`);
   }
   if (guestGuids.length) {
-    parts.push(`Guest on ${guestGuids.length} episode(s). Search with guids for guest appearances.`);
+    parts.push(`Guest on ${guestGuids.length} tagged episode(s): [${guestGuids.join(', ')}]. CRITICAL: guest tagging is incomplete — do NOT rely on these guids alone to determine the most recent appearance. When the user asks about appearances on a specific show, FIRST call get_feed_episodes on that show's feedId with minDate=30 days ago to get the full episode list, THEN identify which episodes feature this person, THEN get clips.`);
   }
   if (!parts.length) parts.push('No hosted feeds or guest episodes found. Try search_quotes with name as query.');
 
   return {
     hostedFeedIds,
     guestGuids,
-    hint: parts.join(' ').substring(0, 250),
+    guestFeedIds: [...guestFeedIds].slice(0, 5),
+    hint: parts.join(' ').substring(0, 600),
   };
 }
 
