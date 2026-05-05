@@ -43,6 +43,10 @@ RUN mkdir -p /tmp/video-gen && chmod 777 /tmp/video-gen
 # Create and set permissions for dbs directory (from your prebuild script)
 RUN mkdir -p dbs && chmod 755 dbs
 
+# Create logs directory for nostr bot zap-receipt dumps (kind 9734/9735).
+# Logger creates this on demand too, but pre-creating keeps perms predictable.
+RUN mkdir -p logs/nostr-bot && chmod 755 logs logs/nostr-bot
+
 # Create RAM disk mount point
 RUN mkdir -p /dev/shm/frames && chmod 777 /dev/shm/frames
 

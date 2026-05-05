@@ -4,6 +4,7 @@ const { NostrZapReceipt } = require('../models/NostrZapReceipt');
 const { getBotPubkeyHex, getBotSecretKey } = require('./nostrBotIdentity');
 const { validateZapReceipt } = require('./zapReceiptValidator');
 const { satsToUsdMicro, getBtcUsdRate } = require('./btcPrice');
+const { nostrBotLog } = require('./nostrBotLogger');
 
 /**
  * NostrZapWatcher
@@ -357,22 +358,18 @@ class NostrZapWatcher {
 
   /**
    * High-visibility dump of an incoming 9735 + its embedded 9734.
-   * Prints the structured fields you need to tell wallets apart
+   * Captures the structured fields you need to tell wallets apart
    * (Primal vs Damus vs Amethyst vs ...) plus the raw JSON for
-   * forensics. ON by default — set `NOSTR_BOT_DEBUG_RECEIPTS=false`
-   * in `.env` to silence.
+   * forensics. Routed to logs/nostr-bot/nostr-bot.log instead of
+   * stdout to keep the container's main log stream readable. ON by
+   * default — set `NOSTR_BOT_DEBUG_RECEIPTS=false` in `.env` to
+   * silence.
    */
   _debugDumpReceipt(receipt) {
     if (process.env.NOSTR_BOT_DEBUG_RECEIPTS === 'false') return;
 
     const C = {
-      banner: '\x1b[1;45;97m', // bold magenta bg, white fg
-      label: '\x1b[1;36m',     // bold cyan
-      val: '\x1b[1;33m',       // bold yellow
-      warn: '\x1b[1;31m',      // bold red
-      ok: '\x1b[1;32m',        // bold green
-      dim: '\x1b[2m',
-      reset: '\x1b[0m',
+      banner: '', label: '', val: '', warn: '', ok: '', dim: '', reset: '',
     };
 
     const findTag = (ev, name) => {
@@ -443,7 +440,7 @@ class NostrZapWatcher {
       '',
     );
 
-    console.log(lines.filter(Boolean).join('\n'));
+    nostrBotLog(lines.filter(Boolean).join('\n'));
   }
 
   _queryRelay(relayUrl, botPubkey, since, queryTimeoutMs) {
