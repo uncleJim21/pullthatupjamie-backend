@@ -944,10 +944,11 @@ function createAgentChatRoutes({ openai } = {}) {
 
     printLog(`[${requestId}] POST ${req.path} — provider=${modelConfig.provider}, model=${modelConfig.label} (${modelKey}), profile=${profileKey}, history=${history.length}, compact=${compactResults}/${compactHistoryEnabled}, stream=${streaming}, "${message.substring(0, 100)}"`);
 
+    let _heartbeat = null;
     if (streaming) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
@@ -956,6 +957,18 @@ function createAgentChatRoutes({ openai } = {}) {
       // Without this, synthesis tokens (which arrive via async for-await) still
       // get bundled into one burst before being sent to the client.
       res.socket?.setNoDelay(true);
+      // Tell the browser's EventSource to reconnect after 3s (default is ~3s
+      // already, but stating it makes behavior explicit across browsers).
+      try { res.write('retry: 3000\n\n'); } catch (_) {}
+      // Heartbeat: SSE comment line (ignored by EventSource parser) every 15s.
+      // Prevents intermediate proxies (Cloudflare/ALB/nginx) from idle-closing
+      // the socket during long quiet gaps (LLM thinking, slow tool calls),
+      // which is the usual cause of "network error" mid-stream in prod.
+      _heartbeat = setInterval(() => {
+        try { res.write(': keepalive\n\n'); }
+        catch (_) { clearInterval(_heartbeat); _heartbeat = null; }
+      }, 15000);
+      if (typeof _heartbeat.unref === 'function') _heartbeat.unref();
     }
 
     // Non-streaming accumulator. Populated by emit() when !streaming.
@@ -1089,7 +1102,10 @@ function createAgentChatRoutes({ openai } = {}) {
     };
 
     let _aborted = false;
-    res.on('close', () => { _aborted = true; });
+    res.on('close', () => {
+      _aborted = true;
+      if (_heartbeat) { clearInterval(_heartbeat); _heartbeat = null; }
+    });
     const aborted = () => _aborted;
 
     let agentLog = null;
@@ -2226,6 +2242,7 @@ function createAgentChatRoutes({ openai } = {}) {
       });
 
       if (streaming) {
+        if (_heartbeat) { clearInterval(_heartbeat); _heartbeat = null; }
         res.end();
       } else {
         const responseBody = {
@@ -2272,10 +2289,12 @@ function createAgentChatRoutes({ openai } = {}) {
       }
       if (streaming) {
         emit('error', { error: error.message });
+        if (_heartbeat) { clearInterval(_heartbeat); _heartbeat = null; }
         res.end();
       } else if (!res.headersSent) {
         res.status(500).json({ sessionId, error: error.message });
       } else {
+        if (_heartbeat) { clearInterval(_heartbeat); _heartbeat = null; }
         res.end();
       }
     }

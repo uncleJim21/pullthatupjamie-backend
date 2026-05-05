@@ -2035,7 +2035,7 @@ if (DEBUG_MODE) {
 
 
 
-app.listen(PORT, async () => {
+const _server = app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`DEBUG_MODE:`, process.env.DEBUG_MODE === 'true')
   console.log(`SCHEDULER_ENABLED:`, SCHEDULER_ENABLED)
@@ -2304,6 +2304,14 @@ app.listen(PORT, async () => {
     console.warn('Continuing without backup system...');
   }
 });
+
+// Long-running SSE streams need timeouts looser than Node's defaults so the
+// server doesn't close the socket out from under the heartbeat. Defaults are
+// keepAlive=5s / headers=60s. Set keepAlive > typical proxy idle (60s on
+// Cloudflare/ALB) and headers > keepAlive per Node's required ordering.
+_server.requestTimeout = 0;          // no per-request hard limit
+_server.keepAliveTimeout = 75_000;
+_server.headersTimeout   = 80_000;
 
 // Update the shutdown handlers
 process.on('SIGTERM', async () => {
