@@ -16,7 +16,7 @@ const { executeAgentTool } = require('../utils/agentToolHandler');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { filterUpsellCandidates } = require('../utils/upsellRelevance');
 const { createProvider } = require('../utils/agent/providers');
-const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, scrubClipIds } = require('../utils/agent/sanitizeOutput');
+const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, createClipTokenStreamSanitizer, scrubClipIds, repairIndexedClipTokens } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 
@@ -1001,16 +1001,35 @@ function createAgentChatRoutes({ openai } = {}) {
     // carry there.
     const streamSanitizer = createStreamSanitizer();
     let streamSanitizerLeakLogged = false;
+    // Indexed-clip-token sanitizer is initialized lazily once clipCache is
+    // created (see further down in handleAgentChat). The holder lets the
+    // emit closure capture a reference now and read the live sanitizer
+    // when text_delta events fire. `clipCache` is also stored on the
+    // holder so text_done can run document-level repair too.
+    const clipTokenSanitizerRef = { current: null, clipCache: null };
+    let clipLeakLogged = false;
 
     const emit = (eventType, data) => {
       if (eventType === 'text_delta'
           && data && typeof data.text === 'string') {
-        const safe = streamSanitizer.feed(data.text);
+        let safe = streamSanitizer.feed(data.text);
         if (!streamSanitizerLeakLogged && safe.length !== data.text.length) {
           console.warn(`[${requestId}] Stream sanitizer trimmed text_delta: ${data.text.length} → ${safe.length} chars (further drops will be silent for this request)`);
           streamSanitizerLeakLogged = true;
         }
-        if (!safe.length) return; // entire delta is in-flight markup carry
+        // Repair / hold-back indexed clip tokens (`[[CLIP:N]]` etc.) before
+        // emitting. Without this, the model's raw indexed refs ship to the
+        // browser as literal text — what users were seeing as "[[CLIP:0]]"
+        // tokens with quote bodies underneath instead of clip pills.
+        if (clipTokenSanitizerRef.current && safe.length) {
+          const repaired = clipTokenSanitizerRef.current.feed(safe);
+          if (!clipLeakLogged && repaired !== safe) {
+            console.warn(`[${requestId}] Clip-token sanitizer altered text_delta: ${safe.length} → ${repaired.length} chars (further changes silent for this request)`);
+            clipLeakLogged = true;
+          }
+          safe = repaired;
+        }
+        if (!safe.length) return; // entire delta is in-flight markup/clip carry
         data = { ...data, text: safe };
       } else if (eventType === 'text_done'
           && data && typeof data.text === 'string') {
@@ -1018,15 +1037,22 @@ function createAgentChatRoutes({ openai } = {}) {
         // carry (its content is included in `data.text`) and run the
         // regular sanitizer for any markup the streaming pass missed.
         streamSanitizer.flush();
-        if (hasToolCallMarkup(data.text)) {
-          const cleaned = sanitizeAgentText(data.text);
-          console.warn(`[${requestId}] Stripped tool-call markup from text_done: ${data.text.length} → ${cleaned.length} chars`);
+        if (clipTokenSanitizerRef.current) clipTokenSanitizerRef.current.flush();
+        // Always run the document sanitizer on text_done — repairs indexed
+        // clip refs that survived streaming and strips any tool-call markup
+        // the per-delta pass missed.
+        const cleaned = sanitizeAgentText(data.text, clipTokenSanitizerRef.clipCache);
+        if (cleaned !== data.text) {
+          console.warn(`[${requestId}] text_done sanitized: ${data.text.length} → ${cleaned.length} chars`);
           data = { ...data, text: cleaned };
         }
       } else if (eventType === 'error') {
         // Surface any held-back content before the error so the user sees
         // partial work product rather than dropping it on the floor.
-        const tail = streamSanitizer.flush();
+        let tail = streamSanitizer.flush();
+        if (clipTokenSanitizerRef.current) {
+          tail = clipTokenSanitizerRef.current.feed(tail) + clipTokenSanitizerRef.current.flush();
+        }
         if (tail && streaming) {
           try {
             res.write(`event: text_delta\ndata: ${JSON.stringify({ text: tail })}\n\n`);
@@ -1108,6 +1134,12 @@ function createAgentChatRoutes({ openai } = {}) {
       const effectiveHistory = compactHistoryEnabled ? compactHistory(history) : history;
       const messages = [...effectiveHistory, { role: 'user', content: message }];
       const clipCache = new Map(); // shareLink → raw clip metadata, populated by search_quotes results
+      // Now that clipCache exists, wire up the streaming clip-token
+      // sanitizer the emit wrapper has been holding a reference for.
+      // Ordering matters: text_delta events fired BEFORE this point
+      // (none today, but defensively) would have skipped repair.
+      clipTokenSanitizerRef.clipCache = clipCache;
+      clipTokenSanitizerRef.current = createClipTokenStreamSanitizer(clipCache);
       let toolCalls = [];
       const costs = createCostTracker(modelConfig, executionProfile);
       // Classifier (Haiku) ran before the cost tracker existed, so backfill its
@@ -1295,18 +1327,28 @@ function createAgentChatRoutes({ openai } = {}) {
             break;
           }
 
-          // Trickle-emit the buffered chunks so the client sees progressive
-          // output rather than a single mag-dump. setImmediate yields the event
-          // loop between chunks so TCP can flush each write individually.
+          // Sanitize BEFORE emitting. Without this, the model's raw text
+          // (which can contain indexed clip refs like `[[CLIP:0]]`,
+          // tool-call DSML, etc.) is shipped to the client. Repair indexed
+          // refs against clipCache so they become real {{clip:shareLink}}
+          // tokens; scrubClipIds validates {{clip:...}} IDs against the
+          // cache. Both passes are idempotent on already-clean text.
+          //
+          // We deliberately drop the per-chunk trickle here: chunks can
+          // split a token like `[[CLIP:0]]` across boundaries, and
+          // per-chunk sanitization can't repair across the split. Emitting
+          // the sanitized whole as a single text_delta + text_done is the
+          // only correctness-preserving option until we add a stateful
+          // streaming repair (planned, not yet shipped).
           naturalCompletion = true;
-          console.log(`[${requestId}] Final text trickle-emit: ${roundText.length} chars, ${roundTextDeltaBuffer.length} chunks, effectiveFinal=${effectiveFinal} (round ${round})`);
+          const sanitizedFinal = scrubClipIds(sanitizeAgentText(roundText, clipCache), clipCache);
+          console.log(`[${requestId}] Final text sanitize: ${roundText.length} → ${sanitizedFinal.length} chars (chunks=${roundTextDeltaBuffer.length}, effectiveFinal=${effectiveFinal}, round ${round})`);
           agentLog.rounds.push({ round, type: effectiveFinal && !isFinalResponse ? 'final_suggest_shortcircuit' : 'final', tokens: response.usage });
-          agentLog.finalText = roundText;
-          for (const chunk of roundTextDeltaBuffer) {
-            emit('text_delta', { text: chunk });
-            await new Promise(resolve => setImmediate(resolve));
+          agentLog.finalText = sanitizedFinal;
+          if (sanitizedFinal.length > 0) {
+            emit('text_delta', { text: sanitizedFinal });
           }
-          emit('text_done', { text: roundText });
+          emit('text_done', { text: sanitizedFinal });
           break;
         }
 
