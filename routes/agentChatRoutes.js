@@ -1,5 +1,6 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { printLog } = require('../constants.js');
@@ -23,6 +24,43 @@ const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
 
+// Hash request IPs before they land in any persisted log. SHA-256 with a
+// server-side salt; truncated to 16 hex chars (64 bits — plenty of entropy
+// for correlation, no useful inversion). If IP_HASH_SALT is unset we drop
+// the IP entirely rather than store an unsalted hash, since IPv4 space is
+// small enough to rainbow-table without a salt. The warning fires once per
+// process so we notice in dev but don't spam prod logs.
+let _ipSaltWarned = false;
+function hashIp(ip) {
+  if (!ip) return null;
+  const salt = process.env.IP_HASH_SALT;
+  if (!salt) {
+    if (!_ipSaltWarned) {
+      printLog('[AGENT-LOG] IP_HASH_SALT unset — IP field will be omitted from agent run logs. Set IP_HASH_SALT to a long random string to enable hashed-IP correlation.');
+      _ipSaltWarned = true;
+    }
+    return null;
+  }
+  return crypto.createHash('sha256').update(salt).update(String(ip)).digest('hex').slice(0, 16);
+}
+
+// Lazy-loaded so unit tests / scripts that exercise the router without a
+// Mongo connection don't fail on import. require()ing inside the function
+// is cheap (Node caches the module) and keeps the dual-write opt-out
+// simple — set AGENT_RUN_LOG_MONGO=false to disable.
+function persistAgentLogToMongo(logData) {
+  if (process.env.AGENT_RUN_LOG_MONGO === 'false') return;
+  try {
+    const AgentRunLog = require('../models/AgentRunLog');
+    // Fire-and-forget. Mongo hiccups must not affect the user request.
+    AgentRunLog.create(logData).catch(err => {
+      printLog(`[AGENT-LOG] Mongo write failed: ${err.message}`);
+    });
+  } catch (err) {
+    printLog(`[AGENT-LOG] Mongo persist init failed: ${err.message}`);
+  }
+}
+
 function writeAgentLog(requestId, sessionId, logData) {
   try {
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -34,6 +72,7 @@ function writeAgentLog(requestId, sessionId, logData) {
   } catch (err) {
     printLog(`[AGENT-LOG] Failed to write log: ${err.message}`);
   }
+  persistAgentLogToMongo(logData);
 }
 
 const MAX_HISTORY_MESSAGES = 4; // 2 prior turns (user + assistant each)
@@ -1217,8 +1256,18 @@ function createAgentChatRoutes({ openai } = {}) {
       };
       agentLog = {
         requestId, sessionId, model: modelConfig.label, intent,
+        modelKey,
+        provider: modelConfig.provider,
         synthesisModel: synthesisIsDistinct ? synthesisModelConfig.label : null,
         synthesisModelKey: synthesisIsDistinct ? synthesisModelKey : null,
+        executionProfile: profileKey,
+        streaming,
+        compactResults,
+        compactHistory: compactHistoryEnabled,
+        bypassTriage,
+        ip: hashIp(req.ip),
+        entitlementType: req.entitlement?.type || null,
+        entitlementSource: req.entitlement?.source || null,
         query: message, startedAt: new Date().toISOString(),
         classifierTokens,
         rounds: [],
