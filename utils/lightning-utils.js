@@ -1,10 +1,26 @@
 const axios = require("axios");
 const bolt11 = require("bolt11");
-const crypto = require('crypto'); 
+const crypto = require('crypto');
+// Node 20 lacks a global WebSocket; @getalby/sdk needs one for nostr relays.
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = require('ws');
+}
+const { NWCClient } = require('@getalby/sdk');
 // DEPRECATED: SQLite invoice tracking is disabled due to security vulnerabilities
 // The imported functions are now no-op stubs - see invoice-db.js for MongoDB migration path
 const { isPaymentHashValid, recordPayment, storeInvoice } = require('./invoice-db');
 const { DEBUG_MODE } = require("../constants");
+
+let _nwcClient;
+function getNwcClient() {
+  if (!_nwcClient) {
+    if (!process.env.NWC_CONNECTION_URI) {
+      throw new Error('NWC_CONNECTION_URI not set');
+    }
+    _nwcClient = new NWCClient({ nostrWalletConnectUrl: process.env.NWC_CONNECTION_URI });
+  }
+  return _nwcClient;
+}
 
 
 function getLNURL() {
@@ -233,29 +249,25 @@ async function generateInvoiceForSats(amountSats, description = 'PTUJ Agent API 
   const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
   const fullDescription = `${description} (${amountSats} sats) at ${timestamp}`;
 
-  const response = await axios.post('https://api.getalby.com/invoices', {
-    description: fullDescription,
-    amount: amountSats
-  }, {
-    headers: {
-      'Authorization': `Bearer ${process.env.ALBY_WALLET_API_KEY}`,
-      'Content-Type': 'application/json'
-    }
+  const result = await getNwcClient().makeInvoice({
+    amount: amountSats * 1000, // NIP-47 makeInvoice takes msats
+    description: fullDescription
   });
 
-  const invoiceData = response.data;
+  const paymentRequest = result.invoice;
+  const paymentHash = result.payment_hash;
 
-  if (!invoiceData.payment_request) {
-    throw new Error(`No payment request in Alby response: ${JSON.stringify(invoiceData)}`);
+  if (!paymentRequest) {
+    throw new Error(`No invoice returned from NWC: ${JSON.stringify(result)}`);
   }
 
-  const decodedInvoice = bolt11.decode(invoiceData.payment_request);
+  const decodedInvoice = bolt11.decode(paymentRequest);
   const expirySeconds = decodedInvoice.tags.find(tag => tag.tagName === 'expire_time')?.data || 3600;
   const expiresAt = new Date((decodedInvoice.timestamp + expirySeconds) * 1000);
 
   return {
-    pr: invoiceData.payment_request,
-    paymentHash: invoiceData.payment_hash,
+    pr: paymentRequest,
+    paymentHash,
     expiresAt
   };
 }
