@@ -2707,72 +2707,43 @@ const getFullTranscriptJSON = async (podGuid) => {
   }
   
   try {
-    const transcriptUrl = `https://cascdr-transcripts.nyc3.cdn.digitaloceanspaces.com/${podGuid}.json`;
-    console.log(`${debugPrefix} Fetching transcript from URL: ${transcriptUrl}`);
-    
-    console.time(`${debugPrefix} Transcript-API-Call`);
-    let response;
+    if (!transcriptSpacesManager) {
+      throw new Error('transcriptSpacesManager not initialized — cannot read transcript');
+    }
+
+    const transcriptKey = `${podGuid}.json`;
+    const bucket = process.env.TRANSCRIPT_SPACES_BUCKET_NAME;
+    console.log(`${debugPrefix} Fetching transcript from Spaces: bucket=${bucket}, key=${transcriptKey}`);
+
+    console.time(`${debugPrefix} Transcript-Spaces-Call`);
+    let fileBuffer;
     try {
-      response = await axios.get(transcriptUrl, {
-        timeout: 10000, // 10 second timeout
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'JamieAgent/1.0'
-        }
-      });
-      console.timeEnd(`${debugPrefix} Transcript-API-Call`);
+      fileBuffer = await transcriptSpacesManager.getFileAsBuffer(bucket, transcriptKey);
+      console.timeEnd(`${debugPrefix} Transcript-Spaces-Call`);
     } catch (fetchError) {
-      console.timeEnd(`${debugPrefix} Transcript-API-Call`);
-      console.error(`${debugPrefix} 🔴 HTTP request failed: ${fetchError.message}`);
-      
-      if (fetchError.response) {
-        // The request was made and the server responded with a status code
-        console.error(`${debugPrefix} Response status: ${fetchError.response.status}`);
-        console.error(`${debugPrefix} Response headers: ${JSON.stringify(fetchError.response.headers)}`);
-      } else if (fetchError.request) {
-        // The request was made but no response was received
-        console.error(`${debugPrefix} No response received. Network error or timeout.`);
-      }
-      
+      console.timeEnd(`${debugPrefix} Transcript-Spaces-Call`);
+      console.error(`${debugPrefix} 🔴 Spaces fetch failed: ${fetchError.message}`);
       throw new Error(`Failed to fetch transcript: ${fetchError.message}`);
     }
-    
-    console.log(`${debugPrefix} Transcript API Response status: ${response.status}`);
-    console.log(`${debugPrefix} Response headers: ${JSON.stringify(response.headers)}`);
-    console.log(`${debugPrefix} Response size: ${
-      typeof response.data === 'string' 
-        ? `${response.data.length} characters` 
-        : `${JSON.stringify(response.data).length} characters (JSON)`
-    }`);
-    
-    // Check if response.data is already an object or a string that needs parsing
+
+    console.log(`${debugPrefix} Spaces response size: ${fileBuffer.length} bytes`);
+
     let transcriptData;
-    if (typeof response.data === 'string') {
-      console.log(`${debugPrefix} Response is a string, attempting to parse JSON...`);
-      try {
-        transcriptData = JSON.parse(response.data);
-        console.log(`${debugPrefix} Successfully parsed JSON string to object`);
-      } catch (parseError) {
-        console.error(`${debugPrefix} 🔴 Failed to parse transcript JSON: ${parseError.message}`);
-        
-        // Try to show a sample of the response to debug content issues
-        const sampleLength = Math.min(response.data.length, 500);
-        console.log(`${debugPrefix} First ${sampleLength} chars of response: ${response.data.substring(0, sampleLength)}...`);
-        
-        // Check for common issues
-        if (response.data.includes('AccessDenied')) {
-          console.error(`${debugPrefix} Response appears to contain an Access Denied error`);
-        } else if (response.data.includes('<!DOCTYPE html>')) {
-          console.error(`${debugPrefix} Response appears to be HTML, not JSON`);
-        } else if (response.data.trim() === '') {
-          console.error(`${debugPrefix} Response is an empty string`);
-        }
-        
-        throw new Error(`Failed to parse transcript JSON: ${parseError.message}`);
+    const jsonString = fileBuffer.toString('utf-8');
+    try {
+      transcriptData = JSON.parse(jsonString);
+      // Handle double-encoded JSON, mirroring getWordTimestampsFromFullTranscriptJSON.
+      if (typeof transcriptData === 'string' &&
+          (transcriptData.trim().startsWith('{') || transcriptData.trim().startsWith('['))) {
+        console.log(`${debugPrefix} Detected double-encoded JSON, parsing again`);
+        transcriptData = JSON.parse(transcriptData);
       }
-    } else {
-      console.log(`${debugPrefix} Response is already an object, no parsing needed`);
-      transcriptData = response.data;
+      console.log(`${debugPrefix} Successfully parsed transcript JSON`);
+    } catch (parseError) {
+      console.error(`${debugPrefix} 🔴 Failed to parse transcript JSON: ${parseError.message}`);
+      const sampleLength = Math.min(jsonString.length, 500);
+      console.log(`${debugPrefix} First ${sampleLength} chars: ${jsonString.substring(0, sampleLength)}...`);
+      throw new Error(`Failed to parse transcript JSON: ${parseError.message}`);
     }
     
     // Validate transcript data structure
@@ -2894,16 +2865,9 @@ const getWordTimestampsFromFullTranscriptJSON = async (guid, startTime, endTime)
       console.timeEnd(`${debugPrefix} GetTranscript-Spaces`);
       console.log(`${debugPrefix} Successfully retrieved transcript from Spaces`);
     } catch (spacesError) {
-      // If Spaces method fails, fall back to the HTTP method
       console.timeEnd(`${debugPrefix} GetTranscript-Spaces`);
-      console.warn(`${debugPrefix} ⚠️ Spaces method failed: ${spacesError.message}. Falling back to HTTP method.`);
-      
-      console.time(`${debugPrefix} GetTranscript-HTTP`);
-      const transcriptUrl = `https://cascdr-transcripts.nyc3.cdn.digitaloceanspaces.com/${guid}.json`;
-      const response = await axios.get(transcriptUrl);
-      transcriptJSON = response.data;
-      console.log(`${debugPrefix} Successfully retrieved transcript using fallback HTTP method`);
-      console.timeEnd(`${debugPrefix} GetTranscript-HTTP`);
+      console.error(`${debugPrefix} 🔴 Spaces fetch failed: ${spacesError.message}`);
+      throw spacesError;
     }
     
     console.timeEnd(`${debugPrefix} GetTranscript-Total`);
