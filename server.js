@@ -2122,8 +2122,9 @@ const _server = app.listen(PORT, async () => {
             const result = await podcastRssCache.refreshAllPodcasts();
             console.log(`[SCHEDULED TASK] Podcast RSS cache refresh completed: ${result.successful} successful, ${result.failed} failed`);
             
-            // Clean up expired entries
+            // Clean up expired entries across in-memory caches
             podcastRssCache.cleanupExpiredEntries();
+            editChildrenCache.cleanupExpiredEntries();
             
           } catch (error) {
             console.error(`[SCHEDULED TASK] Error in podcast RSS cache refresh:`, error.message);
