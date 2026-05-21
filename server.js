@@ -2135,6 +2135,36 @@ const _server = app.listen(PORT, async () => {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
 
+    // Scheduler-lock smoke test — fires every 5 minutes, prints a single
+    // line proving exactly one container won the time-bucket lock. Lets us
+    // verify the distributed-lock pattern in production logs across the
+    // 1-4 App Platform autoscale before wrapping the real scheduled tasks
+    // (RSS refresh, backups, blog ingestion) in the same guard. Opt-in via
+    // SCHEDULER_LOCK_SMOKE_TEST_ENABLED so it doesn't run by default.
+    if (process.env.SCHEDULER_LOCK_SMOKE_TEST_ENABLED === 'true') {
+      const cron = require('node-cron');
+      const { runIfLockHeld } = require('./utils/runIfLockHeld');
+      const instanceTag = process.env.HOSTNAME || process.env.HOST || 'unknown';
+      cron.schedule('*/5 * * * *', async () => {
+        try {
+          const result = await runIfLockHeld(
+            'scheduler-lock-smoke-test',
+            async () => {
+              const now = new Date().toISOString();
+              console.log(`[SCHED-LOCK-SMOKE] tick ran on instance=${instanceTag} at ${now}`);
+            },
+            { bucketResolutionSeconds: 300, verbose: true }
+          );
+          if (!result.ranOnThisInstance) {
+            console.log(`[SCHED-LOCK-SMOKE] tick skipped on instance=${instanceTag} (lock=${result.lockId})`);
+          }
+        } catch (err) {
+          console.error(`[SCHED-LOCK-SMOKE] error on instance=${instanceTag}:`, err.message);
+        }
+      });
+      console.log('[SchedulerLockSmokeTest] Cron registered: every 5 minutes (guarded by SchedulerLock)');
+    }
+
     // Blog ingestion cron — runs every 10 minutes, independent of SCHEDULER_ENABLED
     // Controlled by its own NOSTR_BLOG_ENABLED flag
     if (process.env.NOSTR_BLOG_ENABLED === 'true') {
