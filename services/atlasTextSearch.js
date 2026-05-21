@@ -7,19 +7,23 @@
  * existing merge logic in searchQuotesService.
  *
  * Index: `paragraph_text_search`
- *   - Custom analyzer `shingleSquashed` (standard + lowercase + asciiFolding +
- *     shingle 2-6 + regex squash) on `metadataRaw.text.shingleSquashed`
  *   - Standard analyzer on `metadataRaw.text` (covers exact phrase + fuzzy)
  *   - Synonym mapping `brand_aliases` sourced from the `searchSynonyms`
  *     collection (curated equivalence classes, may be empty)
+ *   - NO shingle multi-fields. Compound-word and spelled-out-letter recovery
+ *     (e.g. "albyhub" -> "Alby Hub", "lncurl" -> "l n c u r l") is now handled
+ *     at the query layer via LLM-generated `extraQueries`. The orchestrator
+ *     populates these via the `expansions` parameter on the search_quotes
+ *     tool; the server-side properNounLLMExpansion service adds variants as
+ *     a fallback. Dropping shingles shrinks the index ~85%.
  *
- * Compound query — four `should` clauses contribute independently to recall:
+ * Compound query — three `should` clauses contribute independently to recall:
  *   1. phrase   — exact word-for-word match on `metadataRaw.text`
  *   2. text+fuzzy — Levenshtein up to 2 edits, prefix preserved
- *   3. text on `metadataRaw.text.shingleSquashed` — recovers spelled-out
- *      forms ("l n c u r l" -> indexed token "lncurl") so a query of
- *      "lncurl" hits the squashed shingle on the indexed side
- *   4. text + synonyms — expands curated equivalence classes
+ *   3. text + synonyms — expands curated equivalence classes
+ *
+ * Plus a phrase + text+fuzzy clause pair per `extraQueries` variant — the
+ * primary mechanism for proper-noun / spelled-out / compound recovery.
  *
  * Filters mirror the Pinecone vector path (paragraph type, optional feed /
  * guid / date scoping). episodeName is intentionally NOT supported here —
@@ -37,10 +41,6 @@ const { printLog } = require('../constants.js');
 
 const ATLAS_SEARCH_INDEX_NAME = 'paragraph_text_search';
 const ATLAS_SEARCH_TEXT_PATH = 'metadataRaw.text';
-// Multi-field sub-analyzer must be addressed via { value, multi } at query time
-// (per Atlas Search path-construction docs). A dotted-string path does NOT
-// resolve to a multi-field and silently matches nothing.
-const ATLAS_SEARCH_SHINGLE_PATH = { value: 'metadataRaw.text', multi: 'shingleSquashed' };
 const ATLAS_SEARCH_SYNONYM_NAME = 'brand_aliases';
 const ATLAS_SEARCH_TIMEOUT_MS = 5000;
 
@@ -87,39 +87,6 @@ function buildFilterClauses({ feedIds = [], guids = [], minDate = null, maxDate 
   return filters;
 }
 
-// Split URL-shaped queries into sub-tokens to probe the shingle-squashed
-// path. Critical for queries like "lncurl.lol" where lucene.standard
-// either keeps the dotted form as one token or splits to ["lncurl",
-// "lol"] — neither matches the indexed squashed shingle "lncurl"
-// produced from spelled-out transcript text "l n c u r l".
-//
-// Limited to URL-shaped delimiters (`.`, `/`, `\`) deliberately:
-//   - Hyphenated forms like "BIP-32" are already handled by the
-//     standard-analyzer phrase clause (StandardTokenizer splits on `-`
-//     so `BIP 32` and `BIP-32` produce the same indexed tokens). Adding
-//     a `bip` sub-token clause was bringing in unrelated BIP mentions
-//     and ranking them above the actual BIP-32 docs.
-//   - Underscores are rare in user queries and similarly handled by the
-//     standard analyzer.
-//
-// Length cutoff at 3 chars further suppresses fragment noise. The
-// original full query is excluded to avoid duplicate scoring against
-// the primary shingle clause.
-function splitPunctuationTokens(query) {
-  if (typeof query !== 'string' || !/[./\\]/.test(query)) return [];
-  const lowered = query.toLowerCase();
-  const seen = new Set();
-  const tokens = [];
-  for (const raw of lowered.split(/[./\\]+/)) {
-    const t = raw.trim();
-    if (t.length >= 3 && t !== lowered && !seen.has(t)) {
-      seen.add(t);
-      tokens.push(t);
-    }
-  }
-  return tokens;
-}
-
 function buildShouldClauses(query, extraQueries = []) {
   const clauses = [
     {
@@ -140,13 +107,6 @@ function buildShouldClauses(query, extraQueries = []) {
     {
       text: {
         query,
-        path: ATLAS_SEARCH_SHINGLE_PATH,
-        score: { boost: { value: 3 } },
-      },
-    },
-    {
-      text: {
-        query,
         path: ATLAS_SEARCH_TEXT_PATH,
         synonyms: ATLAS_SEARCH_SYNONYM_NAME,
         score: { boost: { value: 2 } },
@@ -154,37 +114,29 @@ function buildShouldClauses(query, extraQueries = []) {
     },
   ];
 
-  for (const subToken of splitPunctuationTokens(query)) {
-    clauses.push({
-      text: {
-        query: subToken,
-        path: ATLAS_SEARCH_SHINGLE_PATH,
-        score: { boost: { value: 2 } },
-      },
-    });
-  }
-
-  // LLM-generated phonetic / spelling variants (e.g. "lncurl.lol" -> "ellen curl").
-  // Boost intentionally LOWER than original-query clauses (1.5 vs 2-4) so that
-  // expansion-only hits don't outrank exact-original-query matches when both
-  // exist in the same corpus. Variants probe both the standard text path
-  // (catches homophone tokens like "ellen") and the shingle-squashed path
-  // (catches letter-by-letter forms like "L N curl").
+  // Expansion variants (orchestrator-supplied via the search_quotes
+  // `expansions` parameter, plus server-side LLM-generated variants merged in
+  // upstream). Each variant gets a phrase clause (catches multi-word ordering
+  // like "Alby Hub" or "l n c u r l") plus a text+fuzzy clause (catches close
+  // typos on single-token variants). Boost intentionally lower than the
+  // original-query clauses so expansion-only hits don't outrank exact
+  // original-query matches when both exist.
   if (Array.isArray(extraQueries) && extraQueries.length) {
     for (const extra of extraQueries) {
       if (typeof extra !== 'string' || !extra.trim()) continue;
       const trimmed = extra.trim();
       clauses.push({
-        text: {
+        phrase: {
           query: trimmed,
           path: ATLAS_SEARCH_TEXT_PATH,
-          score: { boost: { value: 1.5 } },
+          score: { boost: { value: 2.5 } },
         },
       });
       clauses.push({
         text: {
           query: trimmed,
-          path: ATLAS_SEARCH_SHINGLE_PATH,
+          path: ATLAS_SEARCH_TEXT_PATH,
+          fuzzy: { maxEdits: 1, prefixLength: 1 },
           score: { boost: { value: 1.5 } },
         },
       });
