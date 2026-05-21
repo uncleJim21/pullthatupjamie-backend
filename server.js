@@ -2135,13 +2135,18 @@ const _server = app.listen(PORT, async () => {
       console.log('Scheduler is disabled. Skipping scheduled tasks setup.');
     }
 
-    // Scheduler-lock smoke test — fires every 5 minutes, prints a single
-    // line proving exactly one container won the time-bucket lock. Lets us
-    // verify the distributed-lock pattern in production logs across the
-    // 1-4 App Platform autoscale before wrapping the real scheduled tasks
-    // (RSS refresh, backups, blog ingestion) in the same guard. Opt-in via
-    // SCHEDULER_LOCK_SMOKE_TEST_ENABLED so it doesn't run by default.
-    if (process.env.SCHEDULER_LOCK_SMOKE_TEST_ENABLED === 'true') {
+    // Scheduler-lock smoke test — fires every 5 minutes against the
+    // distributed lock. Proves the pattern is working in production across
+    // the 1-4 App Platform autoscale before we wrap the real scheduled
+    // tasks (RSS refresh, backups, blog ingestion) in the same guard.
+    //
+    // Verification (no log watching required): open the SchedulerLock
+    // collection in Atlas. With the lock working you should see 1-2 active
+    // docs at any moment (the current bucket plus possibly the previous
+    // one inside its TTL window). Each doc's `instanceId` shows which
+    // container won that tick. Across autoscale events, instanceId should
+    // vary across ticks.
+    {
       const cron = require('node-cron');
       const { runIfLockHeld } = require('./utils/runIfLockHeld');
       const instanceTag = process.env.HOSTNAME || process.env.HOST || 'unknown';
