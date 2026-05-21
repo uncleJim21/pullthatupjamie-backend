@@ -560,17 +560,34 @@ const SYSTEM_PROMPT = [
 const TOOL_DEFINITIONS = [
   {
     name: 'search_quotes',
-    description: 'Semantic vector search across all transcribed podcast content. Returns timestamped quotes with speaker, episode, and audio metadata. Each result includes a pineconeId for referencing.',
+    description: `Semantic vector search across all transcribed podcast content. Returns timestamped quotes with speaker, episode, and audio metadata. Each result includes a pineconeId for referencing.
+
+EXPANSIONS (proper-noun recall): For queries that mention a brand, product, technical spec, URL, or acronym, populate the \`expansions\` array with 2-5 alternate forms. The lexical search probes each variant against the index, dramatically improving recall for non-standard terms where the user's spelling diverges from how the transcript records it. For generic conceptual queries (e.g. "how does staking work"), leave \`expansions\` empty.
+
+What kinds of variants to generate:
+- Word-boundary splits: "albyhub" → ["Alby Hub", "Alby"]
+- Spelled-out letter forms (URLs, abbreviations spoken letter-by-letter): "lncurl" → ["lncurl", "l n c u r l", "LN URL"]
+- Acronym expansions: "NWC" → ["Nostr Wallet Connect"]
+- Reverse acronym (full → short): "Lightning Network" → ["LN"]
+- Domain extraction from URLs: "lncurl.lol" → ["lncurl", "l n c u r l"]
+
+Examples:
+- query: "albyhub"               → expansions: ["Alby Hub", "Alby"]
+- query: "lncurl.lol"             → expansions: ["lncurl", "l n c u r l", "LN URL"]
+- query: "nostrwalletconnect"    → expansions: ["Nostr Wallet Connect", "NWC"]
+- query: "BIP-32"                 → expansions: ["BIP 32", "Hierarchical Deterministic"]
+- query: "how does the lightning network handle small payments" → expansions: []`,
     input_schema: {
       type: 'object',
       properties: {
-        query:   { type: 'string', description: 'Natural language search query (required, non-empty after trimming — empty values break embedding search)' },
-        guid:    { type: 'string', description: 'Filter to a single episode GUID' },
-        guids:   { type: 'array', items: { type: 'string' }, description: 'Filter to multiple episode GUIDs' },
-        feedIds: { type: 'array', items: { type: 'string' }, description: 'Filter to specific podcast feed IDs' },
-        limit:   { type: 'number', description: 'Max results (default 5, hard cap 20). Start with 5 — only increase if you need broader coverage.' },
-        minDate: { type: 'string', description: 'ISO date string — only episodes after this date' },
-        maxDate: { type: 'string', description: 'ISO date string — only episodes before this date' },
+        query:      { type: 'string', description: 'Natural language search query (required, non-empty after trimming — empty values break embedding search)' },
+        expansions: { type: 'array', items: { type: 'string' }, description: 'Alternate forms of proper-noun / brand / URL / spec terms in the query (2-5 entries). See tool description for examples. Leave empty [] for generic conceptual queries.' },
+        guid:       { type: 'string', description: 'Filter to a single episode GUID' },
+        guids:      { type: 'array', items: { type: 'string' }, description: 'Filter to multiple episode GUIDs' },
+        feedIds:    { type: 'array', items: { type: 'string' }, description: 'Filter to specific podcast feed IDs' },
+        limit:      { type: 'number', description: 'Max results (default 5, hard cap 20). Start with 5 — only increase if you need broader coverage.' },
+        minDate:    { type: 'string', description: 'ISO date string — only episodes after this date' },
+        maxDate:    { type: 'string', description: 'ISO date string — only episodes before this date' },
       },
       required: ['query'],
     },

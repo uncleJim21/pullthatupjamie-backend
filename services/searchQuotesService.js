@@ -87,7 +87,14 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
   let {
     query, feedIds = [], limit = 5, minDate = null, maxDate = null,
     episodeName = null, guid = null, guids: guidsParam = [], smartMode = false,
+    expansions = [],
   } = params;
+
+  // Model-provided expansions: pre-cleaned in the tool handler, but defensive
+  // re-dedupe here in case searchQuotes is called from another path.
+  const modelExpansions = Array.isArray(expansions)
+    ? [...new Set(expansions.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))]
+    : [];
 
   const originalQuery = query;
   feedIds = (Array.isArray(feedIds) ? feedIds : [feedIds]).filter(Boolean);
@@ -144,9 +151,12 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
 
   // Lexical fallback gating — kill-switch + heuristic + must not be already
   // scoped to a single episode (in which case the vector path is plenty).
+  // Model-provided expansions are themselves a strong proper-noun signal, so
+  // they bypass the heuristic gate: if the orchestrator thought variants were
+  // worth generating, the lexical path is worth running.
   const lexicalActivated = PROPER_NOUN_SEARCH_ENABLED
     && !episodeName
-    && isProperNounShaped(query);
+    && (isProperNounShaped(query) || modelExpansions.length > 0);
 
   const llmExpansionActivated = lexicalActivated && PROPER_NOUN_LLM_EXPANSION_ENABLED;
   const lexicalStartedAt = lexicalActivated ? Date.now() : null;
@@ -187,10 +197,18 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
     }
   }
 
+  // Merge model-provided expansions with server-side LLM expansion variants.
+  // Both contribute additively to lexical recall; dedupe so a variant shared
+  // between the two paths only fires once.
+  const mergedExpansions = [...new Set([
+    ...modelExpansions,
+    ...expansionVariants.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean),
+  ])];
+
   const lexicalRaw = lexicalActivated
     ? await atlasTextSearch({
         query, feedIds, guids, minDate, maxDate, limit, requestId,
-        extraQueries: expansionVariants,
+        extraQueries: mergedExpansions,
       })
     : [];
 
@@ -217,7 +235,10 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
     const expansionSuffix = llmExpansionActivated
       ? `, llmExpansion=${expansionVariants.length} variant(s)${expansionVariants.length ? ` ${JSON.stringify(expansionVariants)}` : ''}`
       : '';
-    printLog(`[${requestId}] Lexical activated: hits=${lexicalRaw.length}, latency=${lexicalLatencyMs}ms, overlap=${overlap}, finalMix=${JSON.stringify(sourceMix)}${expansionSuffix}`);
+    const modelExpansionSuffix = modelExpansions.length
+      ? `, modelExpansion=${modelExpansions.length} variant(s) ${JSON.stringify(modelExpansions)}`
+      : '';
+    printLog(`[${requestId}] Lexical activated: hits=${lexicalRaw.length}, latency=${lexicalLatencyMs}ms, overlap=${overlap}, finalMix=${JSON.stringify(sourceMix)}${modelExpansionSuffix}${expansionSuffix}`);
   }
 
   const pineconeIds = merged.map(r => r.id);

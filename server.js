@@ -85,9 +85,6 @@ const GarbageCollector = require('./utils/GarbageCollector');
 const mongoURI = process.env.DEBUG_MODE === 'true' ? process.env.MONGO_DEBUG_URI : process.env.MONGO_URI;
 const invoicePoolSize = 1;
 
-const processingCache = new Map();
-const resultCache = new Map();
-
 // OpenAI helper: configurable timeout & retries for embeddings
 const OPENAI_EMBEDDING_TIMEOUT_MS = parseInt(process.env.OPENAI_EMBEDDING_TIMEOUT_MS || '20000', 10); // 20s default
 const OPENAI_EMBEDDING_MAX_RETRIES = parseInt(process.env.OPENAI_EMBEDDING_MAX_RETRIES || '2', 10);   // 2 retries default
@@ -2125,8 +2122,9 @@ const _server = app.listen(PORT, async () => {
             const result = await podcastRssCache.refreshAllPodcasts();
             console.log(`[SCHEDULED TASK] Podcast RSS cache refresh completed: ${result.successful} successful, ${result.failed} failed`);
             
-            // Clean up expired entries
+            // Clean up expired entries across in-memory caches
             podcastRssCache.cleanupExpiredEntries();
+            editChildrenCache.cleanupExpiredEntries();
             
           } catch (error) {
             console.error(`[SCHEDULED TASK] Error in podcast RSS cache refresh:`, error.message);

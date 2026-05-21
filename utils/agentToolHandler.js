@@ -119,7 +119,7 @@ function truncateResults(data) {
 // --- Per-tool dispatch ---
 
 async function handleSearchQuotes(input, { openai, recordHelperLlmUsage, userMessage }) {
-  const { query, guid, guids, feedIds, limit, minDate, maxDate } = input;
+  const { query, expansions, guid, guids, feedIds, limit, minDate, maxDate } = input;
   const clampedLimit = clampLimit(limit, 5);
   const overFetchLimit = Math.min(clampedLimit * 3, RESULT_HARD_CAP);
 
@@ -132,9 +132,15 @@ async function handleSearchQuotes(input, { openai, recordHelperLlmUsage, userMes
     };
   }
 
-  printLog(`[TOOL] search_quotes: query="${q}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true`);
+  // Model-provided expansions: trimmed strings, deduped, capped at 10 to avoid
+  // pathological inputs blowing up the lexical compound query.
+  const modelExpansions = Array.isArray(expansions)
+    ? [...new Set(expansions.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))].slice(0, 10)
+    : [];
+
+  printLog(`[TOOL] search_quotes: query="${q}", limit=${clampedLimit} (fetching=${overFetchLimit}), smartMode=true, modelExpansions=${modelExpansions.length}${modelExpansions.length ? ` ${JSON.stringify(modelExpansions)}` : ''}`);
   const data = await searchQuotes({
-    query: q, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
+    query: q, expansions: modelExpansions, guid, guids, feedIds, limit: overFetchLimit, minDate, maxDate, smartMode: true,
   }, { openai, recordHelperLlmUsage });
   filterFluffResults(data);
 
