@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "description": "Canonical benchmark query set. Each query exercises a different path through the agent + search pipeline. Expectations are deliberately permissive (keywords + heuristics) to allow paraphrased responses; the judge LLM grades the harder semantic checks.",
+  "queries": [
+    {
+      "id": "compound-brand-albyhub",
+      "category": "proper-noun-compound",
+      "prompt": "What have the hosts said about albyhub?",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["alby"],
+        "responseMinChars": 100
+      },
+      "judgeCriteria": "The response should reference Alby Hub or Alby (the Bitcoin Lightning wallet) and cite at least one transcript clip."
+    },
+    {
+      "id": "url-spelled-lncurl",
+      "category": "proper-noun-url",
+      "prompt": "Find references to lncurl.lol in the transcripts.",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["lncurl", "ln", "lightning"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 100
+      },
+      "judgeCriteria": "The response should mention lncurl, ln curl, or LNURL in the context of Lightning Network. A cited clip is expected."
+    },
+    {
+      "id": "acronym-nostr-wallet-connect",
+      "category": "proper-noun-acronym",
+      "prompt": "What is Nostr Wallet Connect and what have the hosts said about it?",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["nostr", "wallet"],
+        "responseMinChars": 200
+      },
+      "judgeCriteria": "The response should explain or describe Nostr Wallet Connect (NWC) in some form and reference podcast content."
+    },
+    {
+      "id": "technical-spec-bip32",
+      "category": "technical-spec",
+      "prompt": "What have the hosts discussed about BIP-32 and hierarchical deterministic wallets?",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["bip", "wallet", "key"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 150
+      },
+      "judgeCriteria": "The response should reference BIP-32 or hierarchical deterministic wallets in some technical context."
+    },
+    {
+      "id": "general-topic-lightning",
+      "category": "general-topic",
+      "prompt": "What are the main themes hosts have discussed about the Lightning Network this year?",
+      "expected": {
+        "minResultsInToolCalls": 3,
+        "responseShouldMention": ["lightning"],
+        "responseMinChars": 300
+      },
+      "judgeCriteria": "The response should describe multiple themes or aspects of Lightning Network discussions. Pure vector-search territory; many hits expected."
+    },
+    {
+      "id": "general-topic-bitcoin-mining",
+      "category": "general-topic",
+      "prompt": "Summarize recent discussion about bitcoin mining and energy.",
+      "expected": {
+        "minResultsInToolCalls": 3,
+        "responseShouldMention": ["mining", "energy"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 300
+      },
+      "judgeCriteria": "The response should cover mining + energy / power / electricity in some combination and cite multiple sources."
+    },
+    {
+      "id": "person-luke-gromen",
+      "category": "person-query",
+      "prompt": "What has Luke Gromen said about the bond market recently?",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["bond", "gromen", "treasury", "rate"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 200
+      },
+      "judgeCriteria": "The response should reference Luke Gromen's views on bonds, treasuries, or interest rates. find_person + search_quotes path expected."
+    },
+    {
+      "id": "broad-theme-ai-agents",
+      "category": "general-topic",
+      "prompt": "Have any hosts talked about AI agents in 2026?",
+      "expected": {
+        "minResultsInToolCalls": 2,
+        "responseShouldMention": ["ai", "agent"],
+        "responseMinChars": 200
+      },
+      "judgeCriteria": "The response should discuss AI agents in some form, ideally citing 2026 content if available."
+    },
+    {
+      "id": "obscure-no-result-likely",
+      "category": "edge-case-empty",
+      "prompt": "What did the hosts say about quasicrystalline metallurgy in space habitats?",
+      "expected": {
+        "responseMinChars": 50,
+        "graceful": true
+      },
+      "judgeCriteria": "The query is intentionally obscure. The agent should respond gracefully — either with a 'no information found' message or by surfacing tangentially related material with an honest framing. A confident fabricated answer is a FAIL."
+    },
+    {
+      "id": "feed-scoped-bitcoin-audible",
+      "category": "feed-scoped",
+      "prompt": "On the Bitcoin Audible podcast, what books have been featured this year?",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["bitcoin audible", "book"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 150
+      },
+      "judgeCriteria": "The response should reference Bitcoin Audible content, ideally book titles or themes covered on that show."
+    },
+    {
+      "id": "compound-brand-openai",
+      "category": "proper-noun-compound",
+      "prompt": "Find clips about openai's latest models.",
+      "expected": {
+        "minResultsInToolCalls": 1,
+        "responseShouldMention": ["openai", "model"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 150
+      },
+      "judgeCriteria": "The response should reference OpenAI / GPT / similar in some context. Compound-word expansion case."
+    },
+    {
+      "id": "general-recent-market",
+      "category": "general-topic",
+      "prompt": "What's the general sentiment about market conditions on recent episodes?",
+      "expected": {
+        "minResultsInToolCalls": 3,
+        "responseShouldMention": ["market", "sentiment", "price"],
+        "responseShouldMentionAny": true,
+        "responseMinChars": 250
+      },
+      "judgeCriteria": "The response should synthesize market sentiment from multiple episodes — bullish/bearish/cautious framing. No proper-noun expansion expected."
+    }
+  ]
+}
