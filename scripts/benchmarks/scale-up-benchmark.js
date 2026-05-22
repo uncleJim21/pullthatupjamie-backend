@@ -50,6 +50,26 @@ const repeats = repeatArgIdx > -1 ? Math.max(1, parseInt(args[repeatArgIdx + 1],
 const filterArgIdx = args.indexOf('--filter');
 const filter = filterArgIdx > -1 ? args[filterArgIdx + 1] : null;
 
+// ─── Corpus stats fetch ───────────────────────────────────────────────────
+
+async function fetchCorpusStats() {
+  // Public endpoint, no auth needed. Counts episodes / paragraphs / chapters /
+  // feeds. Stamped into the report header so milestone reports are directly
+  // comparable as the corpus grows.
+  try {
+    const resp = await fetch(`${BASE_URL}/api/corpus-stats`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!resp.ok) {
+      return { error: `HTTP ${resp.status}`, episodes: null, paragraphs: null };
+    }
+    const stats = await resp.json();
+    return stats;
+  } catch (err) {
+    return { error: err.message, episodes: null, paragraphs: null };
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function fmtMs(ms) {
@@ -219,6 +239,17 @@ async function main() {
     process.exit(1);
   }
 
+  // Fetch corpus size first so it's stamped into the report header.
+  // Done before any benchmark queries fire so the snapshot represents the
+  // corpus state at the START of the run, not after.
+  process.stdout.write('Fetching corpus stats... ');
+  const corpusStats = await fetchCorpusStats();
+  if (corpusStats.error) {
+    console.log(`failed (${corpusStats.error}) — proceeding without stats`);
+  } else {
+    console.log(`${corpusStats.episodes?.toLocaleString()} episodes / ${corpusStats.paragraphs?.toLocaleString()} paragraphs`);
+  }
+
   console.log(`\nScale-up benchmark`);
   console.log(`  target:   ${BASE_URL}`);
   console.log(`  queries:  ${allQueries.length} × ${repeats} repeats = ${allQueries.length * repeats} requests`);
@@ -265,6 +296,23 @@ async function main() {
   const r = (s) => reportLines.push(s);
 
   r(`# Scale-up Benchmark — ${new Date().toISOString()}`);
+  r('');
+  if (corpusStats && !corpusStats.error) {
+    r(`## Corpus snapshot`);
+    r('');
+    r(`- **Episodes:** ${corpusStats.episodes?.toLocaleString()}`);
+    r(`- **Paragraphs:** ${corpusStats.paragraphs?.toLocaleString()}`);
+    r(`- **Chapters:** ${corpusStats.chapters?.toLocaleString()}`);
+    r(`- **Feeds:** ${corpusStats.feeds?.toLocaleString()}`);
+    r(`- Captured at: \`${corpusStats.capturedAt}\``);
+    r('');
+  } else if (corpusStats?.error) {
+    r(`## Corpus snapshot`);
+    r('');
+    r(`- ⚠️  Failed to fetch corpus stats: ${corpusStats.error}`);
+    r('');
+  }
+  r(`## Run config`);
   r('');
   r(`- Target: \`${BASE_URL}\``);
   r(`- Queries: ${allQueries.length} × ${repeats} repeats = ${runs.length} requests`);
