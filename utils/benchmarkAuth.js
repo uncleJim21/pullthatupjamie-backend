@@ -74,10 +74,13 @@ function isBenchmarkRequest(req, { maxSkewSeconds = DEFAULT_MAX_SKEW_SECONDS } =
   if (!secret) return false; // benchmark mode disabled entirely
 
   try {
-    const keyId = String(req.headers['x-svc-keyid'] || '');
-    const tsStr = String(req.headers['x-svc-timestamp'] || '');
-    const providedSig = String(req.headers['x-svc-signature'] || '');
-    const providedBodyHash = String(req.headers['x-svc-body-hash'] || '');
+    // X-Benchmark-* namespace deliberately distinct from the X-Svc-* used by
+    // middleware/hmac.js — sharing that namespace would cause the existing
+    // serviceHmac middleware on /api/pull to 401 us before this check runs.
+    const keyId = String(req.headers['x-benchmark-keyid'] || '');
+    const tsStr = String(req.headers['x-benchmark-timestamp'] || '');
+    const providedSig = String(req.headers['x-benchmark-signature'] || '');
+    const providedBodyHash = String(req.headers['x-benchmark-body-hash'] || '');
 
     if (!keyId || !tsStr || !providedSig) return false;
     if (keyId !== KEY_ID) return false;

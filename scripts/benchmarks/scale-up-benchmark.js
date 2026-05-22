@@ -158,7 +158,16 @@ async function callPull({ query }) {
 function evaluateQueryResult(query, result) {
   const gates = [];
   if (result.networkErr) gates.push({ name: 'network', pass: false, detail: result.networkErr });
-  if (result.httpStatus && result.httpStatus !== 200) gates.push({ name: 'http', pass: false, detail: `status ${result.httpStatus}` });
+  if (result.httpStatus && result.httpStatus !== 200) {
+    // Surface the actual error body so 401/403/etc are visible at a glance
+    // without having to grep into the markdown report. First 200 chars is
+    // usually enough to tell auth-failure from quota-exhaustion from
+    // server-error.
+    const errSnippet = result.body?.error
+      || result.body?._rawText
+      || JSON.stringify(result.body || {}).slice(0, 200);
+    gates.push({ name: 'http', pass: false, detail: `status ${result.httpStatus}: ${errSnippet.slice(0, 200)}` });
+  }
 
   const text = result.body?.text || '';
   const minChars = query.expected?.responseMinChars || 0;
@@ -278,6 +287,12 @@ async function main() {
       const statusMark = overallPass ? '✓' : '✘';
       const judgeMark = judgeResult == null ? '—' : (judgeResult.pass === true ? '✓' : (judgeResult.pass === false ? '✘' : '?'));
       console.log(`${statusMark} ${fmtMs(result.wallClockMs).padStart(7)}  gates:${gateResult.passedAllGates ? '✓' : '✘'}  judge:${judgeMark}`);
+      // On gate failures, also log the first failing gate detail so the
+      // operator doesn't have to open the markdown to find out why.
+      if (!gateResult.passedAllGates) {
+        const failed = gateResult.gates.find(g => !g.pass);
+        if (failed) console.log(`              ↳ ${failed.name}: ${failed.detail}`);
+      }
 
       runs.push({ query, result, gateResult, judgeResult });
 
