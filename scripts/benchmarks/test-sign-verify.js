@@ -29,6 +29,10 @@ function makeMockReq({ method = 'POST', path = '/api/pull', rawBody = '{"message
     method,
     baseUrl: '',
     path,
+    // Mirror what production sees: originalUrl is the incoming URL, which
+    // /api/pull's route handler does NOT rewrite (only req.url gets changed).
+    // Production verification reads originalUrl, so the test must set it too.
+    originalUrl: path,
     query: {},
     rawBody,
     headers: {

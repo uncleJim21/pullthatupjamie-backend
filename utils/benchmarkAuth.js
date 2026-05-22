@@ -107,7 +107,15 @@ function isBenchmarkRequest(req, { maxSkewSeconds = DEFAULT_MAX_SKEW_SECONDS } =
     }
 
     const method = (req.method || 'GET').toUpperCase();
-    const path = ((req.baseUrl || '') + (req.path || '/')) || '/';
+    // Use req.originalUrl (preserved across Express sub-router dispatch)
+    // rather than req.path / req.url. The /api/pull route internally
+    // rewrites req.url to '/agent' before dispatching to the agent router,
+    // so by the time this check runs, req.path is '/agent'. The harness
+    // signs over the original incoming path ('/api/pull'), so we must
+    // recover that here too. Strip any query string — it's signed via the
+    // separate queryString component.
+    const originalUrl = req.originalUrl || ((req.baseUrl || '') + (req.path || '/')) || '/';
+    const path = originalUrl.split('?')[0] || '/';
     const queryString = buildSortedQueryString(req.query);
     const expectedSig = computeExpectedSignature({
       method, path, queryString, bodyHashHex, timestamp: ts, secret,
