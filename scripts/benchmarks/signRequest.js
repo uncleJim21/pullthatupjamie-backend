@@ -65,10 +65,10 @@ function signRequest({ method, path, query, rawBody, secret }) {
   // would cause the production serviceHmac (which reads a different env
   // key map) to 401 our requests before they reach the route handler.
   return {
-    'X-Bench-KeyId': KEY_ID,
-    'X-Bench-Timestamp': String(timestamp),
-    'X-Bench-Body-Hash': bodyHashHex,
-    'X-Bench-Signature': signature,
+    'X-Jamie-KeyId': KEY_ID,
+    'X-Jamie-Timestamp': String(timestamp),
+    'X-Jamie-Body-Hash': bodyHashHex,
+    'X-Jamie-Signature': signature,
   };
 }
 

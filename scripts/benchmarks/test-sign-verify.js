@@ -70,7 +70,7 @@ const headers = signRequest({
 
 // Test 3: bad signature
 {
-  const bad = { ...headers, 'X-Bench-Signature': 'AAAA' + headers['X-Bench-Signature'].slice(4) };
+  const bad = { ...headers, 'X-Jamie-Signature': 'AAAA' + headers['X-Jamie-Signature'].slice(4) };
   const req = makeMockReq({ rawBody, headers: bad });
   check('bad signature rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -78,7 +78,7 @@ const headers = signRequest({
 // Test 4: expired timestamp
 {
   const oldTs = String(Math.floor(Date.now() / 1000) - 600); // 10 min ago, well past 60s window
-  const expired = { ...headers, 'X-Bench-Timestamp': oldTs };
+  const expired = { ...headers, 'X-Jamie-Timestamp': oldTs };
   const req = makeMockReq({ rawBody, headers: expired });
   check('expired timestamp rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -95,7 +95,7 @@ const headers = signRequest({
 
 // Test 6: wrong keyId
 {
-  const wrongKey = { ...headers, 'X-Bench-KeyId': 'not-benchmark' };
+  const wrongKey = { ...headers, 'X-Jamie-KeyId': 'not-benchmark' };
   const req = makeMockReq({ rawBody, headers: wrongKey });
   check('wrong keyId rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -117,7 +117,7 @@ const headers = signRequest({
   // Compute a fresh hash for the shorter body, but DO NOT re-sign — use old sig
   const tamperedHeaders = {
     ...headers,
-    'X-Bench-Body-Hash': sha256Hex(shortBody), // hash matches new body
+    'X-Jamie-Body-Hash': sha256Hex(shortBody), // hash matches new body
     'content-length': String(Buffer.byteLength(shortBody, 'utf8')),
   };
   const req = makeMockReq({ rawBody: shortBody, headers: tamperedHeaders });
