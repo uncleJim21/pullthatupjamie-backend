@@ -74,13 +74,15 @@ function isBenchmarkRequest(req, { maxSkewSeconds = DEFAULT_MAX_SKEW_SECONDS } =
   if (!secret) return false; // benchmark mode disabled entirely
 
   try {
-    // X-Benchmark-* namespace deliberately distinct from the X-Svc-* used by
+    // X-Bench-* namespace deliberately distinct from the X-Svc-* used by
     // middleware/hmac.js — sharing that namespace would cause the existing
     // serviceHmac middleware on /api/pull to 401 us before this check runs.
-    const keyId = String(req.headers['x-benchmark-keyid'] || '');
-    const tsStr = String(req.headers['x-benchmark-timestamp'] || '');
-    const providedSig = String(req.headers['x-benchmark-signature'] || '');
-    const providedBodyHash = String(req.headers['x-benchmark-body-hash'] || '');
+    // (Originally tried X-Benchmark-* but Cloudflare's bot ruleset
+    // slow-loris-hangs requests using that exact prefix.)
+    const keyId = String(req.headers['x-bench-keyid'] || '');
+    const tsStr = String(req.headers['x-bench-timestamp'] || '');
+    const providedSig = String(req.headers['x-bench-signature'] || '');
+    const providedBodyHash = String(req.headers['x-bench-body-hash'] || '');
 
     if (!keyId || !tsStr || !providedSig) return false;
     if (keyId !== KEY_ID) return false;
