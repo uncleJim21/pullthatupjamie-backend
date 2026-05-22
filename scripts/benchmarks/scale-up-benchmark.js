@@ -181,13 +181,26 @@ function evaluateQueryResult(query, result) {
 
   const minResults = query.expected?.minResultsInToolCalls || 0;
   if (minResults > 0) {
-    const totalResultCount = (result.body?.metrics?.toolCalls || [])
-      .reduce((acc, tc) => acc + (tc.resultCount || 0), 0);
-    gates.push({
-      name: 'minResults',
-      pass: totalResultCount >= minResults,
-      detail: `${totalResultCount}/${minResults} results across tool calls`,
-    });
+    // metrics.toolCalls only exists when the server enabled benchmark mode
+    // (valid HMAC signature). If metrics is entirely absent, we can't
+    // evaluate result counts — skip the gate rather than fail it (a missed
+    // env-var setup would otherwise look like a quality regression).
+    const hasMetrics = !!result.body?.metrics;
+    if (!hasMetrics) {
+      gates.push({
+        name: 'minResults',
+        pass: true,
+        detail: 'skipped — server did not return metrics (BENCHMARK_HMAC_SECRET likely not set on server, or server not restarted with the env)',
+      });
+    } else {
+      const totalResultCount = (result.body.metrics.toolCalls || [])
+        .reduce((acc, tc) => acc + (tc.resultCount || 0), 0);
+      gates.push({
+        name: 'minResults',
+        pass: totalResultCount >= minResults,
+        detail: `${totalResultCount}/${minResults} results across tool calls`,
+      });
+    }
   }
 
   const mentionCheck = checkResponseShouldMention(text, query.expected);
@@ -390,6 +403,26 @@ async function main() {
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Summary: ${passCount}/${runs.length} pass, ${failCount} fail`);
   console.log(`Wall: p50=${fmtMs(timings.wallClock.p50)} p95=${fmtMs(timings.wallClock.p95)} p99=${fmtMs(timings.wallClock.p99)}`);
+
+  // Detect the most common operator confusion: harness sends signed
+  // requests but server didn't return metrics. Usually means the server's
+  // BENCHMARK_HMAC_SECRET isn't set, or the server was started before the
+  // env var was added.
+  const runsWithMetrics = runs.filter(r => r.result.body?.metrics).length;
+  if (runsWithMetrics === 0 && runs.length > 0) {
+    console.log('');
+    console.log('⚠️  NO responses contained the `metrics` field.');
+    console.log('   The server did not enable benchmark mode for any request.');
+    console.log('   Likely causes:');
+    console.log('     1. BENCHMARK_HMAC_SECRET is not set in the SERVER process env');
+    console.log('     2. The server was started before BENCHMARK_HMAC_SECRET was added — restart it');
+    console.log('     3. The harness and server have different secrets (.env mismatch)');
+    console.log('   Without metrics, latency breakdowns and tool counts are unavailable.');
+  } else if (runsWithMetrics < runs.length) {
+    console.log('');
+    console.log(`⚠️  Only ${runsWithMetrics}/${runs.length} responses had a metrics field. Partial benchmark visibility.`);
+  }
+
   console.log(`Report written to: ${outFile}`);
 
   process.exit(failCount > 0 ? 1 : 0);
