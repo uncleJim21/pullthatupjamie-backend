@@ -1645,6 +1645,32 @@ app.get('/api/get-clip-count', async (req, res) => {
   }
 });
 
+// Per-type corpus stats — used by scripts/benchmarks to stamp each report
+// with the current episode / paragraph / chapter / feed counts so reports
+// across staging-ingest milestones are directly comparable. Public, no
+// auth needed (these are aggregate counts, no sensitive data).
+app.get('/api/corpus-stats', async (req, res) => {
+  try {
+    const [episodes, paragraphs, chapters, feeds] = await Promise.all([
+      JamieVectorMetadata.countDocuments({ type: 'episode' }),
+      JamieVectorMetadata.countDocuments({ type: 'paragraph' }),
+      JamieVectorMetadata.countDocuments({ type: 'chapter' }),
+      JamieVectorMetadata.countDocuments({ type: 'feed' }),
+    ]);
+    res.json({
+      episodes,
+      paragraphs,
+      chapters,
+      feeds,
+      total: episodes + paragraphs + chapters + feeds,
+      capturedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Error fetching corpus stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Queue monitoring endpoint
 app.get('/api/queue-status', async (req, res) => {
   try {

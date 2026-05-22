@@ -50,6 +50,26 @@ const repeats = repeatArgIdx > -1 ? Math.max(1, parseInt(args[repeatArgIdx + 1],
 const filterArgIdx = args.indexOf('--filter');
 const filter = filterArgIdx > -1 ? args[filterArgIdx + 1] : null;
 
+// ─── Corpus stats fetch ───────────────────────────────────────────────────
+
+async function fetchCorpusStats() {
+  // Public endpoint, no auth needed. Counts episodes / paragraphs / chapters /
+  // feeds. Stamped into the report header so milestone reports are directly
+  // comparable as the corpus grows.
+  try {
+    const resp = await fetch(`${BASE_URL}/api/corpus-stats`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!resp.ok) {
+      return { error: `HTTP ${resp.status}`, episodes: null, paragraphs: null };
+    }
+    const stats = await resp.json();
+    return stats;
+  } catch (err) {
+    return { error: err.message, episodes: null, paragraphs: null };
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function fmtMs(ms) {
@@ -138,7 +158,16 @@ async function callPull({ query }) {
 function evaluateQueryResult(query, result) {
   const gates = [];
   if (result.networkErr) gates.push({ name: 'network', pass: false, detail: result.networkErr });
-  if (result.httpStatus && result.httpStatus !== 200) gates.push({ name: 'http', pass: false, detail: `status ${result.httpStatus}` });
+  if (result.httpStatus && result.httpStatus !== 200) {
+    // Surface the actual error body so 401/403/etc are visible at a glance
+    // without having to grep into the markdown report. First 200 chars is
+    // usually enough to tell auth-failure from quota-exhaustion from
+    // server-error.
+    const errSnippet = result.body?.error
+      || result.body?._rawText
+      || JSON.stringify(result.body || {}).slice(0, 200);
+    gates.push({ name: 'http', pass: false, detail: `status ${result.httpStatus}: ${errSnippet.slice(0, 200)}` });
+  }
 
   const text = result.body?.text || '';
   const minChars = query.expected?.responseMinChars || 0;
@@ -152,13 +181,26 @@ function evaluateQueryResult(query, result) {
 
   const minResults = query.expected?.minResultsInToolCalls || 0;
   if (minResults > 0) {
-    const totalResultCount = (result.body?.metrics?.toolCalls || [])
-      .reduce((acc, tc) => acc + (tc.resultCount || 0), 0);
-    gates.push({
-      name: 'minResults',
-      pass: totalResultCount >= minResults,
-      detail: `${totalResultCount}/${minResults} results across tool calls`,
-    });
+    // metrics.toolCalls only exists when the server enabled benchmark mode
+    // (valid HMAC signature). If metrics is entirely absent, we can't
+    // evaluate result counts — skip the gate rather than fail it (a missed
+    // env-var setup would otherwise look like a quality regression).
+    const hasMetrics = !!result.body?.metrics;
+    if (!hasMetrics) {
+      gates.push({
+        name: 'minResults',
+        pass: true,
+        detail: 'skipped — server did not return metrics (BENCHMARK_HMAC_SECRET likely not set on server, or server not restarted with the env)',
+      });
+    } else {
+      const totalResultCount = (result.body.metrics.toolCalls || [])
+        .reduce((acc, tc) => acc + (tc.resultCount || 0), 0);
+      gates.push({
+        name: 'minResults',
+        pass: totalResultCount >= minResults,
+        detail: `${totalResultCount}/${minResults} results across tool calls`,
+      });
+    }
   }
 
   const mentionCheck = checkResponseShouldMention(text, query.expected);
@@ -219,6 +261,17 @@ async function main() {
     process.exit(1);
   }
 
+  // Fetch corpus size first so it's stamped into the report header.
+  // Done before any benchmark queries fire so the snapshot represents the
+  // corpus state at the START of the run, not after.
+  process.stdout.write('Fetching corpus stats... ');
+  const corpusStats = await fetchCorpusStats();
+  if (corpusStats.error) {
+    console.log(`failed (${corpusStats.error}) — proceeding without stats`);
+  } else {
+    console.log(`${corpusStats.episodes?.toLocaleString()} episodes / ${corpusStats.paragraphs?.toLocaleString()} paragraphs`);
+  }
+
   console.log(`\nScale-up benchmark`);
   console.log(`  target:   ${BASE_URL}`);
   console.log(`  queries:  ${allQueries.length} × ${repeats} repeats = ${allQueries.length * repeats} requests`);
@@ -247,6 +300,12 @@ async function main() {
       const statusMark = overallPass ? '✓' : '✘';
       const judgeMark = judgeResult == null ? '—' : (judgeResult.pass === true ? '✓' : (judgeResult.pass === false ? '✘' : '?'));
       console.log(`${statusMark} ${fmtMs(result.wallClockMs).padStart(7)}  gates:${gateResult.passedAllGates ? '✓' : '✘'}  judge:${judgeMark}`);
+      // On gate failures, also log the first failing gate detail so the
+      // operator doesn't have to open the markdown to find out why.
+      if (!gateResult.passedAllGates) {
+        const failed = gateResult.gates.find(g => !g.pass);
+        if (failed) console.log(`              ↳ ${failed.name}: ${failed.detail}`);
+      }
 
       runs.push({ query, result, gateResult, judgeResult });
 
@@ -265,6 +324,23 @@ async function main() {
   const r = (s) => reportLines.push(s);
 
   r(`# Scale-up Benchmark — ${new Date().toISOString()}`);
+  r('');
+  if (corpusStats && !corpusStats.error) {
+    r(`## Corpus snapshot`);
+    r('');
+    r(`- **Episodes:** ${corpusStats.episodes?.toLocaleString()}`);
+    r(`- **Paragraphs:** ${corpusStats.paragraphs?.toLocaleString()}`);
+    r(`- **Chapters:** ${corpusStats.chapters?.toLocaleString()}`);
+    r(`- **Feeds:** ${corpusStats.feeds?.toLocaleString()}`);
+    r(`- Captured at: \`${corpusStats.capturedAt}\``);
+    r('');
+  } else if (corpusStats?.error) {
+    r(`## Corpus snapshot`);
+    r('');
+    r(`- ⚠️  Failed to fetch corpus stats: ${corpusStats.error}`);
+    r('');
+  }
+  r(`## Run config`);
   r('');
   r(`- Target: \`${BASE_URL}\``);
   r(`- Queries: ${allQueries.length} × ${repeats} repeats = ${runs.length} requests`);
@@ -327,6 +403,26 @@ async function main() {
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Summary: ${passCount}/${runs.length} pass, ${failCount} fail`);
   console.log(`Wall: p50=${fmtMs(timings.wallClock.p50)} p95=${fmtMs(timings.wallClock.p95)} p99=${fmtMs(timings.wallClock.p99)}`);
+
+  // Detect the most common operator confusion: harness sends signed
+  // requests but server didn't return metrics. Usually means the server's
+  // BENCHMARK_HMAC_SECRET isn't set, or the server was started before the
+  // env var was added.
+  const runsWithMetrics = runs.filter(r => r.result.body?.metrics).length;
+  if (runsWithMetrics === 0 && runs.length > 0) {
+    console.log('');
+    console.log('⚠️  NO responses contained the `metrics` field.');
+    console.log('   The server did not enable benchmark mode for any request.');
+    console.log('   Likely causes:');
+    console.log('     1. BENCHMARK_HMAC_SECRET is not set in the SERVER process env');
+    console.log('     2. The server was started before BENCHMARK_HMAC_SECRET was added — restart it');
+    console.log('     3. The harness and server have different secrets (.env mismatch)');
+    console.log('   Without metrics, latency breakdowns and tool counts are unavailable.');
+  } else if (runsWithMetrics < runs.length) {
+    console.log('');
+    console.log(`⚠️  Only ${runsWithMetrics}/${runs.length} responses had a metrics field. Partial benchmark visibility.`);
+  }
+
   console.log(`Report written to: ${outFile}`);
 
   process.exit(failCount > 0 ? 1 : 0);

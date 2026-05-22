@@ -60,11 +60,15 @@ function signRequest({ method, path, query, rawBody, secret }) {
 
   const signature = crypto.createHmac('sha256', secret).update(canonical).digest('base64');
 
+  // Deliberately distinct from the X-Svc-* namespace used by the existing
+  // serviceHmac middleware mounted on /api/pull. Sharing that namespace
+  // would cause the production serviceHmac (which reads a different env
+  // key map) to 401 our requests before they reach the route handler.
   return {
-    'X-Svc-KeyId': KEY_ID,
-    'X-Svc-Timestamp': String(timestamp),
-    'X-Svc-Body-Hash': bodyHashHex,
-    'X-Svc-Signature': signature,
+    'X-Jamie-KeyId': KEY_ID,
+    'X-Jamie-Timestamp': String(timestamp),
+    'X-Jamie-Body-Hash': bodyHashHex,
+    'X-Jamie-Signature': signature,
   };
 }
 
