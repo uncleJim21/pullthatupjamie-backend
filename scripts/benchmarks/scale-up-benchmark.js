@@ -105,24 +105,17 @@ function checkResponseShouldMention(text, expected) {
   };
 }
 
-async function callPull({ query }) {
-  const url = `${BASE_URL}/api/pull`;
-  const body = {
-    message: query.prompt,
-    stream: false,
-    includeMetrics: false, // we want the SCOPED-via-HMAC metrics, not the env one
-  };
+// Shared HTTP POST helper. The HMAC headers are unused by /api/search-quotes
+// at the route level (entitlement middleware gates it), but they're cheap to
+// include and futureproof if we ever want metrics on that path too.
+async function callJson({ path, body, timeoutMs = REQUEST_TIMEOUT_MS }) {
+  const url = `${BASE_URL}${path}`;
   const rawBody = JSON.stringify(body);
 
-  const hmacHeaders = signRequest({
-    method: 'POST',
-    path: '/api/pull',
-    rawBody,
-    secret: HMAC_SECRET,
-  });
+  const hmacHeaders = signRequest({ method: 'POST', path, rawBody, secret: HMAC_SECRET });
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   const startedAt = Date.now();
   let response, parsed, networkErr;
@@ -153,6 +146,32 @@ async function callPull({ query }) {
     body: parsed,
     networkErr,
   };
+}
+
+async function callPull({ query }) {
+  return callJson({
+    path: '/api/pull',
+    body: {
+      message: query.prompt,
+      stream: false,
+      includeMetrics: false, // we want the SCOPED-via-HMAC metrics, not the env one
+    },
+  });
+}
+
+// Direct retrieval probe — bypasses the agent loop entirely. Tests the
+// embedding + Pinecone + Atlas Search + Mongo enrichment path on its own.
+// Faster than /api/pull (no orchestration LLM) and the latency that gates
+// the upper bound on /api/pull responsiveness.
+async function callSearchQuotes({ query }) {
+  return callJson({
+    path: '/api/search-quotes',
+    body: {
+      query: query.prompt,
+      limit: 5,
+    },
+    timeoutMs: 30000, // search-quotes is faster; tight timeout catches degradation
+  });
 }
 
 function evaluateQueryResult(query, result) {
@@ -224,10 +243,32 @@ function aggregateTimings(allRuns) {
     return tc.reduce((acc, t) => acc + (t.latencyMs || 0), 0);
   }).sort((a, b) => a - b);
 
+  // /api/search-quotes (direct retrieval) — its own latency profile.
+  const sqWallTimes = allRuns
+    .filter(r => r.searchResult && !r.searchResult.networkErr && r.searchResult.httpStatus === 200)
+    .map(r => r.searchResult.wallClockMs)
+    .sort((a, b) => a - b);
+  const sqResultCounts = allRuns
+    .filter(r => r.searchResult?.httpStatus === 200)
+    .map(r => (r.searchResult.body?.results || []).length);
+  const sqOkCount = sqWallTimes.length;
+  const sqFailCount = allRuns.length - sqOkCount;
+  const sqAvgResults = sqResultCounts.length
+    ? sqResultCounts.reduce((a, b) => a + b, 0) / sqResultCounts.length
+    : 0;
+
   return {
     wallClock: { p50: percentile(wallTimes, 50), p95: percentile(wallTimes, 95), p99: percentile(wallTimes, 99) },
     serverLatency: { p50: percentile(llmTotals, 50), p95: percentile(llmTotals, 95), p99: percentile(llmTotals, 99) },
     toolTime: { p50: percentile(totalToolMs, 50), p95: percentile(totalToolMs, 95), p99: percentile(totalToolMs, 99) },
+    searchQuotes: {
+      p50: percentile(sqWallTimes, 50),
+      p95: percentile(sqWallTimes, 95),
+      p99: percentile(sqWallTimes, 99),
+      okCount: sqOkCount,
+      failCount: sqFailCount,
+      avgResults: sqAvgResults,
+    },
   };
 }
 
@@ -284,14 +325,22 @@ async function main() {
     for (const query of allQueries) {
       const tag = `[${query.id}#${r + 1}]`;
       process.stdout.write(`${tag} `.padEnd(48));
-      const result = await callPull({ query });
-      const gateResult = evaluateQueryResult(query, result);
+
+      // Fire /api/pull (agent loop) and /api/search-quotes (raw retrieval)
+      // in parallel for the same prompt. They share no state on the server
+      // side beyond the embedding cache (which is per-query, not shared),
+      // so this is safe and roughly halves total wall-clock time.
+      const [pullResult, searchResult] = await Promise.all([
+        callPull({ query }),
+        callSearchQuotes({ query }),
+      ]);
+      const gateResult = evaluateQueryResult(query, pullResult);
 
       let judgeResult = null;
-      if (!noJudge && !result.networkErr && result.httpStatus === 200 && query.judgeCriteria) {
+      if (!noJudge && !pullResult.networkErr && pullResult.httpStatus === 200 && query.judgeCriteria) {
         judgeResult = await judgeResponse({
           question: query.prompt,
-          response: result.body?.text || '',
+          response: pullResult.body?.text || '',
           criteria: query.judgeCriteria,
         });
       }
@@ -299,15 +348,20 @@ async function main() {
       const overallPass = gateResult.passedAllGates && (judgeResult?.pass !== false);
       const statusMark = overallPass ? '✓' : '✘';
       const judgeMark = judgeResult == null ? '—' : (judgeResult.pass === true ? '✓' : (judgeResult.pass === false ? '✘' : '?'));
-      console.log(`${statusMark} ${fmtMs(result.wallClockMs).padStart(7)}  gates:${gateResult.passedAllGates ? '✓' : '✘'}  judge:${judgeMark}`);
+      const sqStatus = searchResult.networkErr || searchResult.httpStatus !== 200 ? '✘' : '✓';
+      console.log(`${statusMark} pull:${fmtMs(pullResult.wallClockMs).padStart(7)}  sq:${sqStatus}${fmtMs(searchResult.wallClockMs).padStart(7)}  gates:${gateResult.passedAllGates ? '✓' : '✘'}  judge:${judgeMark}`);
       // On gate failures, also log the first failing gate detail so the
       // operator doesn't have to open the markdown to find out why.
       if (!gateResult.passedAllGates) {
         const failed = gateResult.gates.find(g => !g.pass);
         if (failed) console.log(`              ↳ ${failed.name}: ${failed.detail}`);
       }
+      if (searchResult.httpStatus && searchResult.httpStatus !== 200) {
+        const errSnippet = searchResult.body?.error || searchResult.body?._rawText || JSON.stringify(searchResult.body || {}).slice(0, 120);
+        console.log(`              ↳ search-quotes ${searchResult.httpStatus}: ${errSnippet.slice(0, 120)}`);
+      }
 
-      runs.push({ query, result, gateResult, judgeResult });
+      runs.push({ query, result: pullResult, searchResult, gateResult, judgeResult });
 
       if (PER_QUERY_PAUSE_MS) await new Promise(r => setTimeout(r, PER_QUERY_PAUSE_MS));
     }
@@ -351,20 +405,27 @@ async function main() {
   r(`- **Pass:** ${passCount}/${runs.length} (${pct(passCount, runs.length)})`);
   r(`- **Fail:** ${failCount}/${runs.length}`);
   r('');
-  r(`### Latency (wall-clock, client-side)`);
+  r(`### /api/pull — wall-clock latency (client-side, full agent loop)`);
   r(`- p50: ${fmtMs(timings.wallClock.p50)}`);
   r(`- p95: ${fmtMs(timings.wallClock.p95)}`);
   r(`- p99: ${fmtMs(timings.wallClock.p99)}`);
   r('');
-  r(`### Server-reported latency (\`metrics.latencyMs\`)`);
+  r(`### /api/pull — server-reported latency (\`metrics.latencyMs\`)`);
   r(`- p50: ${fmtMs(timings.serverLatency.p50)}`);
   r(`- p95: ${fmtMs(timings.serverLatency.p95)}`);
   r(`- p99: ${fmtMs(timings.serverLatency.p99)}`);
   r('');
-  r(`### Tool-call time (sum across rounds, server-reported)`);
+  r(`### /api/pull — tool-call time (sum across rounds, server-reported)`);
   r(`- p50: ${fmtMs(timings.toolTime.p50)}`);
   r(`- p95: ${fmtMs(timings.toolTime.p95)}`);
   r(`- p99: ${fmtMs(timings.toolTime.p99)}`);
+  r('');
+  r(`### /api/search-quotes — direct retrieval (embedding + Pinecone + Atlas + Mongo)`);
+  r(`- p50: ${fmtMs(timings.searchQuotes.p50)}`);
+  r(`- p95: ${fmtMs(timings.searchQuotes.p95)}`);
+  r(`- p99: ${fmtMs(timings.searchQuotes.p99)}`);
+  r(`- Success: ${timings.searchQuotes.okCount} / Failed: ${timings.searchQuotes.failCount}`);
+  r(`- Avg results returned: ${timings.searchQuotes.avgResults.toFixed(1)}`);
   r('');
   r(`### Tool breakdown (aggregate across all runs)`);
   r('');
@@ -376,18 +437,22 @@ async function main() {
   r('');
   r(`## Per-query results`);
   r('');
-  r(`| Query | Status | Wall | Server | Gates | Judge | Notes |`);
-  r(`|---|---|---|---|---|---|---|`);
+  r(`| Query | Status | Pull wall | Pull server | SearchQ | Gates | Judge | Notes |`);
+  r(`|---|---|---|---|---|---|---|---|`);
   for (const run of runs) {
     const q = run.query;
     const result = run.result;
+    const sq = run.searchResult;
     const overallPass = run.gateResult.passedAllGates && (run.judgeResult?.pass !== false);
     const gateBlurb = run.gateResult.gates.map(g => `${g.name}:${g.pass ? '✓' : '✘'}`).join(' ');
     const judgeBlurb = run.judgeResult == null
       ? '—'
       : (run.judgeResult.pass === true ? '✓' : (run.judgeResult.pass === false ? '✘' : '?'));
     const notes = (run.judgeResult?.reason || '').slice(0, 100).replace(/\|/g, '\\|');
-    r(`| ${q.id} | ${overallPass ? '✓' : '✘'} | ${fmtMs(result.wallClockMs)} | ${fmtMs(result.body?.metrics?.latencyMs)} | ${gateBlurb} | ${judgeBlurb} | ${notes} |`);
+    const sqCell = sq?.networkErr
+      ? `err`
+      : (sq?.httpStatus === 200 ? fmtMs(sq.wallClockMs) : `${sq?.httpStatus}`);
+    r(`| ${q.id} | ${overallPass ? '✓' : '✘'} | ${fmtMs(result.wallClockMs)} | ${fmtMs(result.body?.metrics?.latencyMs)} | ${sqCell} | ${gateBlurb} | ${judgeBlurb} | ${notes} |`);
   }
   r('');
   r(`## Notes`);
@@ -402,7 +467,8 @@ async function main() {
 
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Summary: ${passCount}/${runs.length} pass, ${failCount} fail`);
-  console.log(`Wall: p50=${fmtMs(timings.wallClock.p50)} p95=${fmtMs(timings.wallClock.p95)} p99=${fmtMs(timings.wallClock.p99)}`);
+  console.log(`/api/pull          wall p50=${fmtMs(timings.wallClock.p50)} p95=${fmtMs(timings.wallClock.p95)} p99=${fmtMs(timings.wallClock.p99)}`);
+  console.log(`/api/search-quotes wall p50=${fmtMs(timings.searchQuotes.p50)} p95=${fmtMs(timings.searchQuotes.p95)} p99=${fmtMs(timings.searchQuotes.p99)} (${timings.searchQuotes.okCount}ok / ${timings.searchQuotes.failCount}fail, avg ${timings.searchQuotes.avgResults.toFixed(1)} results)`);
 
   // Detect the most common operator confusion: harness sends signed
   // requests but server didn't return metrics. Usually means the server's

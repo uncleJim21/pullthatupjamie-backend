@@ -2316,7 +2316,16 @@ function createAgentChatRoutes({ openai } = {}) {
             executionProfile: profileKey,
             intent,
             rounds: round,
-            toolCalls: buffered.toolCalls,
+            // Use the consolidated local `toolCalls` array (one entry per
+            // executed tool with name/resultCount/latencyMs) rather than
+            // buffered.toolCalls, which stores raw SSE event payloads
+            // (separate tool_call and tool_result entries with mismatched
+            // shapes). The SSE `done` event uses this same array.
+            toolCalls: toolCalls.map(tc => ({
+              name: tc.name,
+              resultCount: tc.resultCount,
+              latencyMs: tc.latencyMs,
+            })),
             tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
             cost: { claude: claudeCost, tools: toolCost, total: totalCost },
             latencyMs,
