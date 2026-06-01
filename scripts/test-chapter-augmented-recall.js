@@ -584,6 +584,35 @@ async function phaseAtlasEvaluate({ mongoConn, guids }) {
   console.log(`\n═══ Phase 2 (Atlas): real Atlas Search recall on "${SIDE_COLL_NAME}" via index "${ATLAS_INDEX_NAME}" ═══\n`);
 
   const sideColl = mongoConn.connection.db.collection(SIDE_COLL_NAME);
+
+  // Hard fail if the named search index doesn't exist or isn't queryable.
+  // Atlas $search silently returns an empty array when the index is missing,
+  // which has burned us before — every query "returns 0 hits" with no error,
+  // and the whole eval looks like a quality failure when it's actually
+  // missing infrastructure.
+  let foundIndex = null;
+  try {
+    const indexes = await sideColl.aggregate([{ $listSearchIndexes: {} }]).toArray();
+    foundIndex = indexes.find(i => i.name === ATLAS_INDEX_NAME);
+    if (!foundIndex) {
+      console.error(`\n✘ Atlas Search index "${ATLAS_INDEX_NAME}" does NOT exist on collection "${SIDE_COLL_NAME}".`);
+      console.error(`  Existing indexes on this collection: ${indexes.length === 0 ? '(none)' : indexes.map(i => `"${i.name}"`).join(', ')}`);
+      console.error(`  Create the index in the Atlas UI using tmp/chapter-test-atlas-index-v2.json,`);
+      console.error(`  or pass the correct name via CHAPTER_TEST_INDEX_NAME=<name>.`);
+      process.exit(1);
+    }
+    if (!foundIndex.queryable || foundIndex.status !== 'READY') {
+      console.error(`\n✘ Atlas Search index "${ATLAS_INDEX_NAME}" exists but is not ready.`);
+      console.error(`  status=${foundIndex.status}  queryable=${foundIndex.queryable}`);
+      console.error(`  Wait for the index to finish building, then retry.`);
+      process.exit(1);
+    }
+    console.log(`✓ Atlas index "${ATLAS_INDEX_NAME}" found and ready.\n`);
+  } catch (err) {
+    console.error(`\n✘ Failed to verify Atlas Search index existence: ${err.message}`);
+    process.exit(1);
+  }
+
   const results = [];
 
   for (const { q, kind } of CANONICAL_QUERIES) {
