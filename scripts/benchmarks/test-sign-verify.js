@@ -29,6 +29,10 @@ function makeMockReq({ method = 'POST', path = '/api/pull', rawBody = '{"message
     method,
     baseUrl: '',
     path,
+    // Mirror what production sees: originalUrl is the incoming URL, which
+    // /api/pull's route handler does NOT rewrite (only req.url gets changed).
+    // Production verification reads originalUrl, so the test must set it too.
+    originalUrl: path,
     query: {},
     rawBody,
     headers: {
@@ -70,7 +74,7 @@ const headers = signRequest({
 
 // Test 3: bad signature
 {
-  const bad = { ...headers, 'X-Benchmark-Signature': 'AAAA' + headers['X-Benchmark-Signature'].slice(4) };
+  const bad = { ...headers, 'X-Jamie-Signature': 'AAAA' + headers['X-Jamie-Signature'].slice(4) };
   const req = makeMockReq({ rawBody, headers: bad });
   check('bad signature rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -78,7 +82,7 @@ const headers = signRequest({
 // Test 4: expired timestamp
 {
   const oldTs = String(Math.floor(Date.now() / 1000) - 600); // 10 min ago, well past 60s window
-  const expired = { ...headers, 'X-Benchmark-Timestamp': oldTs };
+  const expired = { ...headers, 'X-Jamie-Timestamp': oldTs };
   const req = makeMockReq({ rawBody, headers: expired });
   check('expired timestamp rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -95,7 +99,7 @@ const headers = signRequest({
 
 // Test 6: wrong keyId
 {
-  const wrongKey = { ...headers, 'X-Benchmark-KeyId': 'not-benchmark' };
+  const wrongKey = { ...headers, 'X-Jamie-KeyId': 'not-benchmark' };
   const req = makeMockReq({ rawBody, headers: wrongKey });
   check('wrong keyId rejected silently', isBenchmarkRequest(req) === false);
 }
@@ -117,7 +121,7 @@ const headers = signRequest({
   // Compute a fresh hash for the shorter body, but DO NOT re-sign — use old sig
   const tamperedHeaders = {
     ...headers,
-    'X-Benchmark-Body-Hash': sha256Hex(shortBody), // hash matches new body
+    'X-Jamie-Body-Hash': sha256Hex(shortBody), // hash matches new body
     'content-length': String(Buffer.byteLength(shortBody, 'utf8')),
   };
   const req = makeMockReq({ rawBody: shortBody, headers: tamperedHeaders });

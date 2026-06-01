@@ -74,13 +74,16 @@ function isBenchmarkRequest(req, { maxSkewSeconds = DEFAULT_MAX_SKEW_SECONDS } =
   if (!secret) return false; // benchmark mode disabled entirely
 
   try {
-    // X-Benchmark-* namespace deliberately distinct from the X-Svc-* used by
-    // middleware/hmac.js — sharing that namespace would cause the existing
-    // serviceHmac middleware on /api/pull to 401 us before this check runs.
-    const keyId = String(req.headers['x-benchmark-keyid'] || '');
-    const tsStr = String(req.headers['x-benchmark-timestamp'] || '');
-    const providedSig = String(req.headers['x-benchmark-signature'] || '');
-    const providedBodyHash = String(req.headers['x-benchmark-body-hash'] || '');
+    // X-Jamie-* — project-specific namespace. Deliberately not X-Svc-*
+    // (would collide with serviceHmac middleware that gates /api/pull) and
+    // deliberately not X-Benchmark-* or X-Bench-* (Cloudflare's bot
+    // ruleset slow-loris-hangs requests with names that look like
+    // load-testing tools — verified by curl). Project-name prefixes like
+    // this clear CF cleanly, mirroring the existing X-Pulse-Session etc.
+    const keyId = String(req.headers['x-jamie-keyid'] || '');
+    const tsStr = String(req.headers['x-jamie-timestamp'] || '');
+    const providedSig = String(req.headers['x-jamie-signature'] || '');
+    const providedBodyHash = String(req.headers['x-jamie-body-hash'] || '');
 
     if (!keyId || !tsStr || !providedSig) return false;
     if (keyId !== KEY_ID) return false;
@@ -104,7 +107,15 @@ function isBenchmarkRequest(req, { maxSkewSeconds = DEFAULT_MAX_SKEW_SECONDS } =
     }
 
     const method = (req.method || 'GET').toUpperCase();
-    const path = ((req.baseUrl || '') + (req.path || '/')) || '/';
+    // Use req.originalUrl (preserved across Express sub-router dispatch)
+    // rather than req.path / req.url. The /api/pull route internally
+    // rewrites req.url to '/agent' before dispatching to the agent router,
+    // so by the time this check runs, req.path is '/agent'. The harness
+    // signs over the original incoming path ('/api/pull'), so we must
+    // recover that here too. Strip any query string — it's signed via the
+    // separate queryString component.
+    const originalUrl = req.originalUrl || ((req.baseUrl || '') + (req.path || '/')) || '/';
+    const path = originalUrl.split('?')[0] || '/';
     const queryString = buildSortedQueryString(req.query);
     const expectedSig = computeExpectedSignature({
       method, path, queryString, bodyHashHex, timestamp: ts, secret,

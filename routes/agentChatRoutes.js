@@ -20,6 +20,7 @@ const { createProvider } = require('../utils/agent/providers');
 const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, createClipTokenStreamSanitizer, scrubClipIds, repairIndexedClipTokens } = require('../utils/agent/sanitizeOutput');
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
+const { isBenchmarkRequest } = require('../utils/benchmarkAuth');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -899,7 +900,14 @@ function createAgentChatRoutes({ openai } = {}) {
     // SSE emits are stripped of model, cost, tokens, intent, tool inputs,
     // round numbers, etc. Set AGENT_INCLUDE_METRICS=true in .env on internal
     // environments (local dev, benchmarks) to receive the full payload.
-    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true' || req.body?.includeMetrics === true;
+    //
+    // Benchmark mode: when the request carries a valid HMAC signature signed
+    // with BENCHMARK_HMAC_SECRET (single dedicated env var; see
+    // utils/benchmarkAuth.js), metrics are attached regardless of env/body
+    // flags. Fail-quiet — invalid/missing signatures are indistinguishable
+    // from a normal user request. Used by scripts/benchmarks/.
+    const benchmarkRequested = isBenchmarkRequest(req);
+    const includeMetrics = process.env.AGENT_INCLUDE_METRICS === 'true' || req.body?.includeMetrics === true || benchmarkRequested;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'message (or task) is required' });
@@ -2308,7 +2316,16 @@ function createAgentChatRoutes({ openai } = {}) {
             executionProfile: profileKey,
             intent,
             rounds: round,
-            toolCalls: buffered.toolCalls,
+            // Use the consolidated local `toolCalls` array (one entry per
+            // executed tool with name/resultCount/latencyMs) rather than
+            // buffered.toolCalls, which stores raw SSE event payloads
+            // (separate tool_call and tool_result entries with mismatched
+            // shapes). The SSE `done` event uses this same array.
+            toolCalls: toolCalls.map(tc => ({
+              name: tc.name,
+              resultCount: tc.resultCount,
+              latencyMs: tc.latencyMs,
+            })),
             tokens: { input: costs.llm.inputTokens, output: costs.llm.outputTokens },
             cost: { claude: claudeCost, tools: toolCost, total: totalCost },
             latencyMs,
