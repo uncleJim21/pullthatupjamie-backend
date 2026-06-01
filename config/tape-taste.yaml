@@ -1,0 +1,85 @@
+# Editorial taste config for the Tape skin (spec §6).
+#
+# Shapes the recipes in person-quotes and topic-quotes. Reloaded automatically
+# when this file's mtime changes (see services/tape/tapeTaste.js) — edit + save,
+# no restart needed.
+#
+# A clip is "mainstream" if `creator` matches an allow entry (case-insensitive
+# substring) AND no deny entry.
+
+mainstream_allow:
+  - bloomberg
+  - bloomberg surveillance
+  - bloomberg intelligence
+  - macro voices
+  - macrovoices
+  - forward guidance
+  - real vision
+  - the compound
+  - the compound and friends
+  - odd lots
+  - prof g markets
+  - all-in
+  - capital allocators
+  - decoder
+  - hidden forces
+  - investor's podcast
+  - tim ferriss
+  - grant williams
+  - masters in business
+  - animal spirits
+  - the daily
+  - goalhanger
+
+mainstream_deny:
+  - simply bitcoin
+  - bankless
+  - tftc
+  - what bitcoin did
+  - guy swann
+  - bitcoin audible
+  - no agenda
+  - empire
+  - hivemind
+
+# How a "dedicated" episode is detected.
+# Options: 'last-name' (default), 'full-name', 'exact-title'.
+dedicated_match: last-name
+
+confidence_signals:
+  dedicated_weight: 0.4
+  mainstream_weight: 0.3
+  span_weight: 0.3
+  # Tier thresholds (combined weighted score):
+  high_min: 0.7
+  medium_min: 0.4
+
+# Keyword classifier for topic-quotes groupBy: "bull-bear".
+bull_keywords:
+  - rally
+  - upside
+  - bullish
+  - buy
+  - long
+  - growth
+  - outperform
+  - breakout
+  - boom
+  - optimistic
+  - higher
+  - surge
+
+bear_keywords:
+  - crash
+  - downside
+  - bearish
+  - sell
+  - short
+  - recession
+  - underperform
+  - bubble
+  - bust
+  - pessimistic
+  - lower
+  - plunge
+  - risk

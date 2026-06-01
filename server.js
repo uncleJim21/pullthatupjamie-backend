@@ -68,6 +68,7 @@ const mentionsRoutes = require('./routes/mentions');
 const automationSettingsRoutes = require('./routes/automationSettingsRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const corpusRoutes = require('./routes/corpusRoutes');
+const createTapeRoutes = require('./routes/tapeRoutes');
 const agentRoutes = require('./routes/agentRoutes');
 const discoverRoutes = require('./routes/discoverRoutes');
 // const createWorkflowRoutes = require('./routes/workflowRoutes'); // Shelved — replaced by Claude agent
@@ -1726,6 +1727,7 @@ app.use('/api/shared-research-sessions', sharedResearchSessionsRoutes);
 app.use('/api/pulse', analyticsRoutes);      // Primary path (ad-blocker safe)
 app.use('/api/analytics', analyticsRoutes);  // Deprecated — remove after frontend cutover
 app.use('/api/corpus', corpusRoutes); // Corpus navigation for AI agents (feeds, episodes, chapters, topics)
+app.use('/api/tape', createTapeRoutes({ openai })); // Tape finance skin (auth + quote proxy + person/topic-quotes + synthesize)
 app.use('/api/agent', agentRoutes);  // Lightning credit system for agent API access (Issue #63)
 // Nostr bot admin (HMAC-protected). Always mounted (DEBUG_MODE-independent)
 // because ops needs balance/queue lookups in prod. Scope `nostr-bot:admin`
