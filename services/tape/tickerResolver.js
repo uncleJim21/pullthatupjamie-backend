@@ -37,6 +37,13 @@ const CURATED = {
   PLTR: { name: 'Palantir', aliases: [] },
   HOOD: { name: 'Robinhood', aliases: [] },
   COIN: { name: 'Coinbase', aliases: [] },
+  // Adtech / common short-word tickers that need curation precisely because the
+  // ticker collides with an English word (APP, U) — bare-substring search is
+  // useless for these, so the resolved name is what makes retrieval work.
+  APP: { name: 'AppLovin', aliases: ['app lovin'] },
+  TTD: { name: 'The Trade Desk', aliases: ['trade desk'] },
+  U: { name: 'Unity Software', aliases: ['unity technologies'] },
+  RBLX: { name: 'Roblox', aliases: [] },
 };
 
 const NAME_STOPWORDS = new Set([

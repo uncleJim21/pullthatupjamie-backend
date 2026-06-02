@@ -13,7 +13,9 @@
 const { resolveModelSelection } = require('../../constants/agentModels');
 const { createProvider } = require('../../utils/agent/providers');
 const { sanitizeAgentText, createStreamSanitizer } = require('../../utils/agent/sanitizeOutput');
-const { VALID_KINDS, systemPromptFor, buildUserMessage, hasRequiredMarkers, EMPTY_SENTINEL, PROMPT_VERSION } = require('./tapePrompts');
+const { VALID_KINDS, systemPromptFor, buildUserMessage, hasRequiredMarkers, EMPTY_SENTINEL, TICKERS_MARKER, PROMPT_VERSION } = require('./tapePrompts');
+const { extractTickers } = require('./tickerExtract');
+const { buildAliases } = require('./tickerResolver');
 const { getCached, setCached, addAndGet } = require('./tapeStore');
 const { TIER, synTtlSec, buildFreshnessMeta } = require('./tapeFreshness');
 const { tapeError, tapeRateLimited, TapeHttpError } = require('./tapeErrors');
@@ -28,6 +30,42 @@ const HOURLY_LIMIT = parseInt(process.env.TAPE_SYN_HOURLY_LIMIT || '30', 10);
 const NOCACHE_ENABLED = process.env.TAPE_NOCACHE_ENABLED === 'true';
 
 const CLIP_RE = /\{\{clip:([^}]+)\}\}/g;
+const TICKERS_HEADER_RE = new RegExp(`#{1,3}\\s*${TICKERS_MARKER}\\b`, 'i');
+
+/**
+ * Streaming gate: suppress everything from the `## TICKERS` header onward so the
+ * parsed-off block never reaches the client as text_delta. Holds back a short
+ * tail each feed so a marker split across deltas is still caught.
+ */
+function createMarkerCut(headerRe) {
+  let full = '';
+  let emitted = 0;
+  let cut = false;
+  const HOLD = 16;
+  return {
+    feed(delta) {
+      if (cut) return '';
+      full += delta || '';
+      const m = full.match(headerRe);
+      if (m && m.index != null) {
+        const out = full.slice(emitted, Math.max(emitted, m.index));
+        emitted = full.length;
+        cut = true;
+        return out;
+      }
+      const safeEnd = Math.max(emitted, full.length - HOLD);
+      const out = full.slice(emitted, safeEnd);
+      emitted = safeEnd;
+      return out;
+    },
+    flush() {
+      if (cut) return '';
+      const out = full.slice(emitted);
+      emitted = full.length;
+      return out;
+    },
+  };
+}
 
 /** Strip {{clip:id}} tokens whose id was not in the provided candidate set. */
 function stripUnknownClipTokens(text, validIds) {
@@ -62,8 +100,25 @@ function secondsUntilUtcMidnight() {
   return Math.max(60, Math.ceil((next.getTime() - now.getTime()) / 1000));
 }
 
+/**
+ * Resolve a ticker the user typed (input.ticker for readin, input.topic for
+ * split/brief) to a company name — pure/curated lookup, no network — so the
+ * synthesis model picks sector-correct peers (e.g. APP → AppLovin → adtech).
+ * Returns "APP = AppLovin" or null.
+ */
+function companyHintFor(input = {}) {
+  const cand = [input.ticker, input.topic].find(
+    (v) => typeof v === 'string' && /^[A-Z]{1,5}$/.test(v.trim()),
+  );
+  if (!cand) return null;
+  const tk = cand.trim();
+  const { name } = buildAliases(tk);
+  return name && name.toLowerCase() !== tk.toLowerCase() ? `${tk} = ${name}` : null;
+}
+
 /** One synthesis pass. Returns { rawText, usage }. */
 async function runSynthesis({ kind, input, candidates, modelConfig, onDelta }) {
+  const companyHint = companyHintFor(input);
   const provider = createProvider(modelConfig.provider);
   const ready = await provider.validate();
   if (!ready) {
@@ -74,7 +129,7 @@ async function runSynthesis({ kind, input, candidates, modelConfig, onDelta }) {
     model: modelConfig.id,
     maxTokens: modelConfig.maxSynthesisTokens || MAX_TOKENS,
     system: systemPromptFor(kind),
-    messages: [{ role: 'user', content: buildUserMessage({ kind, input, candidates }) }],
+    messages: [{ role: 'user', content: buildUserMessage({ kind, input, candidates, companyHint }) }],
     tools: undefined,
     toolChoice: 'none',
     temperature: 0.4,
@@ -164,6 +219,7 @@ function createSynthesizeHandler() {
         if (prior) {
           const cachedBody = {
             ...prior.value,
+            tickers: Array.isArray(prior.value.tickers) ? prior.value.tickers : [],
             _meta: {
               ...(prior.value._meta || {}),
               ...buildFreshnessMeta({
@@ -177,7 +233,7 @@ function createSynthesizeHandler() {
             sseInit(res);
             sseSend(res, 'status', { message: 'Cached', kind });
             sseSend(res, 'text', { text: cachedBody.text });
-            sseSend(res, 'done', { kind, model: cachedBody.model, tokens: cachedBody.tokens, cached: true });
+            sseSend(res, 'done', { kind, model: cachedBody.model, tokens: cachedBody.tokens, tickers: cachedBody.tickers, cached: true });
             return res.end();
           }
           return res.status(200).json(cachedBody);
@@ -220,15 +276,23 @@ function createSynthesizeHandler() {
         sseInit(res);
         sseSend(res, 'status', { message: 'Synthesizing…', kind });
         const sanitizer = createStreamSanitizer();
-        const onDelta = (d) => { const safe = sanitizer.feed(d); if (safe) sseSend(res, 'text_delta', { text: safe }); };
+        // Gate the trailing `## TICKERS` block so it never leaks into text_delta.
+        const cut = createMarkerCut(TICKERS_HEADER_RE);
+        const onDelta = (d) => {
+          const pre = cut.feed(d);
+          if (pre) { const safe = sanitizer.feed(pre); if (safe) sseSend(res, 'text_delta', { text: safe }); }
+        };
 
         const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig, onDelta });
-        const tail = sanitizer.flush();
+        const preTail = cut.flush();
+        const tail = (preTail ? (sanitizer.feed(preTail) || '') : '') + (sanitizer.flush() || '');
         if (tail) sseSend(res, 'text_delta', { text: tail });
-        const { text: finalText, synthesizedEmpty, reason } = finalizeText(rawText, kind, validIds);
+
+        const { cleanedText, tickers } = extractTickers(rawText);
+        const { text: finalText, synthesizedEmpty, reason } = finalizeText(cleanedText, kind, validIds);
 
         const outBody = {
-          kind, text: finalText,
+          kind, text: finalText, tickers: synthesizedEmpty ? [] : tickers,
           tokens: { input: usage.input_tokens, output: usage.output_tokens },
           model: modelConfig.id, elapsedMs: Date.now() - startedAt,
           _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
@@ -241,16 +305,17 @@ function createSynthesizeHandler() {
         // The final `text` event is authoritative and replaces accumulated
         // deltas — so an empty result correctly clears any provisional stream.
         sseSend(res, 'text', { text: finalText });
-        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, cached: false, forced: refresh, synthesizedEmpty });
-        logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
+        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, tickers: outBody.tickers, cached: false, forced: refresh, synthesizedEmpty });
+        logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
         return res.end();
       }
 
       // non-stream
       const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig });
-      const { text: finalText, synthesizedEmpty, reason } = finalizeText(rawText, kind, validIds);
+      const { cleanedText, tickers } = extractTickers(rawText);
+      const { text: finalText, synthesizedEmpty, reason } = finalizeText(cleanedText, kind, validIds);
       const outBody = {
-        kind, text: finalText,
+        kind, text: finalText, tickers: synthesizedEmpty ? [] : tickers,
         tokens: { input: usage.input_tokens, output: usage.output_tokens },
         model: modelConfig.id, elapsedMs: Date.now() - startedAt,
         _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
@@ -259,7 +324,7 @@ function createSynthesizeHandler() {
       if (!noCache && !synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
       await recordCost(usage, modelConfig, dayKey, ttlDay);
 
-      logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
+      logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
       return res.status(200).json(outBody);
     } catch (err) {
       if (res.headersSent) {

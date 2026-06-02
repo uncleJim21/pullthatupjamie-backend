@@ -15,12 +15,40 @@
  * Bump PROMPT_VERSION on any change (it is part of the synthesize cache key).
  */
 
-// v3: rewrote every per-kind contract to the strict client marker shapes
-// (readin WHAT_THEY_DO/PULSE/SMART_MONEY/RISKS, brief HEADLINE/PUBLISHER, arc
-// THESIS/VERDICT/CALL, etc.) + empty-sentinel handling. Invalidates v2 caches.
-const PROMPT_VERSION = 'v3';
+// v4: appended the `## TICKERS` relevance block to every kind (parsed off into
+// the structured `tickers` field — see synthesize.js). Invalidates v3 caches.
+const PROMPT_VERSION = 'v4';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
+
+// Marker the model appends; synthesize.js parses it off and strips it from text.
+const TICKERS_MARKER = 'TICKERS';
+
+// Per-kind definition of "relevant tickers" (baked into the prompt).
+const TICKER_GUIDANCE = {
+  dossier: 'Tickers this person is on record about — names they are known for covering, plus anything heavily represented in the supplied candidates. Skip names merely mentioned in passing. (El-Erian → ^TNX, DX-Y.NYB, GLD; Cathie Wood → TSLA, COIN, PATH, RBLX.)',
+  brief: 'Tickers most exposed to the story being briefed. For commodity/macro stories include the underlying (CL=F, GLD, ^TNX); for company/sector stories the obvious operators. (Hormuz oil → CL=F, XOM, CVX, OXY, SLB, ^TNX; AI bubble → NVDA, MSFT, GOOGL, META, AMZN, AVGO.)',
+  split: 'What is at stake in the debate — reflect the TOPIC, not the side names. Include peer context. (bulls vs bears on AAPL → AAPL, MSFT, GOOGL; dollar debate → DX-Y.NYB, ^TNX, GLD, BTC-USD.)',
+  arc: 'Names referenced IN THE TRACKED THESIS — bias toward the thesis, not the person\'s full beat. (Gromen debt-spiral → GLD, ^TNX, DX-Y.NYB, BTC-USD; Druckenmiller AI capex → NVDA, MSFT, META.)',
+  readin: 'The queried company\'s SECTOR PEERS, not the company itself (the client already has the primary ticker). 4-6 peers a finance pro would actually triangulate with — match the company\'s real industry, do NOT default to mega-cap tech unless that IS the sector. (AAPL → MSFT, GOOGL, META, AMZN, NVDA; CRWV → NVDA, ORCL, MSFT, GOOGL; APP/AppLovin → TTD, U, RBLX, META, GOOGL [adtech/gaming]; XOM → CVX, OXY, SLB, COP [energy].) If the queried ticker is not a real listed equity, output no symbols.',
+};
+
+function tickersBlock(kind) {
+  return `After all content sections, ALWAYS end with this block:
+## ${TICKERS_MARKER}
+- <SYMBOL>
+- <SYMBOL>
+
+Ticker rules:
+- 4-8 real, currently-listed symbols in RELEVANCE order, highest first.
+- Use the form a user types into Yahoo Finance: US listings preferred; \`^TNX\`
+  for the 10-year, \`DX-Y.NYB\` for the dollar index, \`CL=F\` for crude,
+  \`BTC-USD\`, \`GLD\`, \`TM\` (not 7203.T), \`BRK-B\`.
+- Do NOT fabricate. If the topic is not about specific names, emit the
+  \`## ${TICKERS_MARKER}\` header with NO symbols beneath it.
+- This block is parsed off by the backend and NOT shown to the user.
+- Relevance for this kind: ${TICKER_GUIDANCE[kind]}`;
+}
 
 // --- per-kind marker contract blocks (pasted verbatim into the prompt) ---
 
@@ -116,7 +144,9 @@ sections, output EXACTLY this line and nothing else:
 ${EMPTY_SENTINEL}
 
 MARKER CONTRACT for \`${kind}\`:
-${contract}`;
+${contract}
+
+${tickersBlock(kind)}`;
 }
 
 const VALID_KINDS = Object.keys(CONTRACTS);
@@ -147,13 +177,16 @@ function hasRequiredMarkers(kind, text) {
 }
 
 /** Build the user message: the input framing + the candidate evidence list. */
-function buildUserMessage({ kind, input = {}, candidates = [] }) {
+function buildUserMessage({ kind, input = {}, candidates = [], companyHint = null }) {
   const lines = [];
   lines.push(`KIND: ${kind}`);
   if (input.person) lines.push(`PERSON: ${input.person}`);
   if (input.personB) lines.push(`PERSON B: ${input.personB}`);
   if (input.topic) lines.push(`TOPIC: ${input.topic}`);
   if (input.ticker) lines.push(`TICKER: ${input.ticker}`);
+  // Resolved company identity for a ticker the user typed (e.g. "APP" =
+  // AppLovin) — lets the model pick sector-correct peer tickers.
+  if (companyHint) lines.push(`COMPANY: ${companyHint} — pick sector-appropriate peers/relevant names.`);
   lines.push('');
   lines.push('CANDIDATE QUOTES (cite by pineconeId):');
   candidates.forEach((c, i) => {
@@ -169,6 +202,6 @@ function buildUserMessage({ kind, input = {}, candidates = [] }) {
 }
 
 module.exports = {
-  PROMPT_VERSION, EMPTY_SENTINEL, VALID_KINDS,
+  PROMPT_VERSION, EMPTY_SENTINEL, TICKERS_MARKER, VALID_KINDS,
   systemPromptFor, buildUserMessage, hasRequiredMarkers, CONTRACTS,
 };

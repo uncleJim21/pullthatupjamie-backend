@@ -124,6 +124,20 @@ sentinel), the response is `{ text: "", _meta: { synthesizedEmpty: true, reason 
 and is **not cached** (so a retry can still succeed). Bump `PROMPT_VERSION` on any
 prompt change — it's part of the cache key.
 
+## Relevant tickers (`tickers: string[]`)
+
+Every successful `synthesize` response carries a top-level `tickers` array (the
+"On the tape" strip) — real Yahoo-typed symbols in relevance order, 4–8 typical,
+`[]` when the topic isn't about specific names. Implemented as a parsed-off
+`## TICKERS` marker the model appends (option 1 — no extra LLM call; cached with
+the body; stripped from `text` and gated out of the stream so it never renders).
+Per-kind meaning lives in [tapePrompts.js](tapePrompts.js) `TICKER_GUIDANCE`
+(dossier = names the person covers; brief/split = what's exposed to the topic;
+arc = names in the tracked thesis; **readin = the queried company's PEERS, not
+itself**). Parsing/validation (incl. `^TNX`, `DX-Y.NYB`, `CL=F`, `BRK-B`,
+`BTC-USD`) is in [tickerExtract.js](tickerExtract.js). Empty/`synthesizedEmpty`
+responses return `tickers: []`.
+
 ## Model & token cost
 
 `model: "fast"` → **Haiku 4.5** (`claude-haiku-4-5`, $1/$5 per 1M) ≈ **~$0.005 per
@@ -142,6 +156,29 @@ For ticker-shaped `topic-quotes` queries (`^[A-Z]{1,5}$`), candidates are post-f
 to those whose text mentions the ticker or any resolved **name/alias** of the company,
 dropping vector-noise (e.g. `CRWV` no longer returns Crimson Wine / leveraged ETFs).
 Never reduces a non-empty set to zero. Disable with `TAPE_TICKER_FILTER=false`.
+
+**Theme expansion (non-ticker topics).** A user phrasing nobody says ("gold prognosis")
+is expanded server-side into podcast-realistic phrasings ("gold outlook", "gold safe
+haven", …) before fanning out — [themeExpander.js](themeExpander.js), gpt-4o-mini with a
+deterministic template fallback. Caller-provided `themes` are kept verbatim and ranked
+first. Disable per request with `{"expandThemes": false}` or globally with
+`TAPE_THEME_EXPANSION=false`. Since this lives in the backend, the client does not need
+its own expansion.
+
+**Empty results are never cached.** `person-quotes`/`topic-quotes` only cache when
+`candidates.length > 0`, so a zero-result phrasing isn't pinned for the TTL. The
+retrieval cache key carries a version (`tape:tq:v2:…`) — bump it when retrieval logic
+changes to evict stale entries. Empty *live* responses still carry `_meta` (so the
+client can show a Refresh affordance and the correct date window — prefer the live empty
+response over any canned/mock empty fallback).
+
+**Query-layer ticker resolution.** A ticker-shaped query is resolved to its company
+and the **company name** is what's searched — critical for tickers that collide with
+English words (`APP`→AppLovin, `U`→Unity): searching the literal "app" retrieves noise
+("happen", "apple") or nothing. The noise filter then matches the bare ticker only as a
+real symbol (case-sensitive, word-bounded — `$APP`/`NASDAQ: APP`, never "happen") plus
+company-name aliases. `synthesize` also gets the resolved identity (`COMPANY: APP =
+AppLovin`) so it picks sector-correct peers (adtech `TTD/U/RBLX`, not default mega-cap).
 
 Aliases come from [tickerResolver.js](tickerResolver.js), which merges: a curated map
 (nicknames / former names / pronunciations — e.g. `CRWV` → "core weave", "atlantic

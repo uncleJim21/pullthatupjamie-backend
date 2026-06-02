@@ -64,8 +64,11 @@ function logTape(entry) {
  * @param {(req)=>string|null} opts.cacheKey       null => skip caching
  * @param {(req)=>Promise<{body:object,fetchedAt?:string,underlying?:object}>} opts.handler
  * @param {(body:object)=>string[]} [opts.idsOf]   identity set for revalidation detection
+ * @param {(body:object)=>boolean} [opts.cacheable] gate caching of a result
+ *        (default: always). Used to NOT cache empty results so a transient/empty
+ *        retrieval doesn't get pinned for the full TTL.
  */
-function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, handler, idsOf }) {
+function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, handler, idsOf, cacheable }) {
   return async (req, res) => {
     const startedAt = Date.now();
     try {
@@ -117,11 +120,15 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
       });
       const body = { ...payload, _meta: { ...(payload._meta || {}), ...meta } };
 
-      if (key && !noCache) await setCached(key, body, ttl);
+      // Don't pin empty/uncacheable results — otherwise a zero-candidate
+      // retrieval (e.g. an odd phrasing) gets stuck in cache for the full TTL.
+      const shouldCache = typeof cacheable === 'function' ? cacheable(body) : true;
+      if (key && !noCache && shouldCache) await setCached(key, body, ttl);
 
       logTape({
         endpoint, jwt_sub: req.tape?.sub,
         cache: refresh ? (revalidated ? 'revalidate' : 'refresh') : 'miss',
+        cached_write: shouldCache,
         upstream_calls: result.underlying || undefined,
         status: 200, elapsed_ms: Date.now() - startedAt,
       });

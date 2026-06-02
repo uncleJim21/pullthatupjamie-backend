@@ -63,14 +63,21 @@ function createTapeRoutes({ openai } = {}) {
     }
   });
 
+  // Retrieval cache version — bump to evict stale entries when retrieval logic
+  // changes (e.g. theme expansion, ticker filtering). v2 busts pre-expansion
+  // empties like the poisoned "gold prognosis" result.
+  const RV = 'v2';
+  const hasCandidates = (body) => Array.isArray(body.candidates) && body.candidates.length > 0;
+
   // --- POST /person-quotes ---
   router.post('/person-quotes', withCachedEndpoint({
     endpoint: 'person-quotes',
     hourlyLimit: 120,
     tier: TIER.QUALITATIVE,
     ttlSec: () => qualTtlSec(),
-    cacheKey: (req) => `tape:pq:v1:${hashBody(req.body)}`,
+    cacheKey: (req) => `tape:pq:${RV}:${hashBody(req.body)}`,
     idsOf: candidateIds,
+    cacheable: hasCandidates,
     handler: async (req) => {
       const { body, underlying } = await personQuotes(req.body, { openai });
       return { body, fetchedAt: new Date().toISOString(), underlying };
@@ -83,8 +90,9 @@ function createTapeRoutes({ openai } = {}) {
     hourlyLimit: 120,
     tier: TIER.QUALITATIVE,
     ttlSec: () => qualTtlSec(),
-    cacheKey: (req) => `tape:tq:v1:${hashBody(req.body)}`,
+    cacheKey: (req) => `tape:tq:${RV}:${hashBody(req.body)}`,
     idsOf: candidateIds,
+    cacheable: hasCandidates,
     handler: async (req) => {
       const { body, underlying } = await topicQuotes(req.body, { openai });
       return { body, fetchedAt: new Date().toISOString(), underlying };

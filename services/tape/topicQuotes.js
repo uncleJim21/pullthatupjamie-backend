@@ -11,6 +11,7 @@ const taste = require('./tapeTaste');
 const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
 const { resolveTicker } = require('./tickerResolver');
+const { expandThemes } = require('./themeExpander');
 const { printLog } = require('../../constants');
 
 const DEFAULTS = {
@@ -26,27 +27,37 @@ function isTickerShaped(q) {
   return typeof q === 'string' && /^[A-Z]{1,5}$/.test(q.trim());
 }
 
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
 /**
- * For ticker-shaped queries (e.g. "CRWV"), drop candidates that don't actually
- * mention the ticker or any resolved name/alias of the company — guards against
- * vector-noise (Crimson Wine "CWGL", leveraged ETFs, similar-letter tickers).
- * Uses the ticker resolver so nicknames / spaced forms ("Core Weave") match too.
- * Never reduces a non-empty set to zero (keeps the original if nothing matches).
+ * For ticker-shaped queries (e.g. "APP"), drop candidates that don't actually
+ * discuss the company. Matching rules avoid the ambiguous-ticker trap (a bare
+ * lowercase "app" substring-matches "happen"/"apple"):
+ *   - the bare ticker matches only as a real symbol — case-sensitive,
+ *     word-bounded (catches "$APP", "NASDAQ: APP", "APP", but not "happen");
+ *   - company name aliases (length ≥ 4, e.g. "applovin", "app lovin") match
+ *     case-insensitively.
+ * Never reduces a non-empty set to zero. `resolved` is reused if already fetched.
  */
-async function filterTickerNoise(ticker, candidates) {
+async function filterTickerNoise(ticker, candidates, resolved) {
   if (!candidates.length) return candidates;
-  const { aliases } = await resolveTicker(ticker);
+  const tk = ticker.trim();
+  const r = resolved || await resolveTicker(ticker);
+  const tickerRe = new RegExp(`(^|[^A-Za-z])${escapeRegex(tk)}([^A-Za-z]|$)`); // case-sensitive
+  const nameAliases = r.aliases.filter((a) => a !== tk.toLowerCase() && a.length >= 4);
   const matches = (c) => {
-    const t = (c.text || '').toLowerCase();
-    return aliases.some((a) => t.includes(a));
+    const text = c.text || '';
+    if (tickerRe.test(text)) return true;
+    const lower = text.toLowerCase();
+    return nameAliases.some((a) => lower.includes(a));
   };
   const kept = candidates.filter(matches);
   if (!kept.length) {
-    printLog(`[topicQuotes] ticker "${ticker}" filter matched 0/${candidates.length}; keeping unfiltered set`);
+    printLog(`[topicQuotes] ticker "${tk}" filter matched 0/${candidates.length}; keeping unfiltered set`);
     return candidates;
   }
   if (kept.length < candidates.length) {
-    printLog(`[topicQuotes] ticker "${ticker}" filter kept ${kept.length}/${candidates.length} (aliases=[${aliases.join(', ')}])`);
+    printLog(`[topicQuotes] ticker "${tk}" filter kept ${kept.length}/${candidates.length} (name="${r.name}")`);
   }
   return kept;
 }
@@ -62,10 +73,13 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const maxDate = validateDate(f.maxDate, 'maxDate');
   const feedIds = Array.isArray(f.feedIds) ? f.feedIds.filter(Boolean) : [];
 
-  const themes = Array.isArray(input.themes) && input.themes.length
+  const seedThemes = Array.isArray(input.themes) && input.themes.length
     ? input.themes.filter((t) => typeof t === 'string' && t.trim())
-    : (typeof input.query === 'string' && input.query.trim() ? [input.query.trim()] : []);
-  if (!themes.length) {
+    : [];
+  const topic = (typeof input.query === 'string' && input.query.trim())
+    ? input.query.trim()
+    : (seedThemes[0] || '');
+  if (!seedThemes.length && !topic) {
     throw new TapeHttpError(400, 'bad-request', 'Bad request', 'query or themes is required');
   }
 
@@ -73,6 +87,27 @@ async function topicQuotes(input = {}, { openai } = {}) {
 
   const underlying = { searchQuotes: 0, helperTokens: 0 };
   const recordHelperLlmUsage = (_m, i = 0, o = 0) => { underlying.helperTokens += (i || 0) + (o || 0); };
+
+  // Ticker-shaped query → resolve to the company and search the NAME, not the
+  // literal ticker. Critical for ambiguous tickers like APP ("app"), U
+  // ("unity") where a bare-string search retrieves noise/nothing.
+  let resolved = null;
+  let searchTopic = topic;
+  if (isTickerShaped(topic)) {
+    resolved = await resolveTicker(topic);
+    if (resolved.name && resolved.name.toLowerCase() !== topic.toLowerCase()) {
+      searchTopic = resolved.name; // e.g. "APP" -> "AppLovin"
+    }
+  }
+
+  // Expand the (resolved) topic into podcast-realistic phrasings before fanning
+  // out, so a user phrasing nobody says ("gold prognosis") or a bare ticker
+  // ("APP") still retrieves. Caller themes are kept verbatim and ranked first.
+  const expand = input.expandThemes !== false;
+  const themes = expand
+    ? await expandThemes({ topic: searchTopic, seedThemes, deps: { openai, recordHelperLlmUsage } })
+    : (seedThemes.length ? seedThemes : [searchTopic]).filter(Boolean);
+  underlying.themes = themes.length;
 
   // Fan out across themes.
   const tasks = themes.map((theme) =>
@@ -98,8 +133,8 @@ async function topicQuotes(input = {}, { openai } = {}) {
   let candidates = [...byId.values()].sort((a, b) => (b.spanSec || 0) - (a.spanSec || 0));
 
   // Ticker-shaped query → drop company-mismatch noise before capping (§4).
-  if (TICKER_FILTER_ENABLED && isTickerShaped(input.query)) {
-    candidates = await filterTickerNoise(input.query, candidates);
+  if (TICKER_FILTER_ENABLED && isTickerShaped(topic)) {
+    candidates = await filterTickerNoise(topic, candidates, resolved);
   }
   candidates = candidates.slice(0, f.candidatesLimit);
 
