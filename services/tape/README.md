@@ -107,11 +107,48 @@ beta it is unlimited and only measured** — see the `TODO(beta)` in
   `tape:syn:resynth:all:<utc-date>` (global) increment on each forced pass, so you can
   read real usage before picking a limit.
 
-## Token cost (DeepSeek V4 Flash default)
+## Synthesis output contract
 
-Only `synthesize` spends LLM tokens (~$0.0012–0.0015 per cold query); retrieval
-embeddings are ~$0.0001 and quotes are free. Cached / revalidated repeats are ~$0.
-The 5M daily token cap ≈ 3,300 synth calls ≈ <$3/day at the ceiling.
+`synthesize` emits a strict per-kind marker contract the client parser splits on
+(see [tapePrompts.js](tapePrompts.js) `CONTRACTS`):
+- **readin**: `## WHAT_THEY_DO` (required) + optional `## PULSE | BULL:… | BEAR:…`, `## SMART_MONEY: BULL`, `## SMART_MONEY: BEAR`, `## RISKS`
+- **brief**: `# HEADLINE:` (required) + one `## PUBLISHER: <show>` per creator
+- **dossier**: one or more `## TOPIC:` + optional `## APPEARANCES`
+- **split**: two `## PERSON:` blocks + optional `## CONTRAST`
+- **arc**: `## THESIS:` + `## VERDICT:` + ≥3 `## CALL | …` + optional `## FORWARD:`
+
+Optional sections are **omitted** (no empty headers) when candidates don't support
+them. A server-side guardrail (`hasRequiredMarkers`) verifies the required markers
+are present; if the model can't produce them (or signals the `EMPTY_SYNTHESIS`
+sentinel), the response is `{ text: "", _meta: { synthesizedEmpty: true, reason } }`
+and is **not cached** (so a retry can still succeed). Bump `PROMPT_VERSION` on any
+prompt change — it's part of the cache key.
+
+## Model & token cost
+
+`model: "fast"` → **Haiku 4.5** (`claude-haiku-4-5`, $1/$5 per 1M) ≈ **~$0.005 per
+synth** (measured: Oracle readin 2125 in / 471 out). `model: "quality"` → **DeepSeek
+V4 Flash** ($0.14/$0.28 per 1M) ≈ **~$0.0004 per synth** (~10× cheaper). The
+server's own default is `quality`; the Tape client currently sends `fast`, so it's
+on Haiku. The marker contract is a prompt property — it holds on either model.
+
+Only `synthesize` spends LLM tokens; retrieval embeddings are ~$0.0001 and quotes
+are free. Cached / revalidated repeats are ~$0. The 5M daily token cap ≈ <$3–15/day
+at the ceiling depending on model.
+
+## Ticker-query retrieval guard
+
+For ticker-shaped `topic-quotes` queries (`^[A-Z]{1,5}$`), candidates are post-filtered
+to those whose text mentions the ticker or any resolved **name/alias** of the company,
+dropping vector-noise (e.g. `CRWV` no longer returns Crimson Wine / leveraged ETFs).
+Never reduces a non-empty set to zero. Disable with `TAPE_TICKER_FILTER=false`.
+
+Aliases come from [tickerResolver.js](tickerResolver.js), which merges: a curated map
+(nicknames / former names / pronunciations — e.g. `CRWV` → "core weave", "atlantic
+crypto"), the live quote-proxy `name`, and auto-derived variants (camelCase split,
+significant tokens). Add a ticker to `CURATED` only when its nicknames can't be derived
+from the formal name; everything else (spacing, tokenization) falls out automatically.
+The resolver is reusable for query/theme expansion too.
 
 ## Quick verification
 

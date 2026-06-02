@@ -13,7 +13,7 @@
 const { resolveModelSelection } = require('../../constants/agentModels');
 const { createProvider } = require('../../utils/agent/providers');
 const { sanitizeAgentText, createStreamSanitizer } = require('../../utils/agent/sanitizeOutput');
-const { VALID_KINDS, systemPromptFor, buildUserMessage, PROMPT_VERSION } = require('./tapePrompts');
+const { VALID_KINDS, systemPromptFor, buildUserMessage, hasRequiredMarkers, EMPTY_SENTINEL, PROMPT_VERSION } = require('./tapePrompts');
 const { getCached, setCached, addAndGet } = require('./tapeStore');
 const { TIER, synTtlSec, buildFreshnessMeta } = require('./tapeFreshness');
 const { tapeError, tapeRateLimited, TapeHttpError } = require('./tapeErrors');
@@ -33,6 +33,26 @@ const CLIP_RE = /\{\{clip:([^}]+)\}\}/g;
 function stripUnknownClipTokens(text, validIds) {
   if (typeof text !== 'string') return text;
   return text.replace(CLIP_RE, (m, id) => (validIds.has(id.trim()) ? m : ''));
+}
+
+/**
+ * Sanitize the raw model output and classify it against the kind's contract.
+ * Returns { text, synthesizedEmpty, reason } — text is '' when empty.
+ */
+function finalizeText(rawText, kind, validIds) {
+  const sanitized = stripUnknownClipTokens(sanitizeAgentText(rawText) || '', validIds);
+  const trimmed = sanitized.trim();
+  // Model explicitly signaled "not enough on-topic material".
+  if (!trimmed || trimmed.replace(/[.\s]+$/, '').toUpperCase() === EMPTY_SENTINEL) {
+    return { text: '', synthesizedEmpty: true, reason: 'candidates did not contain enough on-topic material' };
+  }
+  // Guardrail: model produced text but not in the required shape for this kind.
+  // Returning empty is preferable to letting malformed/mismatched markers reach
+  // the strict client parser (which would render misleading or blank sections).
+  if (!hasRequiredMarkers(kind, sanitized)) {
+    return { text: '', synthesizedEmpty: true, reason: `output did not contain the required ${kind} markers` };
+  }
+  return { text: sanitized, synthesizedEmpty: false, reason: null };
 }
 
 function utcDateKey() { return new Date().toISOString().slice(0, 10); }
@@ -61,7 +81,9 @@ async function runSynthesis({ kind, input, candidates, modelConfig, onDelta }) {
     onTextDelta: onDelta || (() => {}),
     aborted: () => false,
   });
-  const rawText = (result.contentBlocks || [])
+  // Provider returns { content: [...blocks], usage, stop_reason } — the blocks
+  // live under `content`, not `contentBlocks`.
+  const rawText = (result.content || [])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('');
@@ -203,38 +225,41 @@ function createSynthesizeHandler() {
         const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig, onDelta });
         const tail = sanitizer.flush();
         if (tail) sseSend(res, 'text_delta', { text: tail });
-        const finalText = stripUnknownClipTokens(sanitizeAgentText(rawText), validIds);
+        const { text: finalText, synthesizedEmpty, reason } = finalizeText(rawText, kind, validIds);
 
         const outBody = {
           kind, text: finalText,
           tokens: { input: usage.input_tokens, output: usage.output_tokens },
           model: modelConfig.id, elapsedMs: Date.now() - startedAt,
-          _meta: { fetchedAt },
+          _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
         };
-        outBody._meta = { ...outBody._meta, forced: refresh, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
-        if (!noCache) await setCached(cacheKey, outBody, ttl);
+        outBody._meta = { ...outBody._meta, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
+        // Don't cache empties — temperature>0 means a retry may yet produce content.
+        if (!noCache && !synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
         await recordCost(usage, modelConfig, dayKey, ttlDay);
 
+        // The final `text` event is authoritative and replaces accumulated
+        // deltas — so an empty result correctly clears any provisional stream.
         sseSend(res, 'text', { text: finalText });
-        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, cached: false, forced: refresh });
-        logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
+        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, cached: false, forced: refresh, synthesizedEmpty });
+        logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
         return res.end();
       }
 
       // non-stream
       const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig });
-      const finalText = stripUnknownClipTokens(sanitizeAgentText(rawText), validIds);
+      const { text: finalText, synthesizedEmpty, reason } = finalizeText(rawText, kind, validIds);
       const outBody = {
         kind, text: finalText,
         tokens: { input: usage.input_tokens, output: usage.output_tokens },
         model: modelConfig.id, elapsedMs: Date.now() - startedAt,
-        _meta: { fetchedAt },
+        _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
       };
-      outBody._meta = { ...outBody._meta, forced: refresh, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
-      if (!noCache) await setCached(cacheKey, outBody, ttl);
+      outBody._meta = { ...outBody._meta, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
+      if (!noCache && !synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
       await recordCost(usage, modelConfig, dayKey, ttlDay);
 
-      logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
+      logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
       return res.status(200).json(outBody);
     } catch (err) {
       if (res.headersSent) {

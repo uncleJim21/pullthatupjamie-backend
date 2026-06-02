@@ -1,95 +1,149 @@
 /**
  * Synthesis prompts, one per Tape `kind` (spec §4).
  *
- * Each prompt reuses the section markers the client already parses
- * (`## TOPIC:`, `## PERSON:`, `## PUBLISHER:`, etc.) and instructs the model
- * to cite quotes using the exact `{{clip:<pineconeId>}}` token form — the
- * frontend renders these as embedded audio. Bump PROMPT_VERSION when any
- * template changes (it is part of the synthesize cache key).
+ * Each kind emits a STRICT marker contract that the client parser splits on.
+ * The contracts are defined per the frontend's typed shape — see the
+ * "conform synthesize prompts to the client contract" ask. The client will not
+ * loosen its parser, so the model must emit ONLY the listed markers, in order,
+ * with exact names and literal punctuation (`|`, `:`).
+ *
+ * Optional sections are OMITTED entirely when candidates don't support them
+ * (never an empty header). When even the REQUIRED sections can't be produced,
+ * the model emits the EMPTY_SENTINEL and synthesize.js returns empty text with
+ * `_meta.synthesizedEmpty`.
+ *
+ * Bump PROMPT_VERSION on any change (it is part of the synthesize cache key).
  */
 
-const PROMPT_VERSION = 'v1';
+// v3: rewrote every per-kind contract to the strict client marker shapes
+// (readin WHAT_THEY_DO/PULSE/SMART_MONEY/RISKS, brief HEADLINE/PUBLISHER, arc
+// THESIS/VERDICT/CALL, etc.) + empty-sentinel handling. Invalidates v2 caches.
+const PROMPT_VERSION = 'v3';
 
-const SHARED_RULES = `
-You are Tape, an editorial finance assistant. You write tight, neutral,
-publication-grade copy grounded ONLY in the provided quotes. Rules:
-- Use ONLY the supplied candidate quotes as evidence. Do not invent facts,
-  numbers, names, or quotes.
-- Cite a quote by placing its token {{clip:<pineconeId>}} immediately after the
-  sentence it supports. Use the EXACT pineconeId given for that quote. Never
-  fabricate or guess a clip id; never cite a quote that was not provided.
-- Keep it concise and skimmable. Prefer specific claims over hedged generalities.
-- Do not include preambles like "Here is" or "Based on the quotes". Start
-  directly with the first section marker.
-`.trim();
+const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
-const KINDS = {
-  dossier: {
-    label: 'Dossier',
-    system: `${SHARED_RULES}
+// --- per-kind marker contract blocks (pasted verbatim into the prompt) ---
 
-FORMAT — a Dossier on a single PERSON's views.
-Structure with these markers:
-## PERSON: <name>
-A 1–2 sentence framing of who they are and the throughline of their view.
-## TOPIC: <topic>
-2–4 short paragraphs synthesizing their position, each grounded with {{clip:...}} citations.
-Group by sub-theme where natural. End with the sharpest single takeaway.`,
-  },
-  arc: {
-    label: 'Arc',
-    system: `${SHARED_RULES}
+const CONTRACTS = {
+  readin: `## WHAT_THEY_DO
+<2-3 paragraph plain-English primer on the company. REQUIRED.>
 
-FORMAT — an Arc tracing how a PERSON's view evolved over time.
-## PERSON: <name>
-One-sentence framing.
-## TOPIC: <topic>
-Walk chronologically (earliest → latest) through their position, noting shifts
-or consistency. Anchor each phase to dated quotes via {{clip:...}}. Close with
-where they stand now.`,
-  },
-  brief: {
-    label: 'Brief',
-    system: `${SHARED_RULES}
+## PULSE | BULL: <one-sentence bull case> | BEAR: <one-sentence bear case>
+{{clip:<id>}}   # the single strongest marquee quote. OPTIONAL section.
 
-FORMAT — a Brief: a cross-publisher roundup on a TOPIC.
-## TOPIC: <topic>
-A 2–3 sentence summary of the current state of the conversation.
-## PUBLISHER: <creator>
-For each notable creator/show, a short paragraph on their angle, grounded with
-{{clip:...}}. Cover the range of views, not just one side.`,
-  },
-  split: {
-    label: 'Split',
-    system: `${SHARED_RULES}
+## SMART_MONEY: BULL
+{{clip:<id>}}
+{{clip:<id>}}   # OPTIONAL section.
 
-FORMAT — a Split presenting two opposing sides (two people, or bull vs bear).
-## TOPIC: <topic>
-One-sentence framing of the disagreement.
-## SIDE: <label A>
-The case for side A, grounded with {{clip:...}}.
-## SIDE: <label B>
-The case for side B, grounded with {{clip:...}}.
-Be even-handed; give each side its strongest grounded argument.`,
-  },
-  readin: {
-    label: 'Read-in',
-    system: `${SHARED_RULES}
+## SMART_MONEY: BEAR
+{{clip:<id>}}   # OPTIONAL section.
 
-FORMAT — a Read-in: a fast briefing pairing a market move with commentary.
-## TOPIC: <topic>
-2–3 sentences on what's happening and why it matters now.
-## CONTEXT:
-The relevant commentary, grounded with {{clip:...}} citations, in 2–4 short
-paragraphs. Keep it punchy — this is a get-up-to-speed brief.`,
-  },
+## RISKS
+- <one-line risk>
+- <one-line risk>   # OPTIONAL section.`,
+
+  brief: `# HEADLINE: <one-sentence newsroom-style takeaway>   # REQUIRED.
+
+## PUBLISHER: <show name>
+<2-3 sentence summary of what this publisher said>
+{{clip:<id>}}
+{{clip:<id>}}
+
+## PUBLISHER: <next show>
+...   # at least one PUBLISHER block REQUIRED; group candidates by their creator.`,
+
+  dossier: `## TOPIC: <topic name>
+<2-3 sentence stance summary>
+{{clip:<id>}}
+
+## TOPIC: <next>
+...   # one or more TOPIC blocks REQUIRED.
+
+## APPEARANCES
+- <show> | <episode title> | <YYYY-MM-DD>   # OPTIONAL (client backfills from appearances).`,
+
+  split: `## PERSON: <name A>
+<2-3 sentence stance summary>
+{{clip:<id>}}
+
+## PERSON: <name B>
+<2-3 sentence stance summary>
+{{clip:<id>}}   # both PERSON blocks REQUIRED.
+
+## CONTRAST
+<1-2 sentence contrast>   # OPTIONAL but encouraged.`,
+
+  arc: `## THESIS: <one-line summary of the thesis being tracked>   # REQUIRED.
+## VERDICT: <one-line verdict, e.g. "Conviction rising — calls landing">   # REQUIRED.
+## CALL | <ISO date> | <short label> | <conviction 1-5> | <optional outcome>
+{{clip:<id>}}
+## CALL | <ISO date> | <short label> | <conviction 1-5> |
+{{clip:<id>}}
+# at least 3 CALL entries REQUIRED; each MUST be followed by a {{clip:<id>}} line.
+## FORWARD: <one-line forward prediction>   # OPTIONAL.`,
 };
 
-const VALID_KINDS = Object.keys(KINDS);
+const LABELS = {
+  readin: 'Read-in', brief: 'Brief', dossier: 'Dossier', split: 'Split', arc: 'Arc',
+};
 
 function systemPromptFor(kind) {
-  const entry = KINDS[kind];
-  return entry ? entry.system : null;
+  const contract = CONTRACTS[kind];
+  if (!contract) return null;
+  return `You are Tape, an editorial finance assistant producing a structured \`${kind}\`
+(${LABELS[kind]}) result for the Tape UI. Your output is parsed by a STRICT
+client-side parser that splits the response on exact marker lines.
+
+Follow the marker contract below VERBATIM:
+- Use ONLY these markers, in this order, with these EXACT names and literal
+  punctuation (\`|\`, \`:\`). The marker name is case-insensitive but the
+  structure is literal.
+- Do NOT use markers from other Tape result types (e.g. ## TOPIC, ## CONTEXT,
+  ## PUBLISHER) unless they appear in the contract below.
+- Ground every claim ONLY in the supplied candidate quotes. Do not invent facts,
+  numbers, names, or quotes.
+- Every {{clip:<id>}} token MUST reference a pineconeId from the candidate pool
+  in the user message. Never invent ids; never cite an id not in the pool. Put a
+  citation on its own line where the contract shows one.
+- OPTIONAL sections: if the candidate pool does not confidently support a section
+  marked OPTIONAL, OMIT that section entirely (header AND body). Returning less is
+  better than empty scaffolding.
+- Output no preamble, explanation, or text outside the markers. Start directly
+  with the first marker.
+
+If the candidates are too sparse or off-topic to produce even the REQUIRED
+sections, output EXACTLY this line and nothing else:
+${EMPTY_SENTINEL}
+
+MARKER CONTRACT for \`${kind}\`:
+${contract}`;
+}
+
+const VALID_KINDS = Object.keys(CONTRACTS);
+
+// Required-marker validators (case-insensitive on the marker name). Used as a
+// server-side guardrail: if the model failed to emit the required shape, we
+// return synthesizedEmpty rather than letting malformed markers reach the UI.
+function countMatches(text, re) { return (text.match(re) || []).length; }
+
+function hasRequiredMarkers(kind, text) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  switch (kind) {
+    case 'readin':
+      return /^##\s*WHAT_THEY_DO\b/im.test(text);
+    case 'brief':
+      return /^#\s*HEADLINE\s*:/im.test(text) && /^##\s*PUBLISHER\s*:/im.test(text);
+    case 'dossier':
+      return /^##\s*TOPIC\s*:/im.test(text);
+    case 'split':
+      return countMatches(text, /^##\s*PERSON\s*:/gim) >= 2;
+    case 'arc':
+      return /^##\s*THESIS\s*:/im.test(text)
+        && /^##\s*VERDICT\s*:/im.test(text)
+        && countMatches(text, /^##\s*CALL\b/gim) >= 3;
+    default:
+      return false;
+  }
 }
 
 /** Build the user message: the input framing + the candidate evidence list. */
@@ -110,8 +164,11 @@ function buildUserMessage({ kind, input = {}, candidates = [] }) {
     lines.push(`   "${(c.text || '').replace(/\s+/g, ' ').trim()}"`);
   });
   lines.push('');
-  lines.push('Write the piece now, following the FORMAT for this KIND.');
+  lines.push('Produce the result now, following the MARKER CONTRACT for this KIND exactly.');
   return lines.join('\n');
 }
 
-module.exports = { PROMPT_VERSION, VALID_KINDS, systemPromptFor, buildUserMessage, KINDS };
+module.exports = {
+  PROMPT_VERSION, EMPTY_SENTINEL, VALID_KINDS,
+  systemPromptFor, buildUserMessage, hasRequiredMarkers, CONTRACTS,
+};

@@ -10,6 +10,8 @@ const { searchQuotes } = require('../searchQuotesService');
 const taste = require('./tapeTaste');
 const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
+const { resolveTicker } = require('./tickerResolver');
+const { printLog } = require('../../constants');
 
 const DEFAULTS = {
   mainstream: true,
@@ -17,6 +19,37 @@ const DEFAULTS = {
   candidatesLimit: 25,
   perThemeLimit: 12,
 };
+
+const TICKER_FILTER_ENABLED = process.env.TAPE_TICKER_FILTER !== 'false';
+
+function isTickerShaped(q) {
+  return typeof q === 'string' && /^[A-Z]{1,5}$/.test(q.trim());
+}
+
+/**
+ * For ticker-shaped queries (e.g. "CRWV"), drop candidates that don't actually
+ * mention the ticker or any resolved name/alias of the company — guards against
+ * vector-noise (Crimson Wine "CWGL", leveraged ETFs, similar-letter tickers).
+ * Uses the ticker resolver so nicknames / spaced forms ("Core Weave") match too.
+ * Never reduces a non-empty set to zero (keeps the original if nothing matches).
+ */
+async function filterTickerNoise(ticker, candidates) {
+  if (!candidates.length) return candidates;
+  const { aliases } = await resolveTicker(ticker);
+  const matches = (c) => {
+    const t = (c.text || '').toLowerCase();
+    return aliases.some((a) => t.includes(a));
+  };
+  const kept = candidates.filter(matches);
+  if (!kept.length) {
+    printLog(`[topicQuotes] ticker "${ticker}" filter matched 0/${candidates.length}; keeping unfiltered set`);
+    return candidates;
+  }
+  if (kept.length < candidates.length) {
+    printLog(`[topicQuotes] ticker "${ticker}" filter kept ${kept.length}/${candidates.length} (aliases=[${aliases.join(', ')}])`);
+  }
+  return kept;
+}
 
 /**
  * @param {object} input
@@ -62,9 +95,13 @@ async function topicQuotes(input = {}, { openai } = {}) {
       byId.set(cand.pineconeId, cand);
     }
   }
-  let candidates = [...byId.values()]
-    .sort((a, b) => (b.spanSec || 0) - (a.spanSec || 0))
-    .slice(0, f.candidatesLimit);
+  let candidates = [...byId.values()].sort((a, b) => (b.spanSec || 0) - (a.spanSec || 0));
+
+  // Ticker-shaped query → drop company-mismatch noise before capping (§4).
+  if (TICKER_FILTER_ENABLED && isTickerShaped(input.query)) {
+    candidates = await filterTickerNoise(input.query, candidates);
+  }
+  candidates = candidates.slice(0, f.candidatesLimit);
 
   // Optional bull/bear tagging on each candidate.
   if (groupBy === 'bull-bear') {
