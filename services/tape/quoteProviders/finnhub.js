@@ -11,10 +11,20 @@
  *   would need a mapping table to resolve on Finnhub. `FINNHUB_SYMBOL_MAP`
  *   (JSON env) lets you translate per slug, e.g. {"^TNX":"...","CL=F":"..."}.
  * - The candle (sparkline) endpoint requires a paid Finnhub plan; on free tier
- *   it 403s. We degrade gracefully to a single-point spark rather than failing.
+ *   it 403s. When it does, we DON'T degrade to a single point (which renders a
+ *   blank sparkline on the client) — we synthesize a >= 2-point series from the
+ *   /quote payload (prev close -> open -> current) so the shape matches Yahoo.
  */
 
 const API = 'https://finnhub.io/api/v1';
+
+// Company names don't change — cache resolved names by symbol for the process
+// lifetime so we hit /stock/profile2 at most once per symbol, not once per cold
+// quote-cache miss. Only positive hits are cached, so a transient profile2
+// failure doesn't permanently pin name === symbol.
+const nameCache = new Map();
+
+const { isUsMarketOpen } = require('../tapeFreshness');
 
 function apiKey() { return process.env.FINNHUB_API_KEY || ''; }
 function isConfigured() { return !!apiKey(); }
@@ -37,24 +47,52 @@ async function getJson(url) {
   }
 }
 
-async function fetchSpark(symbol, key, fallbackPrice) {
-  // Daily candles for the last ~2 weeks → up to 10 closes. Paid-plan endpoint;
-  // degrade to a single point on any failure.
+/**
+ * Build a >= 2-point spark from the /quote payload alone (no extra request).
+ * Finnhub's free-tier /quote returns pc (previous close), o (today's open) and
+ * c (current). That's a chronologically ordered mini-series that reflects the
+ * day's direction — enough for the sparkline to render and stay consistent with
+ * dayChangePct. Guarantees length >= 2 whenever a price exists.
+ */
+function syntheticSpark(quote, price) {
+  const raw = [quote && quote.pc, quote && quote.o, price].filter((v) => Number.isFinite(v));
+  // Collapse consecutive duplicates so a flat day doesn't produce repeats,
+  // but never drop below the two endpoints we need to draw a line.
+  const series = raw.filter((v, i) => i === 0 || v !== raw[i - 1]);
+  if (series.length >= 2) return series;
+  if (Number.isFinite(price)) {
+    if (Number.isFinite(quote && quote.pc) && quote.pc !== price) return [quote.pc, price];
+    return [price, price]; // flat 2-point line — still renders, unlike a single point
+  }
+  return [];
+}
+
+async function fetchSpark(symbol, key, quote, price) {
+  // Primary: daily candles for the last ~3 weeks → up to ~9 historical closes
+  // with the live price appended as the final element (matches Yahoo, whose
+  // last spark point is the live regularMarketPrice). Paid-plan endpoint.
   try {
     const to = Math.floor(Date.now() / 1000);
     const from = to - 21 * 86400;
     const data = await getJson(`${API}/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${key}`);
     if (data && data.s === 'ok' && Array.isArray(data.c) && data.c.length) {
-      return data.c.filter((v) => v != null && Number.isFinite(v)).slice(-10);
+      const closes = data.c.filter((v) => v != null && Number.isFinite(v));
+      const series = Number.isFinite(price) ? [...closes.slice(-9), price] : closes.slice(-10);
+      if (series.length >= 2) return series;
     }
-  } catch (_) { /* free-tier 403 / throttle — fall through */ }
-  return Number.isFinite(fallbackPrice) ? [fallbackPrice] : [];
+  } catch (_) { /* free-tier 403 / throttle — fall through to synthetic */ }
+  // Fallback (free tier / candle unavailable): synthesize from the /quote
+  // payload so spark always has >= 2 points and the sparkline never blanks.
+  return syntheticSpark(quote, price);
 }
 
 async function fetchName(symbol, key) {
+  if (nameCache.has(symbol)) return nameCache.get(symbol);
   try {
     const p = await getJson(`${API}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${key}`);
-    return p && p.name ? p.name : null;
+    const name = p && p.name ? p.name : null;
+    if (name) nameCache.set(symbol, name); // cache positive hits only
+    return name;
   } catch (_) { return null; }
 }
 
@@ -72,7 +110,7 @@ async function fetchQuote(slug) {
   const price = Number.isFinite(q.c) ? q.c : null;
   const dayChangePct = Number.isFinite(q.dp) ? parseFloat(q.dp.toFixed(2)) : null;
   const [spark, name] = await Promise.all([
-    fetchSpark(symbol, key, price),
+    fetchSpark(symbol, key, q, price),
     fetchName(symbol, key),
   ]);
 
@@ -83,7 +121,10 @@ async function fetchQuote(slug) {
     currency: 'USD', // /quote does not return currency; assume USD
     dayChangePct,
     spark,
-    marketState: null,
+    // Finnhub /quote has no market-state field; fill best-effort from US market
+    // hours so the type matches Yahoo's enum ('REGULAR' | 'CLOSED') instead of
+    // null. Pre/post-market aren't distinguishable here, so we map to CLOSED.
+    marketState: isUsMarketOpen() ? 'REGULAR' : 'CLOSED',
   };
 }
 

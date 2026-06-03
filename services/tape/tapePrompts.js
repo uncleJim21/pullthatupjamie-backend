@@ -176,6 +176,37 @@ function hasRequiredMarkers(kind, text) {
   }
 }
 
+// Markers that must NOT appear in a given kind (cross-kind bleed). Matched as
+// case-insensitive substrings. Each kind's own legitimate markers are excluded.
+// Note: brief's headline is a single-# `# HEADLINE`, so the forbidden token uses
+// one # to actually catch it leaking into other kinds.
+const FORBIDDEN_CROSS_KIND = {
+  readin: ['## PUBLISHER', '## TOPIC:', '## THESIS', '## PERSON:', '# HEADLINE'],
+  brief: ['## WHAT_THEY_DO', '## PULSE |', '## SMART_MONEY', '## THESIS', '## PERSON:'],
+  dossier: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## THESIS', '## PERSON:'],
+  split: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## TOPIC:'],
+  arc: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## PERSON:'],
+};
+
+/**
+ * Validate a synthesis response against the requested kind's marker contract:
+ * all REQUIRED markers present AND no FORBIDDEN cross-kind markers leaked.
+ *
+ * @returns {{ ok:boolean, reason:string|null, missing:boolean, leaked:string[] }}
+ */
+function validateKindCompliance(kind, text) {
+  const t = typeof text === 'string' ? text : '';
+  if (!hasRequiredMarkers(kind, t)) {
+    return { ok: false, reason: `missing required ${kind} markers`, missing: true, leaked: [] };
+  }
+  const lower = t.toLowerCase();
+  const leaked = (FORBIDDEN_CROSS_KIND[kind] || []).filter((m) => lower.includes(m.toLowerCase()));
+  if (leaked.length) {
+    return { ok: false, reason: `cross-kind markers leaked into ${kind}: ${leaked.join(', ')}`, missing: false, leaked };
+  }
+  return { ok: true, reason: null, missing: false, leaked: [] };
+}
+
 /** Build the user message: the input framing + the candidate evidence list. */
 function buildUserMessage({ kind, input = {}, candidates = [], companyHint = null }) {
   const lines = [];
@@ -203,5 +234,6 @@ function buildUserMessage({ kind, input = {}, candidates = [], companyHint = nul
 
 module.exports = {
   PROMPT_VERSION, EMPTY_SENTINEL, TICKERS_MARKER, VALID_KINDS,
-  systemPromptFor, buildUserMessage, hasRequiredMarkers, CONTRACTS,
+  systemPromptFor, buildUserMessage, hasRequiredMarkers, validateKindCompliance,
+  FORBIDDEN_CROSS_KIND, CONTRACTS,
 };

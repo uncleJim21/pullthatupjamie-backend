@@ -10,10 +10,11 @@
  * (resolveModelSelection) + clip-token sanitizers.
  */
 
+const fs = require('fs');
 const { resolveModelSelection } = require('../../constants/agentModels');
 const { createProvider } = require('../../utils/agent/providers');
 const { sanitizeAgentText, createStreamSanitizer } = require('../../utils/agent/sanitizeOutput');
-const { VALID_KINDS, systemPromptFor, buildUserMessage, hasRequiredMarkers, EMPTY_SENTINEL, TICKERS_MARKER, PROMPT_VERSION } = require('./tapePrompts');
+const { VALID_KINDS, systemPromptFor, buildUserMessage, validateKindCompliance, EMPTY_SENTINEL, TICKERS_MARKER, PROMPT_VERSION } = require('./tapePrompts');
 const { extractTickers } = require('./tickerExtract');
 const { buildAliases } = require('./tickerResolver');
 const { getCached, setCached, addAndGet } = require('./tapeStore');
@@ -74,21 +75,17 @@ function stripUnknownClipTokens(text, validIds) {
 }
 
 /**
- * Sanitize the raw model output and classify it against the kind's contract.
- * Returns { text, synthesizedEmpty, reason } — text is '' when empty.
+ * Sanitize the raw model output and detect a GENUINELY empty result (blank or
+ * the explicit EMPTY_SENTINEL). Kind-contract conformance is NOT judged here —
+ * that's `validateKindCompliance` in `produce`, which can retry on a violation
+ * rather than silently emptying a wrong-shaped (but non-empty) result.
+ * Returns { text, synthesizedEmpty, reason }.
  */
 function finalizeText(rawText, kind, validIds) {
   const sanitized = stripUnknownClipTokens(sanitizeAgentText(rawText) || '', validIds);
   const trimmed = sanitized.trim();
-  // Model explicitly signaled "not enough on-topic material".
   if (!trimmed || trimmed.replace(/[.\s]+$/, '').toUpperCase() === EMPTY_SENTINEL) {
     return { text: '', synthesizedEmpty: true, reason: 'candidates did not contain enough on-topic material' };
-  }
-  // Guardrail: model produced text but not in the required shape for this kind.
-  // Returning empty is preferable to letting malformed/mismatched markers reach
-  // the strict client parser (which would render misleading or blank sections).
-  if (!hasRequiredMarkers(kind, sanitized)) {
-    return { text: '', synthesizedEmpty: true, reason: `output did not contain the required ${kind} markers` };
   }
   return { text: sanitized, synthesizedEmpty: false, reason: null };
 }
@@ -116,8 +113,9 @@ function companyHintFor(input = {}) {
   return name && name.toLowerCase() !== tk.toLowerCase() ? `${tk} = ${name}` : null;
 }
 
-/** One synthesis pass. Returns { rawText, usage }. */
-async function runSynthesis({ kind, input, candidates, modelConfig, onDelta }) {
+/** One synthesis pass. Returns { rawText, usage }. `reflection` is appended to
+ *  the user message on a compliance-retry to nudge the model back on-contract. */
+async function runSynthesis({ kind, input, candidates, modelConfig, onDelta, reflection }) {
   const companyHint = companyHintFor(input);
   const provider = createProvider(modelConfig.provider);
   const ready = await provider.validate();
@@ -125,11 +123,13 @@ async function runSynthesis({ kind, input, candidates, modelConfig, onDelta }) {
     throw new TapeHttpError(502, 'upstream-failure', 'Synthesis provider unavailable',
       `Provider ${modelConfig.provider} for model ${modelConfig.label} is not configured.`);
   }
+  let userMsg = buildUserMessage({ kind, input, candidates, companyHint });
+  if (reflection) userMsg += `\n\n${reflection}`;
   const result = await provider.createResponse({
     model: modelConfig.id,
     maxTokens: modelConfig.maxSynthesisTokens || MAX_TOKENS,
     system: systemPromptFor(kind),
-    messages: [{ role: 'user', content: buildUserMessage({ kind, input, candidates, companyHint }) }],
+    messages: [{ role: 'user', content: userMsg }],
     tools: undefined,
     toolChoice: 'none',
     temperature: 0.4,
@@ -158,6 +158,83 @@ async function recordCost(usage, modelConfig, dayKey, ttlDay) {
 function costUsd(usage, modelConfig) {
   return parseFloat((((usage.input_tokens || 0) * (modelConfig.inputPer1M || 0)
     + (usage.output_tokens || 0) * (modelConfig.outputPer1M || 0)) / 1e6).toFixed(4));
+}
+
+/**
+ * Log a kind-compliance failure (input + offending output) for the prompt-
+ * hardening / eval dataset. Always emits a structured stdout line; also appends
+ * to TAPE_COMPLIANCE_LOG_FILE (JSONL) when set, for local fixture collection.
+ */
+function logCompliance(ctx, info) {
+  const entry = {
+    event: 'kind-compliance-fail',
+    ts: new Date().toISOString(),
+    endpoint: 'synthesize',
+    jwt_sub: ctx.sub || null,
+    model: ctx.model || null,
+    kind: info.kind,
+    attempt: info.attempt,
+    reason: info.reason,
+    missing: !!info.missing,
+    leaked: info.leaked || [],
+    input: info.input || null,
+    candidatePineconeIds: (info.candidates || []).map((c) => c.pineconeId).filter(Boolean),
+    offendingText: info.offendingText || '',
+  };
+  try { printLog(`[tape:kind-compliance] ${JSON.stringify(entry)}`); } catch (_) { /* never throw */ }
+  console.warn(`[tape:kind-compliance] kind=${info.kind} attempt=${info.attempt} reason="${info.reason}"`);
+  const file = process.env.TAPE_COMPLIANCE_LOG_FILE;
+  if (file) { try { fs.appendFile(file, `${JSON.stringify(entry)}\n`, () => {}); } catch (_) { /* best-effort */ } }
+}
+
+/**
+ * Generate a synthesis, validate it against the kind contract, and auto-retry
+ * once with a reflection nudge on failure. Returns the validated result, or
+ * throws TapeHttpError(502, 'kind-compliance') if the retry also violates the
+ * contract — we never serve malformed text. A legitimately empty result
+ * (sentinel / sparse candidates) is returned as-is (valid render state).
+ *
+ * @returns {Promise<{finalText:string, tickers:string[], synthesizedEmpty:boolean,
+ *                    reason?:string, usage:object, attempts:number, recovered?:boolean}>}
+ */
+async function produce({ kind, input, candidates, modelConfig, validIds, onDelta, ctx, runner = runSynthesis }) {
+  const a1 = await runner({ kind, input, candidates, modelConfig, onDelta });
+  const e1 = extractTickers(a1.rawText);
+  const f1 = finalizeText(e1.cleanedText, kind, validIds);
+  if (f1.synthesizedEmpty) {
+    return { finalText: '', tickers: [], synthesizedEmpty: true, reason: f1.reason, usage: a1.usage, attempts: 1 };
+  }
+  const v1 = validateKindCompliance(kind, f1.text);
+  if (v1.ok) {
+    return { finalText: f1.text, tickers: e1.tickers, synthesizedEmpty: false, usage: a1.usage, attempts: 1 };
+  }
+
+  logCompliance(ctx, { attempt: 1, kind, input, candidates, reason: v1.reason, missing: v1.missing, leaked: v1.leaked, offendingText: f1.text });
+
+  // One auto-retry with an explicit reflection (no streaming on the retry).
+  const reflection = `Your previous output used the wrong markers (${v1.reason}). `
+    + `Produce ONLY the marker contract for kind: ${kind}. Do NOT use any markers from other kinds.`;
+  const a2 = await runner({ kind, input, candidates, modelConfig, reflection });
+  const usage = {
+    input_tokens: (a1.usage.input_tokens || 0) + (a2.usage.input_tokens || 0),
+    output_tokens: (a1.usage.output_tokens || 0) + (a2.usage.output_tokens || 0),
+  };
+  const e2 = extractTickers(a2.rawText);
+  const f2 = finalizeText(e2.cleanedText, kind, validIds);
+  if (!f2.synthesizedEmpty) {
+    const v2 = validateKindCompliance(kind, f2.text);
+    if (v2.ok) {
+      return { finalText: f2.text, tickers: e2.tickers, synthesizedEmpty: false, usage, attempts: 2, recovered: true };
+    }
+    logCompliance(ctx, { attempt: 2, kind, input, candidates, reason: v2.reason, missing: v2.missing, leaked: v2.leaked, offendingText: f2.text });
+    const e = new TapeHttpError(502, 'kind-compliance', 'Synthesizer output violated kind contract', `${kind}: ${v2.reason}`);
+    e.usage = usage;
+    throw e;
+  }
+  logCompliance(ctx, { attempt: 2, kind, input, candidates, reason: 'retry produced empty/sentinel after a wrong-kind attempt', missing: true, leaked: [] });
+  const e = new TapeHttpError(502, 'kind-compliance', 'Synthesizer output violated kind contract', `${kind}: retry failed to produce conformant output`);
+  e.usage = usage;
+  throw e;
 }
 
 // --- SSE helpers (same event shape as /api/pull) ---
@@ -269,62 +346,58 @@ function createSynthesizeHandler() {
         printLog(`[tape:synthesize] forced re-synthesize by ${sub} (#${perUser} today, kind=${kind})`);
       }
 
-      // --- run synthesis ---
+      // --- run synthesis (generate → validate kind contract → retry once → 502) ---
       const fetchedAt = new Date().toISOString();
+      const complianceCtx = { sub: req.tape?.sub, model: modelConfig.id };
 
+      // Stream attempt-1 tokens live (gating the `## TICKERS` block); on the
+      // rare compliance-retry the corrected text arrives via the final `text`
+      // event, which the client treats as authoritative.
+      let onDelta;
       if (stream) {
         sseInit(res);
         sseSend(res, 'status', { message: 'Synthesizing…', kind });
         const sanitizer = createStreamSanitizer();
-        // Gate the trailing `## TICKERS` block so it never leaks into text_delta.
         const cut = createMarkerCut(TICKERS_HEADER_RE);
-        const onDelta = (d) => {
+        onDelta = (d) => {
           const pre = cut.feed(d);
           if (pre) { const safe = sanitizer.feed(pre); if (safe) sseSend(res, 'text_delta', { text: safe }); }
         };
-
-        const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig, onDelta });
-        const preTail = cut.flush();
-        const tail = (preTail ? (sanitizer.feed(preTail) || '') : '') + (sanitizer.flush() || '');
-        if (tail) sseSend(res, 'text_delta', { text: tail });
-
-        const { cleanedText, tickers } = extractTickers(rawText);
-        const { text: finalText, synthesizedEmpty, reason } = finalizeText(cleanedText, kind, validIds);
-
-        const outBody = {
-          kind, text: finalText, tickers: synthesizedEmpty ? [] : tickers,
-          tokens: { input: usage.input_tokens, output: usage.output_tokens },
-          model: modelConfig.id, elapsedMs: Date.now() - startedAt,
-          _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
-        };
-        outBody._meta = { ...outBody._meta, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
-        // Don't cache empties — temperature>0 means a retry may yet produce content.
-        if (!noCache && !synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
-        await recordCost(usage, modelConfig, dayKey, ttlDay);
-
-        // The final `text` event is authoritative and replaces accumulated
-        // deltas — so an empty result correctly clears any provisional stream.
-        sseSend(res, 'text', { text: finalText });
-        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, tickers: outBody.tickers, cached: false, forced: refresh, synthesizedEmpty });
-        logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
-        return res.end();
       }
 
-      // non-stream
-      const { rawText, usage } = await runSynthesis({ kind, input, candidates, modelConfig });
-      const { cleanedText, tickers } = extractTickers(rawText);
-      const { text: finalText, synthesizedEmpty, reason } = finalizeText(cleanedText, kind, validIds);
+      let r;
+      try {
+        r = await produce({ kind, input, candidates, modelConfig, validIds, onDelta, ctx: complianceCtx });
+      } catch (e) {
+        // Record tokens already spent across the failed attempts before bubbling.
+        if (e && e.usage) await recordCost(e.usage, modelConfig, dayKey, ttlDay);
+        throw e;
+      }
+
       const outBody = {
-        kind, text: finalText, tickers: synthesizedEmpty ? [] : tickers,
-        tokens: { input: usage.input_tokens, output: usage.output_tokens },
+        kind, text: r.finalText, tickers: r.synthesizedEmpty ? [] : r.tickers,
+        tokens: { input: r.usage.input_tokens, output: r.usage.output_tokens },
         model: modelConfig.id, elapsedMs: Date.now() - startedAt,
-        _meta: { fetchedAt, forced: refresh, ...(synthesizedEmpty ? { synthesizedEmpty: true, reason } : {}) },
+        _meta: {
+          fetchedAt, forced: refresh,
+          ...(r.synthesizedEmpty ? { synthesizedEmpty: true, reason: r.reason } : {}),
+          ...(r.recovered ? { complianceRecovered: true } : {}),
+        },
       };
       outBody._meta = { ...outBody._meta, ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: ttl }) };
-      if (!noCache && !synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
-      await recordCost(usage, modelConfig, dayKey, ttlDay);
+      // Don't cache empties — temperature>0 means a retry may yet produce content.
+      if (!noCache && !r.synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
+      await recordCost(r.usage, modelConfig, dayKey, ttlDay);
 
-      logTape({ endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt });
+      const logBase = { endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty: r.synthesizedEmpty, complianceRecovered: !!r.recovered, attempts: r.attempts, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(r.usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt };
+
+      if (stream) {
+        sseSend(res, 'text', { text: r.finalText });
+        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, tickers: outBody.tickers, cached: false, forced: refresh, synthesizedEmpty: r.synthesizedEmpty });
+        logTape(logBase);
+        return res.end();
+      }
+      logTape(logBase);
       return res.status(200).json(outBody);
     } catch (err) {
       if (res.headersSent) {
@@ -343,4 +416,4 @@ function createSynthesizeHandler() {
   };
 }
 
-module.exports = { createSynthesizeHandler, runSynthesis, stripUnknownClipTokens };
+module.exports = { createSynthesizeHandler, runSynthesis, produce, stripUnknownClipTokens };

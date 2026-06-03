@@ -118,11 +118,28 @@ beta it is unlimited and only measured** — see the `TODO(beta)` in
 - **arc**: `## THESIS:` + `## VERDICT:` + ≥3 `## CALL | …` + optional `## FORWARD:`
 
 Optional sections are **omitted** (no empty headers) when candidates don't support
-them. A server-side guardrail (`hasRequiredMarkers`) verifies the required markers
-are present; if the model can't produce them (or signals the `EMPTY_SYNTHESIS`
-sentinel), the response is `{ text: "", _meta: { synthesizedEmpty: true, reason } }`
-and is **not cached** (so a retry can still succeed). Bump `PROMPT_VERSION` on any
-prompt change — it's part of the cache key.
+them. Bump `PROMPT_VERSION` on any prompt change — it's part of the cache key.
+
+### Kind-compliance validator
+
+Before a synthesis response leaves the handler, `validateKindCompliance(kind, text)`
+([tapePrompts.js](tapePrompts.js)) checks that all REQUIRED markers are present AND no
+FORBIDDEN cross-kind markers leaked (e.g. a `brief` must have `# HEADLINE`/`## PUBLISHER`
+and must NOT contain `## WHAT_THEY_DO`/`## SMART_MONEY`). On a violation, `produce()`
+([synthesize.js](synthesize.js)) does **one auto-retry** with a reflection nudge
+("your previous output used the wrong markers… produce ONLY the markers for `<kind>`").
+If the retry conforms, it's served with `_meta.complianceRecovered: true`; if it still
+violates, the handler returns **502** `{ type: ".../tape/kind-compliance" }` rather than
+serving malformed text. Neither violation nor empty results are cached.
+
+A genuinely empty result (the `EMPTY_SYNTHESIS` sentinel / sparse candidates) is distinct
+from a violation — it returns `{ text: "", _meta: { synthesizedEmpty: true, reason } }`
+with a 200 (a valid "no results" render state, not an error).
+
+Every compliance failure (even one the retry then fixes) is logged as a structured
+`kind-compliance-fail` line (kind, reason, leaked/missing, the input, and the offending
+text) for prompt hardening; set `TAPE_COMPLIANCE_LOG_FILE` to also append them as JSONL
+for an eval fixture set.
 
 ## Relevant tickers (`tickers: string[]`)
 
