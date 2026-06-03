@@ -20,7 +20,8 @@
     "nostr:process-mentions": "node scripts/nostr-process-mentions.js",
     "nostr:decrypt-private-zap": "node scripts/nostr-decrypt-private-zap.js",
     "test:zap-validator": "node tests/zap-receipt-validator.test.js",
-    "test:tape-quote": "node tests/tape-finnhub-quote.test.js"
+    "test:tape-quote": "node tests/tape-finnhub-quote.test.js",
+    "test:tape-narrative": "node tests/tape-narrative-compliance.test.js"
   },
   "author": "uj21",
   "license": "ISC",

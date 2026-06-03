@@ -11,6 +11,8 @@ const { findPeople, getPersonEpisodes } = require('../corpusService');
 const taste = require('./tapeTaste');
 const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
+const { resolveHalfLife, rankByRecency, recencyMeta } = require('./recency');
+const { hydrateCandidateDates } = require('./dateHydration');
 
 const DEFAULTS = {
   guestsOnly: true,
@@ -108,8 +110,18 @@ async function personQuotes(input = {}, { openai } = {}) {
     if (Number.isFinite(f.maxSpan) && c.spanSec > f.maxSpan) return false;
     return true;
   });
-  candidates.sort((a, b) => (b.spanSec || 0) - (a.spanSec || 0));
-  candidates = candidates.slice(0, f.candidatesLimit);
+  // Lazy-fill missing dates from the parent episode before recency ranking.
+  const dates = await hydrateCandidateDates(candidates);
+
+  // Soft recency weighting before truncation. Default half-life from the kind
+  // (dossier 18mo); Arc passes kind:'arc' / disableRecencyWeighting to keep the
+  // full multi-year spread that the time dimension depends on.
+  const recency = resolveHalfLife({
+    kind: input.kind,
+    halfLifeMonths: f.halfLifeMonths,
+    disableRecencyWeighting: f.disableRecencyWeighting,
+  });
+  candidates = rankByRecency(candidates, recency).slice(0, f.candidatesLimit);
 
   // 7. Confidence tagging.
   const maxSpan = candidates.reduce((m, c) => Math.max(m, c.spanSec || 0), 0) || 1;
@@ -136,7 +148,7 @@ async function personQuotes(input = {}, { openai } = {}) {
     imageUrl: e.imageUrl,
   }));
 
-  const body = { person: resolvedName, appearances, candidates, _meta: { underlying } };
+  const body = { person: resolvedName, appearances, candidates, _meta: { underlying, ...recencyMeta(recency), datesHydrated: dates.hydrated } };
   return { body, underlying };
 }
 

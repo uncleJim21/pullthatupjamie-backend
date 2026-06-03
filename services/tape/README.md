@@ -116,6 +116,7 @@ beta it is unlimited and only measured** — see the `TODO(beta)` in
 - **dossier**: one or more `## TOPIC:` + optional `## APPEARANCES`
 - **split**: two `## PERSON:` blocks + optional `## CONTRAST`
 - **arc**: `## THESIS:` + `## VERDICT:` + ≥3 `## CALL | …` + optional `## FORWARD:`
+- **narrative**: `## THESIS:` + ≥3 `## BUCKET | <ISO start> | <ISO end> | <signed sentiment -5..+5>` (chronological, oldest→newest) + optional `## INFLECTION` / `## FORWARD:`. Sentiment is the **third pipe field**, a required integer in `-5..+5` on every bucket (drives the client trajectory chart); a missing/malformed value is a compliance failure. A sign-flip across zero between adjacent buckets is a reversal — the client renders a marker at the crossing.
 
 Optional sections are **omitted** (no empty headers) when candidates don't support
 them. Bump `PROMPT_VERSION` on any prompt change — it's part of the cache key.
@@ -150,8 +151,9 @@ Every successful `synthesize` response carries a top-level `tickers` array (the
 the body; stripped from `text` and gated out of the stream so it never renders).
 Per-kind meaning lives in [tapePrompts.js](tapePrompts.js) `TICKER_GUIDANCE`
 (dossier = names the person covers; brief/split = what's exposed to the topic;
-arc = names in the tracked thesis; **readin = the queried company's PEERS, not
-itself**). Parsing/validation (incl. `^TNX`, `DX-Y.NYB`, `CL=F`, `BRK-B`,
+arc = names in the tracked thesis; **narrative = names exposed to the TOPIC, not
+the group filter** — same tickers whether the lens is bulls, bears, or a person;
+**readin = the queried company's PEERS, not itself**). Parsing/validation (incl. `^TNX`, `DX-Y.NYB`, `CL=F`, `BRK-B`,
 `BTC-USD`) is in [tickerExtract.js](tickerExtract.js). Empty/`synthesizedEmpty`
 responses return `tickers: []`.
 
@@ -188,6 +190,19 @@ retrieval cache key carries a version (`tape:tq:v2:…`) — bump it when retrie
 changes to evict stale entries. Empty *live* responses still carry `_meta` (so the
 client can show a Refresh affordance and the correct date window — prefer the live empty
 response over any canned/mock empty fallback).
+
+**Recency weighting.** Candidates are ranked by `span × exp(-age_months / half_life)`
+before truncation ([recency.js](recency.js)), so a quote from a company's prior era
+(ORCL 2021, NVDA pre-2023) loses to current ones — soft decay, not a cutoff, so a strong
+old quote survives if nothing newer competes. Half-life is per **kind** (passed by the
+client on the retrieval call): `brief` ~1wk, `readin`/`split` 6mo, `dossier` 18mo, `arc`
+and `narrative` **disabled** (the time dimension is the point — full multi-year spread
+preserved; `narrative` drift analysis needs the whole window unweighted).
+Override via `filters.halfLifeMonths` / `filters.disableRecencyWeighting`. Undated
+candidates (corpus lacks `publishedDate`) get a fixed 0.5 penalty (`TAPE_UNDATED_DECAY_FACTOR`)
+— unknown age shouldn't outrank fresh dated quotes. `_meta.halfLifeApplied` /
+`_meta.weightingDisabled` report what was used. Lives only in the Tape recipe layer —
+`searchQuotes` / `/api/pull` ranking is untouched.
 
 **Query-layer ticker resolution.** A ticker-shaped query is resolved to its company
 and the **company name** is what's searched — critical for tickers that collide with

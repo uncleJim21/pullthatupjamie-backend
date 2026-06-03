@@ -12,6 +12,8 @@ const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
 const { resolveTicker } = require('./tickerResolver');
 const { expandThemes } = require('./themeExpander');
+const { resolveHalfLife, rankByRecency, recencyMeta } = require('./recency');
+const { hydrateCandidateDates } = require('./dateHydration');
 const { printLog } = require('../../constants');
 
 const DEFAULTS = {
@@ -130,13 +132,26 @@ async function topicQuotes(input = {}, { openai } = {}) {
       byId.set(cand.pineconeId, cand);
     }
   }
-  let candidates = [...byId.values()].sort((a, b) => (b.spanSec || 0) - (a.spanSec || 0));
+  let candidates = [...byId.values()];
 
-  // Ticker-shaped query → drop company-mismatch noise before capping (§4).
+  // Ticker-shaped query → drop company-mismatch noise before ranking/capping (§4).
   if (TICKER_FILTER_ENABLED && isTickerShaped(topic)) {
     candidates = await filterTickerNoise(topic, candidates, resolved);
   }
-  candidates = candidates.slice(0, f.candidatesLimit);
+
+  // Lazy-fill missing candidate dates from the parent episode before ranking,
+  // so recency decay sees real dates instead of the undated penalty.
+  const dates = await hydrateCandidateDates(candidates);
+
+  // Soft recency weighting: rank by span × exp(-age/half-life) before truncating.
+  // Half-life from the requested kind (brief ~1wk, readin/split 6mo) unless the
+  // caller overrides; Arc-style callers pass disableRecencyWeighting.
+  const recency = resolveHalfLife({
+    kind: input.kind,
+    halfLifeMonths: f.halfLifeMonths,
+    disableRecencyWeighting: f.disableRecencyWeighting,
+  });
+  candidates = rankByRecency(candidates, recency).slice(0, f.candidatesLimit);
 
   // Optional bull/bear tagging on each candidate.
   if (groupBy === 'bull-bear') {
@@ -146,7 +161,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const body = {
     query: input.query || themes[0],
     candidates,
-    _meta: { underlying },
+    _meta: { underlying, ...recencyMeta(recency), datesHydrated: dates.hydrated },
   };
 
   // Grouping.

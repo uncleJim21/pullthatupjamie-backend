@@ -17,7 +17,9 @@
 
 // v4: appended the `## TICKERS` relevance block to every kind (parsed off into
 // the structured `tickers` field — see synthesize.js). Invalidates v3 caches.
-const PROMPT_VERSION = 'v4';
+// v5: added the `narrative` kind (## THESIS + ## BUCKET | with signed sentiment +
+// optional ## INFLECTION/## FORWARD). Invalidates v4 caches.
+const PROMPT_VERSION = 'v5';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
@@ -31,6 +33,7 @@ const TICKER_GUIDANCE = {
   split: 'What is at stake in the debate — reflect the TOPIC, not the side names. Include peer context. (bulls vs bears on AAPL → AAPL, MSFT, GOOGL; dollar debate → DX-Y.NYB, ^TNX, GLD, BTC-USD.)',
   arc: 'Names referenced IN THE TRACKED THESIS — bias toward the thesis, not the person\'s full beat. (Gromen debt-spiral → GLD, ^TNX, DX-Y.NYB, BTC-USD; Druckenmiller AI capex → NVDA, MSFT, META.)',
   readin: 'The queried company\'s SECTOR PEERS, not the company itself (the client already has the primary ticker). 4-6 peers a finance pro would actually triangulate with — match the company\'s real industry, do NOT default to mega-cap tech unless that IS the sector. (AAPL → MSFT, GOOGL, META, AMZN, NVDA; CRWV → NVDA, ORCL, MSFT, GOOGL; APP/AppLovin → TTD, U, RBLX, META, GOOGL [adtech/gaming]; XOM → CVX, OXY, SLB, COP [energy].) If the queried ticker is not a real listed equity, output no symbols.',
+  narrative: 'Names most exposed to the TOPIC of the narrative, NOT the group filter — pick the same tickers whether the lens is bulls, bears, or a named person. (AI capex narrative → NVDA, MSFT, GOOGL, META, AMZN, AVGO regardless of bull/bear; sovereign debt endgame → GLD, ^TNX, DX-Y.NYB, BTC-USD; rate cuts in 2026 → ^TNX, TLT, GLD, DX-Y.NYB.)',
 };
 
 function tickersBlock(kind) {
@@ -109,10 +112,49 @@ const CONTRACTS = {
 {{clip:<id>}}
 # at least 3 CALL entries REQUIRED; each MUST be followed by a {{clip:<id>}} line.
 ## FORWARD: <one-line forward prediction>   # OPTIONAL.`,
+
+  narrative: `## THESIS: <one-sentence current consensus / the group's current view>   # REQUIRED.
+
+## BUCKET | <ISO start date> | <ISO end date> | <signed sentiment -5..+5>
+<2-3 sentence stance summary for this window>
+{{clip:<id>}}
+{{clip:<id>}}
+
+## BUCKET | <ISO start date> | <ISO end date> | <signed sentiment -5..+5>
+<2-3 sentence stance summary for this window>
+{{clip:<id>}}
+# AT LEAST 3 ## BUCKET blocks REQUIRED, in chronological order oldest→newest.
+# Each bucket carries 1-4 {{clip:<id>}} citations. The sentiment is the THIRD
+# pipe-delimited field and is REQUIRED on EVERY bucket: an integer -5..+5.
+
+## INFLECTION
+- <YYYY-Qn OR ISO date>: <one-sentence what changed and, briefly, why>
+- <...>   # OPTIONAL — omit the whole section (header included) if the candidates don't confidently support it.
+
+## FORWARD: <one-line where this trajectory is heading>   # OPTIONAL — omit if unsupported.
+
+SENTIMENT RUBRIC (the third ## BUCKET field — signed conviction on the THESIS):
+- SIGN = direction. Positive = the prevailing voices in the window SUPPORTED /
+  advanced the thesis; negative = they CONTRADICTED / pushed back; 0 = mixed,
+  ambivalent, or genuinely neutral.
+- A sign-flip across zero between adjacent buckets is a REVERSAL — do NOT smooth
+  it out; if the data reversed, let the numbers reverse.
+- MAGNITUDE (1-5) = how forcefully the position was stated:
+  5 absolute, no hedging ("definitely", "guaranteed", "the only outcome");
+  4 strong ("I'm convinced", "the data is unambiguous");
+  3 confident but caveated ("I think", "probably", "the best read is");
+  2 soft ("could", "might", "leaning toward");
+  1 highly hedged ("possibly", "one scenario is", "not impossible").
+- If the GROUP is a NAMED PERSON: sentiment = THAT person's conviction strength
+  on the thesis; sign reflects whether they support (usually +) or oppose it.
+- If the GROUP is bulls / bears / all: sentiment = the aggregate direction ×
+  confidence of that group's quotes in the window (capitulation can flip it
+  negative).`,
 };
 
 const LABELS = {
   readin: 'Read-in', brief: 'Brief', dossier: 'Dossier', split: 'Split', arc: 'Arc',
+  narrative: 'Narrative',
 };
 
 function systemPromptFor(kind) {
@@ -156,6 +198,23 @@ const VALID_KINDS = Object.keys(CONTRACTS);
 // return synthesizedEmpty rather than letting malformed markers reach the UI.
 function countMatches(text, re) { return (text.match(re) || []).length; }
 
+// Narrative buckets: every `## BUCKET | start | end | sentiment` line MUST carry
+// a parseable signed integer in the THIRD pipe slot, range -5..+5. A missing or
+// malformed sentiment is a compliance failure (→ one auto-retry → 502), since
+// the trajectory chart on the client is driven entirely off these values.
+function narrativeBucketsValid(text) {
+  const lines = text.match(/^##\s*BUCKET\s*\|.*$/gim) || [];
+  if (lines.length < 3) return false;
+  return lines.every((line) => {
+    const parts = line.split('|'); // [ "## BUCKET ", start, end, sentiment ]
+    if (parts.length < 4) return false;
+    const raw = parts[3].trim();
+    if (!/^[+-]?\d+$/.test(raw)) return false;
+    const n = parseInt(raw, 10);
+    return n >= -5 && n <= 5;
+  });
+}
+
 function hasRequiredMarkers(kind, text) {
   if (typeof text !== 'string' || !text.trim()) return false;
   switch (kind) {
@@ -171,6 +230,9 @@ function hasRequiredMarkers(kind, text) {
       return /^##\s*THESIS\s*:/im.test(text)
         && /^##\s*VERDICT\s*:/im.test(text)
         && countMatches(text, /^##\s*CALL\b/gim) >= 3;
+    case 'narrative':
+      return /^##\s*THESIS\s*:/im.test(text)
+        && narrativeBucketsValid(text);
     default:
       return false;
   }
@@ -181,11 +243,15 @@ function hasRequiredMarkers(kind, text) {
 // Note: brief's headline is a single-# `# HEADLINE`, so the forbidden token uses
 // one # to actually catch it leaking into other kinds.
 const FORBIDDEN_CROSS_KIND = {
-  readin: ['## PUBLISHER', '## TOPIC:', '## THESIS', '## PERSON:', '# HEADLINE'],
-  brief: ['## WHAT_THEY_DO', '## PULSE |', '## SMART_MONEY', '## THESIS', '## PERSON:'],
-  dossier: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## THESIS', '## PERSON:'],
-  split: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## TOPIC:'],
-  arc: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## PERSON:'],
+  readin: ['## PUBLISHER', '## TOPIC:', '## THESIS', '## PERSON:', '# HEADLINE', '## BUCKET |'],
+  brief: ['## WHAT_THEY_DO', '## PULSE |', '## SMART_MONEY', '## THESIS', '## PERSON:', '## BUCKET |'],
+  dossier: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## THESIS', '## PERSON:', '## BUCKET |'],
+  split: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## TOPIC:', '## BUCKET |'],
+  arc: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## PERSON:', '## BUCKET |'],
+  // narrative shares `## THESIS:` (and optional `## FORWARD:`) with arc, so those
+  // are NOT forbidden; everything else from other kinds — including arc's own
+  // `## VERDICT:`/`## CALL` — is, to keep the two time-series kinds distinct.
+  narrative: ['## WHAT_THEY_DO', '## PULSE |', '# HEADLINE', '## PUBLISHER', '## TOPIC:', '## PERSON:', '## VERDICT:', '## CALL'],
 };
 
 /**
@@ -215,6 +281,9 @@ function buildUserMessage({ kind, input = {}, candidates = [], companyHint = nul
   if (input.personB) lines.push(`PERSON B: ${input.personB}`);
   if (input.topic) lines.push(`TOPIC: ${input.topic}`);
   if (input.ticker) lines.push(`TICKER: ${input.ticker}`);
+  // Narrative group filter ('bulls' | 'bears' | 'all' | a named person) — drives
+  // which sentiment lens the model applies (see the narrative SENTIMENT RUBRIC).
+  if (input.group) lines.push(`GROUP: ${input.group}`);
   // Resolved company identity for a ticker the user typed (e.g. "APP" =
   // AppLovin) — lets the model pick sector-correct peer tickers.
   if (companyHint) lines.push(`COMPANY: ${companyHint} — pick sector-appropriate peers/relevant names.`);
