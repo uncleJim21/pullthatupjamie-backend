@@ -20,8 +20,7 @@
     "nostr:process-mentions": "node scripts/nostr-process-mentions.js",
     "nostr:decrypt-private-zap": "node scripts/nostr-decrypt-private-zap.js",
     "test:zap-validator": "node tests/zap-receipt-validator.test.js",
-    "test:tape-quote": "node tests/tape-finnhub-quote.test.js",
-    "test:tape-narrative": "node tests/tape-narrative-compliance.test.js"
+    "test:reranker": "node tests/clip-reranker.test.js"
   },
   "author": "uj21",
   "license": "ISC",
@@ -68,5 +67,11 @@
   "devDependencies": {
     "archiver": "^7.0.1",
     "js-yaml": "^4.1.1"
+  },
+  "overrides": {
+    "ip-address": "^10.1.1",
+    "langsmith": "^0.6.0",
+    "qs": "^6.15.2",
+    "uuid": "^11.1.1"
   }
 }
