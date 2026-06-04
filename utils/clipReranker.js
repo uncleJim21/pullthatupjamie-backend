@@ -60,7 +60,7 @@ Person-mismatch penalty (HARD RULE — apply before any topical score):
 - If the clip is [guests: none-tagged], do NOT apply this penalty — score normally on topical/substantive relevance. Empty guest metadata is ambiguous, not exonerating.
 - This penalty does NOT apply when the user's question is a pure topic query with no named person ("Bitcoin custody", "AI agents").
 
-Return ONLY a JSON array: [{"i":0,"s":7},{"i":1,"s":3},...]`;
+Return JSON of the form {"scores":[{"i":0,"s":7},{"i":1,"s":3}, ...]} — exactly one {"i","s"} entry per clip, where i is the clip's index and s is its 0-10 score.`;
 
   const questionForScorer = (typeof userMessage === 'string' && userMessage.trim().length > 0)
     ? userMessage.trim()
@@ -77,7 +77,36 @@ ${clipSummaries.join('\n')}`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      response_format: { type: 'json_object' },
+      // Strict schema forces {"scores":[{"i","s"}]}. Without it, json_object +
+      // an "array" prompt makes the model flatten to a dup-key object like
+      // {"i":0,"s":10,"i":1,"s":6} that JSON.parse collapses to one pair, so the
+      // parser found no scores and every clip defaulted to 5 (never filtered).
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'clip_scores',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['scores'],
+            properties: {
+              scores: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['i', 's'],
+                  properties: {
+                    i: { type: 'integer' },
+                    s: { type: 'integer', minimum: 0, maximum: 10 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       temperature: 0.0,
       max_tokens: 600,
     });
