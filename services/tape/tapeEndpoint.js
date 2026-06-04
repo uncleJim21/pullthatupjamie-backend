@@ -11,12 +11,25 @@
  * (custom streaming + cost guards) can reuse them without the cache wrapper.
  */
 
-const { incrWindow, getCached, setCached } = require('./tapeStore');
+const { incrWindow, getCached, setCached, addAndGet } = require('./tapeStore');
 const { tapeError, tapeRateLimited, TapeHttpError } = require('./tapeErrors');
-const { buildFreshnessMeta } = require('./tapeFreshness');
+const { buildFreshnessMeta, TIER } = require('./tapeFreshness');
+const { hashBody } = require('./tapeShared');
+const { PROMPT_VERSION } = require('./tapePrompts');
+const { audit } = require('./tapeAudit');
 const { printLog } = require('../../constants');
 
+let auditSeq = 0;
+
 const NOCACHE_ENABLED = process.env.TAPE_NOCACHE_ENABLED === 'true';
+const KIND_TTL_SEC = parseInt(process.env.TAPE_KIND_TTL_SEC || '7200', 10); // 2h
+const DAILY_TOKEN_CAP = parseInt(process.env.TAPE_DAILY_OUTPUT_TOKEN_CAP || '5000000', 10);
+function utcDay() { return new Date().toISOString().slice(0, 10); }
+function secsToUtcMidnight() {
+  const n = new Date();
+  const nx = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1));
+  return Math.max(60, Math.ceil((nx.getTime() - n.getTime()) / 1000));
+}
 
 /** Current UTC hour bucket, e.g. "2026-06-01T14". */
 function hourBucket(now = new Date()) {
@@ -144,4 +157,81 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
   };
 }
 
-module.exports = { withCachedEndpoint, checkRateLimit, logTape, hourBucket };
+/**
+ * Wrap a kind-level endpoint (dossier/brief/split/narrative/readin): rate-limit
+ * → kind cache (full parsed Result, 2h) → daily-token-cap → run() → cache write
+ * → freshness _meta → log. `run(body, { jwtSub })` returns
+ * `{ result, usage, synthesizedEmpty }`; throws TapeHttpError on hard failure.
+ * Empty results are not cached (a retry may succeed).
+ */
+function withKindEndpoint({ kind, hourlyLimit, run }) {
+  return async (req, res) => {
+    const startedAt = Date.now();
+    // eslint-disable-next-line no-plusplus
+    const auditId = `${kind}-${Date.now().toString(36)}-${(auditSeq++).toString(36)}`;
+    try {
+      if (!(await checkRateLimit(req, res, kind, hourlyLimit))) return;
+      const body = req.body || {};
+      audit('request', auditId, { kind, jwt_sub: req.tape?.sub, body });
+      const refresh = body.refresh === true;
+      const noCache = NOCACHE_ENABLED && body._nocache === true;
+      // Tie the kind cache to PROMPT_VERSION so prompt/pipeline fixes evict stale
+      // (e.g. pre-fix empty-citation) entries instead of serving them for the TTL.
+      const key = `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(body)}`;
+
+      if (!noCache && !refresh) {
+        const prior = await getCached(key);
+        if (prior) {
+          const out = {
+            ...prior.value,
+            _meta: {
+              ...(prior.value._meta || {}),
+              ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: true, cachedAt: prior.cachedAt, fetchedAt: prior.value._meta?.fetchedAt, ttlSec: KIND_TTL_SEC }),
+            },
+          };
+          logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: 'hit', status: 200, elapsed_ms: Date.now() - startedAt });
+          audit('cache_hit', auditId, { kind });
+          return res.status(200).json(out);
+        }
+      }
+
+      // Global daily output-token cap (shared with /synthesize).
+      const day = utcDay();
+      const ttlDay = secsToUtcMidnight();
+      if (DAILY_TOKEN_CAP > 0) {
+        const tot = await addAndGet(`tape:syn:tok:${day}`, 0, ttlDay);
+        if (tot >= DAILY_TOKEN_CAP) {
+          logTape({ endpoint: kind, jwt_sub: req.tape?.sub, status: 429, error: 'daily-cap', elapsed_ms: Date.now() - startedAt });
+          return tapeRateLimited(res, { detail: 'Daily synthesis token cap reached; resets at UTC midnight.', retryAfterSec: ttlDay });
+        }
+      }
+
+      const fetchedAt = new Date().toISOString();
+      const { result, usage, synthesizedEmpty } = await run(body, { jwtSub: req.tape?.sub, refresh, auditId });
+      if (usage && DAILY_TOKEN_CAP > 0) await addAndGet(`tape:syn:tok:${day}`, usage.output_tokens || 0, ttlDay);
+      audit('response', auditId, { kind, synthesizedEmpty, confidence: result?._meta?.confidence, result });
+
+      const out = {
+        ...result,
+        _meta: {
+          ...(result._meta || {}),
+          fetchedAt,
+          ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: KIND_TTL_SEC }),
+        },
+      };
+      if (!noCache && !synthesizedEmpty) await setCached(key, out, KIND_TTL_SEC);
+      logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: refresh ? 'refresh' : 'miss', confidence: out._meta?.confidence, tokens: usage || null, status: 200, elapsed_ms: Date.now() - startedAt });
+      return res.status(200).json(out);
+    } catch (err) {
+      if (err instanceof TapeHttpError) {
+        logTape({ endpoint: kind, jwt_sub: req.tape?.sub, status: err.status, error: err.slug, elapsed_ms: Date.now() - startedAt });
+        return tapeError(res, err.status, err.slug, err.title, err.detail, err.extra);
+      }
+      printLog(`[tape:${kind}] error: ${err.message}`);
+      logTape({ endpoint: kind, jwt_sub: req.tape?.sub, status: 502, error: 'upstream', detail: err.message, elapsed_ms: Date.now() - startedAt });
+      return tapeError(res, 502, 'upstream-failure', 'Upstream failure', err.message);
+    }
+  };
+}
+
+module.exports = { withCachedEndpoint, withKindEndpoint, checkRateLimit, logTape, hourBucket };

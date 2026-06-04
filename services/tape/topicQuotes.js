@@ -14,7 +14,12 @@ const { resolveTicker } = require('./tickerResolver');
 const { expandThemes } = require('./themeExpander');
 const { resolveHalfLife, rankByRecency, recencyMeta, defaultRelevance } = require('./recency');
 const { hydrateCandidateDates } = require('./dateHydration');
+const { getMainstreamFeedIds } = require('./mainstreamFeeds');
+const { rerankClips } = require('../../utils/clipReranker'); // reuse the pull path's quality reranker
 const { printLog } = require('../../constants');
+
+const RERANK_ENABLED = process.env.TAPE_RERANK !== 'false';
+const RERANK_MAX = parseInt(process.env.TAPE_RERANK_MAX || '25', 10); // cap rerank input (scorer token budget)
 
 // Drop vector candidates below this absolute similarity so an uncovered topic
 // returns an empty pool (honest confidence:'empty') instead of adjacent noise.
@@ -26,6 +31,21 @@ const LITERAL_BONUS = parseFloat(process.env.TAPE_LITERAL_BONUS || '0.12');
 // Min literal-matching candidates for a non-ticker topic to be "covered"; below
 // this the pool is emptied (honest confidence:'empty') rather than serving noise.
 const LITERAL_MIN = parseInt(process.env.TAPE_LITERAL_MIN || '3', 10);
+// Spoken-vs-typed aliases: macro hosts say "BTC" as often as "bitcoin", "eth"
+// for ethereum, "bullion" for gold. Without these the literal anchor rejects a
+// "BTC"-only quote on a "bitcoin" query (and vice-versa). Bidirectional.
+const TERM_ALIASES = {
+  bitcoin: ['btc'], btc: ['bitcoin'],
+  ethereum: ['eth'], eth: ['ethereum'],
+  gold: ['bullion'], oil: ['crude', 'wti'],
+  dollar: ['greenback', 'dxy'], treasuries: ['treasury', 'tnx'],
+};
+function expandTermsWithAliases(terms) {
+  const out = new Set(terms);
+  for (const t of terms) (TERM_ALIASES[t] || []).forEach((a) => out.add(a));
+  return [...out];
+}
+
 const TOPIC_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'vs', 'this',
   // topic framing words (not the subject)
@@ -126,7 +146,21 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const f = { ...DEFAULTS, ...(input.filters || {}) };
   const minDate = validateDate(f.minDate, 'minDate');
   const maxDate = validateDate(f.maxDate, 'maxDate');
-  const feedIds = Array.isArray(f.feedIds) ? f.feedIds.filter(Boolean) : [];
+  let feedIds = Array.isArray(f.feedIds) ? f.feedIds.filter(Boolean) : [];
+  // Constrain retrieval to allowlisted feeds when mainstream filtering and the
+  // caller didn't pin feeds — otherwise dense niche/denied shows (crypto-native
+  // on a bitcoin query, etc.) crowd mainstream out of the retrieved top-N before
+  // the post-filter runs. Filtering at the source spends the budget on keepers.
+  // Optional (opt-in) feed-constraint: restrict retrieval to allowlisted feeds.
+  // Superseded by the bitcoin-relevance deny-lift below for crowded topics, so
+  // it's OFF by default (it would also exclude the bitcoin_allow shows we now
+  // want to admit). Enable with TAPE_MAINSTREAM_FEED_CONSTRAINT=true.
+  let feedConstraintCount = -1;
+  if (f.mainstream && !feedIds.length && process.env.TAPE_MAINSTREAM_FEED_CONSTRAINT === 'true') {
+    const ms = await getMainstreamFeedIds();
+    feedConstraintCount = ms.length;
+    if (ms.length) feedIds = ms;
+  }
 
   // Brief auto-expanding window: search the WIDEST step up front, then pick the
   // narrowest window that clears the candidate floor (post-fetch, in-memory, so
@@ -153,6 +187,10 @@ async function topicQuotes(input = {}, { openai } = {}) {
 
   const underlying = { searchQuotes: 0, helperTokens: 0 };
   const recordHelperLlmUsage = (_m, i = 0, o = 0) => { underlying.helperTokens += (i || 0) + (o || 0); };
+
+  // Bitcoin/hard-money topics admit the curated bitcoin-native shows (bitcoin_allow)
+  // alongside the mainstream allowlist — for these topics they're the best sources.
+  const bitcoinMode = taste.isBitcoinRelevant(topic);
 
   // Ticker-shaped query → resolve to the company and search the NAME, not the
   // literal ticker. Critical for ambiguous tickers like APP ("app"), U
@@ -192,7 +230,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
       const cand = candidateFromResult(r);
       if (!cand || !cand.pineconeId || byId.has(cand.pineconeId)) continue;
       if (Number.isFinite(f.minSpan) && cand.spanSec != null && cand.spanSec < f.minSpan) continue;
-      if (f.mainstream && !taste.isMainstream(cand.creator)) continue;
+      if (f.mainstream && !taste.isAcceptableSource(cand.creator, { bitcoinMode })) continue;
       byId.set(cand.pineconeId, cand);
     }
   }
@@ -201,6 +239,28 @@ async function topicQuotes(input = {}, { openai } = {}) {
   // Ticker-shaped query → drop company-mismatch noise before ranking/capping (§4).
   if (TICKER_FILTER_ENABLED && isTickerShaped(topic)) {
     candidates = await filterTickerNoise(topic, candidates, resolved);
+  }
+
+  // Quality gate: reuse the pull path's LLM reranker (utils/clipReranker) to DROP
+  // ad reads / sponsor spots (scored 0-1), intros, and shallow clips, and keep
+  // only substantively on-topic quotes (>= minScore). This is what stops a ticker
+  // like CRWV from returning sponsor copy as "analysis". One gpt-4o-mini call,
+  // cached with the response; self-skips when <=2 candidates.
+  if (RERANK_ENABLED && openai && candidates.length > 2) {
+    try {
+      // Cap the rerank input to the top-N by relevance — the scorer's output
+      // budget (~600 tokens) can't score a huge merged pool, and would silently
+      // return it unranked. Pre-sort by similarity so the kept set is the best.
+      const rel = (c) => (Number.isFinite(c.similarity) ? c.similarity : 0.5);
+      const pool = candidates.length > RERANK_MAX
+        ? [...candidates].sort((a, b) => rel(b) - rel(a)).slice(0, RERANK_MAX)
+        : candidates;
+      const rr = await rerankClips({ query: searchTopic, clips: pool, openai });
+      if (rr.usage) recordHelperLlmUsage(rr.usage.model, rr.usage.input_tokens, rr.usage.output_tokens);
+      underlying.rerankedFrom = pool.length;
+      candidates = rr.clips;
+      underlying.rerankedTo = candidates.length;
+    } catch (e) { printLog(`[topicQuotes] rerank skipped: ${e.message}`); }
   }
 
   // Lazy-fill missing candidate dates from the parent episode before window
@@ -230,7 +290,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
   // few clear it, the corpus doesn't cover the topic → empty pool (honest
   // confidence:'empty'). Ticker queries are skipped (the resolver/ticker filter
   // already anchored them on the company name, which won't equal the raw ticker).
-  const terms = isTickerShaped(topic) ? [] : topicTerms(topic);
+  const terms = isTickerShaped(topic) ? [] : expandTermsWithAliases(topicTerms(topic));
   if (terms.length && candidates.length) {
     const literal = candidates.filter((c) => containsAnyTerm(c.text, terms));
     if (literal.length >= LITERAL_MIN) {
@@ -273,6 +333,8 @@ async function topicQuotes(input = {}, { openai } = {}) {
     _meta: {
       underlying, ...recencyMeta(recency), datesHydrated: dates.hydrated,
       ...(autoExpand ? { windowDays, windowExpanded } : {}),
+      mainstreamFeedIds: feedConstraintCount, // telemetry: -1 not attempted, 0 empty, N constrained
+      bitcoinMode, // bitcoin-native shows admitted for this topic
     },
   };
 

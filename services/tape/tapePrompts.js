@@ -21,7 +21,7 @@
 // optional ## INFLECTION/## FORWARD). Invalidates v4 caches.
 // v6: narrative adaptive cadence — variable-width buckets by density, floor
 // relaxed from 3 to 1 bucket. Invalidates v5 caches.
-const PROMPT_VERSION = 'v6';
+const PROMPT_VERSION = 'v7';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
@@ -59,17 +59,21 @@ Ticker rules:
 
 const CONTRACTS = {
   readin: `## WHAT_THEY_DO
-<2-3 paragraph plain-English primer on the company. REQUIRED.>
+<2-3 paragraph plain-English primer on the company, BUILT FROM THE SUPPLIED
+QUOTES (not general knowledge). REQUIRED. Cite the specific quotes you draw on
+inline with {{clip:<id>}} — at least 2 across the primer.>
 
 ## PULSE | BULL: <one-sentence bull case> | BEAR: <one-sentence bear case>
-{{clip:<id>}}   # the single strongest marquee quote. OPTIONAL section.
+{{clip:<id>}}   # the single strongest marquee quote. OPTIONAL — but if you emit
+                # this header you MUST put a {{clip:<id>}} under it.
 
 ## SMART_MONEY: BULL
 {{clip:<id>}}
-{{clip:<id>}}   # OPTIONAL section.
+{{clip:<id>}}   # OPTIONAL — omit the header entirely if you have no bull quotes
+                # to cite. NEVER emit this header with no {{clip:<id>}} beneath it.
 
 ## SMART_MONEY: BEAR
-{{clip:<id>}}   # OPTIONAL section.
+{{clip:<id>}}   # OPTIONAL — same rule: omit if no bear quote; never empty.
 
 ## RISKS
 - <one-line risk>
@@ -289,6 +293,7 @@ function buildUserMessage({ kind, input = {}, candidates = [], companyHint = nul
   if (input.person) lines.push(`PERSON: ${input.person}`);
   if (input.personB) lines.push(`PERSON B: ${input.personB}`);
   if (input.topic) lines.push(`TOPIC: ${input.topic}`);
+  if (input.group) lines.push(`GROUP / LENS: ${input.group} (apply the sentiment rubric to this group's view)`);
   if (input.ticker) lines.push(`TICKER: ${input.ticker}`);
   // Narrative group filter ('bulls' | 'bears' | 'all' | a named person) — drives
   // which sentiment lens the model applies (see the narrative SENTIMENT RUBRIC).

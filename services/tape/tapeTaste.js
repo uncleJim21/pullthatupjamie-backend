@@ -70,6 +70,33 @@ function isMainstream(creator) {
   return cfg.mainstream_allow.some((a) => c.includes(a));
 }
 
+/** Is `creator` one of the curated high-signal bitcoin-native shows? */
+function isBitcoinAllowed(creator) {
+  const cfg = load();
+  const c = String(creator || '').toLowerCase();
+  if (!c) return false;
+  return (cfg.bitcoin_allow || []).some((a) => c.includes(a));
+}
+
+/** Does the topic concern bitcoin / hard-money themes? (admits bitcoin_allow shows) */
+function isBitcoinRelevant(topic) {
+  const cfg = load();
+  const t = String(topic || '').toLowerCase();
+  if (!t) return false;
+  return (cfg.bitcoin_relevance_terms || []).some((term) => t.includes(term));
+}
+
+/**
+ * Whether a candidate's `creator` is an acceptable source for this query.
+ * Normal: mainstream allowlist (minus deny). When the topic is bitcoin-relevant,
+ * the curated bitcoin-native shows (bitcoin_allow) are admitted too.
+ */
+function isAcceptableSource(creator, { bitcoinMode } = {}) {
+  if (isMainstream(creator)) return true;
+  if (bitcoinMode && isBitcoinAllowed(creator)) return true;
+  return false;
+}
+
 function lastNameOf(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1].toLowerCase() : '';
@@ -125,4 +152,7 @@ function classifyBullBear(text) {
   return 'neutral';
 }
 
-module.exports = { isMainstream, isDedicated, scoreConfidence, classifyBullBear, lastNameOf, load };
+module.exports = {
+  isMainstream, isDedicated, scoreConfidence, classifyBullBear, lastNameOf, load,
+  isBitcoinAllowed, isBitcoinRelevant, isAcceptableSource,
+};

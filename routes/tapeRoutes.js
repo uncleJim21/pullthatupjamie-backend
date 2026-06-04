@@ -15,7 +15,8 @@ const express = require('express');
 
 const { signTapeToken, requireTapeAuth, passwordMatches } = require('../services/tape/tapeAuth');
 const { tapeError } = require('../services/tape/tapeErrors');
-const { withCachedEndpoint, checkRateLimit, logTape } = require('../services/tape/tapeEndpoint');
+const { withCachedEndpoint, withKindEndpoint, checkRateLimit, logTape } = require('../services/tape/tapeEndpoint');
+const { runDossier, runBrief, runSplit, runNarrative, runReadin } = require('../services/tape/kindOrchestrator');
 const { TIER, qualTtlSec } = require('../services/tape/tapeFreshness');
 const { hashBody, candidateIds } = require('../services/tape/tapeShared');
 const { TapeHttpError } = require('../services/tape/tapeErrors');
@@ -101,6 +102,14 @@ function createTapeRoutes({ openai } = {}) {
 
   // --- POST /synthesize (custom: streaming + cost guards) ---
   router.post('/synthesize', createSynthesizeHandler());
+
+  // --- Kind-level endpoints (consolidated: retrieve→synthesize→parse→hydrate) ---
+  // The client-facing surface going forward; the primitives above are internal.
+  router.post('/dossier', withKindEndpoint({ kind: 'dossier', hourlyLimit: 30, run: (body, ctx) => runDossier(body, { ...ctx, openai }) }));
+  router.post('/brief', withKindEndpoint({ kind: 'brief', hourlyLimit: 30, run: (body, ctx) => runBrief(body, { ...ctx, openai }) }));
+  router.post('/split', withKindEndpoint({ kind: 'split', hourlyLimit: 30, run: (body, ctx) => runSplit(body, { ...ctx, openai }) }));
+  router.post('/narrative', withKindEndpoint({ kind: 'narrative', hourlyLimit: 30, run: (body, ctx) => runNarrative(body, { ...ctx, openai }) }));
+  router.post('/readin', withKindEndpoint({ kind: 'readin', hourlyLimit: 30, run: (body, ctx) => runReadin(body, { ...ctx, openai }) }));
 
   return router;
 }

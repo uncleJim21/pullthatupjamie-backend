@@ -32,15 +32,55 @@ mainstream_allow:
   - goalhanger
 
 mainstream_deny:
-  - simply bitcoin
-  - bankless
-  - tftc
-  - what bitcoin did
   - guy swann
-  - bitcoin audible
   - no agenda
   - empire
   - hivemind
+
+# High-signal bitcoin-native shows. EXCLUDED from normal mainstream queries (so
+# they don't pollute a Fed/oil brief), but ADMITTED when the topic is bitcoin /
+# hard-money relevant (see bitcoin_relevance_terms) — for those topics they are
+# the authoritative sources, not noise.
+bitcoin_allow:
+  - simply bitcoin
+  - coin stories
+  - natalie brunell
+  - the pomp podcast
+  - what bitcoin did
+  - tftc
+  - bankless
+  - the breakdown
+  - bitcoin audible
+  - the wolf of all streets
+  - the peter mccormack show
+  - bitcoin & markets
+
+# A topic is "bitcoin/hard-money relevant" if its text contains any of these —
+# then bitcoin_allow shows are admitted alongside the mainstream allowlist.
+bitcoin_relevance_terms:
+  - bitcoin
+  - btc
+  - crypto
+  - cryptocurrency
+  - digital asset
+  - digital gold
+  - debasement
+  - inflation
+  - hard asset
+  - hard money
+  - sound money
+  - store of value
+  - fiat
+  - currency
+  - monetary
+  - dollar
+  - gold
+  - satoshi
+  - halving
+  - stablecoin
+  - ethereum
+  - microstrategy
+  - saylor
 
 # How a "dedicated" episode is detected.
 # Options: 'last-name' (default), 'full-name', 'exact-title'.

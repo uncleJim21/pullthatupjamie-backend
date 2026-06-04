@@ -18,7 +18,7 @@ const { printLog } = require('../../constants');
 
 const LLM_ENABLED = process.env.TAPE_THEME_EXPANSION !== 'false';
 const MODEL = process.env.TAPE_THEME_EXPANSION_MODEL || 'gpt-4o-mini';
-const MAX_VARIANTS = 5;
+const MAX_VARIANTS = 7;
 
 // Generic finance framings appended to a topic as a deterministic fallback.
 const TEMPLATE_SUFFIXES = ['outlook', 'forecast', 'price action', 'analysis', 'this week'];
@@ -36,18 +36,30 @@ async function llmVariants(topic, { openai, recordHelperLlmUsage }) {
   try {
     const resp = await openai.chat.completions.create({
       model: MODEL,
-      temperature: 0.3,
-      max_tokens: 200,
+      temperature: 0.2,
+      max_tokens: 220,
       messages: [
         {
           role: 'system',
           content:
-            'You rewrite a finance topic into short phrasings a podcast host or guest would actually say, '
-            + 'for retrieval over transcripts. Output ONLY a JSON array of 3-5 short strings, no prose. '
-            + 'Keep the core subject; vary the framing (outlook, rally, risk, price target, safe haven, etc.). '
-            + 'Do not add tickers or companies not implied by the topic.',
+            'You decompose a finance subject into the distinct ANALYTICAL ANGLES an equity analyst or '
+            + 'macro strategist would actually probe, then phrase each as a short search query a podcast '
+            + 'host/guest would say, for semantic retrieval over transcripts. Output ONLY a JSON array of '
+            + '5-7 strings.\n'
+            + 'RULES:\n'
+            + '- Each phrase 2-5 words, terse and spoken. NOT full sentences. No "the".\n'
+            + '- COVER DISTINCT ANGLES, not rephrasings of the same point. For a COMPANY: profit margins, '
+            + 'revenue growth, competition / moat, customer concentration, valuation, long-term strategy, '
+            + 'guidance / outlook, key risks (e.g. CoreWeave → "CoreWeave profit margins", "CoreWeave '
+            + 'revenue growth", "CoreWeave customer concentration", "CoreWeave debt financing", "CoreWeave '
+            + 'long-term strategy", "CoreWeave valuation", "CoreWeave AI demand"). For a MACRO topic: its '
+            + 'real sub-debates (gold → "gold price target", "gold safe haven", "real rates gold", '
+            + '"central bank gold buying"; AI bubble → "AI capex ROI", "AI valuations bubble", '
+            + '"AI concentration risk", "AI monetization").\n'
+            + '- Lead each phrase with the subject so it stays on-topic. Use real jargon / products / '
+            + 'people / tickers. Stay strictly on the given subject.',
         },
-        { role: 'user', content: `Topic: "${topic}"` },
+        { role: 'user', content: `Subject: "${topic}"\nReturn the JSON array of analyst-angle search phrases.` },
       ],
     });
     const txt = resp?.choices?.[0]?.message?.content || '';

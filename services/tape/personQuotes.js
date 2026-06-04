@@ -13,6 +13,10 @@ const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
 const { resolveHalfLife, rankByRecency, recencyMeta } = require('./recency');
 const { hydrateCandidateDates } = require('./dateHydration');
+const { rerankClips } = require('../../utils/clipReranker'); // shared quality reranker
+
+const RERANK_ENABLED = process.env.TAPE_RERANK !== 'false';
+const RERANK_MAX = parseInt(process.env.TAPE_RERANK_MAX || '25', 10);
 
 const DEFAULTS = {
   guestsOnly: true,
@@ -110,6 +114,21 @@ async function personQuotes(input = {}, { openai } = {}) {
     if (Number.isFinite(f.maxSpan) && c.spanSec > f.maxSpan) return false;
     return true;
   });
+
+  // Quality gate (shared with the pull path): drop ad reads / intros / shallow
+  // clips and keep substantively on-topic quotes. Self-skips when <=2 candidates.
+  if (RERANK_ENABLED && openai && candidates.length > 2) {
+    try {
+      const rel = (c) => (Number.isFinite(c.similarity) ? c.similarity : 0.5);
+      const pool = candidates.length > RERANK_MAX
+        ? [...candidates].sort((a, b) => rel(b) - rel(a)).slice(0, RERANK_MAX)
+        : candidates;
+      const rr = await rerankClips({ query: `${resolvedName} ${themes[0] || ''}`.trim(), clips: pool, openai });
+      if (rr.usage) recordHelperLlmUsage(rr.usage.model, rr.usage.input_tokens, rr.usage.output_tokens);
+      candidates = rr.clips;
+    } catch (e) { /* keep unranked on error */ }
+  }
+
   // Lazy-fill missing dates from the parent episode before recency ranking.
   const dates = await hydrateCandidateDates(candidates);
 

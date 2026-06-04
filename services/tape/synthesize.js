@@ -25,7 +25,12 @@ const { checkRateLimit, logTape } = require('./tapeEndpoint');
 const { hashBody } = require('./tapeShared');
 const { printLog } = require('../../constants');
 
-const MAX_TOKENS = parseInt(process.env.TAPE_SYN_MAX_TOKENS || '2048', 10);
+// Headroom for REASONING models (DeepSeek V4, gpt-5-nano): they spend
+// reasoning_content tokens before emitting visible text, so a low cap makes
+// them hit max_tokens mid-think and return zero prose. 8k leaves room to reason
+// AND answer; non-reasoning models (Haiku, gpt-4o-mini) stop when done and don't
+// approach it, so the only cost effect is on reasoning models (still cheap).
+const MAX_TOKENS = parseInt(process.env.TAPE_SYN_MAX_TOKENS || '8000', 10);
 const DAILY_TOKEN_CAP = parseInt(process.env.TAPE_DAILY_OUTPUT_TOKEN_CAP || '5000000', 10);
 const DAILY_USD_CAP = process.env.TAPE_DAILY_USD_CAP ? parseFloat(process.env.TAPE_DAILY_USD_CAP) : null;
 const HOURLY_LIMIT = parseInt(process.env.TAPE_SYN_HOURLY_LIMIT || '30', 10);
@@ -132,7 +137,10 @@ async function runSynthesis({ kind, input, candidates, modelConfig, onDelta, ref
     system: systemPromptFor(kind),
     messages: [{ role: 'user', content: userMsg }],
     tools: undefined,
-    toolChoice: 'none',
+    // No tools on the synthesis path. Don't send tool_choice:'none' — OpenAI
+    // rejects tool_choice without tools (400); omitting it works across all
+    // providers (no tools ⇒ nothing to call anyway).
+    toolChoice: undefined,
     temperature: 0.4,
     onTextDelta: onDelta || (() => {}),
     aborted: () => false,
