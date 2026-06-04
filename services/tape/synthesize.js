@@ -17,6 +17,7 @@ const { sanitizeAgentText, createStreamSanitizer } = require('../../utils/agent/
 const { VALID_KINDS, systemPromptFor, buildUserMessage, validateKindCompliance, EMPTY_SENTINEL, TICKERS_MARKER, PROMPT_VERSION } = require('./tapePrompts');
 const { extractTickers } = require('./tickerExtract');
 const { buildAliases } = require('./tickerResolver');
+const { assessConfidence } = require('./confidence');
 const { getCached, setCached, addAndGet } = require('./tapeStore');
 const { TIER, synTtlSec, buildFreshnessMeta } = require('./tapeFreshness');
 const { tapeError, tapeRateLimited, TapeHttpError } = require('./tapeErrors');
@@ -374,12 +375,26 @@ function createSynthesizeHandler() {
         throw e;
       }
 
+      // Confidence tier (deterministic, all kinds). windowDays/windowExpanded
+      // come from the Brief retrieval response if the client forwards them.
+      const windowDays = input.windowDays ?? body.windowDays ?? null;
+      const windowExpanded = input.windowExpanded ?? body.windowExpanded ?? false;
+      const conf = assessConfidence({
+        kind, candidates, finalText: r.finalText,
+        synthesizedEmpty: r.synthesizedEmpty, emptyReason: r.reason,
+        windowDays, windowExpanded,
+      });
+
       const outBody = {
         kind, text: r.finalText, tickers: r.synthesizedEmpty ? [] : r.tickers,
         tokens: { input: r.usage.input_tokens, output: r.usage.output_tokens },
         model: modelConfig.id, elapsedMs: Date.now() - startedAt,
         _meta: {
           fetchedAt, forced: refresh,
+          confidence: conf.confidence,
+          confidenceReason: conf.confidenceReason,
+          candidateCount: conf.candidateCount,
+          ...(windowExpanded ? { windowDays, windowExpanded: true } : {}),
           ...(r.synthesizedEmpty ? { synthesizedEmpty: true, reason: r.reason } : {}),
           ...(r.recovered ? { complianceRecovered: true } : {}),
         },
@@ -389,11 +404,11 @@ function createSynthesizeHandler() {
       if (!noCache && !r.synthesizedEmpty) await setCached(cacheKey, outBody, ttl);
       await recordCost(r.usage, modelConfig, dayKey, ttlDay);
 
-      const logBase = { endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty: r.synthesizedEmpty, complianceRecovered: !!r.recovered, attempts: r.attempts, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(r.usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt };
+      const logBase = { endpoint: 'synthesize', kind, jwt_sub: req.tape?.sub, cache: 'miss', forced: refresh, synthesizedEmpty: r.synthesizedEmpty, confidence: conf.confidence, complianceRecovered: !!r.recovered, attempts: r.attempts, tickers: outBody.tickers.length, tokens: outBody.tokens, model: modelConfig.id, cost_usd_est: costUsd(r.usage, modelConfig), status: 200, elapsed_ms: Date.now() - startedAt };
 
       if (stream) {
         sseSend(res, 'text', { text: r.finalText });
-        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, tickers: outBody.tickers, cached: false, forced: refresh, synthesizedEmpty: r.synthesizedEmpty });
+        sseSend(res, 'done', { kind, model: modelConfig.id, tokens: outBody.tokens, tickers: outBody.tickers, confidence: conf.confidence, confidenceReason: conf.confidenceReason, cached: false, forced: refresh, synthesizedEmpty: r.synthesizedEmpty });
         logTape(logBase);
         return res.end();
       }

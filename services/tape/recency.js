@@ -72,18 +72,26 @@ function decayFactor(publishedDate, halfLifeMonths, now = Date.now()) {
   return Math.exp(-ageMonths / halfLifeMonths);
 }
 
+// Default base score = vector RELEVANCE (0..1), not clip length. Selection used
+// to rank by span, which discarded the relevance signal and let long, adjacent
+// clips beat short on-topic ones. Lexical-only / literal hits have null
+// similarity → treated as mid-relevance (0.5); they're inherently on-topic and a
+// literal-term boost (in topicQuotes) lifts them further. Span is the tiebreaker.
+const NO_SIM_RELEVANCE = parseFloat(process.env.TAPE_NO_SIM_RELEVANCE || '0.5');
+function defaultRelevance(c) {
+  return Number.isFinite(c.similarity) ? c.similarity : NO_SIM_RELEVANCE;
+}
+
 /**
- * Re-rank candidates by base_score × recency decay (descending) without
- * mutating or leaking internal fields. `baseScoreFn(candidate)` defaults to the
- * existing span-based key so non-recency ordering is otherwise preserved.
+ * Re-rank candidates by base_score × recency decay (descending), span as the
+ * tiebreaker. `baseScoreFn` defaults to vector relevance. Does not mutate or
+ * leak internal fields.
  */
-function rankByRecency(candidates, { halfLifeMonths, disabled }, baseScoreFn = (c) => c.spanSec || 0, now = Date.now()) {
-  if (disabled) {
-    return [...candidates].sort((a, b) => baseScoreFn(b) - baseScoreFn(a));
-  }
+function rankByRecency(candidates, { halfLifeMonths, disabled }, baseScoreFn = defaultRelevance, now = Date.now()) {
+  const span = (c) => c.spanSec || 0;
   return candidates
-    .map((c) => ({ c, w: baseScoreFn(c) * decayFactor(c.publishedDate, halfLifeMonths, now) }))
-    .sort((a, b) => b.w - a.w)
+    .map((c) => ({ c, w: baseScoreFn(c) * (disabled ? 1 : decayFactor(c.publishedDate, halfLifeMonths, now)) }))
+    .sort((a, b) => (b.w - a.w) || (span(b.c) - span(a.c)))
     .map((x) => x.c);
 }
 
@@ -97,5 +105,5 @@ function recencyMeta({ halfLifeMonths, disabled }) {
 
 module.exports = {
   HALF_LIFE_MONTHS, DEFAULT_HALF_LIFE_MONTHS,
-  resolveHalfLife, decayFactor, rankByRecency, recencyMeta,
+  resolveHalfLife, decayFactor, rankByRecency, recencyMeta, defaultRelevance,
 };

@@ -19,7 +19,9 @@
 // the structured `tickers` field — see synthesize.js). Invalidates v3 caches.
 // v5: added the `narrative` kind (## THESIS + ## BUCKET | with signed sentiment +
 // optional ## INFLECTION/## FORWARD). Invalidates v4 caches.
-const PROMPT_VERSION = 'v5';
+// v6: narrative adaptive cadence — variable-width buckets by density, floor
+// relaxed from 3 to 1 bucket. Invalidates v5 caches.
+const PROMPT_VERSION = 'v6';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
@@ -123,9 +125,14 @@ const CONTRACTS = {
 ## BUCKET | <ISO start date> | <ISO end date> | <signed sentiment -5..+5>
 <2-3 sentence stance summary for this window>
 {{clip:<id>}}
-# AT LEAST 3 ## BUCKET blocks REQUIRED, in chronological order oldest→newest.
-# Each bucket carries 1-4 {{clip:<id>}} citations. The sentiment is the THIRD
-# pipe-delimited field and is REQUIRED on EVERY bucket: an integer -5..+5.
+# ADAPTIVE CADENCE: choose 3-8 bucket boundaries that follow the RHYTHM of the
+# conversation — NARROWER windows where coverage is dense, WIDER where it is
+# sparse. Do NOT force uniform widths (no fixed monthly/quarterly/yearly rule);
+# variable widths are correct output. Each bucket needs >= 2 candidates. If the
+# data only supports fewer, emit fewer — at least 1 bucket. Chronological,
+# non-overlapping, oldest→newest. Each bucket carries 1-4 {{clip:<id>}}
+# citations. Sentiment is the THIRD pipe-delimited field, REQUIRED on EVERY
+# bucket: an integer -5..+5.
 
 ## INFLECTION
 - <YYYY-Qn OR ISO date>: <one-sentence what changed and, briefly, why>
@@ -204,7 +211,9 @@ function countMatches(text, re) { return (text.match(re) || []).length; }
 // the trajectory chart on the client is driven entirely off these values.
 function narrativeBucketsValid(text) {
   const lines = text.match(/^##\s*BUCKET\s*\|.*$/gim) || [];
-  if (lines.length < 3) return false;
+  // Adaptive cadence: bucket count follows data density, so the floor is >= 1
+  // (was 3). Every bucket present must still carry a valid signed-sentiment field.
+  if (lines.length < 1) return false;
   return lines.every((line) => {
     const parts = line.split('|'); // [ "## BUCKET ", start, end, sentiment ]
     if (parts.length < 4) return false;

@@ -20,6 +20,7 @@ function candidateFromResult(r) {
   const spanSec = Number.isFinite(start) && Number.isFinite(end)
     ? Math.round(end - start)
     : null;
+  const sim = r.similarity && Number.isFinite(r.similarity.combined) ? r.similarity.combined : null;
   return {
     pineconeId: r.shareLink,
     text: r.quote || '',
@@ -31,6 +32,7 @@ function candidateFromResult(r) {
     endTime: Number.isFinite(end) ? end : null,
     publishedDate: r.date && r.date !== 'Date not provided' ? r.date : null,
     spanSec,
+    similarity: sim, // vector relevance (0..1); null for lexical-only / literal hits
   };
 }
 

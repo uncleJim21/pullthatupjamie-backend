@@ -121,6 +121,33 @@ beta it is unlimited and only measured** — see the `TODO(beta)` in
 Optional sections are **omitted** (no empty headers) when candidates don't support
 them. Bump `PROMPT_VERSION` on any prompt change — it's part of the cache key.
 
+### Confidence tiers
+
+Every `synthesize` response carries `_meta.confidence` (`strong`/`partial`/`thin`/`empty`),
+`_meta.confidenceReason` (≤100-char sentence, `null` when `strong`), and
+`_meta.candidateCount`. The tier is **deterministic** ([confidence.js](confidence.js)) —
+computed from candidate count, rendered section/marker presence, publisher/side
+distribution, and date spread — not model self-grading (LLMs miscalibrate). `synthesizedEmpty`
+→ `empty`. The client renders a yellow (`partial`) / red (`thin`) pill with the reason, or the
+empty state for `empty`.
+
+### Narrative adaptive cadence
+
+Narrative buckets follow **data density**, not a fixed monthly/quarterly/yearly rule: the model
+picks 3–8 variable-width boundaries (narrow where dense, wide where sparse), ≥2 candidates each.
+The validator floor is **≥1 bucket** (was 3) so a thin topic still renders. Signed-sentiment
+validation per bucket is unchanged.
+
+### Brief auto-expanding window
+
+When `kind: "brief"` and no explicit `minDate`, retrieval starts at a 7-day lookback from
+`asOfDate` and **widens 7 → 30 → 90 days** until ≥3 dated candidates clear (one fan-out at the
+widest step, narrowed in-memory). Reports `_meta.windowDays` + `_meta.windowExpanded`. Crucially,
+when the window expands the recency **half-life is coupled to the effective window** (`~windowDays/30`
+months) — otherwise the 1-week half-life would decay the widened candidates right back out. Solves
+"empty this week when there's a month-old story." The client forwards `windowDays`/`windowExpanded`
+into `synthesize` so the confidence reason can say "Widened to 30 days."
+
 ### Kind-compliance validator
 
 Before a synthesis response leaves the handler, `validateKindCompliance(kind, text)`

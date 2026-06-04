@@ -12,9 +12,35 @@ const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
 const { resolveTicker } = require('./tickerResolver');
 const { expandThemes } = require('./themeExpander');
-const { resolveHalfLife, rankByRecency, recencyMeta } = require('./recency');
+const { resolveHalfLife, rankByRecency, recencyMeta, defaultRelevance } = require('./recency');
 const { hydrateCandidateDates } = require('./dateHydration');
 const { printLog } = require('../../constants');
+
+// Drop vector candidates below this absolute similarity so an uncovered topic
+// returns an empty pool (honest confidence:'empty') instead of adjacent noise.
+// Lexical/literal hits (null similarity) bypass. 0 = off; set after calibration.
+const RELEVANCE_FLOOR = parseFloat(process.env.TAPE_RELEVANCE_FLOOR || '0');
+// Soft boost for clips that literally mention a topic noun ("gold") — ranks them
+// above merely-adjacent ones, without hard-filtering proxies (GLD, miners).
+const LITERAL_BONUS = parseFloat(process.env.TAPE_LITERAL_BONUS || '0.12');
+// Min literal-matching candidates for a non-ticker topic to be "covered"; below
+// this the pool is emptied (honest confidence:'empty') rather than serving noise.
+const LITERAL_MIN = parseInt(process.env.TAPE_LITERAL_MIN || '3', 10);
+const TOPIC_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'vs', 'this',
+  // topic framing words (not the subject)
+  'prognosis', 'outlook', 'forecast', 'prediction', 'thoughts', 'take', 'week',
+  'price', 'stock', 'market', 'markets', 'analysis', 'update', 'latest', 'news',
+  // generic ranking/superlative words that match everything
+  'best', 'worst', 'top', 'ranked', 'rankings', 'guide', 'review', 'championship',
+]);
+function topicTerms(topic) {
+  return String(topic || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !TOPIC_STOPWORDS.has(t));
+}
+function containsAnyTerm(text, terms) {
+  const t = String(text || '').toLowerCase();
+  return terms.some((term) => t.includes(term));
+}
 
 const DEFAULTS = {
   mainstream: true,
@@ -64,6 +90,33 @@ async function filterTickerNoise(ticker, candidates, resolved) {
   return kept;
 }
 
+const DAY_MS = 86_400_000;
+const BRIEF_WINDOW_STEPS = [7, 30, 90]; // days; widen until >= MIN_BRIEF_CANDIDATES
+const MIN_BRIEF_CANDIDATES = 3;
+const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Brief auto-expanding window: pick the SMALLEST step whose dated candidates
+ * within [asOf - step, asOf] reach MIN_BRIEF_CANDIDATES; else the widest step.
+ * Keeps undated candidates (recency-penalized later). Returns the chosen window
+ * and the filtered set.
+ */
+function selectBriefWindow(candidates, asOfMs, steps = BRIEF_WINDOW_STEPS) {
+  const datedWithin = (days) => candidates.filter((c) => {
+    if (!c.publishedDate) return false;
+    const t = new Date(c.publishedDate).getTime();
+    return Number.isFinite(t) && t >= asOfMs - days * DAY_MS && t <= asOfMs;
+  }).length;
+  let chosen = steps[steps.length - 1];
+  for (const d of steps) { if (datedWithin(d) >= MIN_BRIEF_CANDIDATES) { chosen = d; break; } }
+  const kept = candidates.filter((c) => {
+    if (!c.publishedDate) return true;
+    const t = new Date(c.publishedDate).getTime();
+    return !Number.isFinite(t) || (t >= asOfMs - chosen * DAY_MS && t <= asOfMs);
+  });
+  return { windowDays: chosen, windowExpanded: chosen > steps[0], kept };
+}
+
 /**
  * @param {object} input
  * @param {object} deps  { openai }
@@ -74,6 +127,17 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const minDate = validateDate(f.minDate, 'minDate');
   const maxDate = validateDate(f.maxDate, 'maxDate');
   const feedIds = Array.isArray(f.feedIds) ? f.feedIds.filter(Boolean) : [];
+
+  // Brief auto-expanding window: search the WIDEST step up front, then pick the
+  // narrowest window that clears the candidate floor (post-fetch, in-memory, so
+  // it's one fan-out, not three). Only when kind=brief and the caller didn't pin
+  // an explicit minDate. The asOf (window end) stays fixed; only lookback grows.
+  const autoExpand = input.kind === 'brief' && !f.minDate;
+  const asOfMs = autoExpand
+    ? new Date(input.asOfDate || f.maxDate || Date.now()).getTime()
+    : null;
+  const searchMinDate = autoExpand ? isoDay(asOfMs - BRIEF_WINDOW_STEPS[BRIEF_WINDOW_STEPS.length - 1] * DAY_MS) : minDate;
+  const searchMaxDate = autoExpand ? isoDay(asOfMs) : maxDate;
 
   const seedThemes = Array.isArray(input.themes) && input.themes.length
     ? input.themes.filter((t) => typeof t === 'string' && t.trim())
@@ -114,7 +178,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
   // Fan out across themes.
   const tasks = themes.map((theme) =>
     searchQuotes(
-      { query: theme, feedIds, minDate, maxDate, limit: f.perThemeLimit },
+      { query: theme, feedIds, minDate: searchMinDate, maxDate: searchMaxDate, limit: f.perThemeLimit },
       { openai, recordHelperLlmUsage },
     ).then((r) => r.results || []),
   );
@@ -139,19 +203,64 @@ async function topicQuotes(input = {}, { openai } = {}) {
     candidates = await filterTickerNoise(topic, candidates, resolved);
   }
 
-  // Lazy-fill missing candidate dates from the parent episode before ranking,
-  // so recency decay sees real dates instead of the undated penalty.
+  // Lazy-fill missing candidate dates from the parent episode before window
+  // selection + ranking, so both see real dates instead of the undated penalty.
   const dates = await hydrateCandidateDates(candidates);
 
-  // Soft recency weighting: rank by span × exp(-age/half-life) before truncating.
+  // Brief: narrow to the chosen auto-expand window.
+  let windowDays = null;
+  let windowExpanded = false;
+  if (autoExpand) {
+    const sel = selectBriefWindow(candidates, asOfMs);
+    candidates = sel.kept;
+    windowDays = sel.windowDays;
+    windowExpanded = sel.windowExpanded;
+  }
+
+  // Relevance floor: an uncovered topic should yield an empty pool, not noise.
+  if (RELEVANCE_FLOOR > 0) {
+    const before = candidates.length;
+    candidates = candidates.filter((c) => !Number.isFinite(c.similarity) || c.similarity >= RELEVANCE_FLOOR);
+    if (candidates.length < before) printLog(`[topicQuotes] relevance floor ${RELEVANCE_FLOOR} dropped ${before - candidates.length}/${before} for "${topic}"`);
+  }
+
+  // Literal-term anchoring (the real precision lever — ada-002 similarity is too
+  // compressed to separate covered from uncovered topics). For a non-ticker query
+  // with clear nouns, keep only clips that actually mention a topic term; if too
+  // few clear it, the corpus doesn't cover the topic → empty pool (honest
+  // confidence:'empty'). Ticker queries are skipped (the resolver/ticker filter
+  // already anchored them on the company name, which won't equal the raw ticker).
+  const terms = isTickerShaped(topic) ? [] : topicTerms(topic);
+  if (terms.length && candidates.length) {
+    const literal = candidates.filter((c) => containsAnyTerm(c.text, terms));
+    if (literal.length >= LITERAL_MIN) {
+      if (literal.length < candidates.length) printLog(`[topicQuotes] literal-anchor "${topic}" kept ${literal.length}/${candidates.length}`);
+      candidates = literal;
+    } else {
+      printLog(`[topicQuotes] "${topic}" — only ${literal.length} literal matches (<${LITERAL_MIN}); treating as uncovered (empty pool)`);
+      candidates = [];
+    }
+  }
+
+  // Rank by relevance × recency, span as tiebreaker. (All survivors contain a term
+  // after anchoring; the boost only matters for the no-term / ticker fallback.)
+  const baseScore = terms.length
+    ? (c) => defaultRelevance(c) + (containsAnyTerm(c.text, terms) ? LITERAL_BONUS : 0)
+    : defaultRelevance;
+
   // Half-life from the requested kind (brief ~1wk, readin/split 6mo) unless the
-  // caller overrides; Arc-style callers pass disableRecencyWeighting.
+  // caller overrides; Arc-style callers pass disableRecencyWeighting. When a Brief
+  // auto-expands, COUPLE the half-life to the effective window (~windowDays) —
+  // otherwise the 1-week half-life would decay the widened candidates right back out.
+  const halfLifeOverride = Number.isFinite(f.halfLifeMonths)
+    ? f.halfLifeMonths
+    : (autoExpand ? windowDays / 30.44 : undefined);
   const recency = resolveHalfLife({
     kind: input.kind,
-    halfLifeMonths: f.halfLifeMonths,
+    halfLifeMonths: halfLifeOverride,
     disableRecencyWeighting: f.disableRecencyWeighting,
   });
-  candidates = rankByRecency(candidates, recency).slice(0, f.candidatesLimit);
+  candidates = rankByRecency(candidates, recency, baseScore).slice(0, f.candidatesLimit);
 
   // Optional bull/bear tagging on each candidate.
   if (groupBy === 'bull-bear') {
@@ -161,7 +270,10 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const body = {
     query: input.query || themes[0],
     candidates,
-    _meta: { underlying, ...recencyMeta(recency), datesHydrated: dates.hydrated },
+    _meta: {
+      underlying, ...recencyMeta(recency), datesHydrated: dates.hydrated,
+      ...(autoExpand ? { windowDays, windowExpanded } : {}),
+    },
   };
 
   // Grouping.
