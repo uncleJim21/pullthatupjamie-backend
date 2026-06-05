@@ -246,6 +246,15 @@ const AGENT_MODELS = {
     label: 'GPT-4o mini (OpenAI)',
     maxSynthesisTokens: parseInt(process.env.OPENAI_GPT4O_MINI_MAX_SYNTHESIS_TOKENS || '4096', 10),
   },
+  'gpt-4o': {
+    key: 'gpt-4o',
+    provider: 'openai',
+    id: process.env.OPENAI_GPT4O_MODEL || 'gpt-4o',
+    inputPer1M: parseFloat(process.env.OPENAI_GPT4O_INPUT_PER_1M || '2.50'),
+    outputPer1M: parseFloat(process.env.OPENAI_GPT4O_OUTPUT_PER_1M || '10.00'),
+    label: 'GPT-4o (OpenAI)',
+    maxSynthesisTokens: parseInt(process.env.OPENAI_GPT4O_MAX_SYNTHESIS_TOKENS || '4096', 10),
+  },
 };
 
 // Default routing: hardcoded to 'quality' (currently the DeepSeek V4-Flash

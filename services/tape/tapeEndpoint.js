@@ -216,6 +216,8 @@ function withKindEndpoint({ kind, hourlyLimit, run }) {
         _meta: {
           ...(result._meta || {}),
           fetchedAt,
+          // Synthesis token usage (for cost tracking / model A-B in the eval harness).
+          tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
           ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: KIND_TTL_SEC }),
         },
       };

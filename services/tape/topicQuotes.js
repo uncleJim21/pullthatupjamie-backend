@@ -31,6 +31,24 @@ const LITERAL_BONUS = parseFloat(process.env.TAPE_LITERAL_BONUS || '0.12');
 // Min literal-matching candidates for a non-ticker topic to be "covered"; below
 // this the pool is emptied (honest confidence:'empty') rather than serving noise.
 const LITERAL_MIN = parseInt(process.env.TAPE_LITERAL_MIN || '3', 10);
+// Drop pure fragments (too short to be a real quote) before ranking/synthesis.
+const MIN_WORDS = parseInt(process.env.TAPE_MIN_WORDS || '6', 10);
+// Source-diversity cap: at most N candidates per creator in the final set, so a
+// single dense show/episode can't dominate (eval: source_diversity 2.2/5,
+// single-publisher Briefs). Overflow is appended after, so the pool never shrinks.
+const PER_CREATOR_MAX = parseInt(process.env.TAPE_PER_CREATOR_MAX || '3', 10);
+function capPerCreator(list, max) {
+  if (!(max > 0)) return list;
+  const counts = new Map();
+  const kept = [];
+  const overflow = [];
+  for (const c of list) {
+    const k = (c.creator || 'unknown').toLowerCase();
+    const n = counts.get(k) || 0;
+    if (n < max) { counts.set(k, n + 1); kept.push(c); } else overflow.push(c);
+  }
+  return kept.concat(overflow); // diverse-first, then the rest (so slice keeps count)
+}
 // Spoken-vs-typed aliases: macro hosts say "BTC" as often as "bitcoin", "eth"
 // for ethereum, "bullion" for gold. Without these the literal anchor rejects a
 // "BTC"-only quote on a "bitcoin" query (and vice-versa). Bidirectional.
@@ -230,6 +248,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
       const cand = candidateFromResult(r);
       if (!cand || !cand.pineconeId || byId.has(cand.pineconeId)) continue;
       if (Number.isFinite(f.minSpan) && cand.spanSec != null && cand.spanSec < f.minSpan) continue;
+      if (String(cand.text || '').trim().split(/\s+/).length < MIN_WORDS) continue; // drop pure fragments
       if (f.mainstream && !taste.isAcceptableSource(cand.creator, { bitcoinMode })) continue;
       byId.set(cand.pineconeId, cand);
     }
@@ -293,6 +312,8 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const terms = isTickerShaped(topic) ? [] : expandTermsWithAliases(topicTerms(topic));
   if (terms.length && candidates.length) {
     const literal = candidates.filter((c) => containsAnyTerm(c.text, terms));
+    // Reverted the multi-word loosening (v5: it traded honest-empty pools for
+    // off-topic filler → more fabrication/off_topic flags). Honest empty is better.
     if (literal.length >= LITERAL_MIN) {
       if (literal.length < candidates.length) printLog(`[topicQuotes] literal-anchor "${topic}" kept ${literal.length}/${candidates.length}`);
       candidates = literal;
@@ -320,7 +341,10 @@ async function topicQuotes(input = {}, { openai } = {}) {
     halfLifeMonths: halfLifeOverride,
     disableRecencyWeighting: f.disableRecencyWeighting,
   });
-  candidates = rankByRecency(candidates, recency, baseScore).slice(0, f.candidatesLimit);
+  // Rank, then apply the per-creator diversity cap before truncating, so a single
+  // dense show can't crowd the final set (improves source diversity / breaks
+  // single-publisher Briefs).
+  candidates = capPerCreator(rankByRecency(candidates, recency, baseScore), PER_CREATOR_MAX).slice(0, f.candidatesLimit);
 
   // Optional bull/bear tagging on each candidate.
   if (groupBy === 'bull-bear') {

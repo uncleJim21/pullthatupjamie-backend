@@ -21,7 +21,13 @@
 // optional ## INFLECTION/## FORWARD). Invalidates v4 caches.
 // v6: narrative adaptive cadence — variable-width buckets by density, floor
 // relaxed from 3 to 1 bucket. Invalidates v5 caches.
-const PROMPT_VERSION = 'v7';
+// v8: stance gate — candidates may carry a {stance: bull/bear/neutral} hint;
+// readin BEAR slot + split PERSON sides must be stance-correct and quotes must
+// not be reused across split sides. Invalidates v7 caches.
+// v9: retrieval — adjacent-paragraph context stitching on truncated clips, source-
+// diversity cap, min-word fragment drop, looser literal-anchor for multi-word
+// topics. Synthesis sees fuller passages, so output changes. Invalidates v8 caches.
+const PROMPT_VERSION = 'v9';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
@@ -73,7 +79,11 @@ inline with {{clip:<id>}} — at least 2 across the primer.>
                 # to cite. NEVER emit this header with no {{clip:<id>}} beneath it.
 
 ## SMART_MONEY: BEAR
-{{clip:<id>}}   # OPTIONAL — same rule: omit if no bear quote; never empty.
+{{clip:<id>}}   # OPTIONAL. Only GENUINELY BEARISH quotes (the speaker argues the
+                # stock is overvalued / faces downside / structural risk). A clip
+                # marked {stance: bull} or {stance: neutral} is NOT a bear quote —
+                # do not place it here. If NO candidate is actually bearish, OMIT
+                # this header AND the "BEAR:" half of the PULSE line. Never empty.
 
 ## RISKS
 - <one-line risk>
@@ -100,15 +110,24 @@ inline with {{clip:<id>}} — at least 2 across the primer.>
 - <show> | <episode title> | <YYYY-MM-DD>   # OPTIONAL (client backfills from appearances).`,
 
   split: `## PERSON: <name A>
-<2-3 sentence stance summary>
+<2-3 sentence stance summary — state ONLY the position the cited quotes support>
 {{clip:<id>}}
 
 ## PERSON: <name B>
-<2-3 sentence stance summary>
+<2-3 sentence stance summary — must be the OPPOSING side of the debate>
 {{clip:<id>}}   # both PERSON blocks REQUIRED.
 
 ## CONTRAST
-<1-2 sentence contrast>   # OPTIONAL but encouraged.`,
+<1-2 sentence contrast>   # OPTIONAL but encouraged.
+
+# CITATION RULES (strict):
+# - Each PERSON's quotes must support THAT person's/camp's stance. When a clip is
+#   tagged {stance: bull/bear}, put it only under the side whose view it matches.
+# - NEVER cite the same {{clip:<id>}} under both PERSON blocks. A quote belongs to
+#   exactly one side.
+# - Do not assert a position a cited quote does not actually make. If one side has
+#   no genuinely supporting quote, write only what its quotes support (the backend
+#   will mark the result one-sided) — do NOT manufacture a symmetric opposing view.`,
 
   arc: `## THESIS: <one-line summary of the thesis being tracked>   # REQUIRED.
 ## VERDICT: <one-line verdict, e.g. "Conviction rising — calls landing">   # REQUIRED.
@@ -307,7 +326,10 @@ function buildUserMessage({ kind, input = {}, candidates = [], companyHint = nul
     const who = c.creator ? ` — ${c.creator}` : '';
     const ep = c.episodeTitle ? ` (${c.episodeTitle})` : '';
     const date = c.publishedDate ? ` [${String(c.publishedDate).slice(0, 10)}]` : '';
-    lines.push(`${i + 1}. pineconeId=${c.pineconeId}${who}${ep}${date}`);
+    // Optional pre-computed stance (bull/bear/neutral) from the stance gate —
+    // helps the model sort quotes into the correct bull/bear slot or camp side.
+    const stance = c._stance ? ` {stance: ${c._stance}}` : '';
+    lines.push(`${i + 1}. pineconeId=${c.pineconeId}${who}${ep}${date}${stance}`);
     lines.push(`   "${(c.text || '').replace(/\s+/g, ' ').trim()}"`);
   });
   lines.push('');

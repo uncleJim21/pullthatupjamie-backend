@@ -17,7 +17,15 @@ const { parseDossier, parseBrief, parseSplit, parseNarrative, parseReadin } = re
 const { assessConfidence } = require('./confidence');
 const { TapeHttpError } = require('./tapeErrors');
 const { resolveTicker } = require('./tickerResolver');
+const { classifyStance } = require('./stanceClassifier');
+const { expandPassages } = require('./contextExpander');
 const { audit, slimCandidate } = require('./tapeAudit');
+
+// Stance gate (precision half of the polarity work): verify a quote is GENUINELY
+// bullish/bearish before it fills a bear slot (Read-in) or a camp side (Split),
+// so seeding's recall doesn't drag non-polarized quotes into a directional slot.
+// Fail-open (classifier errors → un-gated pool). Disable with TAPE_STANCE_GATE=false.
+const STANCE_GATE_ENABLED = process.env.TAPE_STANCE_GATE !== 'false';
 
 const CAMPS = new Set(['bulls', 'bears', 'hawks', 'doves']);
 const DAY_MS = 86_400_000;
@@ -44,6 +52,16 @@ function campSide(name) {
   return null;
 }
 
+// Strip the internal `_stance` hint off citation objects so it never leaks into
+// the API response (it's an orchestration-only annotation for the stance gate).
+function stripStance(arr) {
+  return (arr || []).map((c) => {
+    if (!c || c._stance === undefined) return c;
+    const { _stance, ...rest } = c;
+    return rest;
+  });
+}
+
 const DEFAULT_DOSSIER_THEMES = [
   'Federal Reserve interest rates inflation policy',
   'recession risk economy',
@@ -65,15 +83,70 @@ const DOSSIER_FILTER_TIERS = [
   { dedicatedOnly: false, mainstream: false },
 ];
 
-// Tape synthesis is a no-tools prose pass. The global `quality` alias (DeepSeek
-// V4) is a REASONING model that's flaky here (burns budget thinking → empty /
-// truncated output that drops the trailing ## TICKERS block). So Tape uses a
-// clean prose model — gpt-4o-mini, which is exactly what /api/pull routes its
-// own final prose to (AGENT_SYNTHESIS_MODEL). Cheap (~$0.001/synth), reliable.
-// `fast` (Haiku) honored if explicitly requested; TAPE_SYNTH_MODEL overrides.
-const TAPE_SYNTH_MODEL = process.env.TAPE_SYNTH_MODEL || 'gpt-4o-mini';
+// Per-kind synthesis routing — LOCKED from the eval model sweep (2026-06-05):
+// - Brief / Split / dossier / narrative → DeepSeek V4-Flash ('quality'): the
+//   cheapest synth in the stack AND the highest quality on these kinds (eval v6:
+//   Brief 9→15/20, confidence_overstated 7→0). The old "DeepSeek is flaky" issue
+//   was a too-low token cap (now 8000), NOT the model — 0 compliance failures at
+//   the proper cap. Trade-off is latency (~30s/synth), which Tape's content-
+//   addressed caching absorbs on repeats.
+// - Read-in → Haiku ('fast', see TAPE_READIN_MODEL): the citation-heavy primer;
+//   DeepSeek under-produced it (eval v6: 6/20, several empty). Haiku cites reliably.
+// Both overridable per env for future A/Bs.
+const TAPE_SYNTH_MODEL = process.env.TAPE_SYNTH_MODEL || 'quality';
+const TAPE_READIN_MODEL = process.env.TAPE_READIN_MODEL || 'fast';
+// Map a requested model to a resolveModelSelection key. 'fast' → Haiku; an
+// explicit model id (gpt-4o, gpt-4o-mini, …) passes through so model can be swept
+// per env; anything empty/'quality'/'default' falls back to the Tape synth model.
 function tapeModelKey(requested) {
-  return requested === 'fast' ? 'fast' : TAPE_SYNTH_MODEL;
+  if (requested === 'fast') return 'fast';
+  if (typeof requested === 'string' && requested && requested !== 'quality' && requested !== 'default') return requested;
+  return TAPE_SYNTH_MODEL;
+}
+
+// Read-in bear-seeded retrieval. Podcasts skew bullish/promotional, so a neutral
+// "{ticker}" vector query lands in a bull-heavy neighborhood and the synth has no
+// genuine bearish material for the SMART_MONEY:BEAR slot (eval flagged
+// bear_slot_not_bearish across ~11 tickers). A second retrieval seeded with
+// bearish framing pulls the short/overvalued/downside neighborhood; results merge
+// into the pool so real bear quotes EXIST for the synth to cite and the bear
+// citation-floor to draw from. Disable with TAPE_READIN_BEAR_SEED=false.
+const BEAR_SEED_ENABLED = process.env.TAPE_READIN_BEAR_SEED !== 'false';
+const READIN_CAND_CAP = parseInt(process.env.TAPE_READIN_CAND_CAP || '24', 10);
+function bearThemes(name) {
+  return [
+    `${name} overvalued bubble`,
+    `${name} bear case short thesis`,
+    `${name} downside risk concerns headwinds`,
+    `${name} expensive valuation priced for perfection`,
+    `why ${name} could fall decline`,
+  ];
+}
+function bullThemes(topic) {
+  return [
+    `${topic} bullish upside`,
+    `${topic} buy opportunity growth`,
+    `${topic} undervalued long thesis`,
+    `why ${topic} will rise positive outlook`,
+  ];
+}
+
+// Split camp side: polarity-seeded retrieval so each side comes from its OWN
+// sentiment neighborhood, not one neutral pool sorted by a keyword classifier
+// (eval: both_sides_same). expandThemes off so the neutral expander doesn't
+// dilute the polarity; query=topic keeps the literal-anchor/topic filter.
+function splitCampPool(topic, themes, openai) {
+  return topicQuotes({ query: topic, themes, kind: 'split', expandThemes: false, filters: { mainstream: true, candidatesLimit: 12 } }, { openai })
+    .then((r) => r.body.candidates || [])
+    .catch(() => []);
+}
+
+// Named Split side: bias toward first-person quotes (a proxy for the person
+// actually SPEAKING vs being discussed by a host — the Saylor "about-them"
+// fabrication). Soft re-rank; never drops, so a thinly-covered person isn't
+// emptied by the heuristic alone.
+function preferFirstPerson(cands) {
+  return [...(cands || [])].sort((a, b) => (b._signals?.firstPerson ? 1 : 0) - (a._signals?.firstPerson ? 1 : 0));
 }
 
 /** One internal synthesis pass via the shared agentic core. */
@@ -198,48 +271,99 @@ async function runSplit(body, { jwtSub, openai, auditId }) {
   if (!personA || !personB || !topic) throw new TapeHttpError(400, 'bad-request', 'Bad request', 'personA, personB and topic are required');
 
   const isCamp = CAMPS.has(personA.toLowerCase()) || CAMPS.has(personB.toLowerCase());
-  let candidates = [];
   let subA = []; // per-side pools for the citation floor
   let subB = [];
+  let stanceMap = new Map();
   if (isCamp) {
-    const { body: tq } = await topicQuotes({ query: topic, themes: [topic], kind: 'split', groupBy: 'bull-bear', filters: { mainstream: true } }, { openai });
-    candidates = tq.candidates || [];
-    const sa = campSide(personA);
+    // Polarity-seeded dual retrieval (recall) → stance gate (precision): each
+    // side keeps only quotes whose classified stance matches its camp, so the two
+    // sides genuinely oppose instead of sharing topically-adjacent neutrals.
+    const [bullPool, bearPool] = await Promise.all([
+      splitCampPool(topic, bullThemes(topic), openai),
+      splitCampPool(topic, bearThemes(topic), openai),
+    ]);
+    const union = [];
+    const seenU = new Set();
+    for (const c of [...bullPool, ...bearPool]) { if (c?.pineconeId && !seenU.has(c.pineconeId)) { seenU.add(c.pineconeId); union.push(c); } }
+    if (STANCE_GATE_ENABLED) {
+      try { ({ stances: stanceMap } = await classifyStance({ subject: topic, clips: union, openai })); } catch (_) { /* fail-open */ }
+    }
+    const sa = campSide(personA); // 'bull' | 'bear' | null
     const sb = campSide(personB);
-    const half = Math.ceil(candidates.length / 2);
-    subA = sa ? candidates.filter((c) => c.side === sa) : candidates.slice(0, half);
-    subB = sb ? candidates.filter((c) => c.side === sb) : candidates.slice(half);
+    if (stanceMap.size > 0) {
+      const ofStance = (st) => union.filter((c) => stanceMap.get(c.pineconeId) === st);
+      subA = sa ? ofStance(sa) : union;   // stance-correct quotes for camp A
+      subB = sb ? ofStance(sb) : union;   // stance-correct quotes for camp B
+    } else {
+      subA = sa === 'bear' ? bearPool : bullPool;   // fail-open: seeded pools
+      subB = sb === 'bull' ? bullPool : bearPool;
+    }
   } else {
+    // Named: quotes BY each person, first-person-preferred (proxy for speaking).
     const grab = (name) => personQuotes({ name, themes: [topic], kind: 'split', filters: { dedicatedOnly: false, mainstream: false } }, { openai })
-      .then((r) => r.body.candidates || []).catch(() => []);
+      .then((r) => preferFirstPerson(r.body.candidates || [])).catch(() => []);
     [subA, subB] = await Promise.all([grab(personA), grab(personB)]);
-    const seen = new Set();
-    candidates = [...subA, ...subB].filter((c) => c.pineconeId && !seen.has(c.pineconeId) && seen.add(c.pineconeId));
+  }
+  // Merge dedup for the synth pool (side pools stay separate for the floor);
+  // annotate with stance so the writer slots quotes onto the correct side.
+  const seenC = new Set();
+  const candidates = [];
+  for (const c of [...subA, ...subB]) {
+    if (!c || !c.pineconeId || seenC.has(c.pineconeId)) continue;
+    seenC.add(c.pineconeId);
+    candidates.push({ ...c, _stance: stanceMap.get(c.pineconeId) });
   }
   if (!candidates.length) {
     return { result: { topic, sideA: { person: personA, positionSummary: '', citations: [] }, sideB: { person: personB, positionSummary: '', citations: [] }, generatedAt: isoNow(), tickers: [], _meta: emptyMeta('No quotes found for either side of this debate.') }, usage: null, synthesizedEmpty: true };
   }
 
+  // Note: NO context expansion on Split — it dilutes the stance-gated quotes
+  // (v5: both_sides_same regressed 3→9). Expansion stays Read-In-only.
   const r = await synth('split', { person: personA, personB, topic }, candidates, body.model, jwtSub, auditId);
   const parsed = parseSplit(r.finalText, candidates);
   const conf = assessConfidence({ kind: 'split', candidates, finalText: r.finalText, synthesizedEmpty: r.synthesizedEmpty, emptyReason: r.reason });
   const used = new Set();
   const sideA = { ...parsed.sideA, person: parsed.sideA.person || personA };
   const sideB = { ...parsed.sideB, person: parsed.sideB.person || personB };
-  sideA.citations = floorEmpty(sideA.citations, subA, used, 3);
-  sideB.citations = floorEmpty(sideB.citations, subB, used, 3);
+  // Citations must be side-correct (stance/person-matched) and never shared across
+  // sides: keep only the model picks belonging to this side's pool, then backfill
+  // from it; the shared `used` set guarantees a clip can't appear on both sides.
+  const aIds = new Set(subA.map((c) => c.pineconeId));
+  const bIds = new Set(subB.map((c) => c.pineconeId));
+  const aModel = (sideA.citations || []).filter((c) => aIds.has(c.pineconeId));
+  const bModel = (sideB.citations || []).filter((c) => bIds.has(c.pineconeId));
+  sideA.citations = stripStance(floorEmpty(aModel, subA, used, 3));
+  sideB.citations = stripStance(floorEmpty(bModel, subB, used, 3));
+
+  // Honest-empty gate: a side with no genuine quotes must not present a
+  // fabricated stance (the El-Erian/Summers + Saylor failures). Blank the prose
+  // and citations for the starved side and report it in the confidence, instead
+  // of letting the writer mirror the other side or invent a position.
+  let { confidence, confidenceReason, candidateCount } = conf;
+  const starved = [];
+  if (!subA.length) { sideA.positionSummary = ''; sideA.citations = []; starved.push(sideA.person); }
+  if (!subB.length) { sideB.positionSummary = ''; sideB.citations = []; starved.push(sideB.person); }
+  if (starved.length === 2) {
+    confidence = 'empty';
+    confidenceReason = `No quotes found for ${sideA.person} or ${sideB.person}.`;
+  } else if (starved.length === 1) {
+    confidence = 'thin';
+    confidenceReason = `No quotes found for ${starved[0]}; one-sided.`;
+  }
+  const oneSided = starved.length > 0;
+
   return {
     result: {
       topic,
       sideA,
       sideB,
-      contrastSummary: parsed.contrastSummary,
+      contrastSummary: oneSided ? '' : parsed.contrastSummary,
       generatedAt: isoNow(),
       tickers: r.synthesizedEmpty ? [] : r.tickers,
-      _meta: { confidence: conf.confidence, confidenceReason: conf.confidenceReason, candidateCount: conf.candidateCount, ...(r.recovered ? { complianceRecovered: true } : {}) },
+      _meta: { confidence, confidenceReason, candidateCount, ...(r.recovered ? { complianceRecovered: true } : {}) },
     },
     usage: r.usage,
-    synthesizedEmpty: r.synthesizedEmpty,
+    synthesizedEmpty: r.synthesizedEmpty || starved.length === 2,
   };
 }
 
@@ -302,24 +426,70 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   if (!ticker) throw new TapeHttpError(400, 'bad-request', 'Bad request', 'ticker is required');
   const resolved = await resolveTicker(ticker);
 
-  const { body: tq } = await topicQuotes({ query: ticker, themes: [ticker], kind: 'readin', filters: { mainstream: false, candidatesLimit: 20 } }, { openai });
-  const candidates = tq.candidates || [];
+  // Two retrievals: a neutral pool (bull/primer material) + a bear-seeded pool so
+  // genuinely bearish quotes are present. Bear call skips theme expansion so the
+  // neutral expander doesn't dilute the bearish framing, and uses query=ticker so
+  // the resolver + ticker-noise filter still anchor results on the company.
+  const bearName = resolved.name || ticker;
+  const [bullRes, bearRes] = await Promise.all([
+    topicQuotes({ query: ticker, themes: [ticker], kind: 'readin', filters: { mainstream: false, candidatesLimit: 18 } }, { openai }),
+    BEAR_SEED_ENABLED
+      ? topicQuotes({ query: ticker, themes: bearThemes(bearName), kind: 'readin', expandThemes: false, filters: { mainstream: false, candidatesLimit: 12 } }, { openai }).catch(() => ({ body: { candidates: [] } }))
+      : Promise.resolve({ body: { candidates: [] } }),
+  ]);
+  const bullCands = bullRes.body.candidates || [];
+  const bearCands = bearRes.body.candidates || [];
+  // Track which ids came from the bear-seeded retrieval (no flag mutation on the
+  // candidate, so nothing leaks into the API response). Merge bull-first, dedup.
+  const bearIds = new Set(bearCands.map((c) => c.pineconeId).filter(Boolean));
+  const seenIds = new Set();
+  const candidates = [];
+  for (const c of [...bullCands, ...bearCands]) {
+    if (!c || !c.pineconeId || seenIds.has(c.pineconeId)) continue;
+    seenIds.add(c.pineconeId);
+    candidates.push(c);
+    if (candidates.length >= READIN_CAND_CAP) break;
+  }
   if (!candidates.length) {
     return { result: { ticker, name: resolved.name || ticker, sectorTag: '', yahoo: ticker, whatTheyDo: '', whatTheyDoCitations: [], pulse: { bullLine: '', bearLine: '', priceAction: '', marqueeCitation: null }, smartMoney: { bulls: [], bears: [] }, catalysts: [], risks: [], peers: [], generatedAt: isoNow(), tickers: [], _meta: emptyMeta(`${ticker} has no meaningful mentions in the corpus.`) }, usage: null, synthesizedEmpty: true };
   }
 
+  // Stance gate: classify each candidate's stance toward the company so the bear
+  // slot is filled only by genuinely BEARISH quotes (seeding surfaces the bearish
+  // neighborhood; this verifies polarity). Fail-open → un-gated bear-seeded pool.
+  let stanceMap = new Map();
+  if (STANCE_GATE_ENABLED) {
+    try { ({ stances: stanceMap } = await classifyStance({ subject: bearName, clips: candidates, openai })); } catch (_) { /* fail-open */ }
+  }
+  const gateActive = stanceMap.size > 0;
+  const cands = candidates.map((c) => ({ ...c, _stance: stanceMap.get(c.pineconeId) }));
+
   // Read-in is citation-critical (inline WHAT_THEY_DO pills + SMART_MONEY quotes);
   // gpt-4o-mini under-cites the primer, so this one kind defaults to Haiku, which
   // cites reliably. Other kinds stay on cheap gpt-4o-mini. Explicit body.model wins.
-  const r = await synth('readin', { ticker }, candidates, body.model || 'fast', jwtSub, auditId);
-  const parsed = parseReadin(r.finalText, candidates);
+  // Stitch adjacent paragraphs onto truncated clips for the synthesis pass only;
+  // citations still hydrate against the original `cands` (original text + times).
+  const synthCands = await expandPassages(cands);
+  const r = await synth('readin', { ticker }, synthCands, body.model || TAPE_READIN_MODEL, jwtSub, auditId);
+  const parsed = parseReadin(r.finalText, cands);
   const peers = r.synthesizedEmpty ? [] : r.tickers;
-  // Citation floor (insurance — readin is on Haiku and usually cites well).
+
+  // Citation floor. The bear slot draws ONLY from genuinely-bearish quotes (when
+  // the gate is active): keep stance-correct model picks, then backfill from the
+  // bear-stance pool. If nothing is genuinely bearish, the bear slot stays empty
+  // and the bear pulse line is blanked — honest over a fabricated bear case.
   const usedR = new Set();
-  const whatTheyDoCitations = floorEmpty(parsed.whatTheyDoCitations, candidates, usedR, 3);
-  const bulls = floorEmpty(parsed.smartMoney.bulls, candidates, usedR, 2);
-  const bears = floorEmpty(parsed.smartMoney.bears, candidates, usedR, 2);
-  const pulse = { ...parsed.pulse, marqueeCitation: parsed.pulse.marqueeCitation || whatTheyDoCitations[0] || candidates[0] || null };
+  const bearStancePool = gateActive ? cands.filter((c) => c._stance === 'bear') : cands.filter((c) => bearIds.has(c.pineconeId));
+  const bearStanceIds = new Set(bearStancePool.map((c) => c.pineconeId));
+  const nonBearPool = gateActive ? cands.filter((c) => c._stance !== 'bear') : cands.filter((c) => !bearIds.has(c.pineconeId));
+  const modelBears = gateActive ? (parsed.smartMoney.bears || []).filter((c) => bearStanceIds.has(c.pineconeId)) : (parsed.smartMoney.bears || []);
+  const bears = stripStance(floorEmpty(modelBears, bearStancePool.length ? bearStancePool : (gateActive ? [] : cands), usedR, 2));
+  const whatTheyDoCitations = stripStance(floorEmpty(parsed.whatTheyDoCitations, cands, usedR, 3));
+  const bulls = stripStance(floorEmpty(parsed.smartMoney.bulls, nonBearPool.length ? nonBearPool : cands, usedR, 2));
+  // Blank an unsupported bear pulse line: no genuine bear quote ⇒ nothing backs it.
+  const bearLine = (gateActive && bears.length === 0) ? '' : parsed.pulse.bearLine;
+  const marquee = parsed.pulse.marqueeCitation || whatTheyDoCitations[0] || cands[0] || null;
+  const pulse = { ...parsed.pulse, bearLine, marqueeCitation: marquee ? stripStance([marquee])[0] : null };
 
   // Confidence scored on the ASSEMBLED result (post-floor): a Read-in that
   // renders the full structure — primer + bull & bear pulse lines + both
@@ -329,7 +499,7 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   // the floor only backfills citations, not those.
   const hasWtd = !!(parsed.whatTheyDo && parsed.whatTheyDo.trim());
   const hasBullLine = !!(parsed.pulse.bullLine && parsed.pulse.bullLine.trim());
-  const hasBearLine = !!(parsed.pulse.bearLine && parsed.pulse.bearLine.trim());
+  const hasBearLine = !!(bearLine && bearLine.trim());
   const hasRisks = parsed.risks.length > 0;
   let confidence;
   let confidenceReason = null;
