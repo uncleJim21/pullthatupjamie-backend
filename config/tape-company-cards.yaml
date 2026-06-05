@@ -95,6 +95,34 @@ AEP:
   execs:
     - Nicholas K. Akins
   source: finnhub+llm
+AGIO:
+  name: Agios Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 1695
+  weburl: https://www.agios.com/
+  description: >-
+    Agios Pharmaceuticals Inc is a biotechnology company focused on discovering and developing innovative medicines for
+    patients with cancer and rare genetic diseases.
+  products:
+    - IDHIFA
+    - TIBSOVO
+    - AG-221
+  execs:
+    - David Schenkein
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
+ALNY:
+  name: Alnylam Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 40405
+  weburl: https://www.alnylam.com/
+  description: >-
+    Alnylam Pharmaceuticals Inc is a biotechnology company focused on the development of RNA interference (RNAi)
+    therapeutics for genetic diseases.
+  execs:
+    - Yvonne Greenstreet
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 AMAT:
   name: Applied Materials Inc
   industry: Semiconductors
@@ -196,6 +224,22 @@ ANET:
   execs:
     - Jayshree Ullal
   source: finnhub+llm
+APLS:
+  name: Apellis Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 5253
+  weburl: https://apellis.com/
+  description: >-
+    Apellis Pharmaceuticals Inc is a biotechnology company focused on developing therapies for patients with rare
+    diseases and autoimmune disorders.
+  products:
+    - APL-2
+    - C3 Inhibition
+    - Complement Therapeutics
+  execs:
+    - Cedric Francois
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 APO:
   name: Apollo Global Management Inc
   industry: Financial Services
@@ -222,6 +266,22 @@ APP:
   execs:
     - Harris B. K. K.
   source: finnhub+llm
+ARGX:
+  name: argenx SE
+  industry: Biotechnology
+  marketCap: 43034
+  weburl: https://www.argenx.com/
+  description: >-
+    argenx SE is a biotechnology company that develops innovative therapies for the treatment of severe autoimmune
+    diseases and cancer.
+  products:
+    - Efgartigimod
+    - ARGX-113
+    - ARGX-110
+  execs:
+    - Tim Van Hauwermeiren
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 ARM:
   name: Arm Holdings PLC
   industry: Semiconductors
@@ -237,6 +297,34 @@ ARM:
     - IoT Solutions
     - Software Development Tools
   source: finnhub+llm
+ARVN:
+  name: Arvinas Inc
+  industry: Pharmaceuticals
+  marketCap: 485
+  weburl: https://www.arvinas.com/
+  description: >-
+    Arvinas Inc is a biopharmaceutical company focused on developing therapies that utilize protein degradation to treat
+    diseases.
+  products:
+    - ARV-471
+    - ARV-110
+    - PROTAC technology
+  execs:
+    - John Houston
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
+ARWR:
+  name: Arrowhead Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 10306
+  weburl: https://arrowheadpharma.com/
+  description: >-
+    Arrowhead Pharmaceuticals Inc is a biotechnology company focused on developing medicines that treat intractable
+    diseases by targeting the underlying causes at the genetic level.
+  execs:
+    - Christopher Anzalone
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 AVGO:
   name: Broadcom Inc
   industry: Semiconductors
@@ -268,6 +356,18 @@ AXP:
   execs:
     - Stephen Squeri
   source: finnhub+llm
+AXSM:
+  name: Axsome Therapeutics Inc
+  industry: Pharmaceuticals
+  marketCap: 12435
+  weburl: https://www.axsome.com/
+  description: >-
+    Axsome Therapeutics Inc is a pharmaceutical company dedicated to developing novel therapies for the management of
+    central nervous system disorders.
+  execs:
+    - Herriot Tabuteau
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 BA:
   name: Boeing Co
   industry: Aerospace & Defense
@@ -318,6 +418,13 @@ BAC:
   execs:
     - Brian Moynihan
   source: finnhub+llm
+BEAM:
+  name: Beam Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 3033
+  weburl: https://beamtx.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 BIDU:
   name: Baidu Inc
   industry: Media
@@ -367,6 +474,13 @@ BLK:
   execs:
     - Larry Fink
   source: finnhub+llm
+BMRN:
+  name: BioMarin Pharmaceutical Inc
+  industry: Biotechnology
+  marketCap: 10996
+  weburl: https://www.biomarin.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 BMY:
   name: Bristol-Myers Squibb Co
   industry: Pharmaceuticals
@@ -613,6 +727,18 @@ COF:
   execs:
     - Richard D. Fairbank
   source: finnhub+llm
+COHR:
+  name: Coherent Corp
+  industry: Electrical Equipment
+  marketCap: 75918
+  weburl: https://www.coherent.com/
+  description: >-
+    Coherent Corp is an electrical equipment company that designs and manufactures lasers and laser-based technology for
+    various applications.
+  execs:
+    - Andy Mattes
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 COIN:
   name: Coinbase Global Inc
   industry: Financial Services
@@ -675,6 +801,18 @@ CRM:
   execs:
     - Marc Benioff
   source: finnhub+llm
+CRSP:
+  name: CRISPR Therapeutics AG
+  industry: Biotechnology
+  marketCap: 5019
+  weburl: https://crisprtx.com/
+  description: >-
+    CRISPR Therapeutics AG is a biotechnology company focused on developing transformative gene-based medicines for
+    serious diseases using its proprietary CRISPR/Cas9 gene-editing platform.
+  execs:
+    - Samant Virk
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 CRWD:
   name: CrowdStrike Holdings Inc
   industry: Technology
@@ -769,6 +907,13 @@ CVX:
   execs:
     - Michael Wirth
   source: finnhub+llm
+CYTK:
+  name: Cytokinetics Inc
+  industry: Biotechnology
+  marketCap: 8841
+  weburl: https://cytokinetics.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 D:
   name: Dominion Energy Inc
   industry: Utilities
@@ -913,6 +1058,20 @@ DLTR:
   execs:
     - Michael Witynski
   source: finnhub+llm
+DNLI:
+  name: Denali Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 3095
+  weburl: https://www.denalitherapeutics.com
+  description: Denali Therapeutics Inc is a biotechnology company focused on developing therapies for neurodegenerative diseases.
+  products:
+    - DNL201
+    - DNL310
+    - DNL151
+  execs:
+    - Ryan Watts
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 DOW:
   name: Dow Inc
   industry: Chemicals
@@ -1095,6 +1254,13 @@ EXC:
   execs:
     - Christopher M. Crane
   source: finnhub+llm
+EXEL:
+  name: Exelixis Inc
+  industry: Biotechnology
+  marketCap: 13231
+  weburl: https://www.exelixis.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 F:
   name: Ford Motor Co
   industry: Automobiles
@@ -1342,6 +1508,13 @@ HAL:
   execs:
     - Jeff Miller
   source: finnhub+llm
+HALO:
+  name: Halozyme Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 8432
+  weburl: https://www.halozyme.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 HD:
   name: Home Depot Inc
   industry: Retail
@@ -1451,6 +1624,25 @@ ICE:
   execs:
     - Jeffrey C. Sprecher
   source: finnhub+llm
+INCY:
+  name: Incyte Corp
+  industry: Biotechnology
+  marketCap: 20797
+  weburl: https://www.incyte.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
+INSM:
+  name: Insmed Inc
+  industry: Biotechnology
+  marketCap: 20484
+  weburl: https://insmed.com/
+  description: >-
+    Insmed Inc is a biotechnology company focused on developing therapies for patients with serious and rare diseases,
+    particularly those related to pulmonary conditions.
+  execs:
+    - Will Lewis
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 INTC:
   name: Intel Corp
   industry: Semiconductors
@@ -1468,6 +1660,13 @@ INTC:
   execs:
     - Pat Gelsinger
   source: finnhub+llm
+IONS:
+  name: Ionis Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 12311
+  weburl: https://www.ionis.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 ISRG:
   name: Intuitive Surgical Inc
   industry: Health Care
@@ -1652,6 +1851,13 @@ KR:
   execs:
     - William McMullen
   source: finnhub+llm
+KRYS:
+  name: Krystal Biotech Inc
+  industry: Biotechnology
+  marketCap: 9097
+  weburl: https://www.krystalbio.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 LCID:
   name: Lucid Group Inc
   industry: Automobiles
@@ -1812,6 +2018,13 @@ MCD:
   execs:
     - Chris Kempczinski
   source: finnhub+llm
+MDGL:
+  name: Madrigal Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 11291
+  weburl: https://www.madrigalpharma.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 MDLZ:
   name: Mondelez International Inc
   industry: Food Products
@@ -2007,6 +2220,13 @@ MU:
   execs:
     - Sanjay Mehrotra
   source: finnhub+llm
+NBIX:
+  name: Neurocrine Biosciences Inc
+  industry: Biotechnology
+  marketCap: 16578
+  weburl: https://www.neurocrine.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 NEE:
   name: Nextera Energy Inc
   industry: Utilities
@@ -2140,6 +2360,18 @@ NOW:
   execs:
     - Bill McDermott
   source: finnhub+llm
+NTLA:
+  name: Intellia Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 1867
+  weburl: https://www.intelliatx.com/
+  description: >-
+    Intellia Therapeutics Inc is a biotechnology company pioneering the development of CRISPR/Cas9-based therapies for
+    genetic diseases.
+  execs:
+    - John Leonard
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 NUE:
   name: Nucor Corp
   industry: Metals & Mining
@@ -2155,6 +2387,20 @@ NUE:
   execs:
     - Leon Topalian
   source: finnhub+llm
+NVAX:
+  name: Novavax Inc
+  industry: Biotechnology
+  marketCap: 1574
+  weburl: https://www.novavax.com/?locale=US
+  description: Novavax Inc is a biotechnology company that develops vaccines to prevent infectious diseases.
+  products:
+    - NVX-CoV2373 (COVID-19 vaccine)
+    - NanoFlu
+    - RSV F protein vaccine
+  execs:
+    - Stanley C. Erck
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 NVDA:
   name: NVIDIA Corp
   industry: Semiconductors
@@ -2439,6 +2685,13 @@ QCOM:
   execs:
     - Cristiano Amon
   source: finnhub+llm
+RARE:
+  name: Ultragenyx Pharmaceutical Inc
+  industry: Biotechnology
+  marketCap: 2157
+  weburl: https://www.ultragenyx.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 RBLX:
   name: Roblox Corp
   industry: Media
@@ -2498,6 +2751,27 @@ RTX:
   execs:
     - Gregory J. Hayes
   source: finnhub+llm
+RVMD:
+  name: Revolution Medicines Inc
+  industry: Biotechnology
+  marketCap: 32169
+  weburl: https://www.revmed.com/
+  description: Revolution Medicines Inc is a biotechnology company focused on developing targeted therapies for cancer.
+  products:
+    - RMC-4630
+    - RMC-5552
+    - RMC-6291
+  execs:
+    - Mark Goldsmith
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
+RXRX:
+  name: Recursion Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 1752
+  weburl: https://www.recursion.com/
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 SBUX:
   name: Starbucks Corp
   industry: Hotels, Restaurants & Leisure
@@ -2707,6 +2981,18 @@ SRE:
   execs:
     - Jeffrey W. Martin
   source: finnhub+llm
+SRPT:
+  name: Sarepta Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 1671
+  weburl: https://www.sarepta.com/
+  description: >-
+    Sarepta Therapeutics Inc is a biotechnology company focused on developing innovative genetic medicine to treat rare
+    diseases, particularly muscular dystrophies.
+  execs:
+    - Doug Ingram
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 SYK:
   name: Stryker Corp
   industry: Health Care
@@ -2771,6 +3057,22 @@ TGT:
   execs:
     - Brian Cornell
   source: finnhub+llm
+TGTX:
+  name: TG Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 6237
+  weburl: https://www.tgtherapeutics.com/
+  description: >-
+    TG Therapeutics Inc is a biotechnology company focused on developing and commercializing innovative therapies for
+    the treatment of B-cell diseases.
+  products:
+    - TG-1101 (ublituximab)
+    - TG-1202 (umbralisib)
+    - B-cell malignancies
+  execs:
+    - Michael S. Weiss
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:46:07.810Z'
 TMO:
   name: Thermo Fisher Scientific Inc
   industry: Life Sciences Tools & Services
@@ -2818,6 +3120,18 @@ TSLA:
   execs:
     - Elon Musk
   source: finnhub+llm
+TSM:
+  name: Taiwan Semiconductor Manufacturing Co Ltd
+  industry: Semiconductors
+  marketCap: 62885995
+  weburl: https://www.tsmc.com/
+  description: >-
+    Taiwan Semiconductor Manufacturing Co Ltd is the world's largest dedicated independent semiconductor foundry,
+    providing advanced manufacturing services for integrated circuits.
+  execs:
+    - C.C. Wei
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 TTD:
   name: Trade Desk Inc
   industry: Media
@@ -2829,6 +3143,18 @@ TTD:
   execs:
     - Jeff Green
   source: finnhub+llm
+TTMI:
+  name: TTM Technologies Inc
+  industry: Electrical Equipment
+  marketCap: 17782
+  weburl: https://www.ttm.com/
+  description: >-
+    TTM Technologies Inc is an electrical equipment company that provides advanced technology solutions in the field of
+    printed circuit boards and electronics manufacturing services.
+  execs:
+    - Tom Edman
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 TTWO:
   name: Take-Two Interactive Software Inc
   industry: Media
@@ -2844,6 +3170,18 @@ TTWO:
   execs:
     - Strauss Zelnick
   source: finnhub+llm
+TVTX:
+  name: Travere Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 4409
+  weburl: https://travere.com/
+  description: >-
+    Travere Therapeutics Inc is a biotechnology company focused on developing and commercializing innovative therapies
+    for rare diseases.
+  execs:
+    - Eric Dube
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 TXN:
   name: Texas Instruments Inc
   industry: Semiconductors
@@ -2981,6 +3319,16 @@ V:
   execs:
     - Ryan McInerney
   source: finnhub+llm
+VKTX:
+  name: Viking Therapeutics Inc
+  industry: Biotechnology
+  marketCap: 3801
+  weburl: https://vikingtherapeutics.com/
+  description: >-
+    Viking Therapeutics Inc is a biotechnology company focused on the development of novel therapies for metabolic and
+    endocrine disorders.
+  source: finnhub+llm
+  builtAt: '2026-06-05T22:43:11.758Z'
 VLO:
   name: Valero Energy Corp
   industry: Energy

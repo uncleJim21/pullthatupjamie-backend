@@ -28,6 +28,8 @@ const LLM_MODEL = process.env.TAPE_CARD_LLM_MODEL || 'gpt-4o-mini';
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
 const optN = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? parseInt(argv[i + 1], 10) : d; };
+const optList = (f) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1].split(',').map((s) => s.trim().toUpperCase()).filter(Boolean) : null; };
+const BUILD_TS = new Date().toISOString(); // stamps builtAt so the hydration job can find stale cards
 
 // ~250 top US-listed names across sectors + the Tape demo set. Edit freely.
 const UNIVERSE = [
@@ -57,6 +59,12 @@ const UNIVERSE = [
   'BABA', 'PDD', 'JD', 'BIDU', 'NIO',
   // ETFs / commodity proxies in the demo set
   'IBIT', 'GLD',
+  // User-added (2026-06-05): biotech + optics/semis
+  'TVTX', 'AXSM', 'VKTX', 'CRSP', 'NTLA', 'INSM', 'ALNY', 'SRPT', 'ARWR',
+  'COHR', 'TTMI', 'TSM',
+  // +20 biotech (2026-06-05)
+  'BEAM', 'RXRX', 'EXEL', 'INCY', 'BMRN', 'NBIX', 'RARE', 'IONS', 'HALO', 'CYTK',
+  'MDGL', 'KRYS', 'APLS', 'ARGX', 'DNLI', 'TGTX', 'AGIO', 'RVMD', 'ARVN', 'NVAX',
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -128,7 +136,8 @@ async function main() {
 
   const existing = fs.existsSync(OUT) ? (yaml.load(fs.readFileSync(OUT, 'utf8')) || {}) : {};
   const force = has('--force');
-  let universe = [...new Set(UNIVERSE)];
+  const only = optList('--only'); // rebuild just these (used by the hydration job)
+  let universe = only && only.length ? only : [...new Set(UNIVERSE)];
   const limit = optN('--limit', 0);
   if (limit > 0) universe = universe.slice(0, limit);
   const todo = force ? universe : universe.filter((t) => !existing[t]);
@@ -173,6 +182,7 @@ async function main() {
       ...(Array.isArray(e.products) && e.products.length ? { products: e.products } : {}),
       ...(Array.isArray(e.execs) && e.execs.length ? { execs: e.execs } : {}),
       source: useLlm ? 'finnhub+llm' : 'finnhub',
+      builtAt: BUILD_TS,
     };
   }
 

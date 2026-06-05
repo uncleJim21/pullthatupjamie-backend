@@ -2217,6 +2217,34 @@ const _server = app.listen(PORT, async () => {
       console.log('[BlogIngestion] Disabled — set NOSTR_BLOG_ENABLED=true to activate');
     }
 
+    // Tape company-card hydration — refreshes stale cards (Finnhub backbone + LLM
+    // facts) daily so request-time lookups stay zippy (cards live in-memory; this
+    // updates them out of band, and the loader hot-reloads on file mtime change).
+    // Lock-guarded so only one instance runs it in a multi-container deploy.
+    if (process.env.TAPE_CARD_HYDRATE_CRON !== 'false') {
+      const cron = require('node-cron');
+      const path = require('path');
+      const { spawn } = require('child_process');
+      const { runIfLockHeld } = require('./utils/runIfLockHeld');
+      cron.schedule('0 10 * * *', async () => {
+        try {
+          const result = await runIfLockHeld('tape-card-hydrate', () => new Promise((resolve) => {
+            const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+            console.log(`[TapeCardHydrate] starting at ${now} (CT)`);
+            const child = spawn('node', [path.join(__dirname, 'scripts', 'hydrate-stale-cards.js')], { stdio: 'inherit' });
+            child.on('exit', (code) => { console.log(`[TapeCardHydrate] done (exit ${code})`); resolve(); });
+            child.on('error', (e) => { console.error('[TapeCardHydrate] spawn error:', e.message); resolve(); });
+          }), { bucketResolutionSeconds: 3600, verbose: false });
+          if (!result.ranOnThisInstance) console.log('[TapeCardHydrate] skipped (another instance holds the lock)');
+        } catch (err) {
+          console.error('[TapeCardHydrate] error:', err.message);
+        }
+      }, { timezone: 'America/Chicago' });
+      console.log('[TapeCardHydrate] Cron registered: daily 10:00 America/Chicago (set TAPE_CARD_HYDRATE_CRON=false to disable)');
+    } else {
+      console.log('[TapeCardHydrate] Disabled (TAPE_CARD_HYDRATE_CRON=false)');
+    }
+
     // Nostr bot — single startup branch handles identity log + all
     // phase crons (mention watcher, zap watcher, reply worker). Each
     // sub-phase is also internally guarded so partial wiring during

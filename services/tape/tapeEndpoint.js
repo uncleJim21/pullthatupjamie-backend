@@ -16,6 +16,7 @@ const { tapeError, tapeRateLimited, TapeHttpError } = require('./tapeErrors');
 const { buildFreshnessMeta, TIER } = require('./tapeFreshness');
 const { hashBody } = require('./tapeShared');
 const { PROMPT_VERSION } = require('./tapePrompts');
+const semanticCache = require('./semanticCache');
 const { audit } = require('./tapeAudit');
 const { printLog } = require('../../constants');
 
@@ -164,7 +165,7 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
  * `{ result, usage, synthesizedEmpty }`; throws TapeHttpError on hard failure.
  * Empty results are not cached (a retry may succeed).
  */
-function withKindEndpoint({ kind, hourlyLimit, run }) {
+function withKindEndpoint({ kind, hourlyLimit, run, openai }) {
   return async (req, res) => {
     const startedAt = Date.now();
     // eslint-disable-next-line no-plusplus
@@ -178,20 +179,39 @@ function withKindEndpoint({ kind, hourlyLimit, run }) {
       // Tie the kind cache to PROMPT_VERSION so prompt/pipeline fixes evict stale
       // (e.g. pre-fix empty-citation) entries instead of serving them for the TTL.
       const key = `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(body)}`;
+      // Semantic cache: "essentially the same" query (within the same kind +
+      // asOfDate + model scope) reuses a cached result. Free-text kinds only.
+      const scope = semanticCache.scopeOf(kind, body, PROMPT_VERSION);
+      const semText = (semanticCache.ENABLED && openai) ? semanticCache.semanticText(kind, body) : '';
+      let queryEmb = null;
+
+      const serveCached = (prior, match, sim) => {
+        const out = {
+          ...prior.value,
+          _meta: {
+            ...(prior.value._meta || {}),
+            cacheMatch: match,
+            ...(sim != null ? { cacheSimilarity: parseFloat(sim.toFixed(3)) } : {}),
+            ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: true, cachedAt: prior.cachedAt, fetchedAt: prior.value._meta?.fetchedAt, ttlSec: KIND_TTL_SEC }),
+          },
+        };
+        logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: match === 'semantic' ? 'semantic-hit' : 'hit', sim: sim != null ? parseFloat(sim.toFixed(3)) : undefined, status: 200, elapsed_ms: Date.now() - startedAt });
+        audit('cache_hit', auditId, { kind, match, sim });
+        return res.status(200).json(out);
+      };
 
       if (!noCache && !refresh) {
         const prior = await getCached(key);
-        if (prior) {
-          const out = {
-            ...prior.value,
-            _meta: {
-              ...(prior.value._meta || {}),
-              ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: true, cachedAt: prior.cachedAt, fetchedAt: prior.value._meta?.fetchedAt, ttlSec: KIND_TTL_SEC }),
-            },
-          };
-          logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: 'hit', status: 200, elapsed_ms: Date.now() - startedAt });
-          audit('cache_hit', auditId, { kind });
-          return res.status(200).json(out);
+        if (prior) return serveCached(prior, 'exact');
+        // Semantic fallback: a near-identical prior query in the same scope.
+        if (semText) {
+          queryEmb = await semanticCache.embed(semText, openai);
+          const sem = semanticCache.lookup(scope, queryEmb);
+          if (sem) {
+            const semPrior = await getCached(sem.key);
+            if (semPrior) return serveCached(semPrior, 'semantic', sem.sim);
+            semanticCache.forget(scope, sem.key); // mapping outlived the cached value
+          }
         }
       }
 
@@ -221,7 +241,11 @@ function withKindEndpoint({ kind, hourlyLimit, run }) {
           ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: KIND_TTL_SEC }),
         },
       };
-      if (!noCache && !synthesizedEmpty) await setCached(key, out, KIND_TTL_SEC);
+      if (!noCache && !synthesizedEmpty) {
+        await setCached(key, out, KIND_TTL_SEC);
+        // Remember the query embedding → key so near-identical future queries hit.
+        if (semText) { const emb = queryEmb || await semanticCache.embed(semText, openai); semanticCache.remember(scope, emb, key); }
+      }
       logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: refresh ? 'refresh' : 'miss', confidence: out._meta?.confidence, tokens: usage || null, status: 200, elapsed_ms: Date.now() - startedAt });
       return res.status(200).json(out);
     } catch (err) {

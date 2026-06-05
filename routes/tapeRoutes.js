@@ -105,11 +105,11 @@ function createTapeRoutes({ openai } = {}) {
 
   // --- Kind-level endpoints (consolidated: retrieve→synthesize→parse→hydrate) ---
   // The client-facing surface going forward; the primitives above are internal.
-  router.post('/dossier', withKindEndpoint({ kind: 'dossier', hourlyLimit: 30, run: (body, ctx) => runDossier(body, { ...ctx, openai }) }));
-  router.post('/brief', withKindEndpoint({ kind: 'brief', hourlyLimit: 30, run: (body, ctx) => runBrief(body, { ...ctx, openai }) }));
-  router.post('/split', withKindEndpoint({ kind: 'split', hourlyLimit: 30, run: (body, ctx) => runSplit(body, { ...ctx, openai }) }));
-  router.post('/narrative', withKindEndpoint({ kind: 'narrative', hourlyLimit: 30, run: (body, ctx) => runNarrative(body, { ...ctx, openai }) }));
-  router.post('/readin', withKindEndpoint({ kind: 'readin', hourlyLimit: 30, run: (body, ctx) => runReadin(body, { ...ctx, openai }) }));
+  router.post('/dossier', withKindEndpoint({ kind: 'dossier', hourlyLimit: 30, openai, run: (body, ctx) => runDossier(body, { ...ctx, openai }) }));
+  router.post('/brief', withKindEndpoint({ kind: 'brief', hourlyLimit: 30, openai, run: (body, ctx) => runBrief(body, { ...ctx, openai }) }));
+  router.post('/split', withKindEndpoint({ kind: 'split', hourlyLimit: 30, openai, run: (body, ctx) => runSplit(body, { ...ctx, openai }) }));
+  router.post('/narrative', withKindEndpoint({ kind: 'narrative', hourlyLimit: 30, openai, run: (body, ctx) => runNarrative(body, { ...ctx, openai }) }));
+  router.post('/readin', withKindEndpoint({ kind: 'readin', hourlyLimit: 30, openai, run: (body, ctx) => runReadin(body, { ...ctx, openai }) }));
 
   return router;
 }
