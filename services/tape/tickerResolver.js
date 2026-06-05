@@ -49,6 +49,15 @@ const CURATED = {
 const NAME_STOPWORDS = new Set([
   'inc', 'corp', 'corporation', 'co', 'company', 'group', 'holdings', 'ltd',
   'plc', 'the', 'sa', 'nv', 'ag', 'class', 'platforms', 'incorporated', 'and',
+  // Generic industry/company-type words — distinctive enough to appear in many
+  // off-topic clips, so they must NOT become match aliases (e.g. "Travere
+  // Therapeutics" → "therapeutics" was matching 23andMe / COVID clips as TVTX).
+  'therapeutics', 'therapeutic', 'pharmaceuticals', 'pharmaceutical', 'pharma',
+  'biosciences', 'bioscience', 'biopharmaceutical', 'biopharmaceuticals', 'biotech',
+  'sciences', 'science', 'technologies', 'technology', 'systems', 'solutions',
+  'industries', 'international', 'communications', 'laboratories', 'energy',
+  'financial', 'enterprises', 'resources', 'networks', 'semiconductor',
+  'semiconductors', 'devices', 'partners', 'capital', 'global', 'micro',
 ]);
 
 /** "CoreWeave" -> "core weave"; "NVIDIA" -> "nvidia" (no-op when no camel hump). */

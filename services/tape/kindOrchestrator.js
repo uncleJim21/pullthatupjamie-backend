@@ -476,7 +476,18 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   const synthCands = await expandPassages(cands);
   const r = await synth('readin', { ticker }, synthCands, body.model || TAPE_READIN_MODEL, jwtSub, auditId);
   const parsed = parseReadin(r.finalText, cands);
-  const peers = r.synthesizedEmpty ? [] : r.tickers;
+
+  // Honest-empty: synthesis produced nothing (clips too thin/off-topic). Do NOT
+  // floor citations onto an empty read-in — that surfaced off-topic quotes (e.g.
+  // 23andMe / COVID clips on a TVTX read-in). Return a clean empty state.
+  if (r.synthesizedEmpty || !parsed.whatTheyDo) {
+    return {
+      result: { ticker, name: resolved.name || ticker, sectorTag: '', yahoo: ticker, whatTheyDo: '', whatTheyDoCitations: [], pulse: { bullLine: '', bearLine: '', priceAction: '', marqueeCitation: null }, smartMoney: { bulls: [], bears: [] }, catalysts: [], risks: [], peers: [], generatedAt: isoNow(), tickers: [], _meta: emptyMeta(r.reason || `${ticker} has no meaningful mentions in the corpus.`) },
+      usage: r.usage,
+      synthesizedEmpty: true,
+    };
+  }
+  const peers = r.tickers;
 
   // Citation floor. The bear slot draws ONLY from genuinely-bearish quotes (when
   // the gate is active): keep stance-correct model picks, then backfill from the
