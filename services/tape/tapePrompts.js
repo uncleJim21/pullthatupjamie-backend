@@ -27,7 +27,9 @@
 // v9: retrieval — adjacent-paragraph context stitching on truncated clips, source-
 // diversity cap, min-word fragment drop, looser literal-anchor for multi-word
 // topics. Synthesis sees fuller passages, so output changes. Invalidates v8 caches.
-const PROMPT_VERSION = 'v9';
+// v10: company-card grounding — authoritative name/industry/description/products/
+// execs injected as the COMPANY reference (fixes wrong-entity primers, e.g. CEG).
+const PROMPT_VERSION = 'v10';
 
 const EMPTY_SENTINEL = 'EMPTY_SYNTHESIS';
 
@@ -319,7 +321,7 @@ function buildUserMessage({ kind, input = {}, candidates = [], companyHint = nul
   if (input.group) lines.push(`GROUP: ${input.group}`);
   // Resolved company identity for a ticker the user typed (e.g. "APP" =
   // AppLovin) — lets the model pick sector-correct peer tickers.
-  if (companyHint) lines.push(`COMPANY: ${companyHint} — pick sector-appropriate peers/relevant names.`);
+  if (companyHint) lines.push(`COMPANY (authoritative reference — ground the company's identity/primer on THIS, not on inference from the clips; also use it to pick sector-appropriate peers): ${companyHint}`);
   lines.push('');
   lines.push('CANDIDATE QUOTES (cite by pineconeId):');
   candidates.forEach((c, i) => {

@@ -17,6 +17,7 @@ const { sanitizeAgentText, createStreamSanitizer } = require('../../utils/agent/
 const { VALID_KINDS, systemPromptFor, buildUserMessage, validateKindCompliance, EMPTY_SENTINEL, TICKERS_MARKER, PROMPT_VERSION } = require('./tapePrompts');
 const { extractTickers } = require('./tickerExtract');
 const { buildAliases } = require('./tickerResolver');
+const { cardContext } = require('./companyCards');
 const { assessConfidence } = require('./confidence');
 const { getCached, setCached, addAndGet } = require('./tapeStore');
 const { TIER, synTtlSec, buildFreshnessMeta } = require('./tapeFreshness');
@@ -115,6 +116,11 @@ function companyHintFor(input = {}) {
   );
   if (!cand) return null;
   const tk = cand.trim();
+  // Prefer the full company card (name + industry + description + products +
+  // execs) — authoritative identity that stops the writer inferring the wrong
+  // company from sparse clips (the CEG = Constellation Energy-not-Software bug).
+  const card = cardContext(tk);
+  if (card) return card;
   const { name } = buildAliases(tk);
   return name && name.toLowerCase() !== tk.toLowerCase() ? `${tk} = ${name}` : null;
 }

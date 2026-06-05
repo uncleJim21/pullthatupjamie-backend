@@ -1,0 +1,3180 @@
+# Tape company cards — built by scripts/build-company-cards.js
+# Backbone (name/industry/marketCap/weburl) from Finnhub; description/products/execs LLM-drafted (verify before trusting).
+AAPL:
+  name: Apple Inc
+  industry: Technology
+  marketCap: 4603311
+  weburl: https://www.apple.com/
+  description: >-
+    Apple Inc designs, manufactures, and markets consumer electronics, software, and services, known for its innovation
+    and premium products.
+  products:
+    - iPhone
+    - iPad
+    - Mac
+    - Apple Watch
+    - Apple Music
+  execs:
+    - Tim Cook
+  source: finnhub+llm
+ABBV:
+  name: AbbVie Inc
+  industry: Biotechnology
+  marketCap: 405779
+  weburl: https://www.abbvie.com/
+  description: >-
+    AbbVie Inc is a global biopharmaceutical company that focuses on developing advanced therapies for complex diseases,
+    particularly in immunology and oncology.
+  products:
+    - Humira
+    - Imbruvica
+    - Skyrizi
+    - Rinvoq
+    - Venclexta
+  execs:
+    - Richard A. Gonzalez
+  source: finnhub+llm
+ABNB:
+  name: Airbnb Inc
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 80907
+  weburl: https://www.airbnb.com/
+  description: >-
+    Airbnb Inc is an online marketplace that connects people looking to rent out their homes with those looking for
+    accommodations.
+  execs:
+    - Brian Chesky
+  source: finnhub+llm
+ABT:
+  name: Abbott Laboratories
+  industry: Health Care
+  marketCap: 159707
+  weburl: https://www.abbott.com
+  description: >-
+    Abbott Laboratories is a global healthcare company that develops a wide range of medical devices, diagnostics,
+    nutrition products, and pharmaceuticals.
+  products:
+    - Ensure
+    - FreeStyle Libre
+    - Similac
+    - Tenders
+    - Alinity
+  execs:
+    - Robert B. Ford
+  source: finnhub+llm
+ADBE:
+  name: Adobe Inc
+  industry: Technology
+  marketCap: 101349
+  weburl: https://www.adobe.com/
+  description: >-
+    Adobe Inc is a multinational software company known for its creative and multimedia software products, as well as
+    digital marketing solutions.
+  products:
+    - Adobe Photoshop
+    - Adobe Illustrator
+    - Adobe Acrobat
+    - Adobe Creative Cloud
+    - Adobe Experience Cloud
+  execs:
+    - Shantanu Narayen
+  source: finnhub+llm
+AEP:
+  name: American Electric Power Company Inc
+  industry: Utilities
+  marketCap: 70679
+  weburl: https://www.aep.com/
+  description: >-
+    American Electric Power Company Inc is one of the largest electric utilities in the United States, providing
+    electricity to millions of customers across several states.
+  products:
+    - Electric Utility Services
+    - Renewable Energy
+    - Transmission Services
+    - Energy Efficiency Programs
+  execs:
+    - Nicholas K. Akins
+  source: finnhub+llm
+AMAT:
+  name: Applied Materials Inc
+  industry: Semiconductors
+  marketCap: 375854
+  weburl: https://www.appliedmaterials.com/
+  description: >-
+    Applied Materials, Inc. is a leader in materials engineering solutions used to produce advanced semiconductor, flat
+    panel display, and solar photovoltaic products.
+  products:
+    - Semiconductor Equipment
+    - Display Equipment
+    - Solar Equipment
+    - Services and Software
+    - Materials Engineering Solutions
+  execs:
+    - Gary Dickerson
+  source: finnhub+llm
+AMD:
+  name: Advanced Micro Devices Inc
+  industry: Semiconductors
+  marketCap: 792129
+  weburl: https://www.amd.com/
+  description: >-
+    Advanced Micro Devices Inc is a semiconductor company that develops computer processors and related technologies for
+    both consumer and enterprise markets.
+  products:
+    - Ryzen Processors
+    - EPYC Processors
+    - Radeon Graphics
+    - AMD Radeon Software
+    - AMD Infinity Fabric
+  execs:
+    - Lisa Su
+  source: finnhub+llm
+AMGN:
+  name: Amgen Inc
+  industry: Biotechnology
+  marketCap: 191343
+  weburl: https://www.amgen.com/
+  description: >-
+    Amgen Inc is a biotechnology company that discovers, develops, and delivers innovative human therapeutics, focusing
+    on serious illnesses.
+  products:
+    - Enbrel
+    - Neulasta
+    - Prolia
+    - Repatha
+    - Aimovig
+  execs:
+    - Robert A. Bradway
+  source: finnhub+llm
+AMT:
+  name: American Tower Corp
+  industry: Real Estate
+  marketCap: 90390
+  weburl: https://www.americantower.com/
+  description: >-
+    American Tower Corp. is a leading independent owner and operator of wireless and broadcast communications real
+    estate.
+  products:
+    - Cell towers
+    - Broadcast towers
+    - Distributed antenna systems
+    - Data centers
+  execs:
+    - Tom Bartlett
+  source: finnhub+llm
+AMZN:
+  name: Amazon.com Inc
+  industry: Retail
+  marketCap: 2724130
+  weburl: https://www.amazon.com/
+  description: >-
+    Amazon.com Inc is a multinational technology company focusing on e-commerce, cloud computing, digital streaming, and
+    artificial intelligence.
+  products:
+    - Amazon Prime
+    - Amazon Web Services (AWS)
+    - Kindle
+    - Alexa
+    - Amazon Fresh
+  execs:
+    - Andy Jassy
+  source: finnhub+llm
+ANET:
+  name: Arista Networks Inc
+  industry: Communications
+  marketCap: 197770
+  weburl: https://www.arista.com/en/
+  description: >-
+    Arista Networks Inc provides cloud networking solutions for large data center and high-frequency trading
+    environments.
+  products:
+    - CloudVision
+    - EOS (Extensible Operating System)
+    - 7500 Series Switches
+    - 7280 Series Switches
+    - Arista Cognitive Cloud Networking
+  execs:
+    - Jayshree Ullal
+  source: finnhub+llm
+APO:
+  name: Apollo Global Management Inc
+  industry: Financial Services
+  marketCap: 72837
+  weburl: https://www.apollo.com/
+  description: >-
+    Apollo Global Management Inc is an alternative investment management firm specializing in private equity, credit,
+    and real estate investments.
+  products:
+    - Apollo Private Equity
+    - Apollo Credit
+    - Apollo Real Estate
+  execs:
+    - Marc Rowan
+  source: finnhub+llm
+APP:
+  name: Applovin Corp
+  industry: Technology
+  marketCap: 190050
+  weburl: https://www.applovin.com/
+  description: >-
+    Applovin Corp is a technology company that provides a platform for mobile app developers to monetize and market
+    their applications.
+  execs:
+    - Harris B. K. K.
+  source: finnhub+llm
+ARM:
+  name: Arm Holdings PLC
+  industry: Semiconductors
+  marketCap: 418620
+  weburl: https://www.arm.com/
+  description: >-
+    Arm Holdings PLC is a semiconductor and software design company known for its ARM architecture, which is widely used
+    in mobile devices and embedded systems.
+  products:
+    - ARM Cortex Processors
+    - ARM Mali Graphics Processors
+    - ARM Neoverse Processors
+    - IoT Solutions
+    - Software Development Tools
+  source: finnhub+llm
+AVGO:
+  name: Broadcom Inc
+  industry: Semiconductors
+  marketCap: 1872538
+  weburl: https://www.broadcom.com
+  description: >-
+    Broadcom Inc is a global technology company that designs, develops, and supplies a broad range of semiconductor and
+    infrastructure software solutions.
+  products:
+    - Broadcom Wireless
+    - Broadcom Networking
+    - Broadcom Storage
+    - Broadcom Broadband
+    - Broadcom IoT
+  source: finnhub+llm
+AXP:
+  name: American Express Co
+  industry: Financial Services
+  marketCap: 211091
+  weburl: https://www.americanexpress.com/
+  description: >-
+    American Express Co is a multinational financial services corporation known for its charge card, credit card, and
+    travel-related services.
+  products:
+    - American Express Cards
+    - Travel Services
+    - Merchant Services
+    - Business Solutions
+  execs:
+    - Stephen Squeri
+  source: finnhub+llm
+BA:
+  name: Boeing Co
+  industry: Aerospace & Defense
+  marketCap: 170612
+  weburl: https://www.boeing.com
+  description: >-
+    Boeing Co is a major aerospace and defense company that designs, manufactures, and sells airplanes, rotorcraft,
+    rockets, satellites, and telecommunications equipment.
+  products:
+    - Commercial Airplanes
+    - Defense, Space & Security
+    - Global Services
+    - Boeing Business Jets
+  execs:
+    - David L. Calhoun
+  source: finnhub+llm
+BABA:
+  name: Alibaba Group Holding Ltd
+  industry: Retail
+  marketCap: 302456
+  weburl: https://www.alibabagroup.com/
+  description: >-
+    Alibaba Group Holding Ltd is a multinational conglomerate specializing in e-commerce, retail, internet, and
+    technology.
+  products:
+    - Taobao
+    - Tmall
+    - Alibaba Cloud
+    - AliExpress
+    - Ant Group
+  execs:
+    - Daniel Zhang
+  source: finnhub+llm
+BAC:
+  name: Bank of America Corp
+  industry: Banking
+  marketCap: 381335
+  weburl: https://www.bankofamerica.com
+  description: >-
+    Bank of America Corp is a multinational banking and financial services corporation that provides a wide range of
+    banking and financial products.
+  products:
+    - Consumer Banking
+    - Wealth Management
+    - Investment Banking
+    - Credit Cards
+    - Mortgages
+  execs:
+    - Brian Moynihan
+  source: finnhub+llm
+BIDU:
+  name: Baidu Inc
+  industry: Media
+  marketCap: 45887
+  weburl: https://www.baidu.com/
+  description: >-
+    Baidu Inc is a Chinese multinational technology company specializing in Internet-related services and products,
+    including search engines and AI.
+  products:
+    - Baidu Search
+    - Baidu Maps
+    - DuerOS
+    - Apollo Autonomous Driving
+  execs:
+    - Robin Li
+  source: finnhub+llm
+BIIB:
+  name: Biogen Inc
+  industry: Biotechnology
+  marketCap: 29420
+  weburl: https://www.biogen.com/
+  description: >-
+    Biogen Inc is a biotechnology company specializing in the discovery, development, and delivery of innovative
+    therapies for neurological diseases.
+  products:
+    - Aduhelm
+    - Tecfidera
+    - Avonex
+    - Tysabri
+    - Spinraza
+  execs:
+    - Christopher A. Viehbacher
+  source: finnhub+llm
+BLK:
+  name: BlackRock Inc
+  industry: Financial Services
+  marketCap: 162865
+  weburl: https://www.blackrock.com/
+  description: >-
+    BlackRock Inc is the world's largest asset manager, providing investment management, risk management, and advisory
+    services to institutional and retail clients.
+  products:
+    - iShares ETFs
+    - BlackRock Investment Management
+    - Risk Management Services
+    - Advisory Services
+  execs:
+    - Larry Fink
+  source: finnhub+llm
+BMY:
+  name: Bristol-Myers Squibb Co
+  industry: Pharmaceuticals
+  marketCap: 117644
+  weburl: https://www.bms.com
+  description: >-
+    Bristol-Myers Squibb Co is a global biopharmaceutical company focused on discovering, developing, and delivering
+    innovative medicines for serious diseases.
+  products:
+    - Opdivo
+    - Eliquis
+    - Revlimid
+    - Yervoy
+    - Abecma
+  execs:
+    - Giovanni Caforio
+  source: finnhub+llm
+BRK.B:
+  name: Berkshire Hathaway Inc
+  industry: Financial Services
+  marketCap: 1053962
+  weburl: https://www.berkshirehathaway.com/
+  description: >-
+    Berkshire Hathaway Inc is a multinational conglomerate holding company led by Warren Buffett, known for its diverse
+    range of subsidiaries and investments across various industries.
+  products:
+    - Geico
+    - BNSF Railway
+    - Berkshire Hathaway Energy
+    - Dairy Queen
+    - Fruit of the Loom
+  execs:
+    - Warren Buffett
+    - Charlie Munger
+  source: finnhub+llm
+BSX:
+  name: Boston Scientific Corp
+  industry: Health Care
+  marketCap: 73842
+  weburl: https://www.bostonscientific.com/en-US/Home.html
+  description: >-
+    Boston Scientific Corp is a global medical device company that develops and manufactures a wide range of innovative
+    medical solutions for various medical specialties.
+  products:
+    - Cardiovascular Devices
+    - Endoscopy Products
+    - Urology Devices
+    - Neuromodulation Devices
+    - Interventional Oncology Products
+  execs:
+    - Michael F. Mahoney
+  source: finnhub+llm
+BX:
+  name: Blackstone Inc
+  industry: Financial Services
+  marketCap: 141091
+  weburl: https://www.blackstone.com/
+  description: >-
+    Blackstone Inc is an investment firm specializing in private equity, real estate, credit, and hedge fund investment
+    strategies.
+  products:
+    - Blackstone Private Equity
+    - Blackstone Real Estate
+    - Blackstone Credit
+    - Blackstone Hedge Fund Solutions
+  execs:
+    - Stephen A. Schwarzman
+  source: finnhub+llm
+C:
+  name: Citigroup Inc
+  industry: Banking
+  marketCap: 227362
+  weburl: http://www.citigroup.com/
+  description: >-
+    Citigroup Inc is a global financial services corporation that provides a wide range of financial products and
+    services to consumers, corporations, governments, and institutions.
+  products:
+    - Consumer Banking
+    - Corporate Banking
+    - Investment Banking
+    - Wealth Management
+    - Credit Cards
+  execs:
+    - Jane Fraser
+  source: finnhub+llm
+CAT:
+  name: Caterpillar Inc
+  industry: Machinery
+  marketCap: 423367
+  weburl: https://www.caterpillar.com
+  description: >-
+    Caterpillar Inc is a leading manufacturer of construction and mining equipment, diesel and natural gas engines, and
+    industrial gas turbines.
+  products:
+    - Excavators
+    - Bulldozers
+    - Backhoe Loaders
+    - Generators
+    - Mining Equipment
+  execs:
+    - Jim Umpleby
+  source: finnhub+llm
+CCJ:
+  name: Cameco Corp
+  industry: Energy
+  marketCap: 46245
+  weburl: https://www.cameco.com/
+  description: Cameco Corp is one of the world's largest uranium producers, supplying fuel for nuclear power plants.
+  products:
+    - Uranium Production
+    - Fuel Services
+    - Nuclear Fuel Supply
+  execs:
+    - Tim Gitzel
+  source: finnhub+llm
+CDNS:
+  name: Cadence Design Systems Inc
+  industry: Technology
+  marketCap: 107102
+  weburl: https://www.cadence.com/en_US/home.html
+  description: Cadence Design Systems Inc offers software, hardware, and services for electronic design automation and engineering.
+  products:
+    - Allegro Platform
+    - OrCAD
+    - PSpice
+    - Xcelium
+    - JasperGold
+  execs:
+    - Anirudh Devgan
+  source: finnhub+llm
+CEG:
+  name: Constellation Energy Corp
+  industry: Utilities
+  marketCap: 92978
+  weburl: https://www.constellationenergy.com/
+  description: >-
+    Constellation Energy Corp is a leading energy company that provides electricity, natural gas, and renewable energy
+    solutions to residential and commercial customers.
+  products:
+    - Electricity Generation
+    - Natural Gas Supply
+    - Renewable Energy
+    - Energy Efficiency Solutions
+    - Retail Energy Services
+  execs:
+    - Joseph Dominguez
+  source: finnhub+llm
+CI:
+  name: Cigna Group
+  industry: Health Care
+  marketCap: 76445
+  weburl: https://www.thecignagroup.com/
+  description: >-
+    Cigna Group is a global health service company that provides health insurance and related services to individuals
+    and businesses.
+  products:
+    - Health Insurance Plans
+    - Dental Insurance
+    - Disability Insurance
+    - Medicare Plans
+    - Pharmacy Benefit Management
+  execs:
+    - David Cordani
+  source: finnhub+llm
+CL:
+  name: Colgate-Palmolive Co
+  industry: Consumer products
+  marketCap: 70497
+  weburl: https://www.colgatepalmolive.com/
+  description: >-
+    Colgate-Palmolive Company is a consumer products company specializing in oral care, personal care, home care, and
+    pet nutrition.
+  products:
+    - Colgate Toothpaste
+    - Palmolive Dish Soap
+    - Speed Stick Deodorant
+    - Softsoap
+    - Hill's Pet Nutrition
+  execs:
+    - Noel Wallace
+  source: finnhub+llm
+CMCSA:
+  name: Comcast Corp
+  industry: Telecommunication
+  marketCap: 84215
+  weburl: https://corporate.comcast.com/
+  description: >-
+    Comcast Corporation is a global media and technology company that provides cable television, internet, and phone
+    services.
+  products:
+    - Xfinity
+    - NBCUniversal
+    - Sky
+    - Comcast Business
+  execs:
+    - Brian L. Roberts
+  source: finnhub+llm
+CME:
+  name: CME Group Inc
+  industry: Financial Services
+  marketCap: 92990
+  weburl: https://www.cmegroup.com/
+  description: >-
+    CME Group Inc operates the world's largest financial derivatives exchange, offering a wide range of products across
+    various asset classes.
+  products:
+    - CME Futures
+    - CME Options
+    - CME Clearing
+    - CME Globex
+  execs:
+    - Terry Duffy
+  source: finnhub+llm
+CMG:
+  name: Chipotle Mexican Grill Inc
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 37924
+  weburl: https://www.chipotle.com/
+  description: >-
+    Chipotle Mexican Grill Inc is a fast-casual restaurant chain specializing in Mexican cuisine, particularly burritos
+    and tacos made with fresh ingredients.
+  products:
+    - Burritos
+    - Tacos
+    - Salads
+    - Quesadillas
+    - Sofritas
+  execs:
+    - Brian Niccol
+  source: finnhub+llm
+COF:
+  name: Capital One Financial Corp
+  industry: Financial Services
+  marketCap: 113189
+  weburl: https://www.capitalone.com/
+  description: >-
+    Capital One Financial Corp is a bank holding company specializing in credit cards, auto loans, banking, and savings
+    accounts.
+  products:
+    - Capital One Credit Cards
+    - Auto Loans
+    - Savings Accounts
+    - Commercial Banking
+  execs:
+    - Richard D. Fairbank
+  source: finnhub+llm
+COIN:
+  name: Coinbase Global Inc
+  industry: Financial Services
+  marketCap: 39681
+  weburl: https://www.coinbase.com
+  description: >-
+    Coinbase Global Inc is a cryptocurrency exchange platform that allows users to buy, sell, and store various
+    cryptocurrencies.
+  execs:
+    - Brian Armstrong
+  source: finnhub+llm
+COP:
+  name: ConocoPhillips
+  industry: Energy
+  marketCap: 144100
+  weburl: https://www.conocophillips.com/
+  description: >-
+    ConocoPhillips is a global oil and gas exploration and production company, focusing on the development of natural
+    resources.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Natural Gas Liquids
+    - Refined Products
+    - LNG
+  execs:
+    - Ryan M. Lance
+  source: finnhub+llm
+COST:
+  name: Costco Wholesale Corp
+  industry: Retail
+  marketCap: 438299
+  weburl: https://www.costco.com/
+  description: >-
+    Costco Wholesale Corporation operates a chain of membership-only warehouse clubs, offering a wide selection of
+    merchandise at discounted prices.
+  products:
+    - Membership Warehouse Clubs
+    - Groceries
+    - Electronics
+    - Clothing
+    - Home Goods
+  execs:
+    - Craig Jelinek
+  source: finnhub+llm
+CRM:
+  name: Salesforce Inc
+  industry: Technology
+  marketCap: 152342
+  weburl: https://www.salesforce.com/
+  description: >-
+    Salesforce Inc is a cloud-based software company that provides customer relationship management (CRM) services and
+    applications focused on sales and marketing.
+  products:
+    - Sales Cloud
+    - Service Cloud
+    - Marketing Cloud
+    - Commerce Cloud
+    - Tableau
+  execs:
+    - Marc Benioff
+  source: finnhub+llm
+CRWD:
+  name: CrowdStrike Holdings Inc
+  industry: Technology
+  marketCap: 174526
+  weburl: https://ir.crowdstrike.com/
+  description: CrowdStrike Holdings Inc provides cloud-delivered endpoint protection and cybersecurity solutions.
+  products:
+    - Falcon Platform
+    - Threat Intelligence
+    - Managed Threat Hunting
+    - Endpoint Detection and Response
+    - Cloud Workload Protection
+  execs:
+    - George Kurtz
+  source: finnhub+llm
+CRWV:
+  name: CoreWeave Inc
+  industry: Technology
+  marketCap: 54584
+  weburl: https://www.coreweave.com/
+  description: >-
+    CoreWeave Inc is a cloud computing company that specializes in providing GPU-accelerated infrastructure for various
+    applications, including AI and machine learning.
+  execs:
+    - Daniel Nityanand
+  source: finnhub+llm
+CSCO:
+  name: Cisco Systems Inc
+  industry: Communications
+  marketCap: 492715
+  weburl: https://www.cisco.com/
+  description: >-
+    Cisco Systems Inc designs and sells networking hardware, software, telecommunications equipment, and high-technology
+    services.
+  products:
+    - Cisco Routers
+    - Cisco Switches
+    - Cisco Webex
+    - Cisco Meraki
+    - Cisco Security Solutions
+  execs:
+    - Chuck Robbins
+  source: finnhub+llm
+CSX:
+  name: CSX Corp
+  industry: Road & Rail
+  marketCap: 87416
+  weburl: https://www.csx.com/
+  description: >-
+    CSX Corporation is a leading transportation company that operates a rail network in the eastern United States,
+    providing freight transportation services.
+  products:
+    - Freight Rail Transportation
+    - Intermodal Services
+    - Coal Transportation
+    - Automotive Transport
+    - Agricultural Products
+  execs:
+    - James M. Foote
+  source: finnhub+llm
+CVS:
+  name: CVS Health Corp
+  industry: Health Care
+  marketCap: 122336
+  weburl: https://cvshealth.com/
+  description: >-
+    CVS Health Corp is a healthcare company that provides a range of services including pharmacy, health insurance, and
+    retail health clinics.
+  products:
+    - CVS Pharmacy
+    - Aetna Health Insurance
+    - MinuteClinic
+    - Pharmacy Benefit Management
+    - HealthHUB
+  execs:
+    - Karen S. Lynch
+  source: finnhub+llm
+CVX:
+  name: Chevron Corp
+  industry: Energy
+  marketCap: 374739
+  weburl: https://www.chevron.com/
+  description: >-
+    Chevron Corporation is a multinational energy corporation engaged in all aspects of the energy sector, including oil
+    and gas exploration, production, and refining.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Refined Products
+    - Chemicals
+    - Renewable Energy
+  execs:
+    - Michael Wirth
+  source: finnhub+llm
+D:
+  name: Dominion Energy Inc
+  industry: Utilities
+  marketCap: 59064
+  weburl: https://www.dominionenergy.com/
+  description: >-
+    Dominion Energy Inc is a power and energy company that provides electricity and natural gas to customers in the
+    eastern United States.
+  products:
+    - Electric Utility Services
+    - Natural Gas Distribution
+    - Renewable Energy
+    - Energy Storage Solutions
+  execs:
+    - Robert M. Blue
+  source: finnhub+llm
+DASH:
+  name: DoorDash Inc
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 68604
+  weburl: https://www.doordash.com/
+  description: >-
+    DoorDash Inc is a food delivery service that connects customers with local restaurants through its online platform
+    and mobile app.
+  execs:
+    - Tony Xu
+  source: finnhub+llm
+DDOG:
+  name: Datadog Inc (Pre-Reincorporation)
+  industry: Technology
+  marketCap: 83652
+  weburl: https://www.datadoghq.com/
+  description: >-
+    Datadog Inc provides monitoring and analytics for cloud-scale applications, enabling organizations to understand
+    their infrastructure and applications.
+  products:
+    - Infrastructure Monitoring
+    - Application Performance Monitoring
+    - Log Management
+    - Real User Monitoring
+    - Synthetic Monitoring
+  execs:
+    - David B. Cohen
+  source: finnhub+llm
+DE:
+  name: Deere & Co
+  industry: Machinery
+  marketCap: 159379
+  weburl: https://www.deere.com/
+  description: >-
+    Deere & Co is a manufacturer of agricultural, construction, and forestry machinery, known for its iconic green and
+    yellow equipment.
+  products:
+    - Tractors
+    - Combine Harvesters
+    - Planters
+    - Construction Equipment
+    - Forestry Equipment
+  execs:
+    - John C. May
+  source: finnhub+llm
+DELL:
+  name: Dell Technologies Inc
+  industry: Technology
+  marketCap: 262239
+  weburl: https://www.dell.com/en-in
+  description: >-
+    Dell Technologies Inc designs, manufactures, and sells a wide range of technology products and services, including
+    computers and servers.
+  products:
+    - Dell XPS Laptops
+    - Dell PowerEdge Servers
+    - Dell EMC Storage Solutions
+    - Alienware Gaming PCs
+    - Dell Technologies Cloud
+  execs:
+    - Michael Dell
+  source: finnhub+llm
+DG:
+  name: Dollar General Corp
+  industry: Retail
+  marketCap: 22848
+  weburl: https://www.dollargeneral.com/
+  description: >-
+    Dollar General Corp is a discount retailer that offers a variety of products, including household goods, groceries,
+    and apparel at low prices.
+  products:
+    - Household Essentials
+    - Groceries
+    - Health and Beauty Products
+    - Seasonal Items
+    - Apparel
+  execs:
+    - Jeff Owen
+  source: finnhub+llm
+DHR:
+  name: Danaher Corp
+  industry: Life Sciences Tools & Services
+  marketCap: 130828
+  weburl: https://www.danaher.com/
+  description: >-
+    Danaher Corp is a global science and technology innovator that designs, manufactures, and markets professional,
+    medical, industrial, and commercial products.
+  products:
+    - Beckman Coulter
+    - Leica Microsystems
+    - Pall Corporation
+    - Videojet
+    - Hach
+  execs:
+    - Rainer M. Blair
+  source: finnhub+llm
+DIS:
+  name: Walt Disney Co
+  industry: Media
+  marketCap: 172835
+  weburl: https://thewaltdisneycompany.com/
+  description: The Walt Disney Company is a diversified international family entertainment and media enterprise.
+  products:
+    - Disney+
+    - ESPN
+    - ABC
+    - Marvel
+    - Pixar
+  execs:
+    - Bob Chapek
+  source: finnhub+llm
+DLTR:
+  name: Dollar Tree Inc
+  industry: Retail
+  marketCap: 21123
+  weburl: https://www.dollartree.com/
+  description: >-
+    Dollar Tree Inc is a discount variety store chain that sells items for $1 or less, including household goods, food,
+    and party supplies.
+  products:
+    - Household Items
+    - Party Supplies
+    - Food and Snacks
+    - Seasonal Decor
+    - Health and Beauty Products
+  execs:
+    - Michael Witynski
+  source: finnhub+llm
+DOW:
+  name: Dow Inc
+  industry: Chemicals
+  marketCap: 24502
+  weburl: https://investors.dow.com/
+  description: Dow Inc. is a global chemical company that produces a wide range of materials and chemicals for various industries.
+  products:
+    - Plastics
+    - Chemicals
+    - Coatings
+    - Silicones
+    - Agricultural sciences
+  execs:
+    - Jim Fitterling
+  source: finnhub+llm
+DPZ:
+  name: Domino's Pizza Inc
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 10361
+  weburl: https://www.dominos.com/
+  description: >-
+    Domino's Pizza Inc is an American pizza delivery and carryout chain known for its wide variety of pizzas and side
+    dishes.
+  products:
+    - Hand-Tossed Pizza
+    - Thin Crust Pizza
+    - Stuffed Cheesy Bread
+    - Chicken Wings
+    - Pasta
+  execs:
+    - Russell Weiner
+  source: finnhub+llm
+DUK:
+  name: Duke Energy Corp
+  industry: Utilities
+  marketCap: 96654
+  weburl: https://www.duke-energy.com/
+  description: >-
+    Duke Energy Corp is one of the largest electric power holding companies in the United States, providing electricity
+    to millions of customers.
+  products:
+    - Electric Utility Services
+    - Natural Gas Distribution
+    - Renewable Energy
+    - Energy Efficiency Programs
+  execs:
+    - Lynn J. Good
+  source: finnhub+llm
+DVN:
+  name: Devon Energy Corp
+  industry: Energy
+  marketCap: 51753
+  weburl: https://www.devonenergy.com/
+  description: >-
+    Devon Energy Corp is an independent oil and natural gas exploration and production company, focusing on onshore
+    resources in North America.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Natural Gas Liquids
+    - Permian Basin
+    - Eagle Ford
+  execs:
+    - Rick Muncrief
+  source: finnhub+llm
+EA:
+  name: Electronic Arts Inc
+  industry: Media
+  marketCap: 50953
+  weburl: https://www.ea.com/
+  description: >-
+    Electronic Arts Inc is a global leader in digital interactive entertainment, known for developing and publishing
+    video games.
+  products:
+    - FIFA
+    - Madden NFL
+    - The Sims
+    - Battlefield
+    - Apex Legends
+  execs:
+    - Andrew Wilson
+  source: finnhub+llm
+EL:
+  name: Estee Lauder Companies Inc
+  industry: Consumer products
+  marketCap: 30049
+  weburl: https://www.elcompanies.com/en
+  description: >-
+    Estee Lauder Companies Inc is a multinational manufacturer and marketer of skincare, makeup, fragrance, and hair
+    care products.
+  products:
+    - Estée Lauder
+    - Clinique
+    - MAC Cosmetics
+    - Bobbi Brown
+    - La Mer
+  execs:
+    - Fabrizio Freda
+  source: finnhub+llm
+EMR:
+  name: Emerson Electric Co
+  industry: Electrical Equipment
+  marketCap: 77871
+  weburl: https://www.emerson.com/en-us
+  description: >-
+    Emerson Electric Co. is a global technology and engineering company providing solutions for industrial, commercial,
+    and residential markets.
+  products:
+    - Process Management
+    - Industrial Automation
+    - Climate Technologies
+    - Tools & Home Products
+    - Network Power
+  execs:
+    - David N. Farr
+  source: finnhub+llm
+EOG:
+  name: EOG Resources Inc
+  industry: Energy
+  marketCap: 74539
+  weburl: https://www.eogresources.com/
+  description: >-
+    EOG Resources Inc is an independent oil and natural gas company engaged in the exploration, development, and
+    production of oil and natural gas resources.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Natural Gas Liquids
+    - EOG's Eagle Ford Shale
+    - Permian Basin
+  execs:
+    - Ezra Yacob
+  source: finnhub+llm
+EQIX:
+  name: Equinix Inc
+  industry: Real Estate
+  marketCap: 107230
+  weburl: https://www.equinix.com/
+  description: >-
+    Equinix Inc. is a global data center and colocation provider, enabling businesses to connect and protect their
+    digital assets.
+  products:
+    - Data centers
+    - Colocation services
+    - Interconnection services
+    - Cloud services
+  execs:
+    - Charles Meyers
+  source: finnhub+llm
+ETN:
+  name: Eaton Corporation PLC
+  industry: Electrical Equipment
+  marketCap: 156310
+  weburl: https://www.eaton.com/
+  description: >-
+    Eaton Corporation PLC is a multinational power management company that provides energy-efficient solutions to manage
+    electrical, hydraulic, and mechanical power.
+  products:
+    - Electrical Components
+    - Hydraulics
+    - Aerospace Systems
+    - Vehicle Components
+    - Industrial Controls
+  execs:
+    - Craig Arnold
+  source: finnhub+llm
+EXC:
+  name: Exelon Corp
+  industry: Utilities
+  marketCap: 46706
+  weburl: https://www.exeloncorp.com/
+  description: >-
+    Exelon Corp is a utility services holding company that operates through its subsidiaries, providing electricity and
+    natural gas to customers.
+  products:
+    - Electric Utility Services
+    - Nuclear Power Generation
+    - Renewable Energy
+    - Energy Efficiency Programs
+  execs:
+    - Christopher M. Crane
+  source: finnhub+llm
+F:
+  name: Ford Motor Co
+  industry: Automobiles
+  marketCap: 59412
+  weburl: https://www.ford.com/
+  description: >-
+    Ford Motor Co is an American multinational automaker that designs, manufactures, markets, and services a wide range
+    of vehicles.
+  products:
+    - Ford F-Series
+    - Ford Mustang
+    - Ford Explorer
+    - Ford Escape
+    - Ford Bronco
+  execs:
+    - Jim Farley
+  source: finnhub+llm
+FANG:
+  name: Diamondback Energy Inc
+  industry: Energy
+  marketCap: 55964
+  weburl: https://ir.diamondbackenergy.com/
+  description: >-
+    Diamondback Energy Inc is an independent oil and natural gas company focused on the acquisition, exploration, and
+    development of unconventional oil and natural gas reserves in the Permian Basin.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Natural Gas Liquids
+    - Permian Basin
+    - Midstream Services
+  execs:
+    - Travis Stice
+  source: finnhub+llm
+FCX:
+  name: Freeport-McMoRan Inc
+  industry: Metals & Mining
+  marketCap: 91738
+  weburl: https://www.fcx.com/
+  description: >-
+    Freeport-McMoRan Inc. is a leading international mining company with a focus on copper, gold, and molybdenum
+    production.
+  products:
+    - Copper
+    - Gold
+    - Molybdenum
+    - Oil and gas
+    - Mining operations
+  execs:
+    - Richard C. Adkerson
+  source: finnhub+llm
+FDX:
+  name: FedEx Corp
+  industry: Logistics & Transportation
+  marketCap: 79103
+  weburl: https://www.fedex.com/en-us/home.html
+  description: >-
+    FedEx Corporation provides logistics and transportation services globally, specializing in overnight shipping and
+    freight services.
+  products:
+    - FedEx Express
+    - FedEx Ground
+    - FedEx Freight
+    - FedEx Office
+    - FedEx Logistics
+  execs:
+    - Raj Subramaniam
+  source: finnhub+llm
+GD:
+  name: General Dynamics Corp
+  industry: Aerospace & Defense
+  marketCap: 93401
+  weburl: https://www.gd.com
+  description: >-
+    General Dynamics Corp is a global aerospace and defense company that provides a wide range of products and services
+    in business aviation, combat vehicles, and information technology.
+  products:
+    - Aerospace
+    - Combat Systems
+    - Marine Systems
+    - Information Technology
+  execs:
+    - Phebe Novakovic
+  source: finnhub+llm
+GE:
+  name: General Electric Co
+  industry: Aerospace & Defense
+  marketCap: 345037
+  weburl: https://www.ge.com/
+  description: >-
+    General Electric Co is a diversified multinational conglomerate involved in various sectors including aviation,
+    healthcare, power, and renewable energy.
+  products:
+    - Aviation
+    - Healthcare
+    - Power
+    - Renewable Energy
+    - Digital Solutions
+  execs:
+    - Larry Culp
+  source: finnhub+llm
+GEV:
+  name: GE Vernova Inc
+  industry: Electrical Equipment
+  marketCap: 254558
+  weburl: https://www.gevernova.com/
+  source: finnhub+llm
+GILD:
+  name: Gilead Sciences, Inc
+  industry: Biotechnology
+  marketCap: 162341
+  weburl: https://www.gilead.com
+  description: >-
+    Gilead Sciences, Inc. is a biopharmaceutical company that discovers, develops, and commercializes innovative
+    medicines in areas of unmet medical need.
+  products:
+    - HIV Medicines
+    - Hepatitis C Treatments
+    - Antiviral Therapies
+    - Oncology Products
+    - Inflammation Treatments
+  execs:
+    - Daniel O'Day
+  source: finnhub+llm
+GIS:
+  name: General Mills Inc
+  industry: Food Products
+  marketCap: 17459
+  weburl: https://www.generalmills.com/
+  description: >-
+    General Mills Inc is a multinational manufacturer and marketer of branded consumer foods, known for its wide range
+    of products in the grocery sector.
+  products:
+    - Cheerios
+    - Betty Crocker
+    - Yoplait
+    - Pillsbury
+    - Nature Valley
+  execs:
+    - Jeff Harmening
+  source: finnhub+llm
+GLW:
+  name: Corning Inc
+  industry: Electrical Equipment
+  marketCap: 158697
+  weburl: https://www.corning.com/
+  description: Corning Inc. is a technology company that specializes in glass, ceramics, and related materials and technologies.
+  products:
+    - Gorilla Glass
+    - Optical fiber
+    - Display technologies
+    - Environmental technologies
+    - Life sciences
+  execs:
+    - Wendell P. Weeks
+  source: finnhub+llm
+GM:
+  name: General Motors Co
+  industry: Automobiles
+  marketCap: 74320
+  weburl: https://www.gm.com/
+  description: >-
+    General Motors Co is a global automotive company that designs, manufactures, and sells vehicles and vehicle parts,
+    and provides automotive financing services.
+  products:
+    - Chevrolet
+    - GMC
+    - Cadillac
+    - Buick
+    - OnStar
+  execs:
+    - Mary Barra
+  source: finnhub+llm
+GOLD:
+  name: Gold.com Inc
+  industry: Distributors
+  marketCap: 1132
+  weburl: https://www.gold.com/
+  source: finnhub+llm
+GOOG:
+  name: Alphabet Inc
+  industry: Media
+  marketCap: 4467169
+  weburl: https://abc.xyz/
+  description: >-
+    Alphabet Inc is the parent company of Google, focusing on internet services and products, including search engines
+    and online advertising.
+  products:
+    - Google Search
+    - YouTube
+    - Google Cloud
+    - Android
+    - Google Ads
+  execs:
+    - Sundar Pichai
+  source: finnhub+llm
+GOOGL:
+  name: Alphabet Inc
+  industry: Media
+  marketCap: 4467169
+  weburl: https://abc.xyz/
+  description: >-
+    Alphabet Inc is the parent company of Google, specializing in internet-related services and products, including
+    search engines, online advertising, and cloud computing.
+  products:
+    - Google Search
+    - YouTube
+    - Google Cloud
+    - Android
+    - Google Ads
+  execs:
+    - Sundar Pichai
+  source: finnhub+llm
+GS:
+  name: Goldman Sachs Group Inc
+  industry: Financial Services
+  marketCap: 313525
+  weburl: https://www.goldmansachs.com/
+  description: >-
+    Goldman Sachs Group Inc is a leading global investment banking, securities, and investment management firm that
+    provides a wide range of financial services.
+  products:
+    - Investment Banking
+    - Asset Management
+    - Securities Trading
+    - Wealth Management
+    - Research
+  execs:
+    - David Solomon
+  source: finnhub+llm
+HAL:
+  name: Halliburton Co
+  industry: Energy
+  marketCap: 33550
+  weburl: https://www.halliburton.com/
+  description: >-
+    Halliburton Co is a multinational corporation that provides products and services to the energy industry,
+    particularly in oil and natural gas exploration and production.
+  products:
+    - Drilling Services
+    - Completion Services
+    - Production Enhancement
+    - Reservoir Management
+    - Oilfield Chemicals
+  execs:
+    - Jeff Miller
+  source: finnhub+llm
+HD:
+  name: Home Depot Inc
+  industry: Retail
+  marketCap: 309690
+  weburl: https://www.homedepot.com/
+  description: >-
+    The Home Depot, Inc. is a home improvement retailer that sells tools, construction products, appliances, and
+    services.
+  products:
+    - Tools
+    - Lumber
+    - Appliances
+    - Garden Supplies
+    - Home Improvement Services
+  execs:
+    - Ted Decker
+  source: finnhub+llm
+HON:
+  name: Honeywell International Inc
+  industry: Industrial Conglomerates
+  marketCap: 137737
+  weburl: https://www.honeywell.com/us/en
+  description: >-
+    Honeywell International Inc is a multinational conglomerate that produces a variety of commercial and consumer
+    products, engineering services, and aerospace systems.
+  products:
+    - Aerospace Systems
+    - Building Technologies
+    - Performance Materials
+    - Safety and Productivity Solutions
+  execs:
+    - Darius Adamczyk
+  source: finnhub+llm
+HOOD:
+  name: Robinhood Markets Inc
+  industry: Financial Services
+  marketCap: 74673
+  weburl: https://robinhood.com
+  description: >-
+    Robinhood Markets Inc is a financial services company that offers commission-free trading of stocks, ETFs, and
+    cryptocurrencies through its mobile app.
+  execs:
+    - Vladimir Tenev
+  source: finnhub+llm
+HPQ:
+  name: HP Inc
+  industry: Technology
+  marketCap: 23233
+  weburl: https://investor.hp.com/
+  description: HP Inc focuses on personal computers, printers, and related supplies and services.
+  products:
+    - HP Spectre Laptops
+    - HP LaserJet Printers
+    - HP Envy Series
+    - HP Instant Ink
+    - HP Gaming PCs
+  execs:
+    - Enrique Lores
+  source: finnhub+llm
+HUM:
+  name: Humana Inc
+  industry: Health Care
+  marketCap: 41535
+  weburl: https://www.humana.com/
+  description: >-
+    Humana Inc is a health insurance company that offers a variety of health and wellness products and services,
+    primarily focused on Medicare and Medicaid.
+  products:
+    - Medicare Advantage Plans
+    - Medicare Prescription Drug Plans
+    - Individual and Family Plans
+    - Group Health Insurance
+    - Wellness Programs
+  execs:
+    - Bruce D. Broussard
+  source: finnhub+llm
+IBM:
+  name: International Business Machines Corp
+  industry: Technology
+  marketCap: 268173
+  weburl: https://www.ibm.com/
+  description: >-
+    International Business Machines Corp provides a wide range of technology and consulting services, including cloud
+    computing and AI.
+  products:
+    - IBM Cloud
+    - IBM Watson
+    - IBM Z Mainframes
+    - IBM Security Solutions
+    - IBM Blockchain
+  execs:
+    - Arvind Krishna
+  source: finnhub+llm
+ICE:
+  name: Intercontinental Exchange Inc
+  industry: Financial Services
+  marketCap: 79008
+  weburl: https://www.ice.com/
+  description: >-
+    Intercontinental Exchange Inc is a global operator of exchanges and clearinghouses, providing trading and risk
+    management services across various asset classes.
+  products:
+    - ICE Futures
+    - ICE Clear
+    - NYSE
+    - Data Services
+  execs:
+    - Jeffrey C. Sprecher
+  source: finnhub+llm
+INTC:
+  name: Intel Corp
+  industry: Semiconductors
+  marketCap: 520493
+  weburl: https://www.intel.com/
+  description: >-
+    Intel Corporation is a multinational corporation and technology company known for designing and manufacturing
+    advanced integrated digital technology platforms, primarily semiconductors.
+  products:
+    - Microprocessors
+    - Chipsets
+    - Solid-State Drives (SSDs)
+    - FPGA (Field-Programmable Gate Arrays)
+    - Networking Products
+  execs:
+    - Pat Gelsinger
+  source: finnhub+llm
+ISRG:
+  name: Intuitive Surgical Inc
+  industry: Health Care
+  marketCap: 150764
+  weburl: https://www.intuitive.com/en-us/about-us/company
+  description: >-
+    Intuitive Surgical Inc is a global technology leader in robotic-assisted minimally invasive surgery, known for its
+    da Vinci Surgical System.
+  products:
+    - da Vinci Surgical System
+    - Ion Endoluminal System
+    - EndoWrist Instruments
+    - Surgical Simulators
+    - Intuitive Surgical Services
+  execs:
+    - Gary Guthart
+  source: finnhub+llm
+ITW:
+  name: Illinois Tool Works Inc
+  industry: Machinery
+  marketCap: 72800
+  weburl: https://www.itw.com/
+  description: >-
+    Illinois Tool Works Inc. is a diversified manufacturer of industrial equipment and consumables, serving various
+    markets worldwide.
+  products:
+    - Packaging Solutions
+    - Welding Products
+    - Polymers & Fluids
+    - Food Equipment
+    - Construction Products
+  execs:
+    - E. Scott Santi
+  source: finnhub+llm
+JD:
+  name: JD.com Inc
+  industry: Retail
+  marketCap: 279030
+  weburl: https://corporate.jd.com/
+  description: >-
+    JD.com Inc is a major Chinese e-commerce company that offers a wide range of products and services, including direct
+    sales and third-party marketplace.
+  products:
+    - JD Mall
+    - JD Logistics
+    - JD Health
+  execs:
+    - Xu Lei
+  source: finnhub+llm
+JNJ:
+  name: Johnson & Johnson
+  industry: Pharmaceuticals
+  marketCap: 561592
+  weburl: https://www.jnj.com/
+  description: >-
+    Johnson & Johnson is a multinational corporation that develops medical devices, pharmaceuticals, and consumer health
+    products, focusing on innovation and quality.
+  products:
+    - Tylenol
+    - Band-Aid
+    - Neutrogena
+    - Johnson's Baby
+    - Janssen Pharmaceuticals
+  execs:
+    - Joaquin Duato
+  source: finnhub+llm
+JPM:
+  name: JPMorgan Chase & Co
+  industry: Banking
+  marketCap: 834802
+  weburl: https://www.jpmorganchase.com/
+  description: >-
+    JPMorgan Chase & Co is a leading global financial services firm that provides investment banking, financial
+    services, and asset management.
+  products:
+    - Investment Banking
+    - Asset Management
+    - Commercial Banking
+    - Consumer Banking
+    - Credit Cards
+  execs:
+    - Jamie Dimon
+  source: finnhub+llm
+KHC:
+  name: Kraft Heinz Co
+  industry: Food Products
+  marketCap: 26378
+  weburl: https://www.kraftheinzcompany.com/
+  description: >-
+    Kraft Heinz Co is a global food and beverage company formed by the merger of Kraft Foods and H.J. Heinz Company,
+    known for its diverse portfolio of iconic brands.
+  products:
+    - Heinz Ketchup
+    - Oscar Mayer
+    - Craft Singles
+    - Jello
+    - Velveeta
+  execs:
+    - Miguel Patricio
+  source: finnhub+llm
+KKR:
+  name: KKR & Co Inc
+  industry: Financial Services
+  marketCap: 83816
+  weburl: https://ir.kkr.com/
+  description: >-
+    KKR & Co Inc is a global investment firm that manages multiple asset classes including private equity, energy,
+    infrastructure, real estate, and credit.
+  products:
+    - KKR Private Equity
+    - KKR Credit
+    - KKR Real Estate
+    - KKR Infrastructure
+  execs:
+    - Henry Kravis
+  source: finnhub+llm
+KLAC:
+  name: KLA Corp
+  industry: Semiconductors
+  marketCap: 260507
+  weburl: https://www.kla.com/
+  description: >-
+    KLA Corporation is a global leader in process control and yield management solutions for the semiconductor and
+    related industries.
+  products:
+    - Wafer Inspection Systems
+    - Metrology Systems
+    - Yield Management Solutions
+    - Software Solutions
+    - Services
+  execs:
+    - Tsu-Jae Liu
+  source: finnhub+llm
+KMI:
+  name: Kinder Morgan Inc
+  industry: Energy
+  marketCap: 70827
+  weburl: https://www.kindermorgan.com/
+  description: >-
+    Kinder Morgan Inc is one of the largest energy infrastructure companies in North America, primarily involved in the
+    transportation and storage of natural gas, crude oil, and other products.
+  products:
+    - Natural Gas Pipelines
+    - Crude Oil Pipelines
+    - Terminals
+    - Natural Gas Storage
+    - CO2 Services
+  execs:
+    - Steven J. Kean
+  source: finnhub+llm
+KO:
+  name: Coca-Cola Co
+  industry: Beverages
+  marketCap: 341337
+  weburl: https://www.coca-colacompany.com/
+  description: >-
+    The Coca-Cola Company is a beverage corporation that produces and sells non-alcoholic beverages, primarily
+    carbonated soft drinks.
+  products:
+    - Coca-Cola
+    - Diet Coke
+    - Sprite
+    - Fanta
+    - Coca-Cola Zero Sugar
+  execs:
+    - James Quincey
+  source: finnhub+llm
+KR:
+  name: Kroger Co
+  industry: Retail
+  marketCap: 38905
+  weburl: https://www.thekrogerco.com/
+  description: >-
+    Kroger Co is one of the largest supermarket chains in the United States, offering groceries, pharmacy services, and
+    various household products.
+  products:
+    - Kroger Grocery Stores
+    - Kroger Pharmacy
+    - Kroger Fuel Centers
+    - Private Label Brands
+    - Kroger Delivery
+  execs:
+    - William McMullen
+  source: finnhub+llm
+LCID:
+  name: Lucid Group Inc
+  industry: Automobiles
+  marketCap: 2022
+  weburl: https://www.lucidmotors.com/
+  description: Lucid Group Inc designs and manufactures electric vehicles, focusing on luxury and performance.
+  products:
+    - Lucid Air
+    - Lucid Gravity
+  execs:
+    - Peter Rawlinson
+  source: finnhub+llm
+LIN:
+  name: Linde PLC
+  industry: Chemicals
+  marketCap: 237980
+  weburl: https://www.linde.com/
+  description: >-
+    Linde PLC is a global leader in industrial gases and engineering, providing products and services to various
+    industries.
+  products:
+    - Industrial Gases
+    - Healthcare Solutions
+    - Engineering Services
+    - Specialty Gases
+  execs:
+    - Severin Schwan
+  source: finnhub+llm
+LLY:
+  name: Eli Lilly and Co
+  industry: Pharmaceuticals
+  marketCap: 1092378
+  weburl: https://www.lilly.com/
+  description: >-
+    Eli Lilly and Co is a global pharmaceutical company that focuses on developing innovative medicines for various
+    health conditions, including diabetes and cancer.
+  products:
+    - Humalog
+    - Trulicity
+    - Cyramza
+    - Taltz
+    - Verzenio
+  execs:
+    - David A. Ricks
+  source: finnhub+llm
+LMT:
+  name: Lockheed Martin Corp
+  industry: Aerospace & Defense
+  marketCap: 120912
+  weburl: https://www.lockheedmartin.com/
+  description: >-
+    Lockheed Martin Corp is a global aerospace, defense, and security company that specializes in advanced technology
+    systems and services.
+  products:
+    - Aeronautics
+    - Missiles and Fire Control
+    - Rotary and Mission Systems
+    - Space Systems
+  execs:
+    - James Taiclet
+  source: finnhub+llm
+LNG:
+  name: Cheniere Energy Inc
+  industry: Energy
+  marketCap: 50313
+  weburl: https://www.cheniere.com/
+  description: >-
+    Cheniere Energy Inc is a leading producer of liquefied natural gas (LNG) in the United States, focusing on LNG
+    export facilities and related infrastructure.
+  products:
+    - LNG Exports
+    - Sabine Pass LNG Terminal
+    - Corpus Christi LNG Terminal
+    - Natural Gas Supply
+    - LNG Shipping
+  execs:
+    - Jack Fusco
+  source: finnhub+llm
+LOW:
+  name: Lowe's Companies Inc
+  industry: Retail
+  marketCap: 118225
+  weburl: https://www.lowes.com/
+  description: >-
+    Lowe's Companies, Inc. is a home improvement retailer that provides a variety of products and services for home
+    improvement, repair, and maintenance.
+  products:
+    - Home Improvement Products
+    - Lawn and Garden Supplies
+    - Appliances
+    - Tools
+    - Building Materials
+  execs:
+    - Marvin Ellison
+  source: finnhub+llm
+LRCX:
+  name: Lam Research Corp
+  industry: Semiconductors
+  marketCap: 396819
+  weburl: https://www.lamresearch.com/
+  description: >-
+    Lam Research Corporation is a supplier of wafer fabrication equipment and services to the semiconductor industry,
+    focusing on etch and deposition technologies.
+  products:
+    - Etch Systems
+    - Deposition Systems
+    - Plasma Doping Systems
+    - Services and Support
+    - Advanced Technology Solutions
+  execs:
+    - Tim Archer
+  source: finnhub+llm
+LULU:
+  name: Lululemon Athletica Inc
+  industry: Textiles, Apparel & Luxury Goods
+  marketCap: 13557
+  weburl: https://shop.lululemon.com/
+  description: >-
+    Lululemon Athletica Inc is a Canadian athletic apparel retailer known for its high-quality yoga and workout
+    clothing.
+  products:
+    - Yoga Pants
+    - Athletic Tops
+    - Shorts
+    - Outerwear
+    - Accessories
+  execs:
+    - Calvin McDonald
+  source: finnhub+llm
+MA:
+  name: Mastercard Inc
+  industry: Financial Services
+  marketCap: 429740
+  weburl: https://www.mastercard.us/
+  description: >-
+    Mastercard Inc is a technology company in the global payments industry, providing transaction processing and payment
+    solutions to consumers and businesses.
+  products:
+    - Mastercard Payment Gateway
+    - Mastercard Send
+    - Mastercard Identity Check
+    - Mastercard Rewards
+  execs:
+    - Michael Miebach
+  source: finnhub+llm
+MCD:
+  name: McDonald's Corp
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 197841
+  weburl: https://www.mcdonalds.com/
+  description: McDonald's Corporation is a global fast-food restaurant chain known for its hamburgers, fries, and breakfast items.
+  products:
+    - Burgers
+    - Fries
+    - Breakfast Items
+    - Salads
+    - McCafé Beverages
+  execs:
+    - Chris Kempczinski
+  source: finnhub+llm
+MDLZ:
+  name: Mondelez International Inc
+  industry: Food Products
+  marketCap: 79625
+  weburl: https://www.mondelezinternational.com/
+  description: >-
+    Mondelez International, Inc. is a multinational confectionery, food, and beverage company known for its snack
+    products.
+  products:
+    - Oreo
+    - Cadbury
+    - Toblerone
+    - Triscuit
+    - BelVita
+  execs:
+    - Dirk Van de Put
+  source: finnhub+llm
+MDT:
+  name: Medtronic PLC
+  industry: Health Care
+  marketCap: 105542
+  weburl: https://www.medtronic.com/
+  description: >-
+    Medtronic PLC is a global leader in medical technology, services, and solutions, focused on alleviating pain,
+    restoring health, and extending life.
+  products:
+    - Insulin Pumps
+    - Pacemakers
+    - Spinal Implants
+    - Heart Valves
+    - Neuromodulation Devices
+  execs:
+    - Geoff Martha
+  source: finnhub+llm
+META:
+  name: Meta Platforms Inc
+  industry: Media
+  marketCap: 1553007
+  weburl: https://www.meta.com/
+  description: >-
+    Meta Platforms Inc, formerly Facebook, Inc., is a technology company that focuses on social media services and
+    products, as well as virtual and augmented reality.
+  products:
+    - Facebook
+    - Instagram
+    - WhatsApp
+    - Oculus
+    - Messenger
+  execs:
+    - Mark Zuckerberg
+  source: finnhub+llm
+MMM:
+  name: 3M Co
+  industry: Industrial Conglomerates
+  marketCap: 80128
+  weburl: https://www.3m.com/
+  description: >-
+    3M Co is a diversified technology company known for its innovative products across various sectors including
+    healthcare, consumer goods, and industrial applications.
+  products:
+    - Adhesives
+    - Medical Products
+    - Consumer Products
+    - Industrial Solutions
+    - Safety and Graphics
+  execs:
+    - Mike Roman
+  source: finnhub+llm
+MO:
+  name: Altria Group Inc
+  industry: Tobacco
+  marketCap: 120366
+  weburl: https://www.altria.com/
+  description: >-
+    Altria Group Inc is an American corporation that is one of the world's largest producers and marketers of tobacco,
+    cigarettes, and related products.
+  products:
+    - Marlboro
+    - Virginia Slims
+    - Black & Mild
+    - Skoal
+    - Copenhagen
+  execs:
+    - Billy Gifford
+  source: finnhub+llm
+MPC:
+  name: Marathon Petroleum Corp
+  industry: Energy
+  marketCap: 78042
+  weburl: https://www.marathonpetroleum.com/
+  description: >-
+    Marathon Petroleum Corp is a leading, integrated, downstream energy company that operates refineries and markets
+    petroleum products.
+  products:
+    - Refining
+    - Retail Fuels
+    - Midstream Services
+    - Marathon Brand Fuels
+    - Marathon Gas Stations
+  execs:
+    - Michael J. Hennigan
+  source: finnhub+llm
+MRK:
+  name: Merck & Co Inc
+  industry: Pharmaceuticals
+  marketCap: 303492
+  weburl: https://www.merck.com/
+  description: >-
+    Merck & Co Inc is a global healthcare company that develops prescription medicines, vaccines, biologic therapies,
+    and animal health products.
+  products:
+    - Keytruda
+    - Gardasil
+    - Januvia
+    - Zetia
+    - Merck Animal Health
+  execs:
+    - Robert M. Davis
+  source: finnhub+llm
+MRNA:
+  name: Moderna Inc
+  industry: Biotechnology
+  marketCap: 19415
+  weburl: https://www.modernatx.com/
+  description: >-
+    Moderna Inc is a biotechnology company pioneering messenger RNA (mRNA) therapeutics and vaccines, notably known for
+    its COVID-19 vaccine.
+  products:
+    - mRNA-1273 (COVID-19 Vaccine)
+    - mRNA Cancer Vaccines
+    - Influenza Vaccine
+    - Zika Virus Vaccine
+    - Cytomegalovirus Vaccine
+  execs:
+    - Stéphane Bancel
+  source: finnhub+llm
+MS:
+  name: Morgan Stanley
+  industry: Financial Services
+  marketCap: 338217
+  weburl: https://www.morganstanley.com/
+  description: >-
+    Morgan Stanley is a global financial services firm that provides investment banking, securities, wealth management,
+    and investment management services.
+  products:
+    - Investment Banking
+    - Wealth Management
+    - Institutional Securities
+    - Investment Management
+  execs:
+    - James Gorman
+  source: finnhub+llm
+MSFT:
+  name: Microsoft Corp
+  industry: Technology
+  marketCap: 3128857
+  weburl: https://www.microsoft.com/en-in/
+  description: >-
+    Microsoft Corp develops, licenses, and supports a wide range of software products, services, and devices, primarily
+    known for its operating systems and productivity software.
+  products:
+    - Windows
+    - Microsoft Office
+    - Azure
+    - Xbox
+    - LinkedIn
+  execs:
+    - Satya Nadella
+  source: finnhub+llm
+MSTR:
+  name: Strategy Inc
+  industry: Technology
+  marketCap: 41095
+  weburl: https://www.strategy.com/
+  description: >-
+    MicroStrategy Inc is a business intelligence company that provides software solutions for data analytics and mobile
+    intelligence.
+  source: finnhub+llm
+MU:
+  name: Micron Technology Inc
+  industry: Semiconductors
+  marketCap: 1041350
+  weburl: https://www.micron.com/
+  description: >-
+    Micron Technology, Inc. is a global leader in memory and storage solutions, providing innovative memory technologies
+    and products for a wide range of applications.
+  products:
+    - DRAM
+    - NAND Flash Memory
+    - Solid-State Drives (SSDs)
+    - 3D NAND
+    - Memory Modules
+  execs:
+    - Sanjay Mehrotra
+  source: finnhub+llm
+NEE:
+  name: Nextera Energy Inc
+  industry: Utilities
+  marketCap: 178213
+  weburl: https://www.nexteraenergy.com/
+  description: >-
+    NextEra Energy Inc is a clean energy company that generates renewable energy from wind and solar projects and is
+    also involved in the utility sector.
+  products:
+    - NextEra Energy Resources
+    - Florida Power & Light Company
+    - Renewable Energy Projects
+    - Energy Storage Solutions
+  execs:
+    - James L. Robo
+  source: finnhub+llm
+NEM:
+  name: Newmont Corporation
+  industry: Metals & Mining
+  marketCap: 108463
+  weburl: https://newmont.com/
+  description: >-
+    Newmont Corporation is the world's largest gold mining company, engaged in the exploration, mining, and production
+    of gold.
+  products:
+    - Gold
+    - Copper
+    - Silver
+    - Exploration
+    - Mining operations
+  execs:
+    - Tom Palmer
+  source: finnhub+llm
+NET:
+  name: Cloudflare Inc
+  industry: Technology
+  marketCap: 89531
+  weburl: https://www.cloudflare.com/
+  description: >-
+    Cloudflare Inc offers content delivery network services, internet security, and distributed domain name server
+    services.
+  products:
+    - Cloudflare CDN
+    - Cloudflare Workers
+    - Cloudflare Access
+    - Cloudflare Magic Transit
+    - Cloudflare DDoS Protection
+  execs:
+    - Matthew Prince
+  source: finnhub+llm
+NFLX:
+  name: Netflix Inc
+  industry: Media
+  marketCap: 342569
+  weburl: https://www.netflix.com/
+  description: >-
+    Netflix Inc is a streaming service that offers a wide variety of award-winning TV shows, movies, anime,
+    documentaries, and more.
+  products:
+    - Netflix Streaming
+    - Netflix Originals
+    - DVD Rental Service
+  execs:
+    - Ted Sarandos
+    - Greg Peters
+  source: finnhub+llm
+NIO:
+  name: NIO Inc
+  industry: Automobiles
+  marketCap: 13568
+  weburl: https://ir.nio.com/
+  description: >-
+    NIO Inc is a Chinese electric vehicle manufacturer known for its premium electric cars and innovative
+    battery-swapping technology.
+  products:
+    - ES6
+    - ES8
+    - EC6
+    - ET7
+    - NIO Power Swap
+  execs:
+    - William Li
+  source: finnhub+llm
+NKE:
+  name: Nike Inc
+  industry: Textiles, Apparel & Luxury Goods
+  marketCap: 63523
+  weburl: https://about.nike.com/
+  description: >-
+    Nike, Inc. is a multinational corporation that designs, develops, and sells athletic footwear, apparel, equipment,
+    and accessories.
+  products:
+    - Footwear
+    - Apparel
+    - Sports Equipment
+    - Athletic Accessories
+    - Nike+ Services
+  execs:
+    - John Donahoe
+  source: finnhub+llm
+NOC:
+  name: Northrop Grumman Corp
+  industry: Aerospace & Defense
+  marketCap: 77574
+  weburl: https://www.northropgrumman.com
+  description: >-
+    Northrop Grumman Corp is an aerospace and defense technology company that provides innovative systems and solutions
+    in autonomous systems, cyber, C4ISR, and logistics.
+  products:
+    - Aerospace Systems
+    - Defense Systems
+    - Cybersecurity Solutions
+    - Space Systems
+  execs:
+    - Kathy Warden
+  source: finnhub+llm
+NOW:
+  name: ServiceNow Inc
+  industry: Technology
+  marketCap: 117497
+  weburl: https://www.servicenow.com/
+  description: >-
+    ServiceNow Inc. is a cloud computing company that provides enterprise cloud solutions for digital workflows and IT
+    service management.
+  products:
+    - IT Service Management (ITSM)
+    - IT Operations Management (ITOM)
+    - Customer Service Management (CSM)
+    - HR Service Delivery
+    - Security Operations
+  execs:
+    - Bill McDermott
+  source: finnhub+llm
+NUE:
+  name: Nucor Corp
+  industry: Metals & Mining
+  marketCap: 58819
+  weburl: https://nucor.com/
+  description: Nucor Corp is a leading steel producer in North America, specializing in steel and steel products.
+  products:
+    - Steel
+    - Rebar
+    - Sheet steel
+    - Structural steel
+    - Steel joists
+  execs:
+    - Leon Topalian
+  source: finnhub+llm
+NVDA:
+  name: NVIDIA Corp
+  industry: Semiconductors
+  marketCap: 5034931
+  weburl: https://www.nvidia.com/
+  description: >-
+    NVIDIA Corp is a technology company primarily known for its graphics processing units (GPUs) for gaming and
+    professional markets, as well as AI and deep learning technologies.
+  products:
+    - GeForce GPUs
+    - Tegra processors
+    - NVIDIA AI
+    - NVIDIA RTX
+    - NVIDIA Omniverse
+  execs:
+    - Jensen Huang
+  source: finnhub+llm
+O:
+  name: Realty Income Corp
+  industry: Real Estate
+  marketCap: 56593
+  weburl: https://www.realtyincome.com/
+  description: >-
+    Realty Income Corp. is a real estate investment trust (REIT) known for its monthly dividend payments and a portfolio
+    of commercial properties.
+  products:
+    - Retail properties
+    - Commercial real estate
+    - Single-tenant properties
+  execs:
+    - Sumit Roy
+  source: finnhub+llm
+OKLO:
+  name: Oklo Inc
+  industry: Utilities
+  marketCap: 10339
+  weburl: https://oklo.com/
+  description: Oklo Inc is a company focused on developing compact nuclear reactors for clean energy generation.
+  source: finnhub+llm
+ORCL:
+  name: Oracle Corp
+  industry: Technology
+  marketCap: 626432
+  weburl: https://www.oracle.com/
+  description: >-
+    Oracle Corp is a multinational computer technology corporation that offers software, cloud solutions, and hardware
+    products, primarily known for its database management systems.
+  products:
+    - Oracle Database
+    - Oracle Cloud
+    - Java
+    - Oracle Applications
+    - Oracle Fusion Middleware
+  execs:
+    - Safra Catz
+  source: finnhub+llm
+OXY:
+  name: Occidental Petroleum Corp
+  industry: Energy
+  marketCap: 57316
+  weburl: https://www.oxy.com/
+  description: >-
+    Occidental Petroleum Corp is an international oil and gas exploration and production company, with a focus on
+    sustainable practices and carbon management.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Chemicals
+    - Oxy Low Carbon Ventures
+    - Permian Basin
+  execs:
+    - Vicki Hollub
+  source: finnhub+llm
+PANW:
+  name: Palo Alto Networks Inc
+  industry: Technology
+  marketCap: 224769
+  weburl: https://www.paloaltonetworks.com/
+  description: >-
+    Palo Alto Networks Inc. is a cybersecurity company that provides advanced firewalls and cloud-based security
+    solutions to protect organizations from cyber threats.
+  products:
+    - Next-Generation Firewalls
+    - Cloud Security Solutions
+    - Endpoint Protection
+    - Threat Intelligence Services
+    - Security Operations
+  execs:
+    - Nikesh Arora
+  source: finnhub+llm
+PDD:
+  name: PDD Holdings Inc
+  industry: Retail
+  marketCap: 122241
+  weburl: https://www.pddholdings.com/
+  description: PDD Holdings Inc operates Pinduoduo, a Chinese e-commerce platform that connects consumers and farmers directly.
+  products:
+    - Pinduoduo
+    - Duoduo Grocery
+  source: finnhub+llm
+PEP:
+  name: PepsiCo Inc
+  industry: Beverages
+  marketCap: 195790
+  weburl: https://www.pepsico.com/
+  description: >-
+    PepsiCo, Inc. is a multinational food and beverage corporation known for its wide range of snacks, beverages, and
+    food products.
+  products:
+    - Pepsi
+    - Mountain Dew
+    - Lay's
+    - Gatorade
+    - Quaker Oats
+  execs:
+    - Ramon Laguarta
+  source: finnhub+llm
+PFE:
+  name: Pfizer Inc
+  industry: Pharmaceuticals
+  marketCap: 148670
+  weburl: https://www.pfizer.com/
+  description: >-
+    Pfizer Inc is a leading global pharmaceutical company known for its research and development of medications and
+    vaccines across a wide range of therapeutic areas.
+  products:
+    - Lipitor
+    - Viagra
+    - Prevnar
+    - Ibrance
+    - Comirnaty
+  execs:
+    - Albert Bourla
+  source: finnhub+llm
+PG:
+  name: Procter & Gamble Co
+  industry: Consumer products
+  marketCap: 338345
+  weburl: https://us.pg.com/
+  description: >-
+    Procter & Gamble Co. is a consumer goods corporation that produces a wide range of personal care and hygiene
+    products.
+  products:
+    - Tide
+    - Pampers
+    - Gillette
+    - Crest
+    - Head & Shoulders
+  execs:
+    - Jon Moeller
+  source: finnhub+llm
+PH:
+  name: Parker-Hannifin Corp
+  industry: Machinery
+  marketCap: 112435
+  weburl: https://www.parker.com/us/en/home.html
+  description: >-
+    Parker-Hannifin Corporation is a global leader in motion and control technologies, providing precision-engineered
+    solutions for a wide range of industries.
+  products:
+    - Hydraulic Systems
+    - Pneumatic Systems
+    - Filtration Products
+    - Sealing Solutions
+    - Motion Control
+  execs:
+    - Thomas L. Williams
+  source: finnhub+llm
+PLD:
+  name: Prologis Inc
+  industry: Real Estate
+  marketCap: 138240
+  weburl: https://www.prologis.com/
+  description: >-
+    Prologis Inc. is a leading global logistics real estate investment trust (REIT) that focuses on industrial
+    properties.
+  products:
+    - Logistics facilities
+    - Distribution centers
+    - Industrial real estate
+    - Warehousing solutions
+  execs:
+    - Hamid R. Moghadam
+  source: finnhub+llm
+PLTR:
+  name: Palantir Technologies Inc
+  industry: Technology
+  marketCap: 329535
+  weburl: https://www.palantir.com/
+  description: >-
+    Palantir Technologies Inc. is a public American software company that specializes in big data analytics and provides
+    platforms for integrating, visualizing, and analyzing data.
+  products:
+    - Palantir Foundry
+    - Palantir Gotham
+    - Data Integration Solutions
+    - Analytics Tools
+    - AI and Machine Learning Solutions
+  execs:
+    - Alexander Karp
+  source: finnhub+llm
+PM:
+  name: Philip Morris International Inc
+  industry: Tobacco
+  marketCap: 275912
+  weburl: https://www.pmi.com/
+  description: >-
+    Philip Morris International Inc is a leading international tobacco company that manufactures and sells cigarettes
+    and smoke-free products worldwide.
+  products:
+    - Marlboro
+    - IQOS
+    - Chesterfield
+    - L&M
+    - Parliament
+  execs:
+    - Jacek Olczak
+  source: finnhub+llm
+PNC:
+  name: PNC Financial Services Group Inc
+  industry: Banking
+  marketCap: 91867
+  weburl: https://www.pnc.com/
+  description: >-
+    PNC Financial Services Group Inc is a bank holding company that provides a wide range of financial services
+    including retail banking, corporate banking, and asset management.
+  products:
+    - PNC Retail Banking
+    - PNC Wealth Management
+    - PNC Corporate & Institutional Banking
+  execs:
+    - William S. Demchak
+  source: finnhub+llm
+PSX:
+  name: Phillips 66
+  industry: Energy
+  marketCap: 74099
+  weburl: https://www.phillips66.com/
+  description: >-
+    Phillips 66 is a diversified energy manufacturing and logistics company, involved in refining, midstream
+    transportation, and marketing of petroleum products.
+  products:
+    - Refining
+    - Midstream
+    - Chemicals
+    - Lubricants
+    - Petroleum Products
+  execs:
+    - Greg Garland
+  source: finnhub+llm
+PYPL:
+  name: PayPal Holdings Inc
+  industry: Financial Services
+  marketCap: 36797
+  weburl: https://www.paypal.com/
+  description: >-
+    PayPal Holdings Inc is a technology platform that enables digital and mobile payments on behalf of consumers and
+    merchants.
+  products:
+    - PayPal
+    - Venmo
+    - Braintree
+    - PayPal Credit
+    - Xoom
+  execs:
+    - Dan Schulman
+  source: finnhub+llm
+QCOM:
+  name: Qualcomm Inc
+  industry: Semiconductors
+  marketCap: 236644
+  weburl: https://www.qualcomm.com/
+  description: >-
+    Qualcomm Incorporated is a global semiconductor company that designs and markets wireless telecommunications
+    products and services, particularly for mobile devices.
+  products:
+    - Snapdragon Processors
+    - 5G Modems
+    - RF Front-End Solutions
+    - Qualcomm Automotive Solutions
+    - IoT Solutions
+  execs:
+    - Cristiano Amon
+  source: finnhub+llm
+RBLX:
+  name: Roblox Corp
+  industry: Media
+  marketCap: 29971
+  weburl: https://corp.roblox.com/
+  description: >-
+    Roblox Corp is an online platform that allows users to create and play games created by other users, fostering a
+    community of game developers and players.
+  execs:
+    - David Baszucki
+  source: finnhub+llm
+REGN:
+  name: Regeneron Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 66745
+  weburl: https://www.regeneron.com/
+  description: >-
+    Regeneron Pharmaceuticals Inc is a biotechnology company that invents life-transforming medicines for serious
+    diseases, focusing on areas such as ophthalmology, immunology, and oncology.
+  products:
+    - EYLEA
+    - Dupixent
+    - Libtayo
+    - Praluent
+    - Regeneron's Antibody Programs
+  execs:
+    - Leonard S. Schleifer
+  source: finnhub+llm
+RIVN:
+  name: Rivian Automotive Inc
+  industry: Automobiles
+  marketCap: 21131
+  weburl: https://rivian.com/
+  description: >-
+    Rivian Automotive Inc is an electric vehicle manufacturer focused on producing adventure-oriented electric trucks
+    and SUVs.
+  products:
+    - R1T
+    - R1S
+    - Rivian Charging Network
+  execs:
+    - RJ Scaringe
+  source: finnhub+llm
+RTX:
+  name: RTX Corp
+  industry: Aerospace & Defense
+  marketCap: 244719
+  weburl: https://www.rtx.com/
+  description: >-
+    RTX Corp, formerly known as Raytheon Technologies, is a multinational aerospace and defense conglomerate that
+    provides advanced systems and services for commercial, military, and government customers.
+  products:
+    - Aerospace Systems
+    - Defense Systems
+    - Intelligence and Cyber Solutions
+    - Commercial Aviation Services
+  execs:
+    - Gregory J. Hayes
+  source: finnhub+llm
+SBUX:
+  name: Starbucks Corp
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 109041
+  weburl: https://www.starbucks.com/
+  description: >-
+    Starbucks Corporation is a global coffeehouse chain that sells coffee, beverages, and food items, along with
+    coffee-related products.
+  products:
+    - Coffee
+    - Espresso Beverages
+    - Teas
+    - Pastries
+    - Merchandise
+  execs:
+    - Laxman Narasimhan
+  source: finnhub+llm
+SCHW:
+  name: Charles Schwab Corp
+  industry: Financial Services
+  marketCap: 153192
+  weburl: https://www.schwab.com/
+  description: >-
+    Charles Schwab Corp is a financial services company that provides a range of investment and banking services,
+    including brokerage and wealth management.
+  products:
+    - Brokerage Services
+    - Retirement Accounts
+    - Wealth Management
+    - Banking Services
+  execs:
+    - Walter W. Bettinger II
+  source: finnhub+llm
+SHOP:
+  name: Shopify Inc
+  industry: Technology
+  marketCap: 143040
+  weburl: https://www.shopify.com/
+  description: >-
+    Shopify Inc is an e-commerce platform that enables businesses to create online stores and sell products across
+    various channels.
+  execs:
+    - Tobi Lütke
+  source: finnhub+llm
+SHW:
+  name: Sherwin-Williams Co
+  industry: Chemicals
+  marketCap: 74839
+  weburl: https://www.sherwin-williams.com/
+  description: >-
+    Sherwin-Williams Co. is a global leader in the manufacture, distribution, and sale of paints, coatings, and related
+    products.
+  products:
+    - Paints
+    - Coatings
+    - Stains
+    - Industrial finishes
+    - Aerosol products
+  execs:
+    - John G. Morikis
+  source: finnhub+llm
+SLB:
+  name: SLB NV
+  industry: Energy
+  marketCap: 83933
+  weburl: https://www.slb.com/
+  description: >-
+    SLB is a global technology company that provides services and solutions for the oil and gas industry, including
+    exploration and production.
+  products:
+    - Reservoir Characterization
+    - Drilling Services
+    - Production Solutions
+    - Well Services
+    - Digital Solutions
+  execs:
+    - Olivier Le Peuch
+  source: finnhub+llm
+SMCI:
+  name: Super Micro Computer Inc
+  industry: Technology
+  marketCap: 25431
+  weburl: https://www.supermicro.com/en/
+  description: >-
+    Super Micro Computer Inc provides high-performance server technology and solutions for data centers and cloud
+    computing.
+  products:
+    - SuperServer Systems
+    - Storage Solutions
+    - Networking Solutions
+    - High-Density Servers
+    - GPU Systems
+  execs:
+    - Charles Liang
+  source: finnhub+llm
+SMR:
+  name: Nuscale Power Corp
+  industry: Electrical Equipment
+  marketCap: 3920
+  weburl: https://ir.nuscalepower.com/
+  description: >-
+    Nuscale Power Corp is a company that designs and develops small modular reactors (SMRs) for nuclear power
+    generation.
+  source: finnhub+llm
+SNOW:
+  name: Snowflake Inc
+  industry: Technology
+  marketCap: 81881
+  weburl: https://www.snowflake.com/
+  description: >-
+    Snowflake Inc. is a cloud-based data-warehousing company that provides a platform for data storage, processing, and
+    analytics.
+  products:
+    - Snowflake Data Cloud
+    - Data Warehousing Solutions
+    - Data Sharing Services
+    - Data Marketplace
+    - Cloud Data Platform
+  execs:
+    - Frank Slootman
+  source: finnhub+llm
+SNPS:
+  name: Synopsys Inc
+  industry: Technology
+  marketCap: 90744
+  weburl: https://www.synopsys.com/
+  description: Synopsys Inc provides electronic design automation software and services for semiconductor design and manufacturing.
+  products:
+    - Design Compiler
+    - Fusion Compiler
+    - Verilog-AMS
+    - TestMAX
+    - Coverity
+  execs:
+    - Aart de Geus
+  source: finnhub+llm
+SO:
+  name: Southern Co
+  industry: Utilities
+  marketCap: 104884
+  weburl: https://www.southerncompany.com/
+  description: >-
+    Southern Company is a gas and electric utility holding company that provides electricity to customers in the
+    southeastern United States.
+  products:
+    - Electric Utility Services
+    - Natural Gas Distribution
+    - Renewable Energy
+    - Energy Efficiency Programs
+  execs:
+    - Thomas A. Fanning
+  source: finnhub+llm
+SPG:
+  name: Simon Property Group Inc
+  industry: Real Estate
+  marketCap: 67746
+  weburl: https://www.simon.com/
+  description: >-
+    Simon Property Group Inc. is a leading global retail real estate investment trust (REIT) that owns and operates
+    shopping malls and outlets.
+  products:
+    - Shopping malls
+    - Outlet centers
+    - Retail properties
+    - Mixed-use properties
+  execs:
+    - David Simon
+  source: finnhub+llm
+SPGI:
+  name: S&P Global Inc
+  industry: Financial Services
+  marketCap: 125263
+  weburl: https://www.spglobal.com/
+  description: >-
+    S&P Global Inc provides financial information and analytics, including credit ratings, benchmarks, and analytics in
+    various sectors.
+  products:
+    - S&P Ratings
+    - S&P Dow Jones Indices
+    - S&P Global Market Intelligence
+    - S&P Global Platts
+  execs:
+    - Douglas L. Peterson
+  source: finnhub+llm
+SPOT:
+  name: Spotify Technology SA
+  industry: Media
+  marketCap: 100702
+  weburl: https://www.spotify.com/lu-fr/premium/
+  description: Spotify Technology SA is a digital music streaming service that provides access to millions of songs and podcasts.
+  execs:
+    - Daniel Ek
+  source: finnhub+llm
+SRE:
+  name: Sempra
+  industry: Utilities
+  marketCap: 60041
+  weburl: https://www.sempra.com/
+  description: >-
+    Sempra is an energy infrastructure company that focuses on the development and operation of energy assets, including
+    utilities and renewable energy.
+  products:
+    - Electric Utility Services
+    - Natural Gas Distribution
+    - Renewable Energy
+    - Energy Infrastructure
+  execs:
+    - Jeffrey W. Martin
+  source: finnhub+llm
+SYK:
+  name: Stryker Corp
+  industry: Health Care
+  marketCap: 117807
+  weburl: https://www.stryker.com/
+  description: >-
+    Stryker Corp is a medical technology company that develops and manufactures innovative products and services in
+    orthopedics, medical and surgical equipment, and neurotechnology.
+  products:
+    - Orthopedic Implants
+    - Surgical Equipment
+    - Endoscopy Products
+    - Trauma Products
+    - Neurovascular Devices
+  execs:
+    - Kevin A. Lobo
+  source: finnhub+llm
+T:
+  name: AT&T Inc
+  industry: Telecommunication
+  marketCap: 158214
+  weburl: https://www.att.com/
+  description: >-
+    AT&T Inc is a telecommunications conglomerate that provides mobile and fixed telephone services, as well as
+    broadband and digital television.
+  products:
+    - AT&T Wireless
+    - DirecTV
+    - AT&T Internet
+  execs:
+    - John Stankey
+  source: finnhub+llm
+TFC:
+  name: Truist Financial Corp
+  industry: Banking
+  marketCap: 61428
+  weburl: https://www.truist.com/
+  description: >-
+    Truist Financial Corp is a bank holding company formed from the merger of BB&T and SunTrust, offering a variety of
+    financial services.
+  products:
+    - Truist Personal Banking
+    - Truist Wealth
+    - Truist Commercial Banking
+  execs:
+    - William H. Rogers Jr.
+  source: finnhub+llm
+TGT:
+  name: Target Corp
+  industry: Retail
+  marketCap: 55890
+  weburl: https://corporate.target.com/
+  description: >-
+    Target Corporation is a general merchandise retailer that provides a wide range of products including household
+    essentials, clothing, and electronics.
+  products:
+    - Clothing
+    - Home Goods
+    - Electronics
+    - Groceries
+    - Beauty Products
+  execs:
+    - Brian Cornell
+  source: finnhub+llm
+TMO:
+  name: Thermo Fisher Scientific Inc
+  industry: Life Sciences Tools & Services
+  marketCap: 176321
+  weburl: https://corporate.thermofisher.com/us/en/index.html
+  description: >-
+    Thermo Fisher Scientific Inc provides analytical instruments, reagents, and consumables, as well as software and
+    services for laboratories and research institutions.
+  products:
+    - Thermo Scientific
+    - Applied Biosystems
+    - Fisher Scientific
+    - Unity Lab Services
+    - Patheon
+  execs:
+    - Marc N. Casper
+  source: finnhub+llm
+TMUS:
+  name: T-Mobile US Inc
+  industry: Telecommunication
+  marketCap: 193953
+  weburl: https://www.t-mobile.com/
+  description: >-
+    T-Mobile US Inc is a wireless network operator that provides mobile voice, messaging, and data services in the
+    United States.
+  products:
+    - T-Mobile
+    - Metro by T-Mobile
+  execs:
+    - Mike Sievert
+  source: finnhub+llm
+TSLA:
+  name: Tesla Inc
+  industry: Automobiles
+  marketCap: 1506496
+  weburl: https://www.tesla.com/
+  description: Tesla Inc designs, manufactures, and sells electric vehicles and renewable energy products.
+  products:
+    - Model S
+    - Model 3
+    - Model X
+    - Model Y
+    - Solar Roof
+    - Powerwall
+  execs:
+    - Elon Musk
+  source: finnhub+llm
+TTD:
+  name: Trade Desk Inc
+  industry: Media
+  marketCap: 9541
+  weburl: https://www.thetradedesk.com/
+  description: >-
+    The Trade Desk Inc is a technology company that provides a platform for digital advertising, enabling advertisers to
+    purchase and manage data-driven digital ad campaigns.
+  execs:
+    - Jeff Green
+  source: finnhub+llm
+TTWO:
+  name: Take-Two Interactive Software Inc
+  industry: Media
+  marketCap: 39765
+  weburl: https://www.take2games.com/
+  description: >-
+    Take-Two Interactive Software Inc is a video game publisher known for developing and publishing interactive
+    entertainment software.
+  products:
+    - Grand Theft Auto
+    - NBA 2K
+    - Red Dead Redemption
+  execs:
+    - Strauss Zelnick
+  source: finnhub+llm
+TXN:
+  name: Texas Instruments Inc
+  industry: Semiconductors
+  marketCap: 263522
+  weburl: https://www.ti.com/
+  description: >-
+    Texas Instruments Incorporated is a technology company that designs and manufactures semiconductors and various
+    integrated circuits, which it sells to electronics designers and manufacturers globally.
+  products:
+    - Analog Chips
+    - Embedded Processors
+    - DLP Technology
+    - Microcontrollers
+    - Digital Signal Processors (DSPs)
+  execs:
+    - Haviv Ilan
+  source: finnhub+llm
+U:
+  name: Unity Software Inc
+  industry: Technology
+  marketCap: 12891
+  weburl: https://www.unity.com
+  description: >-
+    Unity Software Inc is a leading platform for creating and operating interactive, real-time 3D content, primarily for
+    video games and simulations.
+  execs:
+    - John Riccitiello
+  source: finnhub+llm
+UBER:
+  name: Uber Technologies Inc
+  industry: Road & Rail
+  marketCap: 146624
+  weburl: https://www.uber.com/
+  description: >-
+    Uber Technologies Inc is a technology company that provides ride-hailing services, food delivery, and freight
+    transportation through its mobile app.
+  execs:
+    - Dara Khosrowshahi
+  source: finnhub+llm
+ULTA:
+  name: Ulta Beauty Inc
+  industry: Retail
+  marketCap: 19883
+  weburl: https://www.ulta.com/
+  description: >-
+    Ulta Beauty Inc is a beauty retailer that offers cosmetics, skincare products, fragrances, and hair care products,
+    along with salon services.
+  products:
+    - Cosmetics
+    - Skincare
+    - Fragrance
+    - Hair Care
+    - Salon Services
+  execs:
+    - Dave Kimbell
+  source: finnhub+llm
+UNH:
+  name: UnitedHealth Group Inc
+  industry: Health Care
+  marketCap: 360052
+  weburl: https://www.unitedhealthgroup.com/
+  description: >-
+    UnitedHealth Group Inc is a diversified health care company that offers health care products and insurance services,
+    aiming to improve health care access and quality.
+  products:
+    - UnitedHealthcare
+    - Optum
+    - Medicare Advantage
+    - Medicaid
+    - Health Services
+  execs:
+    - Andrew Witty
+  source: finnhub+llm
+UNP:
+  name: Union Pacific Corp
+  industry: Road & Rail
+  marketCap: 156681
+  weburl: https://www.up.com/index.htm
+  description: >-
+    Union Pacific Corporation operates one of the largest freight rail networks in the United States, transporting a
+    variety of goods across the country.
+  products:
+    - Freight Transportation
+    - Intermodal Services
+    - Bulk Commodities
+    - Automotive Transport
+    - Industrial Products
+  execs:
+    - Lance Fritz
+  source: finnhub+llm
+UPS:
+  name: United Parcel Service Inc
+  industry: Logistics & Transportation
+  marketCap: 90687
+  weburl: https://www.ups.com/
+  description: >-
+    United Parcel Service Inc is a global logistics and package delivery company that provides transportation and
+    logistics services worldwide.
+  products:
+    - Package Delivery
+    - Supply Chain Solutions
+    - Freight Transportation
+    - Logistics Services
+  execs:
+    - Carol Tomé
+  source: finnhub+llm
+USB:
+  name: US Bancorp
+  industry: Banking
+  marketCap: 85144
+  weburl: https://www.usbank.com/
+  description: >-
+    US Bancorp is the parent company of U.S. Bank, providing a range of financial services including banking,
+    investment, mortgage, and payment services.
+  products:
+    - U.S. Bank Personal Banking
+    - U.S. Bank Wealth Management
+    - U.S. Bank Corporate Banking
+  execs:
+    - Andrew Cecere
+  source: finnhub+llm
+V:
+  name: Visa Inc
+  industry: Financial Services
+  marketCap: 614903
+  weburl: https://usa.visa.com/
+  description: >-
+    Visa Inc is a global payments technology company that facilitates digital payments between consumers, merchants,
+    financial institutions, and government entities.
+  products:
+    - VisaNet
+    - Visa Direct
+    - Visa Checkout
+    - Visa Token Service
+  execs:
+    - Ryan McInerney
+  source: finnhub+llm
+VLO:
+  name: Valero Energy Corp
+  industry: Energy
+  marketCap: 72695
+  weburl: https://www.valero.com/
+  description: >-
+    Valero Energy Corp is an international manufacturer and marketer of transportation fuels and petrochemical products,
+    operating refineries and retail locations.
+  products:
+    - Refining
+    - Gasoline
+    - Diesel
+    - Jet Fuel
+    - Valero Retail Stations
+  execs:
+    - Joseph W. Gorder
+  source: finnhub+llm
+VRTX:
+  name: Vertex Pharmaceuticals Inc
+  industry: Biotechnology
+  marketCap: 113588
+  weburl: https://www.vrtx.com/
+  description: >-
+    Vertex Pharmaceuticals Inc is a biotechnology company focused on developing and commercializing innovative therapies
+    for people with serious diseases, particularly cystic fibrosis.
+  products:
+    - Kalydeco
+    - Orkambi
+    - Symdeko
+    - Trikafta
+    - Vertex's Gene Editing Programs
+  execs:
+    - Reshma Kewalramani
+  source: finnhub+llm
+VST:
+  name: Vistra Corp
+  industry: Utilities
+  marketCap: 54027
+  weburl: https://www.vistracorp.com/
+  description: >-
+    Vistra Corp is a leading integrated power company that provides electricity and related services to customers in the
+    United States.
+  products:
+    - Retail Electricity
+    - Power Generation
+    - Energy Storage
+    - Natural Gas
+    - Renewable Energy
+  execs:
+    - Jim Burke
+  source: finnhub+llm
+VZ:
+  name: Verizon Communications Inc
+  industry: Telecommunication
+  marketCap: 199633
+  weburl: https://www.verizon.com/
+  description: >-
+    Verizon Communications Inc is a telecommunications company that offers wireless products and services, as well as
+    broadband and television services.
+  products:
+    - Verizon Wireless
+    - Fios
+    - Verizon Business
+  execs:
+    - Hans Vestberg
+  source: finnhub+llm
+WBD:
+  name: Warner Bros Discovery Inc
+  industry: Media
+  marketCap: 67718
+  weburl: https://www.wbd.com/
+  description: >-
+    Warner Bros Discovery Inc is a media and entertainment company that creates and distributes a wide range of content
+    across various platforms.
+  products:
+    - HBO Max
+    - Warner Bros. Pictures
+    - DC Entertainment
+  execs:
+    - David Zaslav
+  source: finnhub+llm
+WFC:
+  name: Wells Fargo & Co
+  industry: Banking
+  marketCap: 237287
+  weburl: https://www.wellsfargo.com
+  description: >-
+    Wells Fargo & Co is a diversified financial services company providing banking, investment, mortgage, and consumer
+    and commercial finance.
+  products:
+    - Consumer Banking
+    - Commercial Banking
+    - Investment Banking
+    - Wealth Management
+    - Home Loans
+  execs:
+    - Charles W. Scharf
+  source: finnhub+llm
+WMB:
+  name: Williams Companies Inc
+  industry: Energy
+  marketCap: 87310
+  weburl: https://www.williams.com/
+  description: >-
+    Williams Companies Inc is a leading provider of natural gas infrastructure, focusing on the transportation and
+    processing of natural gas and natural gas liquids.
+  products:
+    - Natural Gas Transportation
+    - Natural Gas Processing
+    - NGL Services
+    - Transco Pipeline
+    - Northwest Pipeline
+  execs:
+    - Alan S. Armstrong
+  source: finnhub+llm
+WMT:
+  name: Walmart Inc
+  industry: Retail
+  marketCap: 921148
+  weburl: https://corporate.walmart.com/
+  description: >-
+    Walmart Inc is a multinational retail corporation that operates a chain of hypermarkets, discount department stores,
+    and grocery stores.
+  products:
+    - Walmart Supercenters
+    - Sam's Club
+    - Walmart Grocery
+  execs:
+    - Doug McMillon
+  source: finnhub+llm
+XOM:
+  name: Exxon Mobil Corp
+  industry: Energy
+  marketCap: 602095
+  weburl: https://corporate.exxonmobil.com/
+  description: >-
+    Exxon Mobil Corporation is one of the world's largest publicly traded oil and gas companies, involved in the
+    exploration, production, and distribution of energy resources.
+  products:
+    - Crude Oil
+    - Natural Gas
+    - Petroleum Products
+    - Chemical Products
+    - Lubricants
+  execs:
+    - Darren W. W. Wood
+  source: finnhub+llm
+YUM:
+  name: Yum! Brands Inc
+  industry: Hotels, Restaurants & Leisure
+  marketCap: 40778
+  weburl: https://www.yum.com/
+  description: >-
+    Yum! Brands Inc is a global fast-food corporation that operates several well-known restaurant chains, focusing on
+    pizza, chicken, and Mexican food.
+  products:
+    - Pizza Hut
+    - KFC
+    - Taco Bell
+    - WingStreet
+    - The Habit Burger Grill
+  execs:
+    - David Gibbs
+  source: finnhub+llm
+ZS:
+  name: Zscaler Inc
+  industry: Technology
+  marketCap: 22596
+  weburl: https://www.zscaler.com/
+  description: >-
+    Zscaler Inc offers cloud-based information security services, focusing on secure internet access and private
+    application access.
+  products:
+    - Zscaler Internet Access
+    - Zscaler Private Access
+    - Zscaler Digital Experience
+    - Zscaler Cloud Security Platform
+  execs:
+    - Jay Chaudhry
+  source: finnhub+llm
+ZTS:
+  name: Zoetis Inc
+  industry: Pharmaceuticals
+  marketCap: 32570
+  weburl: https://www.zoetis.com/
+  description: >-
+    Zoetis Inc is a global leader in animal health, providing medicines and vaccines for livestock and companion
+    animals.
+  products:
+    - Vaccines
+    - Antibiotics
+    - Parasiticides
+    - Diagnostics
+    - Nutritional products
+  execs:
+    - Kristin Peck
+  source: finnhub+llm
