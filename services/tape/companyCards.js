@@ -76,4 +76,17 @@ function cardAnchors(ticker) {
   return { products: lc(c.products), execs: lc(c.execs), industry: c.industry ? String(c.industry).toLowerCase() : null };
 }
 
-module.exports = { getCard, cardContext, cardAnchors, load, CONFIG_PATH };
+/**
+ * Ultra-condensed identity for the reranker — just enough to recognize and DROP
+ * a wrong-same-named entity (CEG = Constellation Energy, not Software). Kept tiny
+ * to protect the reranker's token budget. Returns '' when no card.
+ */
+function cardRerankHint(ticker) {
+  const c = getCard(ticker);
+  if (!c) return '';
+  const desc = c.description ? String(c.description).slice(0, 140) : '';
+  const execs = Array.isArray(c.execs) && c.execs.length ? ` Execs: ${c.execs.slice(0, 2).join(', ')}.` : '';
+  return `${c.name || ticker}${c.industry ? ` — ${c.industry}.` : '.'} ${desc}${execs}`.trim();
+}
+
+module.exports = { getCard, cardContext, cardAnchors, cardRerankHint, load, CONFIG_PATH };

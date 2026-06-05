@@ -11,6 +11,7 @@ const taste = require('./tapeTaste');
 const { TapeHttpError } = require('./tapeErrors');
 const { candidateFromResult, validateDate } = require('./tapeShared');
 const { resolveTicker } = require('./tickerResolver');
+const { cardRerankHint } = require('./companyCards');
 const { expandThemes } = require('./themeExpander');
 const { resolveHalfLife, rankByRecency, recencyMeta, defaultRelevance } = require('./recency');
 const { hydrateCandidateDates } = require('./dateHydration');
@@ -274,7 +275,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
       const pool = candidates.length > RERANK_MAX
         ? [...candidates].sort((a, b) => rel(b) - rel(a)).slice(0, RERANK_MAX)
         : candidates;
-      const rr = await rerankClips({ query: searchTopic, clips: pool, openai });
+      const rr = await rerankClips({ query: searchTopic, clips: pool, openai, subjectInfo: isTickerShaped(topic) ? cardRerankHint(topic) : '' });
       if (rr.usage) recordHelperLlmUsage(rr.usage.model, rr.usage.input_tokens, rr.usage.output_tokens);
       underlying.rerankedFrom = pool.length;
       candidates = rr.clips;
@@ -312,13 +313,17 @@ async function topicQuotes(input = {}, { openai } = {}) {
   const terms = isTickerShaped(topic) ? [] : expandTermsWithAliases(topicTerms(topic));
   if (terms.length && candidates.length) {
     const literal = candidates.filter((c) => containsAnyTerm(c.text, terms));
-    // Reverted the multi-word loosening (v5: it traded honest-empty pools for
-    // off-topic filler → more fabrication/off_topic flags). Honest empty is better.
-    if (literal.length >= LITERAL_MIN) {
+    // Multi-word topics are specific enough that ANY literal coverage is real —
+    // only empty on ZERO matches (the strict floor was wrongly emptying covered
+    // topics like Hormuz/energy/gold/oil; v7 had ~8 such false-empties). Single
+    // bare-noun topics keep the stricter floor (a lone "gold" hit is likely noise).
+    // The card-aware reranker now provides the precision the strict floor used to.
+    const floor = terms.length >= 2 ? 1 : LITERAL_MIN;
+    if (literal.length >= floor) {
       if (literal.length < candidates.length) printLog(`[topicQuotes] literal-anchor "${topic}" kept ${literal.length}/${candidates.length}`);
       candidates = literal;
     } else {
-      printLog(`[topicQuotes] "${topic}" — only ${literal.length} literal matches (<${LITERAL_MIN}); treating as uncovered (empty pool)`);
+      printLog(`[topicQuotes] "${topic}" — only ${literal.length} literal matches (<${floor}); treating as uncovered (empty pool)`);
       candidates = [];
     }
   }

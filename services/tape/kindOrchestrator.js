@@ -431,6 +431,10 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   // neutral expander doesn't dilute the bearish framing, and uses query=ticker so
   // the resolver + ticker-noise filter still anchor results on the company.
   const bearName = resolved.name || ticker;
+  // NOTE: exec/product search-seeding was tried (v9) and reverted — adding those
+  // themes to the BULL pool crowded out the bear-seeded clips at the merge cap and
+  // worsened bear_slot_not_bearish. Recall on sparse tickers needs a bear-protected
+  // approach, not bull-pool seeding.
   const [bullRes, bearRes] = await Promise.all([
     topicQuotes({ query: ticker, themes: [ticker], kind: 'readin', filters: { mainstream: false, candidatesLimit: 18 } }, { openai }),
     BEAR_SEED_ENABLED
