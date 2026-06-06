@@ -310,7 +310,9 @@ async function topicQuotes(input = {}, { openai } = {}) {
   // few clear it, the corpus doesn't cover the topic → empty pool (honest
   // confidence:'empty'). Ticker queries are skipped (the resolver/ticker filter
   // already anchored them on the company name, which won't equal the raw ticker).
-  const terms = isTickerShaped(topic) ? [] : expandTermsWithAliases(topicTerms(topic));
+  // noLiteralAnchor: skip the literal-term gate (used by the industry-fallback
+  // retrieval, which ranks purely on semantic relevance to a broad sector query).
+  const terms = (isTickerShaped(topic) || input.noLiteralAnchor) ? [] : expandTermsWithAliases(topicTerms(topic));
   if (terms.length && candidates.length) {
     const literal = candidates.filter((c) => containsAnyTerm(c.text, terms));
     // Multi-word topics are specific enough that ANY literal coverage is real —

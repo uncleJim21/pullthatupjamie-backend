@@ -19,6 +19,42 @@ const { TapeHttpError } = require('./tapeErrors');
 const { resolveTicker } = require('./tickerResolver');
 const { classifyStance } = require('./stanceClassifier');
 const { expandPassages } = require('./contextExpander');
+const { getCard, peersByIndustry } = require('./companyCards');
+
+// When a Read-in ticker has no real corpus coverage, zoom out to its industry:
+// surface related peer/sector discussion with a loud disclaimer, instead of a dead
+// empty state. Uses the company card (industry + peers + description). Default on.
+const INDUSTRY_FALLBACK_ENABLED = process.env.TAPE_INDUSTRY_FALLBACK !== 'false';
+
+async function industryReadinFallback(ticker, openai) {
+  if (!INDUSTRY_FALLBACK_ENABLED) return null;
+  const card = getCard(ticker);
+  if (!card || !card.industry) return null;
+  const peers = peersByIndustry(ticker, 5);
+  const themes = [card.industry, ...peers.map((p) => p.name).filter(Boolean)].slice(0, 7);
+  let cites = [];
+  try {
+    const { body: tq } = await topicQuotes(
+      { query: card.industry, themes, kind: 'readin', expandThemes: false, noLiteralAnchor: true, filters: { mainstream: false, candidatesLimit: 6 } },
+      { openai },
+    );
+    cites = (tq.candidates || []).slice(0, 5);
+  } catch (_) { /* fall through to null */ }
+  if (!cites.length) return null;
+  const disclaimer = `⚠️ No podcast coverage of ${card.name} (${ticker}) was found. ${card.name} is a ${card.industry} company${card.description ? ` — ${card.description}` : '.'} The clips below are related ${card.industry} / peer discussion, NOT about ${card.name} specifically.`;
+  return {
+    result: {
+      ticker, name: card.name || ticker, sectorTag: card.industry, yahoo: ticker,
+      whatTheyDo: disclaimer, whatTheyDoCitations: cites,
+      pulse: { bullLine: '', bearLine: '', priceAction: '', marqueeCitation: cites[0] || null },
+      smartMoney: { bulls: [], bears: [] }, catalysts: [], risks: [],
+      peers: peers.map((p) => p.ticker),
+      generatedAt: isoNow(), tickers: peers.map((p) => p.ticker),
+      _meta: { confidence: 'thin', confidenceReason: `No direct coverage of ${ticker}; showing ${card.industry} peers/context.`, candidateCount: cites.length, coverageFallback: 'industry' },
+    },
+    usage: null, synthesizedEmpty: false,
+  };
+}
 const { audit, slimCandidate } = require('./tapeAudit');
 
 // Stance gate (precision half of the polarity work): verify a quote is GENUINELY
@@ -455,6 +491,8 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
     if (candidates.length >= READIN_CAND_CAP) break;
   }
   if (!candidates.length) {
+    const fb = await industryReadinFallback(ticker, openai);
+    if (fb) return fb;
     return { result: { ticker, name: resolved.name || ticker, sectorTag: '', yahoo: ticker, whatTheyDo: '', whatTheyDoCitations: [], pulse: { bullLine: '', bearLine: '', priceAction: '', marqueeCitation: null }, smartMoney: { bulls: [], bears: [] }, catalysts: [], risks: [], peers: [], generatedAt: isoNow(), tickers: [], _meta: emptyMeta(`${ticker} has no meaningful mentions in the corpus.`) }, usage: null, synthesizedEmpty: true };
   }
 
@@ -481,6 +519,8 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   // floor citations onto an empty read-in — that surfaced off-topic quotes (e.g.
   // 23andMe / COVID clips on a TVTX read-in). Return a clean empty state.
   if (r.synthesizedEmpty || !parsed.whatTheyDo) {
+    const fb = await industryReadinFallback(ticker, openai);
+    if (fb) { fb.usage = r.usage; return fb; } // keep token accounting from the attempt
     return {
       result: { ticker, name: resolved.name || ticker, sectorTag: '', yahoo: ticker, whatTheyDo: '', whatTheyDoCitations: [], pulse: { bullLine: '', bearLine: '', priceAction: '', marqueeCitation: null }, smartMoney: { bulls: [], bears: [] }, catalysts: [], risks: [], peers: [], generatedAt: isoNow(), tickers: [], _meta: emptyMeta(r.reason || `${ticker} has no meaningful mentions in the corpus.`) },
       usage: r.usage,

@@ -89,4 +89,21 @@ function cardRerankHint(ticker) {
   return `${c.name || ticker}${c.industry ? ` — ${c.industry}.` : '.'} ${desc}${execs}`.trim();
 }
 
-module.exports = { getCard, cardContext, cardAnchors, cardRerankHint, load, CONFIG_PATH };
+/**
+ * Same-industry peers for a ticker, biggest first (more likely to have corpus
+ * coverage) — powers the Read-in industry fallback ("no coverage of X, here's
+ * related <industry> / competitors"). Returns [{ ticker, name, marketCap }].
+ */
+function peersByIndustry(ticker, limit = 5) {
+  const cards = load();
+  const key = String(ticker || '').toUpperCase();
+  const me = cards[key];
+  if (!me || !me.industry) return [];
+  return Object.entries(cards)
+    .filter(([tk, c]) => tk !== key && c && c.industry === me.industry && c.name)
+    .map(([tk, c]) => ({ ticker: tk, name: c.name, marketCap: c.marketCap || 0 }))
+    .sort((a, b) => b.marketCap - a.marketCap)
+    .slice(0, limit);
+}
+
+module.exports = { getCard, cardContext, cardAnchors, cardRerankHint, peersByIndustry, load, CONFIG_PATH };
