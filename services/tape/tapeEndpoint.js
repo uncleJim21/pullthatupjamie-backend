@@ -159,6 +159,61 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
 }
 
 /**
+ * The kind cache identity: `tape:kind:<kind>:<PROMPT_VERSION>:<hash(body)>`.
+ * Single source of truth — both the live request path and the offline warmer
+ * derive the key here so a warmed entry is byte-for-byte what a live request
+ * reads. Note `hashBody` strips `refresh`/`_nocache`, so warming with
+ * `refresh:true` writes the same key the frontend (no refresh) will hit.
+ */
+function kindCacheKey(kind, body) {
+  return `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(body)}`;
+}
+
+/**
+ * Compute one kind result and write it to cache (+ semantic map). Shared by the
+ * HTTP handler and the cache warmer so the key formula, freshness `_meta`, token
+ * accounting, cache write, and semantic-remember live in exactly one place.
+ *
+ * Caller is responsible for the rate-limit, cache READ, and (HTTP only) the
+ * daily-cap pre-check + 429 rendering — those differ by path (the warmer just
+ * stops). Token usage is always added to the shared daily counter here.
+ *
+ * @returns {{ out:object, key:string, usage:object|null, synthesizedEmpty:boolean }}
+ */
+async function computeAndCacheKind({ kind, body, run, openai, refresh = false, noCache = false, jwtSub, auditId, queryEmb = null }) {
+  const day = utcDay();
+  const ttlDay = secsToUtcMidnight();
+  const fetchedAt = new Date().toISOString();
+  const { result, usage, synthesizedEmpty } = await run(body, { jwtSub, refresh, auditId });
+  if (usage && DAILY_TOKEN_CAP > 0) await addAndGet(`tape:syn:tok:${day}`, usage.output_tokens || 0, ttlDay);
+  audit('response', auditId, { kind, synthesizedEmpty, confidence: result?._meta?.confidence, result });
+
+  const out = {
+    ...result,
+    _meta: {
+      ...(result._meta || {}),
+      fetchedAt,
+      // Synthesis token usage (for cost tracking / model A-B in the eval harness).
+      tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
+      ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: KIND_TTL_SEC }),
+    },
+  };
+
+  const key = kindCacheKey(kind, body);
+  if (!noCache && !synthesizedEmpty) {
+    await setCached(key, out, KIND_TTL_SEC);
+    // Remember the query embedding → key so near-identical future queries hit.
+    const semText = (semanticCache.ENABLED && openai) ? semanticCache.semanticText(kind, body) : '';
+    if (semText) {
+      const scope = semanticCache.scopeOf(kind, body, PROMPT_VERSION);
+      const emb = queryEmb || await semanticCache.embed(semText, openai);
+      semanticCache.remember(scope, emb, key);
+    }
+  }
+  return { out, key, usage, synthesizedEmpty };
+}
+
+/**
  * Wrap a kind-level endpoint (dossier/brief/split/narrative/readin): rate-limit
  * → kind cache (full parsed Result, 2h) → daily-token-cap → run() → cache write
  * → freshness _meta → log. `run(body, { jwtSub })` returns
@@ -178,7 +233,7 @@ function withKindEndpoint({ kind, hourlyLimit, run, openai }) {
       const noCache = NOCACHE_ENABLED && body._nocache === true;
       // Tie the kind cache to PROMPT_VERSION so prompt/pipeline fixes evict stale
       // (e.g. pre-fix empty-citation) entries instead of serving them for the TTL.
-      const key = `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(body)}`;
+      const key = kindCacheKey(kind, body);
       // Semantic cache: "essentially the same" query (within the same kind +
       // asOfDate + model scope) reuses a cached result. Free-text kinds only.
       const scope = semanticCache.scopeOf(kind, body, PROMPT_VERSION);
@@ -226,26 +281,9 @@ function withKindEndpoint({ kind, hourlyLimit, run, openai }) {
         }
       }
 
-      const fetchedAt = new Date().toISOString();
-      const { result, usage, synthesizedEmpty } = await run(body, { jwtSub: req.tape?.sub, refresh, auditId });
-      if (usage && DAILY_TOKEN_CAP > 0) await addAndGet(`tape:syn:tok:${day}`, usage.output_tokens || 0, ttlDay);
-      audit('response', auditId, { kind, synthesizedEmpty, confidence: result?._meta?.confidence, result });
-
-      const out = {
-        ...result,
-        _meta: {
-          ...(result._meta || {}),
-          fetchedAt,
-          // Synthesis token usage (for cost tracking / model A-B in the eval harness).
-          tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
-          ...buildFreshnessMeta({ tier: TIER.QUALITATIVE, cached: false, cachedAt: fetchedAt, fetchedAt, ttlSec: KIND_TTL_SEC }),
-        },
-      };
-      if (!noCache && !synthesizedEmpty) {
-        await setCached(key, out, KIND_TTL_SEC);
-        // Remember the query embedding → key so near-identical future queries hit.
-        if (semText) { const emb = queryEmb || await semanticCache.embed(semText, openai); semanticCache.remember(scope, emb, key); }
-      }
+      const { out, usage } = await computeAndCacheKind({
+        kind, body, run, openai, refresh, noCache, jwtSub: req.tape?.sub, auditId, queryEmb,
+      });
       logTape({ endpoint: kind, jwt_sub: req.tape?.sub, cache: refresh ? 'refresh' : 'miss', confidence: out._meta?.confidence, tokens: usage || null, status: 200, elapsed_ms: Date.now() - startedAt });
       return res.status(200).json(out);
     } catch (err) {
@@ -260,4 +298,4 @@ function withKindEndpoint({ kind, hourlyLimit, run, openai }) {
   };
 }
 
-module.exports = { withCachedEndpoint, withKindEndpoint, checkRateLimit, logTape, hourBucket };
+module.exports = { withCachedEndpoint, withKindEndpoint, computeAndCacheKind, kindCacheKey, checkRateLimit, logTape, hourBucket };

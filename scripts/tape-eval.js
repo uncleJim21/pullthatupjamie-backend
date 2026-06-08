@@ -45,6 +45,7 @@ const opt = (name, def) => { const i = argv.indexOf(name); return i >= 0 && argv
 
 const BASE = opt('--base', `http://localhost:${process.env.PORT || 4132}`);
 const ONLY = opt('--only', null);
+const TAG = opt('--tag', null); // e.g. --tag thin (run just the thin-coverage cohort)
 const LIMIT = parseInt(opt('--limit', '0'), 10);
 const FORCE_REPEAT = parseInt(opt('--repeat', '0'), 10);
 const JUDGE_ENABLED = !flag('--no-judge');
@@ -234,9 +235,20 @@ const JUDGE_GUIDANCE = {
   split: 'This is a two-sided "Split". The single most important check: are side A and side B genuinely OPPOSING stances on the topic? If both sides argue the same direction, raise both_sides_same and score opposition 1-2. Also flag ad-reads cited as either side.',
 };
 
+// THIN-COVERAGE addendum: this name has little/no corpus material BY DESIGN. The
+// test is whether the system makes an HONEST, decent read from what little exists
+// — or degrades gracefully — WITHOUT inventing. Reward faithful use of sparse
+// clips and correct graceful degradation; penalize ONLY fabrication, wrong-entity,
+// or overconfidence. A thin/empty confidence label, a missing bull OR bear side,
+// and an industry-fallback result (a disclaimer + related peers/sector clips) are
+// all CORRECT behaviors here — do NOT penalize them or score grounding down for
+// them. Only score grounding low if claims contradict / aren't in the cited clips.
+const THIN_GUIDANCE = 'THIN-COVERAGE MODE: the corpus has little/no material on this name on purpose. Judge whether the read is HONEST and grounded in whatever clips exist (or correctly falls back to industry/peer context with a clear disclaimer). Thinness, a thin/empty label, a missing bull or bear side, and an industry-fallback result are EXPECTED and fine — do not penalize them. Flag ONLY: claims not supported by the cited clips (unsupported_or_fabricated_claim), a different same-named company (off_topic_dominant), or confidence overstated relative to the sparse evidence (confidence_overstated).';
+
 async function judge(client, sc, json) {
   const tool = verdictTool(sc.kind);
-  const system = `You are a rigorous evaluator of an automated financial-podcast summarization API. Score each dimension 1-5 and raise critical flags ONLY when clearly warranted. Be skeptical: a fluent summary built on off-topic or ad-read quotes is a FAILURE, not a pass. ${JUDGE_GUIDANCE[sc.kind]}`;
+  const thin = (sc.tags || []).includes('thin');
+  const system = `You are a rigorous evaluator of an automated financial-podcast summarization API. Score each dimension 1-5 and raise critical flags ONLY when clearly warranted. Be skeptical: a fluent summary built on off-topic or ad-read quotes is a FAILURE, not a pass. ${JUDGE_GUIDANCE[sc.kind]}${thin ? ` ${THIN_GUIDANCE}` : ''}`;
   const user = `Evaluate this response and call record_verdict.\n\n${renderForJudge(sc, json)}`;
   const resp = await client.messages.create({
     model: JUDGE_MODEL,
@@ -258,15 +270,28 @@ async function judge(client, sc, json) {
 // dimension fails. This isolates genuine defects from "good-but-not-great", which
 // the original >=4 bar conflated. Tune via TAPE_EVAL_MIN_SCORE.
 const MIN_SCORE = parseInt(process.env.TAPE_EVAL_MIN_SCORE || '3', 10);
-function computePass(layer1, verdict) {
+// Flags that fail a THIN-coverage scenario — only the "we got it wrong" ones.
+// Thinness/empty/missing-side/fallback are NOT failures in thin mode, so flags
+// like bear_slot_not_bearish / both_sides_same don't count there.
+const THIN_FAIL_FLAGS = new Set(['unsupported_or_fabricated_claim', 'off_topic_dominant', 'confidence_overstated', 'ad_read_cited']);
+function computePass(layer1, verdict, sc) {
   if (layer1.fails.length) return { pass: false, why: layer1.fails.join('; ') };
-  if (!verdict) return { pass: true, why: 'layer1-only (empty or no-judge)' };
+  const thin = sc && (sc.tags || []).includes('thin');
+  // No verdict = empty/no-coverage. For thin that's an HONEST result → pass.
+  if (!verdict) return { pass: true, why: thin ? 'honest empty / no coverage' : 'layer1-only (empty or no-judge)' };
   const s = verdict.scores || {};
+  const flags = Array.isArray(verdict.critical_flags) ? verdict.critical_flags : [];
   const reasons = [];
-  if ((s.relevance ?? 0) < MIN_SCORE) reasons.push(`relevance ${s.relevance}`);
-  if ((s.grounding ?? 0) < MIN_SCORE) reasons.push(`grounding ${s.grounding}`);
-  if ((s.citation_quality ?? 0) < MIN_SCORE) reasons.push(`citation_quality ${s.citation_quality}`);
-  if (Array.isArray(verdict.critical_flags) && verdict.critical_flags.length) reasons.push(`flags: ${verdict.critical_flags.join(',')}`);
+  if ((s.relevance ?? 0) < MIN_SCORE) reasons.push(`relevance ${s.relevance}`); // wrong/off-topic always fails
+  if ((s.grounding ?? 0) < MIN_SCORE) reasons.push(`grounding ${s.grounding}`); // unfaithful to clips always fails
+  if (thin) {
+    // Don't fail thin on citation_quality (sparse material) or non-fatal flags.
+    const fatal = flags.filter((f) => THIN_FAIL_FLAGS.has(f));
+    if (fatal.length) reasons.push(`flags: ${fatal.join(',')}`);
+  } else {
+    if ((s.citation_quality ?? 0) < MIN_SCORE) reasons.push(`citation_quality ${s.citation_quality}`);
+    if (flags.length) reasons.push(`flags: ${flags.join(',')}`);
+  }
   return { pass: reasons.length === 0, why: reasons.join('; ') || 'ok' };
 }
 
@@ -281,7 +306,7 @@ async function runOne(client, sc, token, runIdx) {
     try { const j = await judge(client, sc, res.json); verdict = j.verdict; judgeUsage = j.usage; }
     catch (err) { layer1.warns.push(`judge error: ${err.message}`); }
   }
-  const { pass, why } = computePass(layer1, verdict);
+  const { pass, why } = computePass(layer1, verdict, sc);
   const tokens = res.json?._meta?.tokens || null;
   const synthModel = sc.kind === 'readin' ? READIN_MODEL : SYNTH_MODEL;
   const cost = tokens ? costOf(synthModel, tokens) : 0;
@@ -290,6 +315,7 @@ async function runOne(client, sc, token, runIdx) {
     id: sc.id, kind: sc.kind, runIdx, body: sc.body, tags: sc.tags,
     status: res.status, elapsedMs: res.elapsedMs, infra: !!layer1.infra,
     confidence: conf ?? null, candidateCount: res.json?._meta?.candidateCount ?? null,
+    coverageFallback: res.json?._meta?.coverageFallback || null,
     layer1Fails: layer1.fails, layer1Warns: layer1.warns,
     verdict, judgeUsage, pass, why, tokens, synthModel, cost, quality,
   };
@@ -436,6 +462,23 @@ function mdReport(perScenario, results, meta) {
     L.push('');
   }
 
+  // Thin-coverage cohort — graded on honest handling of limited info, not richness.
+  const thin = perScenario.filter((s) => (s.tags || []).includes('thin'));
+  if (thin.length) {
+    const passed = thin.filter((s) => s.majorityPass).length;
+    L.push(`## Thin-coverage cohort (${passed}/${thin.length} ok — honest-read-or-graceful-fallback, no fabrication)`, '',
+      '| ticker | conf | outcome | ok | note |', '|---|---|---|---|---|');
+    for (const s of thin) {
+      const r = s.detail[0];
+      const outcome = r.coverageFallback === 'industry' ? 'industry-fallback'
+        : r.confidence === 'empty' ? 'honest-empty'
+        : `analyzed (${r.candidateCount} clips)`;
+      const why = s.majorityPass ? '' : truncate((r.why || '') + (r.verdict ? ` — ${r.verdict.rationale}` : ''), 110).replace(/\|/g, '\\|');
+      L.push(`| ${s.body?.ticker || s.id} | ${s.confidences.join('/')} | ${outcome} | ${s.majorityPass ? '✓' : '✗'} | ${why} |`);
+    }
+    L.push('');
+  }
+
   const lat = results.map((r) => r.elapsedMs).sort((a, b) => a - b);
   if (lat.length) {
     const p = (q) => lat[Math.min(lat.length - 1, Math.floor(q * lat.length))];
@@ -446,7 +489,7 @@ function mdReport(perScenario, results, meta) {
 
 // ----------------------------------------------------------------------- main
 async function main() {
-  let list = scenarios.filter((s) => !ONLY || s.kind === ONLY);
+  let list = scenarios.filter((s) => (!ONLY || s.kind === ONLY) && (!TAG || (s.tags || []).includes(TAG)));
   if (LIMIT > 0) list = list.slice(0, LIMIT);
   if (list.length === 0) { console.error('No scenarios match the filter.'); process.exit(2); }
 

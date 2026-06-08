@@ -91,4 +91,36 @@ const scenarios = [
   { id: 'sp_asym', kind: 'split', body: { personA: 'bulls', personB: 'bears', topic: 'micro-cap space launch startups' }, tags: ['edge', 'asymmetric'], expect: { confidence: THIN } },
 ];
 
+// ---------------------------------------------------------------------------
+// THIN-COVERAGE COHORT (lesser-known small-cap / biotech Read-ins).
+// Corpus coverage (usable clips) was measured before selecting these — the point
+// is NOT "is there a lot of material" but "given what little IS there, do we make
+// an honest, decent read — or degrade gracefully (industry fallback + disclaimer)
+// — WITHOUT fabricating?". Judged under the `thin` rubric (see scripts/tape-eval.js):
+// fabrication / wrong-entity / overconfidence FAIL; a thin/empty label, a missing
+// bull or bear side, and an industry-fallback result all PASS (correct behavior).
+// Run just this cohort with: node scripts/tape-eval.js --tag thin
+const THIN_COHORT = [
+  // limited coverage (~3-6 usable clips) — the core "decent read from little" test
+  { id: 'tc_vktx', ticker: 'VKTX', note: 'Viking Therapeutics ~6' },
+  { id: 'tc_insm', ticker: 'INSM', note: 'Insmed ~5' },
+  { id: 'tc_rxrx', ticker: 'RXRX', note: 'Recursion ~5' },
+  { id: 'tc_ions', ticker: 'IONS', note: 'Ionis ~4' },
+  { id: 'tc_ntla', ticker: 'NTLA', note: 'Intellia ~3' },
+  { id: 'tc_exel', ticker: 'EXEL', note: 'Exelixis ~3' },
+  // moderate-niche (~10-15) — more to work with, still off the beaten path
+  { id: 'tc_srpt', ticker: 'SRPT', note: 'Sarepta ~10' },
+  { id: 'tc_nbix', ticker: 'NBIX', note: 'Neurocrine ~13' },
+  { id: 'tc_alny', ticker: 'ALNY', note: 'Alnylam ~15' },
+  // very thin (~1-2) — stress: honest thin or graceful fallback
+  { id: 'tc_arwr', ticker: 'ARWR', note: 'Arrowhead ~2' },
+  { id: 'tc_cohr', ticker: 'COHR', note: 'Coherent (optics) ~1' },
+  // zero coverage — must use the industry fallback + disclaimer, never fabricate
+  { id: 'tc_tvtx', ticker: 'TVTX', note: 'Travere ~0 (fallback)' },
+];
+THIN_COHORT.forEach((s) => scenarios.push({
+  id: s.id, kind: 'readin', body: { ticker: s.ticker }, tags: ['thin', 'biotech'],
+  expect: { confidence: ANY, noServerError: true }, // thin/empty/partial all acceptable
+}));
+
 module.exports = { scenarios, TODAY, OLD };

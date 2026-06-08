@@ -1,0 +1,93 @@
+# Generic "most-likely a user picks" order for daily Read-In cache warming.
+#
+# The warmer (scripts/warm-readins.js) walks getWarmTickers() in order and warms
+# each Read-In until it hits the cost/count cap (TAPE_WARM_USD_CAP / default $2,
+# TAPE_WARM_MAX_TICKERS / default 150). getWarmTickers() = `priority` below
+# (intersected with the carded universe, in this order) followed by the remaining
+# carded tickers by market cap, deduped. So this list is a *preference order*, not
+# an allowlist — anything here that isn't carded is simply skipped, and the carded
+# tail still gets warmed if budget remains.
+#
+# FUTURE (see memory project-tape-future-ideas #3): personalization layers a
+# per-user conversational watchlist ahead of this generic order via
+# getWarmTickers({ userId }). The warm machinery does not change — only the
+# provider's ordering. Keep this file the *generic* baseline.
+
+priority:
+  # Mega-cap tech / the names a generic user reaches for first
+  - NVDA
+  - AAPL
+  - TSLA
+  - MSFT
+  - AMZN
+  - GOOGL
+  - META
+  - AMD
+  - AVGO
+  - NFLX
+  - ORCL
+  - CRM
+  - INTC
+  - MU
+  - QCOM
+  - MRVL
+  - ARM
+  - SMCI
+  - DELL
+  - CSCO
+  - IBM
+  # Retail-favorite / high-attention / momentum
+  - PLTR
+  - HOOD
+  - COIN
+  - MSTR
+  - UBER
+  - ABNB
+  - SHOP
+  - SOFI
+  - PYPL
+  - RIVN
+  - LCID
+  - GME
+  - BABA
+  # Crypto / gold proxies
+  - IBIT
+  - GLD
+  # Financials
+  - JPM
+  - BAC
+  - GS
+  - WFC
+  - C
+  - V
+  - MA
+  - BRK.B
+  # Energy
+  - XOM
+  - CVX
+  - OXY
+  # Healthcare / pharma the public knows
+  - LLY
+  - PFE
+  - MRNA
+  - JNJ
+  - UNH
+  # Consumer / retail / staples
+  - WMT
+  - COST
+  - TGT
+  - HD
+  - NKE
+  - SBUX
+  - MCD
+  - KO
+  - PEP
+  - DIS
+  # Industrials / autos / misc household names
+  - BA
+  - CAT
+  - GE
+  - F
+  - GM
+  - T
+  - VZ

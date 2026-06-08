@@ -478,9 +478,9 @@ async function runReadin(body, { jwtSub, openai, auditId }) {
   // worsened bear_slot_not_bearish. Recall on sparse tickers needs a bear-protected
   // approach, not bull-pool seeding.
   const [bullRes, bearRes] = await Promise.all([
-    topicQuotes({ query: ticker, themes: [ticker], kind: 'readin', filters: { mainstream: READIN_MAINSTREAM, candidatesLimit: 18 } }, { openai }),
+    topicQuotes({ query: ticker, themes: [ticker], kind: 'readin', strictTicker: true, filters: { mainstream: READIN_MAINSTREAM, candidatesLimit: 18 } }, { openai }),
     BEAR_SEED_ENABLED
-      ? topicQuotes({ query: ticker, themes: bearThemes(bearName), kind: 'readin', expandThemes: false, filters: { mainstream: READIN_MAINSTREAM, candidatesLimit: 12 } }, { openai }).catch(() => ({ body: { candidates: [] } }))
+      ? topicQuotes({ query: ticker, themes: bearThemes(bearName), kind: 'readin', expandThemes: false, strictTicker: true, filters: { mainstream: READIN_MAINSTREAM, candidatesLimit: 12 } }, { openai }).catch(() => ({ body: { candidates: [] } }))
       : Promise.resolve({ body: { candidates: [] } }),
   ]);
   const bullCands = bullRes.body.candidates || [];

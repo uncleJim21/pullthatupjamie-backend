@@ -21,11 +21,20 @@ const { printLog } = require('../../constants');
 
 const nowIso = () => new Date().toISOString();
 
+// Bounded LRU cap for the in-memory response cache (no Redis path). At ~10-14 KB
+// per Tape payload (measured), 2000 entries ≈ ~25 MB — expansive but trivial for
+// the box, and it closes the latent unbounded-Map growth on long uptime. The warm
+// set (~150 read-ins) is <8% of this, so organic traffic won't evict warmed
+// entries before the next daily warm. With Redis, use its own maxmemory/allkeys-lru
+// instead — this cap only governs the in-process Map. Counters are excluded (TTL-
+// bounded and tiny).
+const CACHE_MAX_ENTRIES = Math.max(1, parseInt(process.env.TAPE_CACHE_MAX_ENTRIES || '2000', 10));
+
 // ----------------------------------------------------------------------------
 // In-memory backend
 // ----------------------------------------------------------------------------
 function createMemoryStore() {
-  const cache = new Map();    // key -> { value, expiresAt }
+  const cache = new Map();    // key -> { value, expiresAt } — Map preserves insertion order; we use it as an LRU
   const counters = new Map(); // key -> { count, expiresAt }
 
   // Periodic sweep so abandoned keys don't leak. Unref so it never holds the
@@ -43,10 +52,20 @@ function createMemoryStore() {
       const e = cache.get(key);
       if (!e) return null;
       if (e.expiresAt <= Date.now()) { cache.delete(key); return null; }
+      // LRU touch: re-insert so this key becomes most-recently-used.
+      cache.delete(key);
+      cache.set(key, e);
       return e.value;
     },
     async setJSON(key, value, ttlSec) {
+      cache.delete(key); // ensure re-insert lands at the most-recent end
       cache.set(key, { value, expiresAt: Date.now() + ttlSec * 1000 });
+      // Evict least-recently-used (oldest insertion) while over the cap.
+      while (cache.size > CACHE_MAX_ENTRIES) {
+        const lru = cache.keys().next().value;
+        if (lru === undefined) break;
+        cache.delete(lru);
+      }
     },
     async incrWindow(key, ttlSec) {
       const t = Date.now();
@@ -120,7 +139,7 @@ if (process.env.REDIS_URL) {
   }
 } else {
   store = createMemoryStore();
-  printLog('[tapeStore] using in-memory backend (no REDIS_URL)');
+  printLog(`[tapeStore] using in-memory backend (no REDIS_URL); LRU cap ${CACHE_MAX_ENTRIES} entries`);
 }
 
 /**

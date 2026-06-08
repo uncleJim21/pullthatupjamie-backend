@@ -111,7 +111,7 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
  *     case-insensitively.
  * Never reduces a non-empty set to zero. `resolved` is reused if already fetched.
  */
-async function filterTickerNoise(ticker, candidates, resolved) {
+async function filterTickerNoise(ticker, candidates, resolved, opts = {}) {
   if (!candidates.length) return candidates;
   const tk = ticker.trim();
   const r = resolved || await resolveTicker(ticker);
@@ -125,6 +125,15 @@ async function filterTickerNoise(ticker, candidates, resolved) {
   };
   const kept = candidates.filter(matches);
   if (!kept.length) {
+    // Zero clips even name the company. In `strict` mode (read-in pools) that IS the
+    // zero-coverage signal — return empty so runReadin's industry fallback fires
+    // instead of synthesizing a confident read on off-topic noise (e.g. the
+    // Travere↔"TRAVERSE trial" collision). Lenient default keeps the unfiltered set
+    // so an over-strict regex can't accidentally zero a well-covered topic query.
+    if (opts.strict) {
+      printLog(`[topicQuotes] ticker "${tk}" filter matched 0/${candidates.length}; strict → returning empty (no coverage)`);
+      return [];
+    }
     printLog(`[topicQuotes] ticker "${tk}" filter matched 0/${candidates.length}; keeping unfiltered set`);
     return candidates;
   }
@@ -263,7 +272,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
 
   // Ticker-shaped query → drop company-mismatch noise before ranking/capping (§4).
   if (TICKER_FILTER_ENABLED && isTickerShaped(topic)) {
-    candidates = await filterTickerNoise(topic, candidates, resolved);
+    candidates = await filterTickerNoise(topic, candidates, resolved, { strict: input.strictTicker === true });
   }
 
   // Quality gate: reuse the pull path's LLM reranker (utils/clipReranker) to DROP

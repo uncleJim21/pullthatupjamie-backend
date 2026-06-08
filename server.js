@@ -2245,6 +2245,42 @@ const _server = app.listen(PORT, async () => {
       console.log('[TapeCardHydrate] Disabled (TAPE_CARD_HYDRATE_CRON=false)');
     }
 
+    // Tape Read-In cache warmer — pre-computes the most-likely-picked tickers so a
+    // generic user's first Read-In is instant. Runs 15 min AFTER card hydration so
+    // cards are fresh first. Runs IN-PROCESS (the in-memory cache is per-process, so
+    // a spawned child would warm a throwaway Map) and deliberately takes NO
+    // distributed lock — under autoscale every container must warm its own cache.
+    // Budget is bounded by TAPE_WARM_USD_CAP ($2) and TAPE_WARM_MAX_TICKERS (150).
+    if (process.env.TAPE_WARM_READIN_CRON !== 'false') {
+      const cron = require('node-cron');
+      const { warmReadins } = require('./services/tape/warmReadins');
+      // Schedule is env-overridable (5-field cron). Default 08:00 CT — once daily.
+      // Each run costs ~$1.3-2, so keep this a DAILY (or rarer) schedule; never a
+      // high-frequency one (every-10-min would be ~$288/day). Falls back to the
+      // default if the override is invalid. To test that the cron fires without
+      // burning budget, prefer the CLI (`node scripts/warm-readins.js --limit 5`)
+      // or set the schedule to a single near-future minute and revert after.
+      const DEFAULT_WARM_SCHEDULE = '0 8 * * *';
+      let warmSchedule = process.env.TAPE_WARM_READIN_SCHEDULE || DEFAULT_WARM_SCHEDULE;
+      if (!cron.validate(warmSchedule)) {
+        console.warn(`[TapeWarm] invalid TAPE_WARM_READIN_SCHEDULE="${warmSchedule}"; using default "${DEFAULT_WARM_SCHEDULE}"`);
+        warmSchedule = DEFAULT_WARM_SCHEDULE;
+      }
+      const warmTz = process.env.TAPE_WARM_READIN_TZ || 'America/Chicago';
+      cron.schedule(warmSchedule, async () => {
+        try {
+          const now = new Date().toLocaleString('en-US', { timeZone: warmTz });
+          console.log(`[TapeWarm] starting at ${now} (${warmTz})`);
+          await warmReadins({ openai, log: (m) => console.log(m) });
+        } catch (err) {
+          console.error('[TapeWarm] error:', err.message);
+        }
+      }, { timezone: warmTz });
+      console.log(`[TapeWarm] Cron registered: "${warmSchedule}" ${warmTz} (override TAPE_WARM_READIN_SCHEDULE / TAPE_WARM_READIN_TZ; set TAPE_WARM_READIN_CRON=false to disable)`);
+    } else {
+      console.log('[TapeWarm] Disabled (TAPE_WARM_READIN_CRON=false)');
+    }
+
     // Nostr bot — single startup branch handles identity log + all
     // phase crons (mention watcher, zap watcher, reply worker). Each
     // sub-phase is also internally guarded so partial wiring during
