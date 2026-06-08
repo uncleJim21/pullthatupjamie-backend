@@ -29,6 +29,11 @@ const RELEVANCE_FLOOR = parseFloat(process.env.TAPE_RELEVANCE_FLOOR || '0');
 // Soft boost for clips that literally mention a topic noun ("gold") — ranks them
 // above merely-adjacent ones, without hard-filtering proxies (GLD, miners).
 const LITERAL_BONUS = parseFloat(process.env.TAPE_LITERAL_BONUS || '0.12');
+// Soft source preference: allowlisted feeds (feed_allow / mainstream creators) get
+// a ranking BOOST rather than a hard exclude — quality sources float to the top,
+// but non-allowlisted clips still fill the pool when needed (hard-gating Read-in
+// starved its bear side; this favors good sources without the recall hit). 0 = off.
+const SOURCE_BOOST = parseFloat(process.env.TAPE_SOURCE_BOOST || '0.12');
 // Min literal-matching candidates for a non-ticker topic to be "covered"; below
 // this the pool is emptied (honest confidence:'empty') rather than serving noise.
 const LITERAL_MIN = parseInt(process.env.TAPE_LITERAL_MIN || '3', 10);
@@ -250,7 +255,7 @@ async function topicQuotes(input = {}, { openai } = {}) {
       if (!cand || !cand.pineconeId || byId.has(cand.pineconeId)) continue;
       if (Number.isFinite(f.minSpan) && cand.spanSec != null && cand.spanSec < f.minSpan) continue;
       if (String(cand.text || '').trim().split(/\s+/).length < MIN_WORDS) continue; // drop pure fragments
-      if (f.mainstream && !taste.isAcceptableSource(cand.creator, { bitcoinMode })) continue;
+      if (f.mainstream && !taste.isAcceptableSource(cand.creator, { feedId: cand.feedId, bitcoinMode })) continue;
       byId.set(cand.pineconeId, cand);
     }
   }
@@ -332,9 +337,12 @@ async function topicQuotes(input = {}, { openai } = {}) {
 
   // Rank by relevance × recency, span as tiebreaker. (All survivors contain a term
   // after anchoring; the boost only matters for the no-term / ticker fallback.)
+  const srcBoost = SOURCE_BOOST > 0
+    ? (c) => (taste.isAcceptableSource(c.creator, { feedId: c.feedId, bitcoinMode }) ? SOURCE_BOOST : 0)
+    : () => 0;
   const baseScore = terms.length
-    ? (c) => defaultRelevance(c) + (containsAnyTerm(c.text, terms) ? LITERAL_BONUS : 0)
-    : defaultRelevance;
+    ? (c) => defaultRelevance(c) + (containsAnyTerm(c.text, terms) ? LITERAL_BONUS : 0) + srcBoost(c)
+    : (c) => defaultRelevance(c) + srcBoost(c);
 
   // Half-life from the requested kind (brief ~1wk, readin/split 6mo) unless the
   // caller overrides; Arc-style callers pass disableRecencyWeighting. When a Brief

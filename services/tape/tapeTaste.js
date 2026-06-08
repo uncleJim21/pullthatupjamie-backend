@@ -24,6 +24,7 @@ let cachedMtimeMs = 0;
 const DEFAULTS = {
   mainstream_allow: [],
   mainstream_deny: [],
+  feed_allow: {},
   dedicated_match: 'last-name',
   confidence_signals: {
     dedicated_weight: 0.4, mainstream_weight: 0.3, span_weight: 0.3,
@@ -52,9 +53,12 @@ function load() {
       mainstream_deny: (parsed.mainstream_deny || []).map((s) => String(s).toLowerCase()),
       bull_keywords: (parsed.bull_keywords || []).map((s) => String(s).toLowerCase()),
       bear_keywords: (parsed.bear_keywords || []).map((s) => String(s).toLowerCase()),
+      feed_allow: parsed.feed_allow || {},
     };
+    // Canonical feedId allowlist as a Set of strings for O(1) lookup.
+    cached.feedAllowSet = new Set(Object.keys(cached.feed_allow).map(String));
     cachedMtimeMs = mtimeMs;
-    printLog(`[tapeTaste] loaded config (${cached.mainstream_allow.length} allow / ${cached.mainstream_deny.length} deny)`);
+    printLog(`[tapeTaste] loaded config (${cached.feedAllowSet.size} feed_allow / ${cached.mainstream_allow.length} creator-fallback / ${cached.mainstream_deny.length} deny)`);
   } catch (err) {
     printLog(`[tapeTaste] failed to parse config (${err.message}) — keeping previous/defaults`);
     if (!cached) cached = { ...DEFAULTS };
@@ -87,12 +91,16 @@ function isBitcoinRelevant(topic) {
 }
 
 /**
- * Whether a candidate's `creator` is an acceptable source for this query.
- * Normal: mainstream allowlist (minus deny). When the topic is bitcoin-relevant,
- * the curated bitcoin-native shows (bitcoin_allow) are admitted too.
+ * Whether a candidate is an acceptable source for this query. CANONICAL signal is
+ * the feedId allowlist (feed_allow) — exact, no substring false-positives, catches
+ * null-creator docs. Falls back to the creator-substring allowlist for feeds not
+ * yet mapped to a feedId. When the topic is bitcoin-relevant, the curated
+ * bitcoin-native shows (bitcoin_allow) are admitted too (still creator-based).
  */
-function isAcceptableSource(creator, { bitcoinMode } = {}) {
-  if (isMainstream(creator)) return true;
+function isAcceptableSource(creator, { feedId, bitcoinMode } = {}) {
+  const cfg = load();
+  if (feedId != null && cfg.feedAllowSet && cfg.feedAllowSet.has(String(feedId))) return true;
+  if (isMainstream(creator)) return true; // creator-substring fallback
   if (bitcoinMode && isBitcoinAllowed(creator)) return true;
   return false;
 }

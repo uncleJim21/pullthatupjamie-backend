@@ -26,6 +26,7 @@ function candidateFromResult(r) {
     text: r.quote || '',
     episodeTitle: r.episode || null,
     creator: r.creator || null,
+    feedId: r.feedId != null ? String(r.feedId) : null, // for source gating (tapeTaste.feed_allow)
     episodeImage: r.episodeImage && r.episodeImage !== 'Image unavailable' ? r.episodeImage : null,
     audioUrl: r.audioUrl && r.audioUrl !== 'URL unavailable' ? r.audioUrl : null,
     startTime: Number.isFinite(start) ? start : null,
