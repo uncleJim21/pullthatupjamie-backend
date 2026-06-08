@@ -32,6 +32,14 @@ const CONCURRENCY = Math.max(1, parseInt(process.env.TAPE_WARM_CONCURRENCY || '3
 const IN_RATE = num(process.env.TAPE_WARM_IN_RATE, 1);   // $/1M input  (Haiku `fast`)
 const OUT_RATE = num(process.env.TAPE_WARM_OUT_RATE, 5); // $/1M output
 
+// The read-in cache key is ticker-only (see kindCacheKey), so the warmer doesn't
+// need to match the frontend's `model` — it warms with the cheap default model
+// (TAPE_READIN_MODEL, `fast`) by sending only the ticker, and every live read-in
+// request for that ticker (any model) hits this one entry. Cost over fidelity.
+function readinBody(ticker) {
+  return { ticker };
+}
+
 /** The number of tickers a run will warm: min(count cap, floor($ cap / per-ticker)). */
 function effectiveLimit() {
   const byCost = PER_TICKER > 0 ? Math.floor(USD_CAP / PER_TICKER) : MAX_TICKERS;
@@ -60,7 +68,7 @@ async function warmReadins({ openai, log = printLog, limit, only } = {}) {
       try {
         const { out, synthesizedEmpty } = await computeAndCacheKind({
           kind: 'readin',
-          body: { ticker },
+          body: readinBody(ticker),
           run: (b, ctx) => runReadin(b, { ...ctx, openai }),
           openai,
           refresh: true,

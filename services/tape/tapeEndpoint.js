@@ -166,7 +166,16 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
  * `refresh:true` writes the same key the frontend (no refresh) will hit.
  */
 function kindCacheKey(kind, body) {
-  return `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(body)}`;
+  // Read-In keys on the TICKER ALONE (normalized) — deliberately ignoring `model`
+  // and every other body field. The frontend sends model:"quality" but the warmer
+  // synthesizes on the cheap model; keying on ticker lets ANY read-in request hit
+  // the single warmed entry. We accept the minor quality-vs-fast inaccuracy in
+  // favor of cost + cache-hit rate. Other kinds key on their full body (topic /
+  // persons / dates genuinely change the result).
+  const identity = kind === 'readin'
+    ? { ticker: String((body && body.ticker) || '').trim().toUpperCase() }
+    : body;
+  return `tape:kind:${kind}:${PROMPT_VERSION}:${hashBody(identity)}`;
 }
 
 /**
