@@ -21,17 +21,30 @@ const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
  *       and marks the mention `insufficient_balance`.
  *
  * Failures during runPull or relay publish bump `attemptCount` and
- * leave the mention in `failed` state for triage. Replies that
- * already published successfully are NOT re-attempted because the
- * status transition is the gate.
+ * leave the mention in `failed` state. A failed mention is retried on
+ * a later tick until `attemptCount` reaches MAX_ATTEMPTS_PER_MENTION,
+ * after which it stays `failed` for triage. Replies that already
+ * published successfully are NOT re-attempted because the status
+ * transition to `replied` removes them from the claimable set.
  *
- * Concurrency: the atomic findOneAndUpdate "claim" pattern
- * guarantees no two workers process the same mention. Designed to
- * be safe to run from multiple instances if we ever scale out.
+ * Concurrency & crash recovery: the atomic findOneAndUpdate "claim"
+ * pattern guarantees no two workers process the same mention. A claim
+ * also carries a lease (PROCESSING_LEASE_SECONDS) — if the worker that
+ * claimed a mention dies mid-flight (crash, deploy, kill, OOM), the
+ * `processing` row is reclaimed once its lease expires rather than
+ * being stranded forever. This makes the worker safe to run across
+ * restarts and from multiple instances.
  */
 
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_ATTEMPTS_PER_MENTION = 3;
+// A mention claimed (status → processing) but not resolved within this
+// window is considered orphaned — the worker that claimed it crashed,
+// was killed, deployed over, or timed out mid-agent. The next tick
+// reclaims it. Must exceed the agent timeout (180s in agentPullService)
+// with headroom so we never reclaim a row that's still legitimately
+// being worked. 10 minutes gives ~3x the agent timeout.
+const PROCESSING_LEASE_SECONDS = 10 * 60;
 const MENTION_AGE_LIMIT_SECONDS = 24 * 3600; // ignore mentions older than 24h on first ingest
 const RATE_LIMIT_WINDOW_SECONDS = 3600;        // 1h sliding window
 const RATE_LIMIT_MAX_REPLIES_PER_NPUB = 30;    // per author per window
@@ -93,13 +106,35 @@ class NostrBotReplyService {
   }
 
   /**
-   * Atomically transition one pending mention to processing and
+   * Atomically transition one claimable mention to processing and
    * return it. Returns null if there are none left.
+   *
+   * A mention is claimable when it is:
+   *   (a) fresh — status `pending`; or
+   *   (b) a transient failure worth retrying — status `failed` with
+   *       fewer than MAX_ATTEMPTS_PER_MENTION attempts (e.g. an agent
+   *       timeout or a relay publish hiccup); or
+   *   (c) orphaned — status `processing` whose lease has expired
+   *       (the worker that claimed it died/was killed mid-flight).
+   *
+   * `attemptCount` is incremented on every claim and caps retries so a
+   * genuinely poisoned mention can't loop forever. The lease is keyed
+   * on `updatedAt`, which Mongoose bumps on every save, so an actively
+   * progressing row is never reclaimed out from under its worker.
    */
   async _claimNext() {
     const cutoff = Math.floor(Date.now() / 1000) - MENTION_AGE_LIMIT_SECONDS;
+    const leaseExpiry = new Date(Date.now() - PROCESSING_LEASE_SECONDS * 1000);
     return NostrMention.findOneAndUpdate(
-      { status: 'pending', createdAt: { $gte: cutoff } },
+      {
+        createdAt: { $gte: cutoff },
+        attemptCount: { $lt: MAX_ATTEMPTS_PER_MENTION },
+        $or: [
+          { status: 'pending' },
+          { status: 'failed' },
+          { status: 'processing', updatedAt: { $lt: leaseExpiry } },
+        ],
+      },
       { $set: { status: 'processing' }, $inc: { attemptCount: 1 } },
       { sort: { createdAt: 1 }, new: true },
     );
@@ -355,5 +390,6 @@ class NostrBotReplyService {
 
 module.exports = NostrBotReplyService;
 module.exports.MAX_ATTEMPTS_PER_MENTION = MAX_ATTEMPTS_PER_MENTION;
+module.exports.PROCESSING_LEASE_SECONDS = PROCESSING_LEASE_SECONDS;
 module.exports.RATE_LIMIT_WINDOW_SECONDS = RATE_LIMIT_WINDOW_SECONDS;
 module.exports.RATE_LIMIT_MAX_REPLIES_PER_NPUB = RATE_LIMIT_MAX_REPLIES_PER_NPUB;

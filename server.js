@@ -2238,7 +2238,11 @@ const _server = app.listen(PORT, async () => {
       const NOSTR_BOT_POLL_INTERVAL_MS = (() => {
         const raw = parseInt(process.env.NOSTR_BOT_POLL_INTERVAL_MS, 10);
         if (Number.isFinite(raw) && raw >= 5000) return raw;
-        return 30000; // default: 30 seconds
+        // 15s tick. With the 12-relay pool rotating 3 relays/tick, each
+        // relay is polled once per 60s while the system sweeps 3 fresh
+        // relays every 15s — so mention/zap detection latency stays low
+        // without hammering any single relay.
+        return 15000; // default: 15 seconds
       })();
       console.log(
         `[NostrBot] polling interval = ${NOSTR_BOT_POLL_INTERVAL_MS}ms (override via NOSTR_BOT_POLL_INTERVAL_MS, min 5000)`,
