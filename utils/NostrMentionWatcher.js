@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const { nip19 } = require('nostr-tools');
 const { NostrMention } = require('../models/NostrMention');
 const { getBotPubkeyHex, getBotNpub } = require('./nostrBotIdentity');
+const { RELAY_POOL, RelayRotation, DEFAULT_SLICE_QUERY_TIMEOUT_MS } = require('./nostrRelayPool');
 
 /**
  * NostrMentionWatcher
@@ -24,29 +25,25 @@ const { getBotPubkeyHex, getBotNpub } = require('./nostrBotIdentity');
  * The watcher ignores events authored by the bot itself.
  */
 
-const RELAYS = [
-  'wss://relay.primal.net',
-  'wss://relay.damus.io',
-  'wss://nos.lol',
-  'wss://relay.nostr.band',
-  'wss://nostr.wine',
-];
-
 const LOOKBACK_SECONDS = 600; // 10 minutes — overlap window between polls
-const RELAY_QUERY_TIMEOUT_MS = 12000; // wait at most this long for EOSE
 const SUB_PREFIX = 'jb_mentions_';
 
 class NostrMentionWatcher {
   constructor(options = {}) {
-    this.relays = Array.isArray(options.relays) && options.relays.length > 0
-      ? options.relays
-      : RELAYS;
+    // Each poll sweeps a rotating slice of the relay pool rather than
+    // every relay, so any single relay is polled only once per
+    // rotation. See nostrRelayPool for the cadence rationale. Tests can
+    // still pin a fixed relay set via options.relays.
+    this.rotation = new RelayRotation({
+      relays: options.relays,
+      sliceSize: options.sliceSize,
+    });
     this.lookbackSeconds = Number.isFinite(options.lookbackSeconds)
       ? options.lookbackSeconds
       : LOOKBACK_SECONDS;
     this.queryTimeoutMs = Number.isFinite(options.queryTimeoutMs)
       ? options.queryTimeoutMs
-      : RELAY_QUERY_TIMEOUT_MS;
+      : DEFAULT_SLICE_QUERY_TIMEOUT_MS;
   }
 
   /**
@@ -58,13 +55,14 @@ class NostrMentionWatcher {
     const botNpub = getBotNpub();
     const now = Math.floor(Date.now() / 1000);
     const since = await this._computeSince(botPubkey, now);
+    const relaySlice = this.rotation.next();
 
     console.log(
-      `[NostrMentionWatcher] Polling ${this.relays.length} relays for kind:1 mentions of ${botPubkey.substring(0, 12)}... since ${new Date(since * 1000).toISOString()} (${now - since}s window)`,
+      `[NostrMentionWatcher] Polling ${relaySlice.length}/${this.rotation.poolSize} relays [${relaySlice.join(', ')}] for kind:1 mentions of ${botPubkey.substring(0, 12)}... since ${new Date(since * 1000).toISOString()} (${now - since}s window)`,
     );
 
     const results = await Promise.allSettled(
-      this.relays.map((url) => this._queryRelay(url, botPubkey, since)),
+      relaySlice.map((url) => this._queryRelay(url, botPubkey, since)),
     );
 
     // Dedupe by event id across relays
@@ -121,10 +119,10 @@ class NostrMentionWatcher {
       invalid,
       totalUnique: events.length,
       since,
-      relays: this.relays.length,
+      relays: relaySlice.length,
     };
     console.log(
-      `[NostrMentionWatcher.metrics] new=${newCount} dup=${duplicateCount} self=${skippedSelf} threadProp=${threadPropagation} invalid=${invalid} total=${events.length} relays=${this.relays.length}`,
+      `[NostrMentionWatcher.metrics] new=${newCount} dup=${duplicateCount} self=${skippedSelf} threadProp=${threadPropagation} invalid=${invalid} total=${events.length} relays=${relaySlice.length}/${this.rotation.poolSize}`,
     );
     return summary;
   }
@@ -299,4 +297,4 @@ class NostrMentionWatcher {
 }
 
 module.exports = NostrMentionWatcher;
-module.exports.NOSTR_BOT_RELAYS = RELAYS;
+module.exports.NOSTR_BOT_RELAYS = RELAY_POOL;
