@@ -5,6 +5,7 @@ const { getBotPubkeyHex, getBotSecretKey } = require('./nostrBotIdentity');
 const { validateZapReceipt } = require('./zapReceiptValidator');
 const { satsToUsdMicro, getBtcUsdRate } = require('./btcPrice');
 const { nostrBotLog } = require('./nostrBotLogger');
+const { RELAY_POOL, RelayRotation, DEFAULT_SLICE_QUERY_TIMEOUT_MS } = require('./nostrRelayPool');
 
 /**
  * NostrZapWatcher
@@ -32,14 +33,6 @@ const { nostrBotLog } = require('./nostrBotLogger');
  * worker debits per call.
  */
 
-const RELAYS = [
-  'wss://relay.primal.net',
-  'wss://relay.damus.io',
-  'wss://nos.lol',
-  'wss://nostr.oxtr.dev',
-  'wss://nostr.wine',
-];
-
 // Background polls reach 12h back so a brief outage or a late-arriving
 // receipt can't drop credit on the floor. Receipt rows are deduped by
 // `receiptId` + `bolt11` unique indexes, so re-querying the same window
@@ -48,7 +41,6 @@ const RELAYS = [
 // zapped you" UX.
 const LOOKBACK_SECONDS = 12 * 3600; // 12 hours — generous overlap window
 const QUICK_POLL_LOOKBACK_SECONDS = 600; // 10 minutes — for on-demand re-polls
-const RELAY_QUERY_TIMEOUT_MS = 15000;
 const QUICK_POLL_RELAY_TIMEOUT_MS = 7000; // shorter wait for snappy on-demand polls
 const SUB_PREFIX = 'jb_zaps_';
 const REQUIRE_VALID_PREIMAGE = false; // most NIP-57 services don't include preimage
@@ -65,15 +57,19 @@ function parseTrustedPubkeys() {
 
 class NostrZapWatcher {
   constructor(options = {}) {
-    this.relays = Array.isArray(options.relays) && options.relays.length > 0
-      ? options.relays
-      : RELAYS;
+    // Recurring background polls sweep a rotating slice of the pool;
+    // the on-demand quickPoll path sweeps the full pool for breadth
+    // (see poll()). Tests can pin a fixed set via options.relays.
+    this.rotation = new RelayRotation({
+      relays: options.relays,
+      sliceSize: options.sliceSize,
+    });
     this.lookbackSeconds = Number.isFinite(options.lookbackSeconds)
       ? options.lookbackSeconds
       : LOOKBACK_SECONDS;
     this.queryTimeoutMs = Number.isFinite(options.queryTimeoutMs)
       ? options.queryTimeoutMs
-      : RELAY_QUERY_TIMEOUT_MS;
+      : DEFAULT_SLICE_QUERY_TIMEOUT_MS;
     this.requireValidPreimage = options.requireValidPreimage === true
       ? true
       : REQUIRE_VALID_PREIMAGE;
@@ -120,14 +116,19 @@ class NostrZapWatcher {
       ? opts.queryTimeoutOverrideMs
       : this.queryTimeoutMs;
     const since = await this._computeSince(now, lookbackSeconds);
-    const tag = opts.lookbackOverrideSeconds ? 'quickPoll' : 'poll';
+    const isQuickPoll = Number.isFinite(opts.lookbackOverrideSeconds);
+    const tag = isQuickPoll ? 'quickPoll' : 'poll';
+    // Background polls rotate through the pool one slice at a time. The
+    // on-demand quickPoll is a rare, latency-sensitive one-shot ("did
+    // this user just zap?") so it sweeps the full pool for max coverage.
+    const relaySlice = isQuickPoll ? this.rotation.relays : this.rotation.next();
 
     console.log(
-      `[NostrZapWatcher.${tag}] Polling ${this.relays.length} relays for kind:9735 #p=${botPubkey.substring(0, 12)}... since ${new Date(since * 1000).toISOString()} (${now - since}s window)`,
+      `[NostrZapWatcher.${tag}] Polling ${relaySlice.length}/${this.rotation.poolSize} relays [${relaySlice.join(', ')}] for kind:9735 #p=${botPubkey.substring(0, 12)}... since ${new Date(since * 1000).toISOString()} (${now - since}s window)`,
     );
 
     const results = await Promise.allSettled(
-      this.relays.map((url) => this._queryRelay(url, botPubkey, since, queryTimeoutMs)),
+      relaySlice.map((url) => this._queryRelay(url, botPubkey, since, queryTimeoutMs)),
     );
 
     // Dedupe by event id across relays
@@ -168,10 +169,10 @@ class NostrZapWatcher {
       retried,
       totalUnique: receipts.length,
       since,
-      relays: this.relays.length,
+      relays: relaySlice.length,
     };
     console.log(
-      `[NostrZapWatcher.metrics] credited=${credited} dup=${duplicate} anonSkipped=${anonymousSkipped} rejected=${rejected} failedDb=${failedDb} retried=${retried} total=${receipts.length} relays=${this.relays.length} tag=${tag}`,
+      `[NostrZapWatcher.metrics] credited=${credited} dup=${duplicate} anonSkipped=${anonymousSkipped} rejected=${rejected} failedDb=${failedDb} retried=${retried} total=${receipts.length} relays=${relaySlice.length}/${this.rotation.poolSize} tag=${tag}`,
     );
     return summary;
   }
@@ -509,4 +510,4 @@ class NostrZapWatcher {
 }
 
 module.exports = NostrZapWatcher;
-module.exports.NOSTR_BOT_RELAYS = RELAYS;
+module.exports.NOSTR_BOT_RELAYS = RELAY_POOL;
