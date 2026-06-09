@@ -36,7 +36,7 @@ const RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
+  'wss://nostr.oxtr.dev',
   'wss://nostr.wine',
 ];
 

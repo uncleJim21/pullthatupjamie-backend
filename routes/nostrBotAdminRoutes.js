@@ -99,12 +99,16 @@ function buildRouter() {
       return res.status(400).json({ error: 'eventId must be 64-char hex' });
     }
     try {
+      // Reset attemptCount so a mention that already exhausted its
+      // automatic retries (or is stranded in `processing`) becomes
+      // claimable again. `processing` is included so orphaned rows whose
+      // lease hasn't yet expired can be recovered on demand.
       const m = await NostrMention.findOneAndUpdate(
-        { eventId, status: { $in: ['failed', 'ignored'] } },
-        { $set: { status: 'pending', errorMessage: null, processedAt: null }, $inc: { attemptCount: 0 } },
+        { eventId, status: { $in: ['failed', 'ignored', 'processing'] } },
+        { $set: { status: 'pending', errorMessage: null, processedAt: null, attemptCount: 0 } },
         { new: true },
       );
-      if (!m) return res.status(404).json({ error: 'no failed/ignored mention with that id' });
+      if (!m) return res.status(404).json({ error: 'no failed/ignored/processing mention with that id' });
       res.json({ ok: true, mention: { id: m._id, status: m.status } });
     } catch (err) {
       res.status(500).json({ error: err.message });
