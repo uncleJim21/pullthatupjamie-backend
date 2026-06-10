@@ -272,6 +272,7 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
         quote,
         episode: metadata.episode || metadata.title || 'Unknown episode',
         creator: metadata.creator || 'Creator not specified',
+        feedId: metadata.feedId != null ? String(metadata.feedId) : null,
         audioUrl: metadata.audioUrl || 'URL unavailable',
         episodeImage: metadata.episodeImage || 'Image unavailable',
         listenLink: metadata.listenLink || '',

@@ -1,0 +1,216 @@
+# Editorial taste config for the Tape skin (spec §6).
+#
+# Shapes the recipes in person-quotes and topic-quotes. Reloaded automatically
+# when this file's mtime changes (see services/tape/tapeTaste.js) — edit + save,
+# no restart needed.
+#
+# SOURCE GATING — a clip is "mainstream" if its feedId is in `feed_allow` below
+# (the CANONICAL, precise signal) OR — as a resilience fallback for feeds not yet
+# mapped — its `creator` matches a `mainstream_allow` substring; minus any deny.
+#
+# Prefer feed_allow: creator-substring is fragile (e.g. "founders" wrongly matched
+# "The Official SaaStr Podcast ... | Founders | Investors") and misses the ~3% of
+# docs with a null creator. feed_allow is exact and corpus-verified.
+
+# Creator-substring FALLBACK only (for feeds not in feed_allow). Keep to
+# DISTINCTIVE show names — generic words cause false matches.
+mainstream_allow:
+  - bloomberg
+  - macro voices
+  - forward guidance
+  - real vision
+  - the compound
+  - odd lots
+  - prof g markets
+  - all-in
+  - capital allocators
+  - hidden forces
+  - investor's podcast
+  - tim ferriss
+  - grant williams
+  - masters in business
+  - animal spirits
+  - macro hive
+  - invest like the best
+
+mainstream_deny:
+  - guy swann
+  - no agenda
+  - empire
+  - hivemind
+
+# CANONICAL mainstream allowlist — match by feedId (string). Corpus-verified
+# (scripts that sample the corpus map creator -> feedId). The comment is the show
+# the feedId corresponds to. Add new shows by looking up their feedId in the
+# corpus. This is exact: no substring false-positives, catches null-creator docs.
+feed_allow:
+  "4114115": bloomberg surveillance
+  "4143163": bloomberg intelligence
+  "49438": macro voices
+  "4502930": forward guidance
+  "541102": real vision finance & investing
+  "743660": the compound and friends
+  "399817": the compound
+  "4114173": odd lots
+  "6899881": prof g markets
+  "1015378": all-in
+  "222998": capital allocators
+  "2123": decoder with nilay patel
+  "203667": hidden forces
+  "793331": the investor's podcast (we study billionaires)
+  "739525": the tim ferriss show
+  "446935": the grant williams podcast
+  "4112705": masters in business
+  "982387": invest like the best (patrick o'shaughnessy)
+  "436525": the a16z show
+  "5434524": a16z crypto show
+  "714247": founders (david senra)
+  "48166": acquired
+  "4520099": acq2 by acquired
+  "522818": the knowledge project
+  "743229": the daily
+  "524900": macro hive conversations
+  "714258": how i built this with guy raz
+  "551334": planet money
+  "254103": squawk pod (cnbc)
+  "174725": pivot
+  "743157": the meb faber show
+  "745287": lex fridman podcast
+
+# High-signal bitcoin-native shows. EXCLUDED from normal mainstream queries (so
+# they don't pollute a Fed/oil brief), but ADMITTED when the topic is bitcoin /
+# hard-money relevant (see bitcoin_relevance_terms) — for those topics they are
+# the authoritative sources, not noise.
+bitcoin_allow:
+  - simply bitcoin
+  - coin stories
+  - natalie brunell
+  - the pomp podcast
+  - what bitcoin did
+  - tftc
+  - bankless
+  - the breakdown
+  - bitcoin audible
+  - the wolf of all streets
+  - the peter mccormack show
+  - bitcoin & markets
+
+# A topic is "bitcoin/hard-money relevant" if its text contains any of these —
+# then bitcoin_allow shows are admitted alongside the mainstream allowlist.
+bitcoin_relevance_terms:
+  - bitcoin
+  - btc
+  - crypto
+  - cryptocurrency
+  - digital asset
+  - digital gold
+  - debasement
+  - inflation
+  - hard asset
+  - hard money
+  - sound money
+  - store of value
+  - fiat
+  - currency
+  - monetary
+  - dollar
+  - gold
+  - satoshi
+  - halving
+  - stablecoin
+  - ethereum
+  - microstrategy
+  - saylor
+
+# How a "dedicated" episode is detected.
+# Options: 'last-name' (default), 'full-name', 'exact-title'.
+dedicated_match: last-name
+
+confidence_signals:
+  dedicated_weight: 0.4
+  mainstream_weight: 0.3
+  span_weight: 0.3
+  # Tier thresholds (combined weighted score):
+  high_min: 0.7
+  medium_min: 0.4
+
+# Bull/bear keyword classifier (taste.classifyBullBear). USED ONLY by the
+# NARRATIVE kind's `groupBy: "bull-bear"` lens (services/tape/topicQuotes.js) — it
+# tags each clip bull/bear/neutral by keyword counting.
+# NOT used by the shipping kinds: Read-in's bear slot and Split's camps run the
+# LLM stance classifier (services/tape/stanceClassifier.js) instead, which is far
+# more accurate. Kept for Narrative (not in this release). If Narrative is ever
+# promoted, route its groupBy through the stance classifier and delete these.
+bull_keywords:
+  - rally
+  - upside
+  - bullish
+  - buy
+  - long
+  - growth
+  - outperform
+  - breakout
+  - boom
+  - optimistic
+  - higher
+  - surge
+  - accumulate
+  - overweight
+  - undervalued
+  - conviction
+  - tailwind
+  - momentum
+  - beat
+  - beats
+  - record
+  - all-time high
+  - melt-up
+  - squeeze
+  - re-rate
+  - rerating
+  - compounder
+  - moat
+  - secular
+  - strong
+  - soar
+  - ripping
+  - upgrade
+  - raised guidance
+
+bear_keywords:
+  - crash
+  - downside
+  - bearish
+  - sell
+  - short
+  - recession
+  - underperform
+  - bubble
+  - bust
+  - pessimistic
+  - lower
+  - plunge
+  - risk
+  - overvalued
+  - expensive
+  - priced for perfection
+  - headwind
+  - decline
+  - capitulation
+  - selloff
+  - drawdown
+  - correction
+  - collapse
+  - downgrade
+  - cut guidance
+  - miss
+  - dilution
+  - bankruptcy
+  - falling knife
+  - deteriorating
+  - slowdown
+  - contraction
+  - margin compression
+  - rolling over
+  - short thesis
+  - avoid

@@ -15,7 +15,7 @@ const MIN_RELEVANCE_SCORE = 4;
  * @param {string} [options.userMessage] - The original user question (NOT the rewritten search query). When provided, the scorer applies a person-mismatch penalty: clips from episodes whose tagged guests don't include a person the user named score 0-3.
  * @returns {{ clips: Array, usage: { model: string, input_tokens: number, output_tokens: number } }}
  */
-async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCORE, userMessage }) {
+async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCORE, userMessage, subjectInfo }) {
   const debugPrefix = '[RERANKER]';
 
   if (!clips || clips.length === 0) {
@@ -38,7 +38,14 @@ async function rerankClips({ query, clips, openai, minScore = MIN_RELEVANCE_SCOR
     return `[${i}] (${speaker} — ${episode})${guestStr} "${text}"`;
   });
 
-  const systemPrompt = `You are a relevance scorer for podcast transcript clips. Given the user's question and a numbered list of clips, score each clip 0-10 on how directly relevant and substantive it is to answering the question.
+  // Optional subject identity (e.g. a company card) — lets the scorer DROP a
+  // wrong same-named entity (a clip about "Constellation" Software when the
+  // subject is Constellation ENERGY/CEG) even though the name token matches.
+  const subjectBlock = (typeof subjectInfo === 'string' && subjectInfo.trim())
+    ? `\n\nSUBJECT IDENTITY (the query is about THIS specific entity):\n${subjectInfo.trim()}\nCRITICAL: a clip that matches the name but is clearly about a DIFFERENT company/entity (a same-named but unrelated business, different industry, different people) is OFF-TOPIC — score it 0-2 regardless of keyword overlap.`
+    : '';
+
+  const systemPrompt = `You are a relevance scorer for podcast transcript clips. Given the user's question and a numbered list of clips, score each clip 0-10 on how directly relevant and substantive it is to answering the question.${subjectBlock}
 
 Scoring guide:
 - 0-1: Completely irrelevant, sponsor/ad reads, promo codes, "brought to you by" segments, social media plugs, or intro/outro greetings
