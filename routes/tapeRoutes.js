@@ -24,6 +24,20 @@ const { getTickerQuote } = require('../services/tape/tickerQuote');
 const { personQuotes } = require('../services/tape/personQuotes');
 const { topicQuotes } = require('../services/tape/topicQuotes');
 const { createSynthesizeHandler } = require('../services/tape/synthesize');
+const { warmReadins, getWarmTickers, effectiveLimit } = require('../services/tape/warmReadins');
+const crypto = require('crypto');
+
+/** Timing-safe check of SHARED_HMAC_SECRET in Authorization: Bearer or x-warm-secret. */
+function warmAuthorized(req) {
+  const secret = process.env.SHARED_HMAC_SECRET || '';
+  if (!secret) return false; // route disabled until the secret is configured
+  const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    || String(req.headers['x-warm-secret'] || '');
+  if (!presented) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 function createTapeRoutes({ openai } = {}) {
   const router = express.Router();
@@ -41,6 +55,54 @@ function createTapeRoutes({ openai } = {}) {
     } catch (err) {
       return tapeError(res, 500, 'auth-misconfigured', 'Auth not configured', err.message);
     }
+  });
+
+  // --- POST /warm (shared-secret; manually arm the in-process Read-In cache warm) ---
+  // Runs in the SAME process so it populates the live in-memory cache (no Redis →
+  // a restart or a separate process can't do this). Gated by SHARED_HMAC_SECRET,
+  // NOT the demo JWT — so it's mounted above requireTapeAuth. Body (all optional):
+  //   { dryRun: true }   → authenticate + return the planned ticker list, NO synthesis (free)
+  //   { only: ["NVDA"] } → warm just these tickers
+  //   { limit: 5 }       → warm the top N of the generic order
+  //   { wait: true }     → await the run and return the summary (use only with a small subset)
+  // Default (no wait): kicks the full warm off in the background, returns 202.
+  let warmInFlight = false;
+  router.post('/warm', async (req, res) => {
+    if (!warmAuthorized(req)) {
+      return tapeError(res, 401, 'unauthorized', 'Unauthorized', 'Missing or invalid warm secret');
+    }
+    const body = req.body || {};
+    const only = Array.isArray(body.only) && body.only.length ? body.only.map(String) : undefined;
+    const limit = Number.isFinite(body.limit) ? body.limit : undefined;
+
+    // dryRun: prove receive + auth without spending a single token.
+    if (body.dryRun === true) {
+      const planned = only || getWarmTickers().slice(0, Number.isFinite(limit) ? limit : effectiveLimit());
+      logTape({ endpoint: 'warm', mode: 'dry-run', count: planned.length, status: 200 });
+      return res.status(200).json({ ok: true, dryRun: true, count: planned.length, tickers: planned });
+    }
+
+    if (warmInFlight) {
+      return tapeError(res, 409, 'warm-in-progress', 'Warm in progress', 'A cache warm is already running on this instance.');
+    }
+    const doWarm = async () => {
+      warmInFlight = true;
+      try { return await warmReadins({ openai, only, limit, log: (m) => console.log(m) }); }
+      finally { warmInFlight = false; }
+    };
+
+    if (body.wait === true) {
+      try {
+        const result = await doWarm();
+        return res.status(200).json({ ok: true, ...result });
+      } catch (err) {
+        return tapeError(res, 502, 'warm-failed', 'Warm failed', err.message);
+      }
+    }
+    // Fire-and-forget: a full warm takes ~30 min, far longer than an HTTP timeout.
+    doWarm().catch((err) => console.error('[TapeWarm] arm error:', err.message));
+    logTape({ endpoint: 'warm', mode: 'async', status: 202 });
+    return res.status(202).json({ ok: true, started: true, message: 'Warm started in background; watch [TapeWarm] logs.' });
   });
 
   // All routes below require a valid, current Tape JWT.
