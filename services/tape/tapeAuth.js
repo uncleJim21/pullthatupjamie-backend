@@ -1,86 +1,99 @@
 /**
- * Tape demo auth (spec §1).
+ * Tape access control (v2 — accounts-only).
  *
- * One shared password, exchanged for a scoped HS256 JWT, globally revocable by
- * bumping a server-side `kid`. Independent of the main CASCDR_AUTH_SECRET.
+ * There is NO Tape-specific login and NO shared password. Real users
+ * authenticate with their MAIN-APP JWT (from the separate auth server) sent on
+ * every /api/tape/* request; `requireTapeAuth` resolves identity via the app's
+ * shared `resolveIdentity` and requires an admin-granted `tape-basic-user`
+ * entitlement. Grant via scripts/grant-tape-access.js or the admin entitlements
+ * endpoint.
  *
  * Env:
- *   TAPE_AUTH_PASSWORD  — the shared secret (string)
- *   TAPE_AUTH_SECRET    — HS256 signing key (32+ random bytes)
- *   TAPE_AUTH_KID       — current key id (e.g. "v1"). Bump to revoke all tokens.
- *   TAPE_AUTH_TTL_DAYS  — token lifetime (default 30)
+ *   TAPE_TEST_AUTH   — dev/eval ONLY. When 'true', requireTapeAuth also accepts a
+ *                      locally-minted test token (signTapeToken) so the eval
+ *                      harness can hit the routes without a real account. Never
+ *                      set this in production.
+ *   TAPE_AUTH_SECRET — HS256 key used only to sign/verify the dev test token.
  */
 
-const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { tapeError } = require('./tapeErrors');
+const { resolveIdentity } = require('../../utils/identityResolver');
 
-const SCOPE = 'tape-demo';
+const TAPE_ENTITLEMENT = 'tape-basic-user';
+const USER_SCOPE = 'tape-user';
 const TTL_DAYS = parseInt(process.env.TAPE_AUTH_TTL_DAYS || '30', 10);
 
-function currentKid() { return process.env.TAPE_AUTH_KID || 'v1'; }
 function signingSecret() { return process.env.TAPE_AUTH_SECRET || ''; }
-
-/** Constant-time password comparison. */
-function passwordMatches(provided) {
-  const expected = process.env.TAPE_AUTH_PASSWORD || '';
-  if (!expected) return false; // never accept when unconfigured
-  const a = Buffer.from(String(provided || ''), 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
+function testAuthEnabled() { return process.env.TAPE_TEST_AUTH === 'true'; }
 
 /**
- * Mint a scoped Tape JWT. Returns { token, expiresAt, scope }.
+ * DEV/EVAL ONLY: mint a local Tape test token. Accepted by requireTapeAuth only
+ * when TAPE_TEST_AUTH==='true'. Not a product auth path.
  */
-function signTapeToken() {
+function signTapeToken({ sub = 'tape-test' } = {}) {
   const secret = signingSecret();
   if (!secret) throw new Error('TAPE_AUTH_SECRET is not configured');
   const expiresInSec = Math.max(1, TTL_DAYS) * 86_400;
-  const token = jwt.sign(
-    { sub: SCOPE, scope: SCOPE, kid: currentKid() },
-    secret,
-    { algorithm: 'HS256', expiresIn: expiresInSec },
-  );
-  const expiresAt = new Date(Date.now() + expiresInSec * 1000).toISOString();
-  return { token, expiresAt, scope: SCOPE };
+  const token = jwt.sign({ sub, scope: USER_SCOPE, test: true }, secret, { algorithm: 'HS256', expiresIn: expiresInSec });
+  return { token, expiresAt: new Date(Date.now() + expiresInSec * 1000).toISOString(), scope: USER_SCOPE, sub };
 }
 
 /**
- * Express middleware enforcing a valid, current, in-scope Tape JWT.
- * Attaches `req.tape = { sub, scope }`.
+ * Strict, admin-granted access gate: an ACTIVE `tape-basic-user` Entitlement must
+ * already exist for the user. We do NOT use checkEntitlementEligibility() (it
+ * auto-initializes, which would grant everyone) — only an explicit grant counts.
+ * Not metered: presence = access.
  */
-function requireTapeAuth(req, res, next) {
-  const header = String(req.headers.authorization || '');
-  const m = header.match(/^Bearer\s+(.+)$/i);
-  if (!m) {
-    return tapeError(res, 401, 'auth-failed', 'Missing or malformed Authorization header');
-  }
-  const secret = signingSecret();
-  if (!secret) {
-    return tapeError(res, 500, 'auth-misconfigured', 'Tape auth is not configured');
-  }
-
-  let payload;
+async function hasTapeAccess(userId) {
+  if (!userId || !/^[a-f0-9]{24}$/i.test(String(userId))) return false;
   try {
-    payload = jwt.verify(m[1], secret, { algorithms: ['HS256'] });
-  } catch (err) {
-    const expired = err && err.name === 'TokenExpiredError';
-    return tapeError(res, 401, 'auth-failed',
-      expired ? 'Token expired' : 'Invalid token');
+    // eslint-disable-next-line global-require
+    const { Entitlement } = require('../../models/Entitlement');
+    const rec = await Entitlement.findOne({
+      identifier: String(userId),
+      identifierType: 'mongoUserId',
+      entitlementType: TAPE_ENTITLEMENT,
+      status: 'active',
+    }).lean();
+    return !!rec;
+  } catch (_) {
+    return false; // fail-closed
   }
-
-  // Revocation path: stale kid → reject.
-  if (payload.kid !== currentKid()) {
-    return tapeError(res, 401, 'auth-failed', 'Token revoked (stale key id)');
-  }
-  if (payload.scope !== SCOPE) {
-    return tapeError(res, 401, 'auth-failed', 'Token out of scope');
-  }
-
-  req.tape = { sub: payload.sub || SCOPE, scope: payload.scope };
-  return next();
 }
 
-module.exports = { signTapeToken, requireTapeAuth, passwordMatches, SCOPE };
+/**
+ * Express middleware: authenticate the request and require Tape entitlement.
+ * Product path: main-app JWT (via resolveIdentity) + `tape-basic-user`.
+ * Sets `req.tape = { sub: userId, scope: 'tape-user' }`.
+ */
+async function requireTapeAuth(req, res, next) {
+  try {
+    // Dev/eval bypass (off by default; never in prod).
+    if (testAuthEnabled()) {
+      const m = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+      if (m) {
+        try {
+          const p = jwt.verify(m[1], signingSecret(), { algorithms: ['HS256'] });
+          if (p && p.test) { req.tape = { sub: p.sub, scope: USER_SCOPE, test: true }; return next(); }
+        } catch (_) { /* not a test token — fall through to real auth */ }
+      }
+    }
+
+    // Product auth: main-app JWT + tape-basic-user entitlement.
+    const identity = await resolveIdentity(req);
+    if (!identity || !identity.user) {
+      return tapeError(res, 401, 'auth-failed', 'Missing or invalid auth token');
+    }
+    const userId = identity.identifier; // user._id string
+    if (!(await hasTapeAccess(userId))) {
+      return tapeError(res, 403, 'not-entitled', 'Tape access is not enabled for this account');
+    }
+    req.tape = { sub: userId, scope: USER_SCOPE, user: identity.user };
+    return next();
+  } catch (err) {
+    return tapeError(res, 500, 'auth-misconfigured', 'Auth check failed', err.message);
+  }
+}
+
+module.exports = { requireTapeAuth, hasTapeAccess, signTapeToken, TAPE_ENTITLEMENT, USER_SCOPE };

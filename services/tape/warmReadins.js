@@ -18,10 +18,19 @@
  * cap) and the actual synth token spend is measured and logged after the run.
  */
 
-const { getWarmTickers } = require('./warmTickers');
-const { computeAndCacheKind } = require('./tapeEndpoint');
+const { getWarmTickers, getPersonaUnionTickers } = require('./warmTickers');
+const { computeAndCacheKind, kindCacheKey } = require('./tapeEndpoint');
+const { getCached } = require('./tapeStore');
 const { runReadin } = require('./kindOrchestrator');
 const { printLog } = require('../../constants');
+
+// Lazily build a shared OpenAI client so callers without one (persona-save warm,
+// CLI) can use the warmer; the server passes its own client through.
+let _openai;
+function defaultOpenai() {
+  if (!_openai) { const OpenAI = require('openai'); _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); }
+  return _openai;
+}
 
 const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
 
@@ -47,30 +56,46 @@ function effectiveLimit() {
 }
 
 /**
- * @param {{ openai: object, log?: (m:string)=>void, limit?: number, only?: string[] }} opts
- * @returns {Promise<{warmed:number, empty:number, failed:number, synthUsd:number, inTok:number, outTok:number, elapsedSec:number, attempted:number}>}
+ * @param {object} opts
+ * @param {object}  [opts.openai]  OpenAI client (defaults to a lazily-built shared one)
+ * @param {number}  [opts.limit]   ticker cap (default = effectiveLimit())
+ * @param {string[]}[opts.only]    warm exactly these tickers (skips union/generic)
+ * @param {boolean} [opts.refresh=true] re-synth even if already cached. false = skip
+ *                  tickers already warm (used by on-save so repeated saves are cheap)
+ * @param {boolean} [opts.includePersonaUnion=true] prepend all persona-users' tickers
+ *                  (ignored when `only` is given)
+ * @param {string}  [opts.reason]  label for the log line
  */
-async function warmReadins({ openai, log = printLog, limit, only } = {}) {
-  if (!openai) throw new Error('warmReadins requires an openai client');
-  const all = Array.isArray(only) && only.length ? only.map(String) : getWarmTickers();
+async function warmReadins({ openai, log = printLog, limit, only, refresh = true, includePersonaUnion = true, reason = 'warm' } = {}) {
+  const oa = openai || defaultOpenai();
+  let all;
+  if (Array.isArray(only) && only.length) {
+    all = only.map(String);
+  } else {
+    const union = includePersonaUnion ? await getPersonaUnionTickers() : [];
+    all = [...new Set([...union, ...getWarmTickers()])]; // persona interests first, then generic
+  }
   const cap = Number.isFinite(limit) ? Math.max(0, limit) : effectiveLimit();
   const tickers = all.slice(0, cap);
-  log(`[TapeWarm] warming ${tickers.length}/${all.length} read-ins (cap $${USD_CAP} / ${MAX_TICKERS} tickers @ ~$${PER_TICKER}/ea; concurrency ${CONCURRENCY})`);
+  log(`[TapeWarm:${reason}] warming up to ${tickers.length}/${all.length} read-ins (cap $${USD_CAP} / ${MAX_TICKERS} @ ~$${PER_TICKER}/ea; concurrency ${CONCURRENCY}; refresh=${refresh})`);
 
-  let warmed = 0; let empty = 0; let failed = 0; let inTok = 0; let outTok = 0;
+  let warmed = 0; let empty = 0; let failed = 0; let skipped = 0; let inTok = 0; let outTok = 0;
   const startedAt = Date.now();
 
   for (let i = 0; i < tickers.length; i += CONCURRENCY) {
     const batch = tickers.slice(i, i + CONCURRENCY);
     // eslint-disable-next-line no-await-in-loop
     await Promise.all(batch.map(async (ticker) => {
-      const auditId = `warm-readin-${ticker}-${Date.now().toString(36)}`;
+      const body = readinBody(ticker);
       try {
+        // On-save path (refresh=false): skip tickers whose shared entry already exists.
+        if (!refresh && await getCached(kindCacheKey('readin', body))) { skipped += 1; return; }
+        const auditId = `warm-readin-${ticker}-${Date.now().toString(36)}`;
         const { out, synthesizedEmpty } = await computeAndCacheKind({
           kind: 'readin',
-          body: readinBody(ticker),
-          run: (b, ctx) => runReadin(b, { ...ctx, openai }),
-          openai,
+          body,
+          run: (b, ctx) => runReadin(b, { ...ctx, openai: oa }),
+          openai: oa,
           refresh: true,
           jwtSub: 'warm',
           auditId,
@@ -80,15 +105,15 @@ async function warmReadins({ openai, log = printLog, limit, only } = {}) {
         if (synthesizedEmpty) empty += 1; else warmed += 1;
       } catch (err) {
         failed += 1;
-        log(`[TapeWarm] ${ticker} failed: ${err.message}`);
+        log(`[TapeWarm:${reason}] ${ticker} failed: ${err.message}`);
       }
     }));
   }
 
   const synthUsd = (inTok / 1e6) * IN_RATE + (outTok / 1e6) * OUT_RATE;
   const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-  log(`[TapeWarm] done: ${warmed} warmed, ${empty} empty/fallback, ${failed} failed in ${elapsedSec}s; measured synth spend ~$${synthUsd.toFixed(3)} (${inTok} in / ${outTok} out tok; aux LLM not counted)`);
-  return { warmed, empty, failed, synthUsd, inTok, outTok, elapsedSec, attempted: tickers.length };
+  log(`[TapeWarm:${reason}] done: ${warmed} warmed, ${skipped} already-warm, ${empty} empty/fallback, ${failed} failed in ${elapsedSec}s; measured synth spend ~$${synthUsd.toFixed(3)} (${inTok} in / ${outTok} out tok; aux LLM not counted)`);
+  return { warmed, skipped, empty, failed, synthUsd, inTok, outTok, elapsedSec, attempted: tickers.length };
 }
 
 module.exports = { warmReadins, effectiveLimit, getWarmTickers };

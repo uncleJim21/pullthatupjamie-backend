@@ -34,6 +34,7 @@ const entitlementSchema = new mongoose.Schema({
       'pull',              // LLM-orchestrated corpus query ("Pull That Up")
       'premiumFeature',   // Generic premium feature
       'apiAccess',        // API access
+      'tape-basic-user',  // Tape finance skin access (admin-granted; not metered)
       'custom'            // Custom entitlement
     ],
     index: true

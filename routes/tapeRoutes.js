@@ -13,7 +13,7 @@
 
 const express = require('express');
 
-const { signTapeToken, requireTapeAuth, passwordMatches } = require('../services/tape/tapeAuth');
+const { requireTapeAuth } = require('../services/tape/tapeAuth');
 const { tapeError } = require('../services/tape/tapeErrors');
 const { withCachedEndpoint, withKindEndpoint, checkRateLimit, logTape } = require('../services/tape/tapeEndpoint');
 const { runDossier, runBrief, runSplit, runNarrative, runReadin } = require('../services/tape/kindOrchestrator');
@@ -25,6 +25,7 @@ const { personQuotes } = require('../services/tape/personQuotes');
 const { topicQuotes } = require('../services/tape/topicQuotes');
 const { createSynthesizeHandler } = require('../services/tape/synthesize');
 const { warmReadins, getWarmTickers, effectiveLimit } = require('../services/tape/warmReadins');
+const { buildFeed } = require('../services/tape/feed');
 const crypto = require('crypto');
 
 /** Timing-safe check of SHARED_HMAC_SECRET in Authorization: Bearer or x-warm-secret. */
@@ -42,20 +43,8 @@ function warmAuthorized(req) {
 function createTapeRoutes({ openai } = {}) {
   const router = express.Router();
 
-  // --- POST /auth (unauthenticated; mints the demo JWT) ---
-  router.post('/auth', (req, res) => {
-    const { password } = req.body || {};
-    if (!passwordMatches(password)) {
-      return tapeError(res, 401, 'auth-failed', 'Wrong password');
-    }
-    try {
-      const { token, expiresAt, scope } = signTapeToken();
-      logTape({ endpoint: 'auth', status: 200 });
-      return res.status(200).json({ token, expiresAt, scope });
-    } catch (err) {
-      return tapeError(res, 500, 'auth-misconfigured', 'Auth not configured', err.message);
-    }
-  });
+  // No Tape login: real users authenticate with their MAIN-APP JWT on every
+  // /api/tape/* call (see requireTapeAuth below). There is no shared password.
 
   // --- POST /warm (shared-secret; manually arm the in-process Read-In cache warm) ---
   // Runs in the SAME process so it populates the live in-memory cache (no Redis →
@@ -105,7 +94,8 @@ function createTapeRoutes({ openai } = {}) {
     return res.status(202).json({ ok: true, started: true, message: 'Warm started in background; watch [TapeWarm] logs.' });
   });
 
-  // All routes below require a valid, current Tape JWT.
+  // All routes below require a main-app JWT + the `tape-basic-user` entitlement
+  // (requireTapeAuth does both auth and the entitlement gate; sets req.tape).
   router.use(requireTapeAuth);
 
   // --- GET /quote/:slug (Yahoo/Finnhub proxy) ---
@@ -172,6 +162,23 @@ function createTapeRoutes({ openai } = {}) {
   router.post('/split', withKindEndpoint({ kind: 'split', hourlyLimit: 30, openai, run: (body, ctx) => runSplit(body, { ...ctx, openai }) }));
   router.post('/narrative', withKindEndpoint({ kind: 'narrative', hourlyLimit: 30, openai, run: (body, ctx) => runNarrative(body, { ...ctx, openai }) }));
   router.post('/readin', withKindEndpoint({ kind: 'readin', hourlyLimit: 30, openai, run: (body, ctx) => runReadin(body, { ...ctx, openai }) }));
+
+  // --- GET /feed (personalized "for you": recommended tickers + Brief topics) ---
+  // Pure ranking over shared content — no synthesis. tape-user → persona-ranked;
+  // demo/no-persona → generic order. `ready` flags tickers whose Read-In is cached.
+  router.get('/feed', async (req, res) => {
+    const startedAt = Date.now();
+    try {
+      if (!(await checkRateLimit(req, res, 'feed', 240))) return;
+      const userId = req.tape && req.tape.scope === 'tape-user' ? req.tape.sub : null;
+      const feed = await buildFeed({ userId });
+      logTape({ endpoint: 'feed', jwt_sub: req.tape?.sub, persona: feed.personaApplied, status: 200, elapsed_ms: Date.now() - startedAt });
+      return res.status(200).json(feed);
+    } catch (err) {
+      logTape({ endpoint: 'feed', jwt_sub: req.tape?.sub, status: 502, error: 'feed', detail: err.message, elapsed_ms: Date.now() - startedAt });
+      return tapeError(res, 502, 'upstream-failure', 'Feed failed', err.message);
+    }
+  });
 
   return router;
 }

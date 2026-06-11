@@ -56,4 +56,38 @@ function getWarmTickers(_opts = {}) {
   return ordered;
 }
 
-module.exports = { getWarmTickers };
+/**
+ * Deduped union of every persona-user's `tapePersonaSignals.tickers`, validated
+ * against the carded universe. This is what makes "their stuff is hydrated" work
+ * WITHOUT per-user cost: the warmer prepends this union to the generic order and
+ * warms each into the SHARED cache once — so coverage scales with the breadth of
+ * collective interest, not the user count. Resilient: returns [] on any error.
+ */
+async function getPersonaUnionTickers() {
+  try {
+    // eslint-disable-next-line global-require
+    const { User } = require('../../models/shared/UserSchema');
+    const cardedSet = new Set(Object.keys(loadYaml(CARDS)));
+    const users = await User
+      .find({ 'app_preferences.data.tapePersonaSignals.tickers.0': { $exists: true } })
+      .select('+app_preferences')
+      .lean();
+    const set = new Set();
+    for (const u of users) {
+      const t = u && u.app_preferences && u.app_preferences.data
+        && u.app_preferences.data.tapePersonaSignals
+        && u.app_preferences.data.tapePersonaSignals.tickers;
+      if (Array.isArray(t)) {
+        for (const sym of t) {
+          const s = String(sym || '').toUpperCase().trim();
+          if (s && cardedSet.has(s)) set.add(s);
+        }
+      }
+    }
+    return [...set];
+  } catch (_) {
+    return [];
+  }
+}
+
+module.exports = { getWarmTickers, getPersonaUnionTickers };

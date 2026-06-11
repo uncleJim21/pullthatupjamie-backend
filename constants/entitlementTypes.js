@@ -29,7 +29,8 @@ const ENTITLEMENT_TYPES = {
   TWITTER_POST: 'twitter-post',
   DISCOVER_PODCASTS: 'discover-podcasts',
   CHAPTER_SEARCH: 'chapter-search',
-  PULL: 'pull'
+  PULL: 'pull',
+  TAPE_BASIC_USER: 'tape-basic-user' // Tape access gate (admin-granted, not metered)
 };
 
 // Array of all types for iteration

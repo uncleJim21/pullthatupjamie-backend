@@ -1,0 +1,63 @@
+# Curated seed list of Brief topics for the personalized "for you" feed
+# (GET /api/tape/feed). No trending/popularity signal exists yet, so this is the
+# candidate pool; services/tape/feed.js ranks it per user by overlap with their
+# tapePersonaSignals (themes + tickers). `query` is what a Brief would run on.
+# Order here = the default (generic) ranking for empty-persona users.
+
+topics:
+  - title: "AI capex & the data-center buildout"
+    query: "AI capital expenditure and data center buildout"
+    themes: ["ai capex", "ai bubble", "data center", "capex", "ai infrastructure", "hyperscaler"]
+    tickers: ["NVDA", "AVGO", "MSFT", "GOOGL", "AMD", "MU", "DELL", "SMCI"]
+  - title: "The Fed & the interest-rate path"
+    query: "Federal Reserve interest rate path and policy outlook"
+    themes: ["fed", "interest rates", "rate cuts", "monetary policy", "macro", "inflation"]
+    tickers: []
+  - title: "Oil, energy & geopolitics"
+    query: "oil prices, energy markets and geopolitical risk"
+    themes: ["oil", "energy", "geopolitics", "hormuz", "opec", "crude"]
+    tickers: ["XOM", "CVX", "OXY"]
+  - title: "Credit spreads & corporate debt stress"
+    query: "credit spreads and corporate debt stress"
+    themes: ["credit spreads", "credit", "high yield", "default cycle", "debt"]
+    tickers: []
+  - title: "Commercial real estate"
+    query: "commercial real estate outlook and refinancing wall"
+    themes: ["commercial real estate", "cre", "office", "real estate"]
+    tickers: []
+  - title: "Bitcoin & crypto"
+    query: "bitcoin and crypto market outlook"
+    themes: ["bitcoin", "crypto", "btc", "digital assets"]
+    tickers: ["IBIT", "COIN", "MSTR"]
+  - title: "Semiconductors & the chip cycle"
+    query: "semiconductor demand and the chip cycle"
+    themes: ["semiconductors", "chips", "semis", "ai chips"]
+    tickers: ["NVDA", "AVGO", "AMD", "MU", "INTC", "QCOM", "ARM", "TSM"]
+  - title: "China, trade & tariffs"
+    query: "China economy, trade tensions and tariffs"
+    themes: ["china", "tariffs", "trade war", "supply chain"]
+    tickers: ["BABA"]
+  - title: "Gold & the inflation hedge"
+    query: "gold, real rates and inflation hedges"
+    themes: ["gold", "inflation", "real rates", "debasement"]
+    tickers: ["GLD"]
+  - title: "GLP-1s & big pharma"
+    query: "GLP-1 weight-loss drugs and pharma pipelines"
+    themes: ["glp-1", "weight loss", "obesity drugs", "biotech", "pharma"]
+    tickers: ["LLY", "PFE", "MRNA", "JNJ"]
+  - title: "Regional banks & financial stability"
+    query: "regional banks and financial system stability"
+    themes: ["banks", "regional banks", "deposits", "financial stability"]
+    tickers: ["JPM", "BAC", "WFC", "C", "GS"]
+  - title: "Consumer health & the retail picture"
+    query: "consumer spending and the retail outlook"
+    themes: ["consumer", "retail", "spending", "consumer health"]
+    tickers: ["WMT", "COST", "TGT", "AMZN"]
+  - title: "Magnificent-7 & mega-cap concentration"
+    query: "mega-cap tech concentration and market breadth"
+    themes: ["mag 7", "concentration", "market breadth", "mega cap"]
+    tickers: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
+  - title: "Housing & mortgage rates"
+    query: "housing market and mortgage rates"
+    themes: ["housing", "mortgage rates", "homebuilders", "real estate"]
+    tickers: []

@@ -165,6 +165,13 @@ function withCachedEndpoint({ endpoint, hourlyLimit, tier, ttlSec, cacheKey, han
  * reads. Note `hashBody` strips `refresh`/`_nocache`, so warming with
  * `refresh:true` writes the same key the frontend (no refresh) will hit.
  */
+// NOTE (Tape v2 — deliberately SHARED cache): personalization is selection-layer
+// (hydration coverage + the /feed recommender), NOT per-user synthesis. The
+// synthesis artifact is identical for everyone, so every user — persona'd or not —
+// hits the same shared entry the warmer fills. A future premium "personalized
+// synthesis" tier would prepend a `personaBucket` segment here (empty = anon) and
+// bias retrieval; that seam is intentionally NOT wired (it sacrifices the warm-cache
+// hit rate). See ~/.claude plan + memory project-tape-v2-persona.
 function kindCacheKey(kind, body) {
   // Read-In keys on the TICKER ALONE (normalized) — deliberately ignoring `model`
   // and every other body field. The frontend sends model:"quality" but the warmer

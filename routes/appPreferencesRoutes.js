@@ -5,7 +5,8 @@ const { authenticateToken } = require('../middleware/authMiddleware');
 const { findUserFromRequest, buildUserFilter } = require('../utils/userLookup');
 
 // Current schema version (YYYYMMDDXXX format)
-const CURRENT_SCHEMA_VERSION = 20250812001;
+const CURRENT_SCHEMA_VERSION = 20260610001; // bumped: + tapePersona / tapePersonaSignals
+const { sanitizePersona, extractPersonaSignals } = require('../services/tape/personaSignals');
 
 // Deep merge helper that merges arrays of objects by "id" when present,
 // otherwise replaces arrays. Objects are merged recursively.
@@ -157,6 +158,23 @@ router.put('/', authenticateToken, async (req, res) => {
       }
     }
 
+    // Special-case: Tape persona — sanitize (strip PII/markup, bound length) and
+    // re-extract structured signals (tickers/shows/themes) at write time so the
+    // Tape hot path stays pure-code. Both fields are authoritative replacements.
+    if (Object.prototype.hasOwnProperty.call(preferences, 'tapePersona')) {
+      if (preferences.tapePersona == null || preferences.tapePersona === '') {
+        mergedPreferences.tapePersona = '';
+        mergedPreferences.tapePersonaSignals = { tickers: [], shows: [], themes: [], extractedAt: new Date().toISOString() };
+      } else {
+        const san = sanitizePersona(preferences.tapePersona);
+        if (!san.ok) {
+          return res.status(400).json({ error: 'Invalid preferences format', message: san.error });
+        }
+        mergedPreferences.tapePersona = san.value;
+        mergedPreferences.tapePersonaSignals = await extractPersonaSignals(san.value);
+      }
+    }
+
     // Persist merged preferences with strong write concern, then re-read fresh from DB
     const updateFilter = buildUserFilter(req);
     if (!updateFilter) {
@@ -181,6 +199,23 @@ router.put('/', authenticateToken, async (req, res) => {
       .lean();
 
     console.log('Updated user preferences for:', user?.email || user?.authProvider?.providerId);
+
+    // Tape persona side-effects (best-effort, never block the save):
+    // (1) drop the cached persona so reads pick up the edit immediately;
+    // (2) fire-and-forget warm the user's persona tickers into the SHARED Tape
+    //     cache so "their stuff" is hot within minutes (one artifact per ticker).
+    if (Object.prototype.hasOwnProperty.call(preferences, 'tapePersona') && user?._id) {
+      const uid = user._id.toString();
+      try { require('../services/tape/persona').invalidatePersona(uid); } catch (_) { /* noop */ }
+      const tickers = (mergedPreferences.tapePersonaSignals && mergedPreferences.tapePersonaSignals.tickers) || [];
+      if (tickers.length && process.env.TAPE_WARM_ON_PERSONA_SAVE !== 'false') {
+        try {
+          require('../services/tape/warmReadins')
+            .warmReadins({ only: tickers, refresh: false, reason: 'persona-save' })
+            .catch((e) => console.warn('[TapeWarm:persona-save] error:', e.message));
+        } catch (e) { console.warn('[TapeWarm:persona-save] skip:', e.message); }
+      }
+    }
 
     const responseData = user?.app_preferences?.data || {};
     if (!Array.isArray(responseData.scheduledPostSlots)) {
