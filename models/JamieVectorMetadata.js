@@ -87,6 +87,30 @@ JamieVectorMetadataSchema.index({ type: 1, guid: 1, start_time: 1, end_time: 1 }
 JamieVectorMetadataSchema.index({ type: 1, 'metadataRaw.guests': 1 });
 JamieVectorMetadataSchema.index({ type: 1, 'metadataRaw.keywords': 1 });
 
+// Case-insensitive person-name lookups (find_person / get_person_episodes).
+// A plain index can't serve a case-insensitive $regex, so name lookups used
+// to fall back to a full scan of all ~128k episode docs (90s+ in prod). These
+// collation indexes (strength:2 = case-insensitive) let equality matches with
+// the same collation seek directly. Partial on type:'episode' so the index
+// only covers episode docs, keeping the build small and fast. Query side must
+// pass `.collation({ locale: 'en', strength: 2 })` to use them.
+JamieVectorMetadataSchema.index(
+  { 'metadataRaw.guests': 1 },
+  {
+    name: 'guests_ci',
+    collation: { locale: 'en', strength: 2 },
+    partialFilterExpression: { type: 'episode' },
+  }
+);
+JamieVectorMetadataSchema.index(
+  { 'metadataRaw.creator': 1 },
+  {
+    name: 'creator_ci',
+    collation: { locale: 'en', strength: 2 },
+    partialFilterExpression: { type: 'episode' },
+  }
+);
+
 // Enforce single canonical episode doc per guid (still one collection)
 JamieVectorMetadataSchema.index(
   // Use different key order than the non-unique index to avoid duplicate-index warnings in mongoose
