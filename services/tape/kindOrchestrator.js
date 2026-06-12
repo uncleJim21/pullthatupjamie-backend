@@ -177,8 +177,16 @@ function bullThemes(topic) {
 // sentiment neighborhood, not one neutral pool sorted by a keyword classifier
 // (eval: both_sides_same). expandThemes off so the neutral expander doesn't
 // dilute the polarity; query=topic keeps the literal-anchor/topic filter.
+// Default to SOFT-demote (mainstream:false + source boost), NOT a hard mainstream
+// filter — same fix we applied to Read-In. A hard filter starves the bear camp:
+// genuinely bearish/contrarian takes disproportionately come from outside the
+// mainstream allowlist, so excluding them makes a good Split impossible. With
+// soft-demote the camp pulls bears from the whole corpus; the stance gate +
+// reranker keep only on-topic, stance-correct quotes. Set TAPE_SPLIT_MAINSTREAM=
+// true to restore the hard filter.
+const SPLIT_MAINSTREAM = process.env.TAPE_SPLIT_MAINSTREAM === 'true';
 function splitCampPool(topic, themes, openai) {
-  return topicQuotes({ query: topic, themes, kind: 'split', expandThemes: false, filters: { mainstream: true, candidatesLimit: 12 } }, { openai })
+  return topicQuotes({ query: topic, themes, kind: 'split', expandThemes: false, filters: { mainstream: SPLIT_MAINSTREAM, candidatesLimit: 12 } }, { openai })
     .then((r) => r.body.candidates || [])
     .catch(() => []);
 }

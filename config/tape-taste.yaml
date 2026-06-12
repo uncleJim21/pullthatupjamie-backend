@@ -32,6 +32,7 @@ mainstream_allow:
   - animal spirits
   - macro hive
   - invest like the best
+  - motley fool
 
 mainstream_deny:
   - guy swann
@@ -76,6 +77,17 @@ feed_allow:
   "174725": pivot
   "743157": the meb faber show
   "745287": lex fridman podcast
+  # Added 2026-06-11 — widen mainstream finance scope. NOTE: several of these feeds
+  # are ingestion-stalled (few/no transcripts in the corpus today), so allowlisting
+  # them only takes effect as transcription backfills — tracked separately.
+  "6875349": the david lin report
+  "5965677": the peter zeihan podcast series
+  "500742": the real investment show (lance roberts)
+  "3912604": wealthion (adam taggart)
+  "487653": rebel capitalist news (george gammon)
+  "1239212": the acid capitalist (hugh hendry)
+  "6564469": the risk takers podcast
+  "1114411": talking geopolitics (george friedman)
 
 # High-signal bitcoin-native shows. EXCLUDED from normal mainstream queries (so
 # they don't pollute a Fed/oil brief), but ADMITTED when the topic is bitcoin /

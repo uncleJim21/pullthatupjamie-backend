@@ -3,11 +3,9 @@
 AAPL:
   name: Apple Inc
   industry: Technology
-  marketCap: 4603311
+  marketCap: 4282539
   weburl: https://www.apple.com/
-  description: >-
-    Apple Inc designs, manufactures, and markets consumer electronics, software, and services, known for its innovation
-    and premium products.
+  description: Apple Inc designs, manufactures, and markets consumer electronics, software, and services.
   products:
     - iPhone
     - iPad
@@ -17,59 +15,64 @@ AAPL:
   execs:
     - Tim Cook
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ABBV:
   name: AbbVie Inc
   industry: Biotechnology
-  marketCap: 405779
+  marketCap: 397440
   weburl: https://www.abbvie.com/
-  description: >-
-    AbbVie Inc is a global biopharmaceutical company that focuses on developing advanced therapies for complex diseases,
-    particularly in immunology and oncology.
+  description: AbbVie Inc is a global biopharmaceutical company that develops and markets advanced therapies for complex diseases.
   products:
     - Humira
     - Imbruvica
+    - Venclexta
     - Skyrizi
     - Rinvoq
-    - Venclexta
   execs:
     - Richard A. Gonzalez
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ABNB:
   name: Airbnb Inc
   industry: Hotels, Restaurants & Leisure
-  marketCap: 80907
+  marketCap: 77809
   weburl: https://www.airbnb.com/
   description: >-
-    Airbnb Inc is an online marketplace that connects people looking to rent out their homes with those looking for
-    accommodations.
+    Airbnb Inc operates an online marketplace for lodging, primarily homestays for vacation rentals, and tourism
+    activities.
+  products:
+    - Airbnb platform
+    - Experiences
+    - Airbnb Plus
+    - Airbnb Luxe
   execs:
     - Brian Chesky
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ABT:
   name: Abbott Laboratories
   industry: Health Care
-  marketCap: 159707
+  marketCap: 155317
   weburl: https://www.abbott.com
-  description: >-
-    Abbott Laboratories is a global healthcare company that develops a wide range of medical devices, diagnostics,
-    nutrition products, and pharmaceuticals.
+  description: Abbott Laboratories develops medical devices, diagnostics, nutrition products, and branded generic pharmaceuticals.
   products:
-    - Ensure
     - FreeStyle Libre
     - Similac
-    - Tenders
+    - Ensure
     - Alinity
+    - TaqMan
   execs:
     - Robert B. Ford
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ADBE:
   name: Adobe Inc
   industry: Technology
-  marketCap: 101349
+  marketCap: 94332
   weburl: https://www.adobe.com/
   description: >-
-    Adobe Inc is a multinational software company known for its creative and multimedia software products, as well as
-    digital marketing solutions.
+    Adobe Inc provides software solutions for creative professionals, marketers, and enterprises, focusing on digital
+    media and marketing.
   products:
     - Adobe Photoshop
     - Adobe Illustrator
@@ -79,22 +82,24 @@ ADBE:
   execs:
     - Shantanu Narayen
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AEP:
   name: American Electric Power Company Inc
   industry: Utilities
-  marketCap: 70679
+  marketCap: 69934
   weburl: https://www.aep.com/
   description: >-
-    American Electric Power Company Inc is one of the largest electric utilities in the United States, providing
-    electricity to millions of customers across several states.
+    American Electric Power Company Inc is a major electric utility that provides electricity to millions of customers
+    in the U.S.
   products:
-    - Electric Utility Services
-    - Renewable Energy
-    - Transmission Services
-    - Energy Efficiency Programs
+    - Electricity generation
+    - Transmission and distribution
+    - Renewable energy
+    - Energy efficiency programs
   execs:
     - Nicholas K. Akins
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AGIO:
   name: Agios Pharmaceuticals Inc
   industry: Biotechnology
@@ -126,45 +131,43 @@ ALNY:
 AMAT:
   name: Applied Materials Inc
   industry: Semiconductors
-  marketCap: 375854
+  marketCap: 394606
   weburl: https://www.appliedmaterials.com/
   description: >-
-    Applied Materials, Inc. is a leader in materials engineering solutions used to produce advanced semiconductor, flat
-    panel display, and solar photovoltaic products.
+    Applied Materials Inc provides equipment, services, and software for the semiconductor, display, and solar
+    industries.
   products:
-    - Semiconductor Equipment
-    - Display Equipment
-    - Solar Equipment
-    - Services and Software
-    - Materials Engineering Solutions
+    - Semiconductor manufacturing equipment
+    - Display manufacturing equipment
+    - Solar photovoltaic equipment
   execs:
-    - Gary Dickerson
+    - Gary E. Dickerson
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AMD:
   name: Advanced Micro Devices Inc
   industry: Semiconductors
-  marketCap: 792129
+  marketCap: 737684
   weburl: https://www.amd.com/
-  description: >-
-    Advanced Micro Devices Inc is a semiconductor company that develops computer processors and related technologies for
-    both consumer and enterprise markets.
+  description: Advanced Micro Devices Inc develops computer processors and related technologies for business and consumer markets.
   products:
-    - Ryzen Processors
-    - EPYC Processors
-    - Radeon Graphics
-    - AMD Radeon Software
+    - Ryzen processors
+    - EPYC processors
+    - Radeon graphics cards
+    - Radeon Software
     - AMD Infinity Fabric
   execs:
     - Lisa Su
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AMGN:
   name: Amgen Inc
   industry: Biotechnology
-  marketCap: 191343
+  marketCap: 182276
   weburl: https://www.amgen.com/
   description: >-
-    Amgen Inc is a biotechnology company that discovers, develops, and delivers innovative human therapeutics, focusing
-    on serious illnesses.
+    Amgen Inc is a biotechnology company that discovers, develops, manufactures, and delivers innovative human
+    therapeutics.
   products:
     - Enbrel
     - Neulasta
@@ -174,26 +177,27 @@ AMGN:
   execs:
     - Robert A. Bradway
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AMT:
   name: American Tower Corp
   industry: Real Estate
-  marketCap: 90390
+  marketCap: 89684
   weburl: https://www.americantower.com/
   description: >-
-    American Tower Corp. is a leading independent owner and operator of wireless and broadcast communications real
-    estate.
+    American Tower Corp is a real estate investment trust that owns, operates, and develops wireless and broadcast
+    communications real estate.
   products:
-    - Cell towers
-    - Broadcast towers
+    - Telecommunications towers
     - Distributed antenna systems
     - Data centers
   execs:
-    - Tom Bartlett
+    - James D. Taiclet
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AMZN:
   name: Amazon.com Inc
   industry: Retail
-  marketCap: 2724130
+  marketCap: 2560192
   weburl: https://www.amazon.com/
   description: >-
     Amazon.com Inc is a multinational technology company focusing on e-commerce, cloud computing, digital streaming, and
@@ -207,23 +211,22 @@ AMZN:
   execs:
     - Andy Jassy
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ANET:
   name: Arista Networks Inc
   industry: Communications
-  marketCap: 197770
+  marketCap: 191097
   weburl: https://www.arista.com/en/
-  description: >-
-    Arista Networks Inc provides cloud networking solutions for large data center and high-frequency trading
-    environments.
+  description: Arista Networks Inc provides cloud networking solutions for large data center and campus networks.
   products:
     - CloudVision
     - EOS (Extensible Operating System)
-    - 7500 Series Switches
-    - 7280 Series Switches
-    - Arista Cognitive Cloud Networking
+    - 7500 Series switches
+    - 7280R Series switches
   execs:
     - Jayshree Ullal
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 APLS:
   name: Apellis Pharmaceuticals Inc
   industry: Biotechnology
@@ -243,29 +246,35 @@ APLS:
 APO:
   name: Apollo Global Management Inc
   industry: Financial Services
-  marketCap: 72837
+  marketCap: 75605
   weburl: https://www.apollo.com/
   description: >-
-    Apollo Global Management Inc is an alternative investment management firm specializing in private equity, credit,
-    and real estate investments.
+    Apollo Global Management Inc is a global alternative investment manager specializing in private equity, credit, and
+    real estate investments.
   products:
-    - Apollo Private Equity
-    - Apollo Credit
-    - Apollo Real Estate
+    - Private Equity
+    - Credit Investments
+    - Real Estate Investments
   execs:
     - Marc Rowan
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 APP:
   name: Applovin Corp
   industry: Technology
-  marketCap: 190050
+  marketCap: 165612
   weburl: https://www.applovin.com/
   description: >-
     Applovin Corp is a technology company that provides a platform for mobile app developers to monetize and market
     their applications.
+  products:
+    - App Monetization
+    - User Acquisition
+    - Analytics Platform
   execs:
-    - Harris B. K. K.
+    - Hassan Miah
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ARGX:
   name: argenx SE
   industry: Biotechnology
@@ -285,18 +294,19 @@ ARGX:
 ARM:
   name: Arm Holdings PLC
   industry: Semiconductors
-  marketCap: 418620
+  marketCap: 345651
   weburl: https://www.arm.com/
   description: >-
     Arm Holdings PLC is a semiconductor and software design company known for its ARM architecture, which is widely used
     in mobile devices and embedded systems.
   products:
     - ARM Cortex Processors
-    - ARM Mali Graphics Processors
-    - ARM Neoverse Processors
-    - IoT Solutions
-    - Software Development Tools
+    - ARM Mali Graphics
+    - ARM Neoverse
+  execs:
+    - Rene Haas
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 ARVN:
   name: Arvinas Inc
   industry: Pharmaceuticals
@@ -328,34 +338,35 @@ ARWR:
 AVGO:
   name: Broadcom Inc
   industry: Semiconductors
-  marketCap: 1872538
+  marketCap: 1761770
   weburl: https://www.broadcom.com
   description: >-
     Broadcom Inc is a global technology company that designs, develops, and supplies a broad range of semiconductor and
     infrastructure software solutions.
   products:
-    - Broadcom Wireless
-    - Broadcom Networking
-    - Broadcom Storage
-    - Broadcom Broadband
-    - Broadcom IoT
+    - Semiconductors
+    - Networking Solutions
+    - Wireless Communication
+  execs:
+    - Hock Tan
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AXP:
   name: American Express Co
   industry: Financial Services
-  marketCap: 211091
+  marketCap: 213800
   weburl: https://www.americanexpress.com/
   description: >-
-    American Express Co is a multinational financial services corporation known for its charge card, credit card, and
+    American Express Co is a multinational financial services corporation known for its credit card, charge card, and
     travel-related services.
   products:
-    - American Express Cards
+    - Credit Cards
+    - Charge Cards
     - Travel Services
-    - Merchant Services
-    - Business Solutions
   execs:
     - Stephen Squeri
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 AXSM:
   name: Axsome Therapeutics Inc
   industry: Pharmaceuticals
@@ -371,53 +382,51 @@ AXSM:
 BA:
   name: Boeing Co
   industry: Aerospace & Defense
-  marketCap: 170612
+  marketCap: 164755
   weburl: https://www.boeing.com
   description: >-
-    Boeing Co is a major aerospace and defense company that designs, manufactures, and sells airplanes, rotorcraft,
-    rockets, satellites, and telecommunications equipment.
+    Boeing Co is a leading aerospace company that designs, manufactures, and sells airplanes, rotorcraft, rockets,
+    satellites, and telecommunications equipment.
   products:
     - Commercial Airplanes
     - Defense, Space & Security
     - Global Services
-    - Boeing Business Jets
   execs:
     - David L. Calhoun
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BABA:
   name: Alibaba Group Holding Ltd
   industry: Retail
-  marketCap: 302456
+  marketCap: 286692
   weburl: https://www.alibabagroup.com/
   description: >-
-    Alibaba Group Holding Ltd is a multinational conglomerate specializing in e-commerce, retail, internet, and
+    Alibaba Group Holding Ltd is a Chinese multinational conglomerate specializing in e-commerce, retail, internet, and
     technology.
   products:
-    - Taobao
-    - Tmall
-    - Alibaba Cloud
-    - AliExpress
-    - Ant Group
+    - E-commerce
+    - Cloud Computing
+    - Digital Media
   execs:
     - Daniel Zhang
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BAC:
   name: Bank of America Corp
   industry: Banking
-  marketCap: 381335
+  marketCap: 387048
   weburl: https://www.bankofamerica.com
   description: >-
-    Bank of America Corp is a multinational banking and financial services corporation that provides a wide range of
-    banking and financial products.
+    Bank of America Corp is a multinational banking and financial services corporation providing a wide range of
+    financial products and services.
   products:
     - Consumer Banking
-    - Wealth Management
     - Investment Banking
-    - Credit Cards
-    - Mortgages
+    - Wealth Management
   execs:
     - Brian Moynihan
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BEAM:
   name: Beam Therapeutics Inc
   industry: Biotechnology
@@ -428,52 +437,51 @@ BEAM:
 BIDU:
   name: Baidu Inc
   industry: Media
-  marketCap: 45887
+  marketCap: 41112
   weburl: https://www.baidu.com/
   description: >-
-    Baidu Inc is a Chinese multinational technology company specializing in Internet-related services and products,
-    including search engines and AI.
+    Baidu Inc is a Chinese multinational technology company specializing in Internet-related services and products, and
+    artificial intelligence.
   products:
-    - Baidu Search
-    - Baidu Maps
-    - DuerOS
-    - Apollo Autonomous Driving
+    - Search Engine
+    - AI Cloud Services
+    - Autonomous Driving
   execs:
     - Robin Li
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BIIB:
   name: Biogen Inc
   industry: Biotechnology
-  marketCap: 29420
+  marketCap: 28677
   weburl: https://www.biogen.com/
   description: >-
-    Biogen Inc is a biotechnology company specializing in the discovery, development, and delivery of innovative
-    therapies for neurological diseases.
+    Biogen Inc is a biotechnology company focused on discovering, developing, and delivering innovative therapies for
+    neurological diseases.
   products:
-    - Aduhelm
-    - Tecfidera
-    - Avonex
-    - Tysabri
-    - Spinraza
+    - Multiple Sclerosis Treatments
+    - Alzheimer's Disease Treatments
+    - Neuromuscular Disease Treatments
   execs:
     - Christopher A. Viehbacher
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BLK:
   name: BlackRock Inc
   industry: Financial Services
-  marketCap: 162865
+  marketCap: 164580
   weburl: https://www.blackrock.com/
   description: >-
-    BlackRock Inc is the world's largest asset manager, providing investment management, risk management, and advisory
-    services to institutional and retail clients.
+    BlackRock Inc is a global investment management corporation that provides investment and technology services to
+    institutional and retail clients.
   products:
+    - Investment Management
+    - Risk Management
     - iShares ETFs
-    - BlackRock Investment Management
-    - Risk Management Services
-    - Advisory Services
   execs:
     - Larry Fink
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BMRN:
   name: BioMarin Pharmaceutical Inc
   industry: Biotechnology
@@ -484,28 +492,27 @@ BMRN:
 BMY:
   name: Bristol-Myers Squibb Co
   industry: Pharmaceuticals
-  marketCap: 117644
+  marketCap: 113539
   weburl: https://www.bms.com
   description: >-
     Bristol-Myers Squibb Co is a global biopharmaceutical company focused on discovering, developing, and delivering
     innovative medicines for serious diseases.
   products:
-    - Opdivo
-    - Eliquis
-    - Revlimid
-    - Yervoy
-    - Abecma
+    - Oncology Treatments
+    - Cardiovascular Drugs
+    - Immunology Products
   execs:
     - Giovanni Caforio
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BRK.B:
   name: Berkshire Hathaway Inc
   industry: Financial Services
-  marketCap: 1053962
+  marketCap: 1047020
   weburl: https://www.berkshirehathaway.com/
   description: >-
     Berkshire Hathaway Inc is a multinational conglomerate holding company led by Warren Buffett, known for its diverse
-    range of subsidiaries and investments across various industries.
+    range of investments across various industries.
   products:
     - Geico
     - BNSF Railway
@@ -516,60 +523,63 @@ BRK.B:
     - Warren Buffett
     - Charlie Munger
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BSX:
   name: Boston Scientific Corp
   industry: Health Care
-  marketCap: 73842
+  marketCap: 71850
   weburl: https://www.bostonscientific.com/en-US/Home.html
   description: >-
-    Boston Scientific Corp is a global medical device company that develops and manufactures a wide range of innovative
-    medical solutions for various medical specialties.
+    Boston Scientific Corp is a global medical device company that develops and manufactures innovative products for
+    various medical fields, including cardiology and urology.
   products:
-    - Cardiovascular Devices
-    - Endoscopy Products
-    - Urology Devices
-    - Neuromodulation Devices
-    - Interventional Oncology Products
+    - Stents
+    - Pacemakers
+    - Endoscopy devices
+    - Interventional cardiology products
+    - Neuromodulation devices
   execs:
     - Michael F. Mahoney
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 BX:
   name: Blackstone Inc
   industry: Financial Services
-  marketCap: 141091
+  marketCap: 144725
   weburl: https://www.blackstone.com/
   description: >-
-    Blackstone Inc is an investment firm specializing in private equity, real estate, credit, and hedge fund investment
-    strategies.
+    Blackstone Inc is a leading global investment firm specializing in private equity, real estate, credit, and hedge
+    fund investment strategies.
   products:
-    - Blackstone Private Equity
-    - Blackstone Real Estate
-    - Blackstone Credit
-    - Blackstone Hedge Fund Solutions
+    - Private Equity
+    - Real Estate
+    - Credit
+    - Hedge Fund Solutions
   execs:
     - Stephen A. Schwarzman
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 C:
   name: Citigroup Inc
   industry: Banking
-  marketCap: 227362
+  marketCap: 228734
   weburl: http://www.citigroup.com/
   description: >-
-    Citigroup Inc is a global financial services corporation that provides a wide range of financial products and
-    services to consumers, corporations, governments, and institutions.
+    Citigroup Inc is a multinational investment bank and financial services corporation providing a wide range of
+    financial products and services to consumers, corporations, governments, and institutions.
   products:
     - Consumer Banking
     - Corporate Banking
     - Investment Banking
     - Wealth Management
-    - Credit Cards
   execs:
     - Jane Fraser
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CAT:
   name: Caterpillar Inc
   industry: Machinery
-  marketCap: 423367
+  marketCap: 394379
   weburl: https://www.caterpillar.com
   description: >-
     Caterpillar Inc is a leading manufacturer of construction and mining equipment, diesel and natural gas engines, and
@@ -577,44 +587,51 @@ CAT:
   products:
     - Excavators
     - Bulldozers
-    - Backhoe Loaders
     - Generators
-    - Mining Equipment
+    - Engines
+    - Construction Equipment
   execs:
     - Jim Umpleby
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CCJ:
   name: Cameco Corp
   industry: Energy
-  marketCap: 46245
+  marketCap: 41389
   weburl: https://www.cameco.com/
-  description: Cameco Corp is one of the world's largest uranium producers, supplying fuel for nuclear power plants.
+  description: >-
+    Cameco Corp is one of the world's largest publicly traded uranium companies, involved in the exploration, mining,
+    and production of uranium.
   products:
-    - Uranium Production
-    - Fuel Services
-    - Nuclear Fuel Supply
+    - Uranium Mining
+    - Uranium Fuel
+    - Nuclear Fuel Services
   execs:
     - Tim Gitzel
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CDNS:
   name: Cadence Design Systems Inc
   industry: Technology
-  marketCap: 107102
+  marketCap: 106225
   weburl: https://www.cadence.com/en_US/home.html
-  description: Cadence Design Systems Inc offers software, hardware, and services for electronic design automation and engineering.
+  description: >-
+    Cadence Design Systems Inc provides electronic design automation software and engineering services for the design of
+    integrated circuits and electronic systems.
   products:
-    - Allegro Platform
     - OrCAD
+    - Allegro
     - PSpice
+    - Sigrity
     - Xcelium
-    - JasperGold
   execs:
-    - Anirudh Devgan
+    - Lip-Bu Tan
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CEG:
   name: Constellation Energy Corp
   industry: Utilities
-  marketCap: 92978
+  marketCap: 87516
   weburl: https://www.constellationenergy.com/
   description: >-
     Constellation Energy Corp is a leading energy company that provides electricity, natural gas, and renewable energy
@@ -622,111 +639,115 @@ CEG:
   products:
     - Electricity Generation
     - Natural Gas Supply
-    - Renewable Energy
-    - Energy Efficiency Solutions
-    - Retail Energy Services
+    - Renewable Energy Solutions
   execs:
     - Joseph Dominguez
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CI:
   name: Cigna Group
   industry: Health Care
-  marketCap: 76445
+  marketCap: 78251
   weburl: https://www.thecignagroup.com/
   description: >-
-    Cigna Group is a global health service company that provides health insurance and related services to individuals
-    and businesses.
+    Cigna Group is a global health services company offering health insurance, wellness programs, and related services
+    to individuals and businesses.
   products:
-    - Health Insurance Plans
+    - Health Insurance
     - Dental Insurance
     - Disability Insurance
-    - Medicare Plans
-    - Pharmacy Benefit Management
+    - Medicare Advantage Plans
   execs:
     - David Cordani
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CL:
   name: Colgate-Palmolive Co
   industry: Consumer products
-  marketCap: 70497
+  marketCap: 71977
   weburl: https://www.colgatepalmolive.com/
   description: >-
-    Colgate-Palmolive Company is a consumer products company specializing in oral care, personal care, home care, and
-    pet nutrition.
+    Colgate-Palmolive Co is a consumer products company known for its oral care, personal care, home care, and pet
+    nutrition products.
   products:
     - Colgate Toothpaste
     - Palmolive Dish Soap
     - Speed Stick Deodorant
-    - Softsoap
-    - Hill's Pet Nutrition
+    - Softsoap Liquid Hand Soap
   execs:
     - Noel Wallace
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CMCSA:
   name: Comcast Corp
   industry: Telecommunication
-  marketCap: 84215
+  marketCap: 85626
   weburl: https://corporate.comcast.com/
   description: >-
-    Comcast Corporation is a global media and technology company that provides cable television, internet, and phone
-    services.
+    Comcast Corp is a global media and technology company that provides cable television, internet, and phone services,
+    as well as content through its NBCUniversal division.
   products:
     - Xfinity
-    - NBCUniversal
-    - Sky
-    - Comcast Business
+    - NBC
+    - Universal Pictures
+    - Sky Group
   execs:
     - Brian L. Roberts
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CME:
   name: CME Group Inc
   industry: Financial Services
-  marketCap: 92990
+  marketCap: 95590
   weburl: https://www.cmegroup.com/
   description: >-
-    CME Group Inc operates the world's largest financial derivatives exchange, offering a wide range of products across
-    various asset classes.
+    CME Group Inc is the world's leading and most diverse derivatives marketplace, offering a wide range of futures and
+    options products across various asset classes.
   products:
-    - CME Futures
-    - CME Options
-    - CME Clearing
-    - CME Globex
+    - Futures Contracts
+    - Options Contracts
+    - Interest Rate Products
+    - Equity Index Products
   execs:
     - Terry Duffy
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CMG:
   name: Chipotle Mexican Grill Inc
   industry: Hotels, Restaurants & Leisure
-  marketCap: 37924
+  marketCap: 39021
   weburl: https://www.chipotle.com/
   description: >-
-    Chipotle Mexican Grill Inc is a fast-casual restaurant chain specializing in Mexican cuisine, particularly burritos
-    and tacos made with fresh ingredients.
+    Chipotle Mexican Grill, Inc. is a fast-casual restaurant chain specializing in Mexican cuisine, particularly
+    burritos and tacos.
   products:
     - Burritos
     - Tacos
     - Salads
     - Quesadillas
-    - Sofritas
+    - Chips and Guacamole
   execs:
     - Brian Niccol
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 COF:
   name: Capital One Financial Corp
   industry: Financial Services
-  marketCap: 113189
+  marketCap: 110538
   weburl: https://www.capitalone.com/
   description: >-
-    Capital One Financial Corp is a bank holding company specializing in credit cards, auto loans, banking, and savings
-    accounts.
+    Capital One Financial Corporation is a bank holding company specializing in credit cards, auto loans, banking, and
+    savings accounts.
   products:
-    - Capital One Credit Cards
+    - Credit Cards
     - Auto Loans
     - Savings Accounts
-    - Commercial Banking
+    - Checking Accounts
+    - Business Banking
   execs:
     - Richard D. Fairbank
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 COHR:
   name: Coherent Corp
   industry: Electrical Equipment
@@ -742,56 +763,63 @@ COHR:
 COIN:
   name: Coinbase Global Inc
   industry: Financial Services
-  marketCap: 39681
+  marketCap: 40565
   weburl: https://www.coinbase.com
   description: >-
-    Coinbase Global Inc is a cryptocurrency exchange platform that allows users to buy, sell, and store various
+    Coinbase Global, Inc. is a cryptocurrency exchange platform that allows users to buy, sell, and store various
     cryptocurrencies.
+  products:
+    - Cryptocurrency Exchange
+    - Coinbase Wallet
+    - Coinbase Pro
+    - Staking Services
   execs:
     - Brian Armstrong
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 COP:
   name: ConocoPhillips
   industry: Energy
-  marketCap: 144100
+  marketCap: 146098
   weburl: https://www.conocophillips.com/
   description: >-
-    ConocoPhillips is a global oil and gas exploration and production company, focusing on the development of natural
-    resources.
+    ConocoPhillips is a multinational energy corporation engaged in the exploration and production of oil and natural
+    gas.
   products:
     - Crude Oil
     - Natural Gas
-    - Natural Gas Liquids
     - Refined Products
     - LNG
   execs:
     - Ryan M. Lance
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 COST:
   name: Costco Wholesale Corp
   industry: Retail
-  marketCap: 438299
+  marketCap: 436104
   weburl: https://www.costco.com/
   description: >-
-    Costco Wholesale Corporation operates a chain of membership-only warehouse clubs, offering a wide selection of
+    Costco Wholesale Corporation operates a chain of membership-only warehouse clubs offering a wide selection of
     merchandise at discounted prices.
   products:
-    - Membership Warehouse Clubs
+    - Membership Services
     - Groceries
     - Electronics
     - Clothing
-    - Home Goods
+    - Household Goods
   execs:
     - Craig Jelinek
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CRM:
   name: Salesforce Inc
   industry: Technology
-  marketCap: 152342
+  marketCap: 139983
   weburl: https://www.salesforce.com/
   description: >-
-    Salesforce Inc is a cloud-based software company that provides customer relationship management (CRM) services and
-    applications focused on sales and marketing.
+    Salesforce, Inc. is a cloud-based software company that provides customer relationship management (CRM) services and
+    applications.
   products:
     - Sales Cloud
     - Service Cloud
@@ -801,6 +829,7 @@ CRM:
   execs:
     - Marc Benioff
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CRSP:
   name: CRISPR Therapeutics AG
   industry: Biotechnology
@@ -816,97 +845,96 @@ CRSP:
 CRWD:
   name: CrowdStrike Holdings Inc
   industry: Technology
-  marketCap: 174526
+  marketCap: 164892
   weburl: https://ir.crowdstrike.com/
-  description: CrowdStrike Holdings Inc provides cloud-delivered endpoint protection and cybersecurity solutions.
+  description: >-
+    CrowdStrike Holdings, Inc. is a cybersecurity technology company that provides endpoint security, threat
+    intelligence, and cyberattack response services.
   products:
     - Falcon Platform
+    - Endpoint Protection
     - Threat Intelligence
     - Managed Threat Hunting
-    - Endpoint Detection and Response
-    - Cloud Workload Protection
   execs:
     - George Kurtz
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CRWV:
   name: CoreWeave Inc
   industry: Technology
-  marketCap: 54584
+  marketCap: 52162
   weburl: https://www.coreweave.com/
-  description: >-
-    CoreWeave Inc is a cloud computing company that specializes in providing GPU-accelerated infrastructure for various
-    applications, including AI and machine learning.
-  execs:
-    - Daniel Nityanand
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CSCO:
   name: Cisco Systems Inc
   industry: Communications
-  marketCap: 492715
+  marketCap: 468242
   weburl: https://www.cisco.com/
   description: >-
-    Cisco Systems Inc designs and sells networking hardware, software, telecommunications equipment, and high-technology
-    services.
+    Cisco Systems, Inc. is a multinational technology conglomerate that designs, manufactures, and sells networking
+    hardware, telecommunications equipment, and other high-technology services and products.
   products:
-    - Cisco Routers
-    - Cisco Switches
-    - Cisco Webex
-    - Cisco Meraki
-    - Cisco Security Solutions
+    - Routers
+    - Switches
+    - Cybersecurity Solutions
+    - Collaboration Tools
+    - Data Center Solutions
   execs:
     - Chuck Robbins
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CSX:
   name: CSX Corp
   industry: Road & Rail
-  marketCap: 87416
+  marketCap: 86236
   weburl: https://www.csx.com/
   description: >-
-    CSX Corporation is a leading transportation company that operates a rail network in the eastern United States,
+    CSX Corporation is a transportation company that operates a network of railroads in the eastern United States,
     providing freight transportation services.
   products:
-    - Freight Rail Transportation
+    - Freight Transportation
     - Intermodal Services
     - Coal Transportation
     - Automotive Transport
-    - Agricultural Products
   execs:
     - James M. Foote
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CVS:
   name: CVS Health Corp
   industry: Health Care
-  marketCap: 122336
+  marketCap: 125066
   weburl: https://cvshealth.com/
   description: >-
-    CVS Health Corp is a healthcare company that provides a range of services including pharmacy, health insurance, and
-    retail health clinics.
+    CVS Health Corporation is a healthcare company that operates a chain of pharmacies and provides health services,
+    including pharmacy benefit management.
   products:
-    - CVS Pharmacy
-    - Aetna Health Insurance
+    - Pharmacy Services
+    - Health Insurance
     - MinuteClinic
-    - Pharmacy Benefit Management
-    - HealthHUB
+    - Long-Term Care Services
   execs:
     - Karen S. Lynch
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CVX:
   name: Chevron Corp
   industry: Energy
-  marketCap: 374739
+  marketCap: 378005
   weburl: https://www.chevron.com/
   description: >-
-    Chevron Corporation is a multinational energy corporation engaged in all aspects of the energy sector, including oil
-    and gas exploration, production, and refining.
+    Chevron Corporation is a multinational corporation engaged in all aspects of the energy sector, including oil and
+    gas exploration, production, and refining.
   products:
     - Crude Oil
     - Natural Gas
     - Refined Products
-    - Chemicals
     - Renewable Energy
   execs:
     - Michael Wirth
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 CYTK:
   name: Cytokinetics Inc
   industry: Biotechnology
@@ -917,51 +945,59 @@ CYTK:
 D:
   name: Dominion Energy Inc
   industry: Utilities
-  marketCap: 59064
+  marketCap: 58725
   weburl: https://www.dominionenergy.com/
   description: >-
     Dominion Energy Inc is a power and energy company that provides electricity and natural gas to customers in the
-    eastern United States.
+    United States.
   products:
-    - Electric Utility Services
+    - Electricity Generation
     - Natural Gas Distribution
     - Renewable Energy
-    - Energy Storage Solutions
+    - Energy Storage
+    - Natural Gas Infrastructure
   execs:
     - Robert M. Blue
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DASH:
   name: DoorDash Inc
   industry: Hotels, Restaurants & Leisure
-  marketCap: 68604
+  marketCap: 65794
   weburl: https://www.doordash.com/
   description: >-
-    DoorDash Inc is a food delivery service that connects customers with local restaurants through its online platform
-    and mobile app.
+    DoorDash Inc is an on-demand food delivery service that connects customers with local restaurants and food
+    providers.
+  products:
+    - Food Delivery
+    - DashPass Subscription
+    - DoorDash Drive
+    - DoorDash for Merchants
   execs:
     - Tony Xu
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DDOG:
   name: Datadog Inc (Pre-Reincorporation)
   industry: Technology
-  marketCap: 83652
+  marketCap: 81027
   weburl: https://www.datadoghq.com/
   description: >-
-    Datadog Inc provides monitoring and analytics for cloud-scale applications, enabling organizations to understand
-    their infrastructure and applications.
+    Datadog Inc is a monitoring and analytics platform for developers, IT operations teams, and business users to manage
+    cloud-scale applications.
   products:
     - Infrastructure Monitoring
     - Application Performance Monitoring
     - Log Management
     - Real User Monitoring
-    - Synthetic Monitoring
   execs:
     - David B. Cohen
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DE:
   name: Deere & Co
   industry: Machinery
-  marketCap: 159379
+  marketCap: 151178
   weburl: https://www.deere.com/
   description: >-
     Deere & Co is a manufacturer of agricultural, construction, and forestry machinery, known for its iconic green and
@@ -969,95 +1005,99 @@ DE:
   products:
     - Tractors
     - Combine Harvesters
-    - Planters
     - Construction Equipment
-    - Forestry Equipment
+    - Lawn & Garden Equipment
   execs:
     - John C. May
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DELL:
   name: Dell Technologies Inc
   industry: Technology
-  marketCap: 262239
+  marketCap: 241286
   weburl: https://www.dell.com/en-in
   description: >-
-    Dell Technologies Inc designs, manufactures, and sells a wide range of technology products and services, including
-    computers and servers.
+    Dell Technologies Inc is a multinational technology company that develops, sells, and supports computers and related
+    products and services.
   products:
-    - Dell XPS Laptops
-    - Dell PowerEdge Servers
-    - Dell EMC Storage Solutions
-    - Alienware Gaming PCs
-    - Dell Technologies Cloud
+    - Personal Computers
+    - Servers
+    - Storage Solutions
+    - Networking Equipment
+    - Software Solutions
   execs:
     - Michael Dell
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DG:
   name: Dollar General Corp
   industry: Retail
-  marketCap: 22848
+  marketCap: 24256
   weburl: https://www.dollargeneral.com/
   description: >-
     Dollar General Corp is a discount retailer that offers a variety of products, including household goods, groceries,
     and apparel at low prices.
   products:
     - Household Essentials
-    - Groceries
+    - Food and Snacks
     - Health and Beauty Products
     - Seasonal Items
-    - Apparel
   execs:
     - Jeff Owen
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DHR:
   name: Danaher Corp
   industry: Life Sciences Tools & Services
-  marketCap: 130828
+  marketCap: 129968
   weburl: https://www.danaher.com/
   description: >-
     Danaher Corp is a global science and technology innovator that designs, manufactures, and markets professional,
-    medical, industrial, and commercial products.
+    medical, and industrial instruments.
   products:
-    - Beckman Coulter
-    - Leica Microsystems
-    - Pall Corporation
-    - Videojet
-    - Hach
+    - Life Sciences
+    - Diagnostics
+    - Environmental
+    - Applied Solutions
   execs:
     - Rainer M. Blair
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DIS:
   name: Walt Disney Co
   industry: Media
-  marketCap: 172835
+  marketCap: 171237
   weburl: https://thewaltdisneycompany.com/
-  description: The Walt Disney Company is a diversified international family entertainment and media enterprise.
+  description: >-
+    Walt Disney Co is a diversified multinational entertainment and media company known for its film studios, theme
+    parks, and television networks.
   products:
     - Disney+
-    - ESPN
-    - ABC
-    - Marvel
-    - Pixar
+    - Theme Parks
+    - Film Studios
+    - Merchandising
+    - Television Networks
   execs:
     - Bob Chapek
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DLTR:
   name: Dollar Tree Inc
   industry: Retail
-  marketCap: 21123
+  marketCap: 21201
   weburl: https://www.dollartree.com/
   description: >-
     Dollar Tree Inc is a discount variety store chain that sells items for $1 or less, including household goods, food,
-    and party supplies.
+    and seasonal products.
   products:
     - Household Items
-    - Party Supplies
     - Food and Snacks
-    - Seasonal Decor
-    - Health and Beauty Products
+    - Party Supplies
+    - Seasonal Decorations
   execs:
     - Michael Witynski
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DNLI:
   name: Denali Therapeutics Inc
   industry: Biotechnology
@@ -1075,51 +1115,55 @@ DNLI:
 DOW:
   name: Dow Inc
   industry: Chemicals
-  marketCap: 24502
+  marketCap: 24678
   weburl: https://investors.dow.com/
-  description: Dow Inc. is a global chemical company that produces a wide range of materials and chemicals for various industries.
+  description: >-
+    Dow Inc is a materials science company that specializes in the production of chemicals, plastics, and agricultural
+    products.
   products:
     - Plastics
     - Chemicals
     - Coatings
-    - Silicones
-    - Agricultural sciences
+    - Agricultural Solutions
   execs:
     - Jim Fitterling
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DPZ:
   name: Domino's Pizza Inc
   industry: Hotels, Restaurants & Leisure
-  marketCap: 10361
+  marketCap: 10471
   weburl: https://www.dominos.com/
   description: >-
     Domino's Pizza Inc is an American pizza delivery and carryout chain known for its wide variety of pizzas and side
     dishes.
   products:
-    - Hand-Tossed Pizza
-    - Thin Crust Pizza
-    - Stuffed Cheesy Bread
-    - Chicken Wings
+    - Pizza
     - Pasta
+    - Chicken Wings
+    - Desserts
+    - Beverages
   execs:
     - Russell Weiner
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DUK:
   name: Duke Energy Corp
   industry: Utilities
-  marketCap: 96654
+  marketCap: 97481
   weburl: https://www.duke-energy.com/
   description: >-
-    Duke Energy Corp is one of the largest electric power holding companies in the United States, providing electricity
-    to millions of customers.
+    Duke Energy Corp is an electric power holding company that provides electricity to customers in the Southeast and
+    Midwest regions of the United States.
   products:
-    - Electric Utility Services
+    - Electricity Generation
     - Natural Gas Distribution
     - Renewable Energy
     - Energy Efficiency Programs
   execs:
     - Lynn J. Good
   source: finnhub+llm
+  builtAt: '2026-06-11T15:00:00.548Z'
 DVN:
   name: Devon Energy Corp
   industry: Energy
