@@ -26,6 +26,7 @@ const { topicQuotes } = require('../services/tape/topicQuotes');
 const { createSynthesizeHandler } = require('../services/tape/synthesize');
 const { warmReadins, getWarmTickers, effectiveLimit } = require('../services/tape/warmReadins');
 const { buildFeed } = require('../services/tape/feed');
+const { sanitizePersona, analyzePersona, extractTickersRegex } = require('../services/tape/personaSignals');
 const crypto = require('crypto');
 
 /** Timing-safe check of SHARED_HMAC_SECRET in Authorization: Bearer or x-warm-secret. */
@@ -177,6 +178,41 @@ function createTapeRoutes({ openai } = {}) {
     } catch (err) {
       logTape({ endpoint: 'feed', jwt_sub: req.tape?.sub, status: 502, error: 'feed', detail: err.message, elapsed_ms: Date.now() - startedAt });
       return tapeError(res, 502, 'upstream-failure', 'Feed failed', err.message);
+    }
+  });
+
+  // --- POST /persona/normalize (preview: structured interpretation of raw prose) ---
+  // Preview-only — does NOT persist. Privacy: only the redacted persona text ever
+  // reaches the model (provider-agnostic, Tinfoil by default), no identifiers; and
+  // we log uid + coarse metadata only, never the persona content.
+  router.post('/persona/normalize', async (req, res) => {
+    const startedAt = Date.now();
+    try {
+      if (!(await checkRateLimit(req, res, 'persona-normalize', 120))) return;
+      const san = sanitizePersona((req.body || {}).raw);
+      if (!san.ok) return tapeError(res, 400, 'bad-request', 'Invalid persona', san.error);
+      if (!san.value || !san.value.trim()) return tapeError(res, 400, 'bad-request', 'Invalid persona', 'raw is required');
+
+      let out;
+      try {
+        const a = await analyzePersona(san.value);
+        out = { interpreted: a.interpreted, summary: a.summary, normalizedText: a.normalizedText, confidence: a.confidence, warnings: a.warnings };
+      } catch (_) {
+        // Provider down → degrade to regex tickers so the chip preview survives.
+        const tickers = extractTickersRegex(san.value);
+        if (!tickers.length) {
+          logTape({ endpoint: 'persona-normalize', jwt_sub: req.tape?.sub, status: 502, error: 'llm-unavailable', elapsed_ms: Date.now() - startedAt });
+          return tapeError(res, 502, 'upstream-failure', 'Persona analysis unavailable', 'Save without preview and try again later.');
+        }
+        out = { interpreted: { tickers, shows: [], theses: [], themes: [], people: [] }, summary: '', normalizedText: san.value, confidence: 'low', warnings: ['Automated analysis unavailable — basic ticker detection only.'] };
+      }
+
+      // Privacy: uid + COARSE metadata only — never the persona text/tickers/themes.
+      logTape({ endpoint: 'persona-normalize', jwt_sub: req.tape?.sub, confidence: out.confidence, tickerCount: out.interpreted.tickers.length, status: 200, elapsed_ms: Date.now() - startedAt });
+      return res.status(200).json(out);
+    } catch (err) {
+      logTape({ endpoint: 'persona-normalize', jwt_sub: req.tape?.sub, status: 502, error: 'persona', elapsed_ms: Date.now() - startedAt });
+      return tapeError(res, 502, 'upstream-failure', 'Persona analysis failed', err.message);
     }
   });
 
