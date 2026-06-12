@@ -38,12 +38,24 @@ const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_ATTEMPTS_PER_MENTION = 3;
+// Agent wall-clock budget for a Nostr reply. Nostr replies are async —
+// there's no user holding a connection open — so we can afford a much
+// longer budget than the interactive /api/pull default (180s), letting
+// the agent finish multi-round research (e.g. specific quote-attribution
+// lookups) instead of getting hard-killed mid-flight with no answer. The
+// agent's own guards (maxToolRounds, cost cap) still bound the work;
+// this just stops the outer timer from cutting a healthy run short.
+const NOSTR_AGENT_TIMEOUT_MS = (() => {
+  const raw = parseInt(process.env.NOSTR_AGENT_TIMEOUT_MS, 10);
+  if (Number.isFinite(raw) && raw >= 30_000) return raw;
+  return 5 * 60 * 1000; // default: 5 minutes
+})();
 // A mention claimed (status → processing) but not resolved within this
 // window is considered orphaned — the worker that claimed it crashed,
 // was killed, deployed over, or timed out mid-agent. The next tick
-// reclaims it. Must exceed the agent timeout (180s in agentPullService)
-// with headroom so we never reclaim a row that's still legitimately
-// being worked. 10 minutes gives ~3x the agent timeout.
+// reclaims it. Must exceed NOSTR_AGENT_TIMEOUT_MS with headroom so we
+// never reclaim a row that's still legitimately being worked. 10 minutes
+// gives 2x the 5-minute agent budget.
 const PROCESSING_LEASE_SECONDS = 10 * 60;
 const MENTION_AGE_LIMIT_SECONDS = 24 * 3600; // ignore mentions older than 24h on first ingest
 const RATE_LIMIT_WINDOW_SECONDS = 3600;        // 1h sliding window
@@ -246,6 +258,7 @@ class NostrBotReplyService {
           provider: 'nostr',
           email: null,
         },
+        timeoutMs: NOSTR_AGENT_TIMEOUT_MS,
       });
     } catch (err) {
       await this._refund(entitlement._id, costMicroUsd);
@@ -391,5 +404,6 @@ class NostrBotReplyService {
 module.exports = NostrBotReplyService;
 module.exports.MAX_ATTEMPTS_PER_MENTION = MAX_ATTEMPTS_PER_MENTION;
 module.exports.PROCESSING_LEASE_SECONDS = PROCESSING_LEASE_SECONDS;
+module.exports.NOSTR_AGENT_TIMEOUT_MS = NOSTR_AGENT_TIMEOUT_MS;
 module.exports.RATE_LIMIT_WINDOW_SECONDS = RATE_LIMIT_WINDOW_SECONDS;
 module.exports.RATE_LIMIT_MAX_REPLIES_PER_NPUB = RATE_LIMIT_MAX_REPLIES_PER_NPUB;
