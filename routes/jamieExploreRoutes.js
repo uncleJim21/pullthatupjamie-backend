@@ -6,6 +6,7 @@ const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { ResearchSession } = require('../models/ResearchSession');
 const { printLog } = require('../constants.js');
 const { multiSearchCache } = require('../utils/MultiSearchCacheManager.js');
+const { normalizeLang, DEFAULT_LANGUAGE } = require('../utils/feedLanguage');
 const { createEntitlementMiddleware } = require('../utils/entitlementMiddleware');
 const { ENTITLEMENT_TYPES } = require('../constants/entitlementTypes');
 const { serviceHmac } = require('../middleware/hmac');
@@ -2244,7 +2245,14 @@ router.get('/get-hierarchy', async (req, res) => {
         id: feedIdStr,
         metadata: feedDoc.metadataRaw
       };
-      printLog(`[${requestId}] ✓ Found feed: ${feedIdStr}`);
+      // Normalize the feed's spoken-audio language in place so clients reading
+      // hierarchy.feed.metadata.language get the same shape as /api/clip/:id and
+      // search results: lowercase, region-stripped ("en-US" → "en"), and
+      // defaulted to "en" when unlabeled/empty. Without this, English feeds tagged
+      // "en-US" would falsely trip a client's "translated from English" badge when
+      // compared against responseLanguage="en". (lean() doc — mutation is response-only.)
+      feed.metadata.language = normalizeLang(feed.metadata.language) || DEFAULT_LANGUAGE;
+      printLog(`[${requestId}] ✓ Found feed: ${feedIdStr} (language=${feed.metadata.language})`);
     } else {
       printLog(`[${requestId}] Feed not found in MongoDB`);
     }
