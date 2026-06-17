@@ -21,6 +21,7 @@ const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, createClipT
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const { isBenchmarkRequest } = require('../utils/benchmarkAuth');
+const { detectTextLanguage } = require('../utils/detectLanguage');
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -2278,8 +2279,16 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] Auto-upsell: 0 candidates from ${discoverResults.length} discover feed(s) — no untranscribed matchedEpisodes`);
       }
 
+      // Language the answer is written in, detected from the final prose. The
+      // agent mirrors the user's language (and translates non-English clips
+      // into it), so this is the authoritative "what am I reading" signal the
+      // client pairs with each clip's `language` to decide whether to show a
+      // "translated from <lang>" badge. Always present (defaults to "en").
+      const responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
+
       emit('done', {
         sessionId,
+        responseLanguage,
         provider: modelConfig.provider,
         model: modelConfig.label,
         modelKey,
@@ -2305,6 +2314,7 @@ function createAgentChatRoutes({ openai } = {}) {
         const responseBody = {
           sessionId,
           text: buffered.text,
+          responseLanguage,
           suggestedActions: buffered.suggestedActions,
         };
         if (buffered.session) responseBody.session = buffered.session;
