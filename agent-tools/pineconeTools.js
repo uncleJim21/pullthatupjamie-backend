@@ -7,6 +7,7 @@ const tokenizer = new natural.WordTokenizer();
 const TfIdf = natural.TfIdf;
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { printLog } = require('../constants.js');
+const { ensureFeedLanguages, getFeedLanguageSync } = require('../utils/feedLanguage');
 
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = process.env.PINECONE_INDEX;
@@ -110,7 +111,11 @@ const pineconeTools = {
             
             const metadata = clipDoc.metadataRaw;
             printLog(`${debugPrefix} Found clip in MongoDB: ${metadata.type || 'unknown type'}`);
-            
+
+            // Warm the feed-language cache so formatResults can resolve the
+            // clip's source language via the runtime join (feedId → language).
+            await ensureFeedLanguages();
+
             // Format using the existing formatter
             const match = {
                 id: clipId,
@@ -256,6 +261,14 @@ const pineconeTools = {
                 description: match.metadata.description || null, // For episodes
                 episode: match.metadata.episode || match.metadata.title || "Unknown episode",
                 creator: match.metadata.creator || "Creator not specified",
+                // Source language of the spoken audio (ISO 639-1, e.g. "de"),
+                // resolved by runtime join against the feed's RSS <language>
+                // tag (utils/feedLanguage cache), normalized + defaulted to
+                // "en". Lets the UI render a "translated from <lang>" indicator
+                // when this differs from the language the answer is presented
+                // in. Callers that can await should call ensureFeedLanguages()
+                // first; otherwise a cold cache safely falls back to "en".
+                language: getFeedLanguageSync(match.metadata.feedId),
                 audioUrl: match.metadata.audioUrl || "URL unavailable",
                 episodeImage: match.metadata.episodeImage || "Image unavailable",
                 date: match.metadata.publishedDate || "Date not provided",

@@ -17,6 +17,7 @@ const { isProperNounShaped } = require('../utils/properNounDetector');
 const { atlasTextSearch } = require('./atlasTextSearch');
 const { expandProperNounQuery } = require('./properNounLLMExpansion');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
+const { ensureFeedLanguages, getFeedLanguageSync } = require('../utils/feedLanguage');
 
 const PROPER_NOUN_SEARCH_ENABLED = process.env.PROPER_NOUN_SEARCH_ENABLED === 'true';
 const PROPER_NOUN_LLM_EXPANSION_ENABLED = process.env.PROPER_NOUN_LLM_EXPANSION_ENABLED === 'true';
@@ -252,6 +253,10 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
   const metadataMap = new Map();
   metadataDocs.forEach(doc => metadataMap.set(doc.pineconeId, doc.metadataRaw));
 
+  // Warm the feed-language cache so each result can resolve its source language
+  // via the runtime join (feedId → feed RSS <language>), no per-clip field.
+  await ensureFeedLanguages();
+
   const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
   const results = merged
     .map(merge => {
@@ -272,6 +277,12 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
         quote,
         episode: metadata.episode || metadata.title || 'Unknown episode',
         creator: metadata.creator || 'Creator not specified',
+        // Source language of the spoken audio (ISO 639-1, e.g. "de"), resolved
+        // by runtime join against the feed's RSS <language> tag
+        // (utils/feedLanguage cache), normalized + defaulted to "en". Surfaced
+        // so the client can flag clips whose audio language differs from the
+        // answer language ("translated from German").
+        sourceLanguage: getFeedLanguageSync(metadata.feedId),
         feedId: metadata.feedId != null ? String(metadata.feedId) : null,
         audioUrl: metadata.audioUrl || 'URL unavailable',
         episodeImage: metadata.episodeImage || 'Image unavailable',

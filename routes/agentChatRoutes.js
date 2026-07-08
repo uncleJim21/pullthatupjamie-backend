@@ -21,6 +21,31 @@ const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, createClipT
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const { isBenchmarkRequest } = require('../utils/benchmarkAuth');
+const { detectTextLanguage, detectQuestionLanguage, buildLanguageDirective, buildLanguageReminder, LANGUAGE_NAMES } = require('../utils/detectLanguage');
+const { classifyQuestionLanguage } = require('../utils/classifyLanguage');
+const { translateToLanguage } = require('../utils/translateToLanguage');
+
+/**
+ * Append a short text block to the LAST message in a copy of `msgs` so the
+ * reminder lands at the highest-recency position (immediately before
+ * generation). Non-mutating. Handles both string content and Anthropic-style
+ * content-block arrays (tool-result messages).
+ */
+function withLanguageReminder(msgs, reminder) {
+  if (!reminder || !Array.isArray(msgs) || msgs.length === 0) return msgs;
+  const copy = msgs.slice();
+  const last = copy[copy.length - 1];
+  let content;
+  if (typeof last.content === 'string') {
+    content = `${last.content}\n\n${reminder}`;
+  } else if (Array.isArray(last.content)) {
+    content = [...last.content, { type: 'text', text: reminder }];
+  } else {
+    return msgs; // unknown shape — leave untouched
+  }
+  copy[copy.length - 1] = { ...last, content };
+  return copy;
+}
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -878,6 +903,27 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
+    // Resolve the language the user is WRITING in. The stopword heuristic is
+    // brittle on short questions and questions that embed English proper nouns
+    // ("¿qué dice Michael Saylor en What Bitcoin Did?"), so use a cheap 4o-mini
+    // classifier that returns a confidence and is told to ignore embedded proper
+    // nouns; fall back to the heuristic when the model is unsure or unavailable.
+    // This one value is the single source of truth: it feeds the per-round and
+    // synthesis language directives, the last-message reminder, AND the
+    // end-of-pipeline proofreader trigger. Cost is recorded once `costs` exists.
+    let targetLanguage;
+    let _langClsUsage = null;
+    try {
+      const cls = await classifyQuestionLanguage(openai, message);
+      _langClsUsage = cls.usage;
+      targetLanguage = (cls.confidence >= 0.9 && cls.language) ? cls.language : detectQuestionLanguage(message);
+      console.log(`[lang] classifier: ${cls.language}@${cls.confidence} → target=${targetLanguage} (heuristic=${detectQuestionLanguage(message)}) for: ${String(message).slice(0, 80)}`);
+    } catch (e) {
+      targetLanguage = detectQuestionLanguage(message);
+      console.warn(`[lang] classifier failed (${e.message}); heuristic target=${targetLanguage}`);
+    }
+    const languageDirective = buildLanguageDirective(targetLanguage);
+    const languageReminder = buildLanguageReminder(targetLanguage);
     const { modelKey, modelConfig, executionProfile, profileKey } = resolveModelSelection(req.body || {});
     const maxToolRounds = executionProfile.maxToolRounds;
     const providerClient = createProvider(modelConfig.provider);
@@ -1214,6 +1260,10 @@ function createAgentChatRoutes({ openai } = {}) {
           classifierTokens.output_tokens || 0,
         );
       }
+      // Language classifier (gpt-4o-mini) also ran before the cost tracker; backfill.
+      if (_langClsUsage) {
+        costs.addHelperLlmUsage('gpt-4o-mini', _langClsUsage.input || 0, _langClsUsage.output || 0);
+      }
       const latency = createLatencyTracker(executionProfile, startTime);
       // Hoisted so the post-loop AUTO-SESSION path and the in-loop tool
       // execution path both share the same cost channel.
@@ -1326,7 +1376,7 @@ function createAgentChatRoutes({ openai } = {}) {
         const researchSessionNudge = (intent === 'research_session' && round >= Math.ceil(maxToolRounds * 0.6) && !researchSessionUrl)
           ? `\n\n[SYSTEM] RESEARCH SESSION REMINDER: You have used ${round} of ${maxToolRounds} rounds. You have gathered ${clipCache.size} clips. You MUST call \`create_research_session\` in the next 1-2 rounds or the session will not be saved. Stop searching and call the tool now.`
           : '';
-        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge;
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge + languageDirective;
 
         // Buffer all text deltas for this round. We never stream the orchestrator
         // live because we need to inspect the full text before deciding what to do:
@@ -1339,7 +1389,7 @@ function createAgentChatRoutes({ openai } = {}) {
           model: modelConfig.id,
           maxTokens: 4096,
           system: roundSystemPrompt,
-          messages,
+          messages: withLanguageReminder(messages, languageReminder),
           tools: effectiveTools,
           aborted,
           onTextDelta: (text) => roundTextDeltaBuffer.push(text),
@@ -1765,7 +1815,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl, episodeCache);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl, episodeCache) + languageDirective;
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
@@ -1784,7 +1834,7 @@ function createAgentChatRoutes({ openai } = {}) {
             model: synthesisModelConfig.id,
             maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
-            messages: synthesisMessages,
+            messages: withLanguageReminder(synthesisMessages, languageReminder),
             tools: effectiveTools,
             toolChoice: 'none',
             aborted: synthesisAborted,
@@ -1910,8 +1960,8 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier1Resp = await synthesisProviderClient.createResponse({
               model: synthesisModelConfig.id,
               maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl),
-              messages: tier1Messages,
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl) + languageDirective,
+              messages: withLanguageReminder(tier1Messages, languageReminder),
               tools: effectiveTools,
               toolChoice: 'none',
               temperature: 0,
@@ -2006,8 +2056,8 @@ function createAgentChatRoutes({ openai } = {}) {
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
                 maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl),
-                messages: tier2Messages,
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl) + languageDirective,
+                messages: withLanguageReminder(tier2Messages, languageReminder),
                 tools: effectiveTools,
                 toolChoice: 'none',
                 temperature: 0,
@@ -2156,6 +2206,68 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] === SYNTHESIS DONE === recovery=${recoveryTier}, ${fullText.length} total chars, ${synthesisElapsedTotal}ms${deadlineHit ? ' (primary deadline hit)' : ''}`);
       }
 
+      // Language the answer is written in, detected from the final prose. The
+      // client pairs this with each clip's `language` to decide whether to show
+      // a "translated from <lang>" badge. Always present (defaults to "en").
+      let responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
+
+      // End-of-pipeline language proofreader. The synthesis model does not
+      // reliably answer in the user's language when the clips are in another
+      // language (it anchors prose to the content language). If the finished
+      // answer isn't already in the language of the user's question, run a pure
+      // Claude Haiku translation pass (prose + quotes, {{clip:...}} tokens and
+      // blockquote markdown preserved) so the destination language is ALWAYS
+      // what the user asked in. Fires only on mismatch, so most requests skip
+      // it. Runs BEFORE costs.summary() below so its Haiku spend is billed into
+      // the turn total (via addHelperLlmUsage → summary.total).
+      // targetLanguage resolved once at the top of the handler (LLM classifier
+      // + heuristic fallback) — reuse it so the proofreader trigger, the prompt
+      // directive, and the reminder all agree on one language.
+      const answerToProof = agentLog.finalText || buffered.text || '';
+
+      // Decide whether to run the proofreader by looking at the RENDERED TEXT
+      // language — NOT the clips' source language. Fire if EITHER:
+      //  (a) the whole answer reads in a different language than the question, OR
+      //  (b) the concatenated blockquote (quote) text reads in a different
+      //      language than the question. (b) catches the mixed case (correct
+      //      prose but quotes still in the source language). We deliberately do
+      //      NOT trigger on the clip's *source* language: the model usually
+      //      translates the quote display text into the target already, and
+      //      firing on source language re-translates an already-correct answer
+      //      (observed: a correct Spanish answer got clobbered back to English).
+      const quoteText = answerToProof
+        .split('\n')
+        .filter(l => l.trim().startsWith('>'))
+        .map(l => l.replace(/^\s*>\s*/, ''))
+        .join(' ')
+        .trim();
+      const quoteLang = quoteText ? detectTextLanguage(quoteText, { minTokens: 6, minScore: 2 }) : null;
+      const wholeAnswerMismatch = responseLanguage !== targetLanguage;
+      const quoteMismatch = quoteLang !== null && quoteLang !== targetLanguage;
+      if (answerToProof.trim() && (wholeAnswerMismatch || quoteMismatch)) {
+        try {
+          const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
+          const proofModel = AGENT_MODELS.fast.id; // Haiku
+          console.log(`[${requestId}] Language proofreader trigger: target=${targetLanguage}, wholeAnswerMismatch=${wholeAnswerMismatch} (answer=${responseLanguage}), quoteMismatch=${quoteMismatch} (quotes=${quoteLang || 'n/a'})`);
+          const { text: translated, usage, translated: didTranslate, reason } =
+            await translateToLanguage(anthropic, proofModel, answerToProof, targetName);
+          if (didTranslate) {
+            buffered.text = translated;
+            agentLog.finalText = translated;
+            responseLanguage = targetLanguage;
+            if (usage) costs.addHelperLlmUsage(proofModel, usage.input_tokens || 0, usage.output_tokens || 0);
+            // Clients re-render on text_done — emit the translated text so the
+            // streamed (wrong-language) copy is superseded before `done`.
+            if (streaming) emit('text_done', { text: translated });
+            console.log(`[${requestId}] Language proofreader (Haiku): translated answer → ${targetLanguage} (${answerToProof.length}→${translated.length}c, ${usage?.input_tokens || 0}in/${usage?.output_tokens || 0}out)`);
+          } else {
+            console.warn(`[${requestId}] Language proofreader: skipped (${reason}) — keeping original ${responseLanguage} answer`);
+          }
+        } catch (err) {
+          console.error(`[${requestId}] Language proofreader failed (non-fatal): ${err.message}`);
+        }
+      }
+
       const latencyMs = Date.now() - startTime;
 
       const summary = costs.summary();
@@ -2280,6 +2392,7 @@ function createAgentChatRoutes({ openai } = {}) {
 
       emit('done', {
         sessionId,
+        responseLanguage,
         provider: modelConfig.provider,
         model: modelConfig.label,
         modelKey,
@@ -2305,6 +2418,7 @@ function createAgentChatRoutes({ openai } = {}) {
         const responseBody = {
           sessionId,
           text: buffered.text,
+          responseLanguage,
           suggestedActions: buffered.suggestedActions,
         };
         if (buffered.session) responseBody.session = buffered.session;
