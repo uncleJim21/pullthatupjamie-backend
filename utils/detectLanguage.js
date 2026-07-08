@@ -42,12 +42,15 @@ function tokenize(text) {
 
 /**
  * @param {string} text
+ * @param {object} [opts]
+ * @param {number} [opts.minTokens=12] minimum token count before we trust a match
+ * @param {number} [opts.minScore=3]   minimum function-word hits before we trust a match
  * @returns {string} lowercase ISO 639-1 code; "en" when uncertain / too short.
  */
-function detectTextLanguage(text) {
+function detectTextLanguage(text, { minTokens = 12, minScore = 3 } = {}) {
   const tokens = tokenize(text);
   // Too little signal to trust anything but the default.
-  if (tokens.length < 12) return DEFAULT_LANGUAGE;
+  if (tokens.length < minTokens) return DEFAULT_LANGUAGE;
 
   const scores = {};
   for (const lang of Object.keys(STOPWORDS)) scores[lang] = 0;
@@ -66,9 +69,74 @@ function detectTextLanguage(text) {
   // Require a minimal density of function words so a proper-noun-heavy or
   // garbled passage falls back to English rather than a spurious match.
   const density = bestScore / tokens.length;
-  if (bestScore < 3 || density < 0.04) return DEFAULT_LANGUAGE;
+  if (bestScore < minScore || density < 0.04) return DEFAULT_LANGUAGE;
 
   return best;
 }
 
-module.exports = { detectTextLanguage, DEFAULT_LANGUAGE };
+/**
+ * Detect the language of a USER QUESTION. Questions are short, so we lower the
+ * floors relative to answer-prose detection and add two cheap high-precision
+ * signals: Spanish inverted punctuation (¿ ¡) and, as a tiebreak, accented-Latin
+ * characters (which English lacks) to pull a borderline call off the English
+ * default. Still defaults to "en" — the safe majority — when the signal is thin.
+ * @param {string} text
+ * @returns {string} lowercase ISO 639-1 code.
+ */
+function detectQuestionLanguage(text) {
+  const s = String(text || '');
+  if (/[¿¡]/.test(s)) return 'es'; // unambiguous Spanish marker
+  const detected = detectTextLanguage(s, { minTokens: 4, minScore: 2 });
+  if (detected !== DEFAULT_LANGUAGE) return detected;
+  return DEFAULT_LANGUAGE;
+}
+
+const LANGUAGE_NAMES = { en: 'English', es: 'Spanish', de: 'German', pt: 'Portuguese', fr: 'French' };
+
+// Per-language "translate the quote into THIS language" illustration, written
+// in the target language itself so the model sees the register it should write.
+const DIRECTIVE_EXAMPLES = {
+  en: 'Example: a Spanish clip becomes English — *"Bitcoin es el dinero más perfecto"* → *"Bitcoin is the most perfect money"*.',
+  es: 'Ejemplo: una cita en inglés se traduce al español — *"Bitcoin is a hedge against inflation"* → *"Bitcoin es una cobertura contra la inflación"*.',
+  de: 'Beispiel: ein spanisches Zitat wird ins Deutsche übersetzt — *"Bitcoin es dinero para la gente"* → *"Bitcoin ist Geld für die Menschen"*.',
+  pt: 'Exemplo: uma citação em inglês é traduzida para o português — *"Bitcoin is a hedge against inflation"* → *"Bitcoin é uma proteção contra a inflação"*.',
+  fr: 'Exemple : une citation en anglais est traduite en français — *"Bitcoin is a hedge against inflation"* → *"Bitcoin est une couverture contre l\'inflation"*.',
+};
+
+/**
+ * Build the per-request, top-priority language directive that is appended to the
+ * system + synthesis prompts. Deterministic: the language is detected from the
+ * user's question server-side and stated as a fact, so the model does not have
+ * to infer it against a large same-language clip context (which it does
+ * unreliably — see the language regression testing on jc/clip-source-language).
+ * @param {string} question the user's message
+ * @returns {string} a directive block (leading newlines included)
+ */
+function buildLanguageDirective(question) {
+  const lang = detectQuestionLanguage(question);
+  const name = LANGUAGE_NAMES[lang] || 'English';
+  const example = DIRECTIVE_EXAMPLES[lang] || DIRECTIVE_EXAMPLES.en;
+  return `\n\n## RESPONSE LANGUAGE — highest priority, overrides everything above\n`
+    + `The user wrote their question in ${name}. Write your ENTIRE answer in ${name} — prose, headers, and the words inside every quote — regardless of what language the clips are in. `
+    + `When a clip is in another language, translate the text inside its blockquote into ${name} and keep the \`{{clip:…}}\` token exactly as-is (translating quote display text is required and is NOT invention). `
+    + `${example}`;
+}
+
+/**
+ * Compact, high-recency language reminder appended to the LAST message in the
+ * array (right before generation) — the position with the strongest pull on the
+ * model. The system-prompt directive alone loses to a large same-language clip
+ * context that sits *after* the system prompt in the message array; this reminder
+ * is the last thing the model reads, so it wins. Keep it short.
+ * @param {string} question the user's message
+ * @returns {string} reminder text
+ */
+function buildLanguageReminder(question) {
+  const lang = detectQuestionLanguage(question);
+  const name = LANGUAGE_NAMES[lang] || 'English';
+  return `[LANGUAGE — obey exactly] The user asked in ${name}. Write your entire answer in ${name}, `
+    + `including translating every quote into ${name} (keep each \`{{clip:…}}\` token unchanged). `
+    + `Do not answer in the clips' language just because the clips are in it.`;
+}
+
+module.exports = { detectTextLanguage, detectQuestionLanguage, buildLanguageDirective, buildLanguageReminder, LANGUAGE_NAMES, DEFAULT_LANGUAGE };

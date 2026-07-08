@@ -21,7 +21,30 @@ const { sanitizeAgentText, hasToolCallMarkup, createStreamSanitizer, createClipT
 const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const { isBenchmarkRequest } = require('../utils/benchmarkAuth');
-const { detectTextLanguage } = require('../utils/detectLanguage');
+const { detectTextLanguage, detectQuestionLanguage, buildLanguageDirective, buildLanguageReminder, LANGUAGE_NAMES } = require('../utils/detectLanguage');
+const { translateToLanguage } = require('../utils/translateToLanguage');
+
+/**
+ * Append a short text block to the LAST message in a copy of `msgs` so the
+ * reminder lands at the highest-recency position (immediately before
+ * generation). Non-mutating. Handles both string content and Anthropic-style
+ * content-block arrays (tool-result messages).
+ */
+function withLanguageReminder(msgs, reminder) {
+  if (!reminder || !Array.isArray(msgs) || msgs.length === 0) return msgs;
+  const copy = msgs.slice();
+  const last = copy[copy.length - 1];
+  let content;
+  if (typeof last.content === 'string') {
+    content = `${last.content}\n\n${reminder}`;
+  } else if (Array.isArray(last.content)) {
+    content = [...last.content, { type: 'text', text: reminder }];
+  } else {
+    return msgs; // unknown shape — leave untouched
+  }
+  copy[copy.length - 1] = { ...last, content };
+  return copy;
+}
 
 const AGENT_LOG_DIR = path.join(__dirname, '..', 'logs', 'agent');
 try { fs.mkdirSync(AGENT_LOG_DIR, { recursive: true }); } catch {}
@@ -879,6 +902,13 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
+    // Deterministic response-language directive: detect the language of the
+    // user's question server-side and append it (as a stated fact) to both the
+    // per-round system prompt and every synthesis prompt. A soft prompt rule
+    // was proven to flip-flop against a large same-language clip context; a
+    // per-request fact does not. See utils/detectLanguage.buildLanguageDirective.
+    const languageDirective = buildLanguageDirective(message);
+    const languageReminder = buildLanguageReminder(message);
     const { modelKey, modelConfig, executionProfile, profileKey } = resolveModelSelection(req.body || {});
     const maxToolRounds = executionProfile.maxToolRounds;
     const providerClient = createProvider(modelConfig.provider);
@@ -1327,7 +1357,7 @@ function createAgentChatRoutes({ openai } = {}) {
         const researchSessionNudge = (intent === 'research_session' && round >= Math.ceil(maxToolRounds * 0.6) && !researchSessionUrl)
           ? `\n\n[SYSTEM] RESEARCH SESSION REMINDER: You have used ${round} of ${maxToolRounds} rounds. You have gathered ${clipCache.size} clips. You MUST call \`create_research_session\` in the next 1-2 rounds or the session will not be saved. Stop searching and call the tool now.`
           : '';
-        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge;
+        const roundSystemPrompt = effectiveSystemPrompt + latency.budgetHeader() + latency.budgetNote() + researchSessionNudge + languageDirective;
 
         // Buffer all text deltas for this round. We never stream the orchestrator
         // live because we need to inspect the full text before deciding what to do:
@@ -1340,7 +1370,7 @@ function createAgentChatRoutes({ openai } = {}) {
           model: modelConfig.id,
           maxTokens: 4096,
           system: roundSystemPrompt,
-          messages,
+          messages: withLanguageReminder(messages, languageReminder),
           tools: effectiveTools,
           aborted,
           onTextDelta: (text) => roundTextDeltaBuffer.push(text),
@@ -1766,7 +1796,7 @@ function createAgentChatRoutes({ openai } = {}) {
           // invocation while keeping the request shape consistent with
           // earlier rounds — empirically critical to stop it from inlining
           // its native DSML tool-call markup. See docs/AGENT_SYNTHESIS_PASS.md.
-          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl, episodeCache);
+          const synthesisSystemPrompt = buildSynthesisPrompt(intent, synthesisGuidance, clipCache, researchSessionUrl, episodeCache) + languageDirective;
           console.log(`[${requestId}] SYNTHESIS PROMPT (${synthesisSystemPrompt.length}c):\n${synthesisSystemPrompt}\n--- END SYNTHESIS PROMPT ---`);
           // Cross-provider synthesis: when AGENT_SYNTHESIS_MODEL routes the
           // synthesis pass to a different provider than the orchestrator,
@@ -1785,7 +1815,7 @@ function createAgentChatRoutes({ openai } = {}) {
             model: synthesisModelConfig.id,
             maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
             system: synthesisSystemPrompt,
-            messages: synthesisMessages,
+            messages: withLanguageReminder(synthesisMessages, languageReminder),
             tools: effectiveTools,
             toolChoice: 'none',
             aborted: synthesisAborted,
@@ -1911,8 +1941,8 @@ function createAgentChatRoutes({ openai } = {}) {
             const tier1Resp = await synthesisProviderClient.createResponse({
               model: synthesisModelConfig.id,
               maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl),
-              messages: tier1Messages,
+              system: buildStrictSynthesisPrompt(intent, tier1Guidance, researchSessionUrl) + languageDirective,
+              messages: withLanguageReminder(tier1Messages, languageReminder),
               tools: effectiveTools,
               toolChoice: 'none',
               temperature: 0,
@@ -2007,8 +2037,8 @@ function createAgentChatRoutes({ openai } = {}) {
               const tier2Resp = await haikuClient.createResponse({
                 model: haikuConfig.id,
                 maxTokens: synthesisModelConfig.maxSynthesisTokens || parseInt(process.env.AGENT_SYNTHESIS_MAX_TOKENS || '4096', 10),
-                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl),
-                messages: tier2Messages,
+                system: buildStrictSynthesisPrompt(intent, tier2Guidance, researchSessionUrl) + languageDirective,
+                messages: withLanguageReminder(tier2Messages, languageReminder),
                 tools: effectiveTools,
                 toolChoice: 'none',
                 temperature: 0,
@@ -2284,7 +2314,38 @@ function createAgentChatRoutes({ openai } = {}) {
       // into it), so this is the authoritative "what am I reading" signal the
       // client pairs with each clip's `language` to decide whether to show a
       // "translated from <lang>" badge. Always present (defaults to "en").
-      const responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
+      let responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
+
+      // End-of-pipeline language proofreader. The synthesis model does not
+      // reliably answer in the user's language when the clips are in another
+      // language (it anchors prose to the content language). If the finished
+      // answer isn't already in the language of the user's question, run a pure
+      // gpt-4o-mini translation pass (prose + quotes, {{clip:...}} tokens
+      // preserved) so the destination language is ALWAYS what the user asked in.
+      // Fires only on mismatch, so most requests skip it entirely.
+      const targetLanguage = detectQuestionLanguage(message);
+      const answerToProof = agentLog.finalText || buffered.text || '';
+      if (answerToProof.trim() && responseLanguage !== targetLanguage) {
+        try {
+          const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
+          const { text: translated, usage, translated: didTranslate, reason } =
+            await translateToLanguage(openai, answerToProof, targetName);
+          if (didTranslate) {
+            buffered.text = translated;
+            agentLog.finalText = translated;
+            responseLanguage = targetLanguage;
+            if (usage) costs.addHelperLlmUsage('gpt-4o-mini', usage.prompt_tokens || 0, usage.completion_tokens || 0);
+            // Clients re-render on text_done — emit the translated text so the
+            // streamed (wrong-language) copy is superseded before `done`.
+            if (streaming) emit('text_done', { text: translated });
+            console.log(`[${requestId}] Language proofreader: translated answer → ${targetLanguage} (${answerToProof.length}→${translated.length}c)`);
+          } else {
+            console.warn(`[${requestId}] Language proofreader: skipped (${reason}) — keeping original ${responseLanguage} answer`);
+          }
+        } catch (err) {
+          console.error(`[${requestId}] Language proofreader failed (non-fatal): ${err.message}`);
+        }
+      }
 
       emit('done', {
         sessionId,
