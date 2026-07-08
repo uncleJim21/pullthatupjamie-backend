@@ -25,7 +25,11 @@ const DEFAULT_LANGUAGE = 'en';
 // romance "de/la/el"). Collisions are fine — scoring is comparative.
 const STOPWORDS = {
   en: new Set(['the','and','of','to','in','is','that','it','for','was','with','as','on','be','at','this','have','from','are','you','what','about','they','said','his','her','an','or','not','but','we','he','she','their','there']),
-  de: new Set(['der','die','und','den','von','zu','das','mit','sich','des','auf','für','ist','im','dem','nicht','ein','eine','als','auch','es','an','werden','war','hat','dass','sie','nach','wird','bei','einer','um','sind','noch','wie','einem','über','einen','so','zum','haben','nur','oder','aber','vor','zur','bis','mehr','durch','wenn','wir']),
+  de: new Set(['der','die','und','den','von','zu','das','mit','sich','des','auf','für','ist','im','dem','nicht','ein','eine','als','auch','es','an','werden','war','hat','dass','sie','nach','wird','bei','einer','um','sind','noch','wie','einem','über','einen','so','zum','haben','nur','oder','aber','vor','zur','bis','mehr','durch','wenn','wir',
+    // Distinctive German question/verb words that boost short-question detection
+    // ("Was sagt X über…?"). Most don't collide with English; 'was' is added so
+    // a German question isn't biased toward English (which also has 'was').
+    'was','sagen','sagt','wer','warum','welche','wieso','wann','gegen','nutzen','menschen','deutsche','deutschsprachige','denken','meinen','sprechen','gibt','macht','kann','soll','gut','viele']),
   es: new Set(['de','la','que','el','en','los','del','se','las','por','un','para','con','una','su','al','lo','como','más','pero','sus','le','ya','son','sobre','este','esta','están','está','también','muy','hay','fue','dijo','sería']),
   pt: new Set(['de','que','do','da','em','um','para','com','não','uma','os','no','se','na','por','mais','as','dos','como','mas','foi','ao','das','seu','sua','ou','quando','muito','nos','já','está','também','pelo','isso','essa']),
   fr: new Set(['le','de','un','être','et','en','que','pour','dans','ce','il','qui','ne','sur','se','pas','plus','par','je','avec','les','des','est','une','au','aux','cette','sont','ont','mais','ou','comme','leur','nous','vous','sans']),
