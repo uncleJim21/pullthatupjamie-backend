@@ -2203,10 +2203,38 @@ function createAgentChatRoutes({ openai } = {}) {
       // the turn total (via addHelperLlmUsage → summary.total).
       const targetLanguage = detectQuestionLanguage(message);
       const answerToProof = agentLog.finalText || buffered.text || '';
-      if (answerToProof.trim() && responseLanguage !== targetLanguage) {
+
+      // Decide whether to run the proofreader. Fire if EITHER:
+      //  (a) the whole answer reads in a different language than the question, OR
+      //  (b) ANY clip cited in the answer has a source language != the question
+      //      language. (b) is critical: the common failure is correct prose but
+      //      quotes still in the clip's language (e.g. English answer, Spanish
+      //      blockquotes). Whole-answer detection (a) MISSES that because the
+      //      prose token count dwarfs the quotes and reads as the target
+      //      language. Each clip's source language is known via the feed-language
+      //      join (searchQuotes attaches `sourceLanguage`), so we check it
+      //      directly rather than guessing from the quote text.
+      let citedClipMismatch = false;
+      const citedForeignLangs = new Set();
+      try {
+        for (const [shareLink, clip] of clipCache) {
+          if (!shareLink || !answerToProof.includes(shareLink)) continue;
+          const clipLang = (clip && (clip.sourceLanguage || clip.language)) || null;
+          if (clipLang && clipLang !== targetLanguage) {
+            citedClipMismatch = true;
+            citedForeignLangs.add(clipLang);
+          }
+        }
+      } catch (e) {
+        console.warn(`[${requestId}] Language proofreader: clip-language scan failed (non-fatal): ${e.message}`);
+      }
+
+      const wholeAnswerMismatch = responseLanguage !== targetLanguage;
+      if (answerToProof.trim() && (wholeAnswerMismatch || citedClipMismatch)) {
         try {
           const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
           const proofModel = AGENT_MODELS.fast.id; // Haiku
+          console.log(`[${requestId}] Language proofreader trigger: target=${targetLanguage}, wholeAnswerMismatch=${wholeAnswerMismatch} (detected=${responseLanguage}), citedClipMismatch=${citedClipMismatch}${citedForeignLangs.size ? ` [${[...citedForeignLangs].join(',')}]` : ''}`);
           const { text: translated, usage, translated: didTranslate, reason } =
             await translateToLanguage(anthropic, proofModel, answerToProof, targetName);
           if (didTranslate) {
