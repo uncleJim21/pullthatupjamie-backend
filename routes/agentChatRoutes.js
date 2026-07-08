@@ -2187,6 +2187,45 @@ function createAgentChatRoutes({ openai } = {}) {
         console.log(`[${requestId}] === SYNTHESIS DONE === recovery=${recoveryTier}, ${fullText.length} total chars, ${synthesisElapsedTotal}ms${deadlineHit ? ' (primary deadline hit)' : ''}`);
       }
 
+      // Language the answer is written in, detected from the final prose. The
+      // client pairs this with each clip's `language` to decide whether to show
+      // a "translated from <lang>" badge. Always present (defaults to "en").
+      let responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
+
+      // End-of-pipeline language proofreader. The synthesis model does not
+      // reliably answer in the user's language when the clips are in another
+      // language (it anchors prose to the content language). If the finished
+      // answer isn't already in the language of the user's question, run a pure
+      // Claude Haiku translation pass (prose + quotes, {{clip:...}} tokens and
+      // blockquote markdown preserved) so the destination language is ALWAYS
+      // what the user asked in. Fires only on mismatch, so most requests skip
+      // it. Runs BEFORE costs.summary() below so its Haiku spend is billed into
+      // the turn total (via addHelperLlmUsage → summary.total).
+      const targetLanguage = detectQuestionLanguage(message);
+      const answerToProof = agentLog.finalText || buffered.text || '';
+      if (answerToProof.trim() && responseLanguage !== targetLanguage) {
+        try {
+          const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
+          const proofModel = AGENT_MODELS.fast.id; // Haiku
+          const { text: translated, usage, translated: didTranslate, reason } =
+            await translateToLanguage(anthropic, proofModel, answerToProof, targetName);
+          if (didTranslate) {
+            buffered.text = translated;
+            agentLog.finalText = translated;
+            responseLanguage = targetLanguage;
+            if (usage) costs.addHelperLlmUsage(proofModel, usage.input_tokens || 0, usage.output_tokens || 0);
+            // Clients re-render on text_done — emit the translated text so the
+            // streamed (wrong-language) copy is superseded before `done`.
+            if (streaming) emit('text_done', { text: translated });
+            console.log(`[${requestId}] Language proofreader (Haiku): translated answer → ${targetLanguage} (${answerToProof.length}→${translated.length}c, ${usage?.input_tokens || 0}in/${usage?.output_tokens || 0}out)`);
+          } else {
+            console.warn(`[${requestId}] Language proofreader: skipped (${reason}) — keeping original ${responseLanguage} answer`);
+          }
+        } catch (err) {
+          console.error(`[${requestId}] Language proofreader failed (non-fatal): ${err.message}`);
+        }
+      }
+
       const latencyMs = Date.now() - startTime;
 
       const summary = costs.summary();
@@ -2307,44 +2346,6 @@ function createAgentChatRoutes({ openai } = {}) {
         );
       } else if (discoverResults.length > 0) {
         console.log(`[${requestId}] Auto-upsell: 0 candidates from ${discoverResults.length} discover feed(s) — no untranscribed matchedEpisodes`);
-      }
-
-      // Language the answer is written in, detected from the final prose. The
-      // agent mirrors the user's language (and translates non-English clips
-      // into it), so this is the authoritative "what am I reading" signal the
-      // client pairs with each clip's `language` to decide whether to show a
-      // "translated from <lang>" badge. Always present (defaults to "en").
-      let responseLanguage = detectTextLanguage(agentLog.finalText || buffered.text || '');
-
-      // End-of-pipeline language proofreader. The synthesis model does not
-      // reliably answer in the user's language when the clips are in another
-      // language (it anchors prose to the content language). If the finished
-      // answer isn't already in the language of the user's question, run a pure
-      // gpt-4o-mini translation pass (prose + quotes, {{clip:...}} tokens
-      // preserved) so the destination language is ALWAYS what the user asked in.
-      // Fires only on mismatch, so most requests skip it entirely.
-      const targetLanguage = detectQuestionLanguage(message);
-      const answerToProof = agentLog.finalText || buffered.text || '';
-      if (answerToProof.trim() && responseLanguage !== targetLanguage) {
-        try {
-          const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
-          const { text: translated, usage, translated: didTranslate, reason } =
-            await translateToLanguage(openai, answerToProof, targetName);
-          if (didTranslate) {
-            buffered.text = translated;
-            agentLog.finalText = translated;
-            responseLanguage = targetLanguage;
-            if (usage) costs.addHelperLlmUsage('gpt-4o-mini', usage.prompt_tokens || 0, usage.completion_tokens || 0);
-            // Clients re-render on text_done — emit the translated text so the
-            // streamed (wrong-language) copy is superseded before `done`.
-            if (streaming) emit('text_done', { text: translated });
-            console.log(`[${requestId}] Language proofreader: translated answer → ${targetLanguage} (${answerToProof.length}→${translated.length}c)`);
-          } else {
-            console.warn(`[${requestId}] Language proofreader: skipped (${reason}) — keeping original ${responseLanguage} answer`);
-          }
-        } catch (err) {
-          console.error(`[${requestId}] Language proofreader failed (non-fatal): ${err.message}`);
-        }
       }
 
       emit('done', {
