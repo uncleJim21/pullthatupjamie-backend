@@ -113,11 +113,10 @@ const DIRECTIVE_EXAMPLES = {
  * user's question server-side and stated as a fact, so the model does not have
  * to infer it against a large same-language clip context (which it does
  * unreliably — see the language regression testing on jc/clip-source-language).
- * @param {string} question the user's message
+ * @param {string} lang resolved ISO 639-1 code of the user's question language
  * @returns {string} a directive block (leading newlines included)
  */
-function buildLanguageDirective(question) {
-  const lang = detectQuestionLanguage(question);
+function buildLanguageDirective(lang) {
   const name = LANGUAGE_NAMES[lang] || 'English';
   const example = DIRECTIVE_EXAMPLES[lang] || DIRECTIVE_EXAMPLES.en;
   return `\n\n## RESPONSE LANGUAGE — highest priority, overrides everything above\n`
@@ -135,8 +134,7 @@ function buildLanguageDirective(question) {
  * @param {string} question the user's message
  * @returns {string} reminder text
  */
-function buildLanguageReminder(question) {
-  const lang = detectQuestionLanguage(question);
+function buildLanguageReminder(lang) {
   const name = LANGUAGE_NAMES[lang] || 'English';
   return `[LANGUAGE — obey exactly] The user asked in ${name}. Write your entire answer in ${name}, `
     + `including translating every quote into ${name} (keep each \`{{clip:…}}\` token unchanged). `

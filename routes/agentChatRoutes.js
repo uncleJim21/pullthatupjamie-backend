@@ -22,6 +22,7 @@ const { evaluateSynthesisOutput } = require('../utils/agent/synthesisQuality');
 const { rerankClips, RERANKER_MODEL } = require('../utils/clipReranker');
 const { isBenchmarkRequest } = require('../utils/benchmarkAuth');
 const { detectTextLanguage, detectQuestionLanguage, buildLanguageDirective, buildLanguageReminder, LANGUAGE_NAMES } = require('../utils/detectLanguage');
+const { classifyQuestionLanguage } = require('../utils/classifyLanguage');
 const { translateToLanguage } = require('../utils/translateToLanguage');
 
 /**
@@ -902,13 +903,27 @@ function createAgentChatRoutes({ openai } = {}) {
 
   async function handleAgentChat(req, res) {
     const message = req.body.message || req.body.task;
-    // Deterministic response-language directive: detect the language of the
-    // user's question server-side and append it (as a stated fact) to both the
-    // per-round system prompt and every synthesis prompt. A soft prompt rule
-    // was proven to flip-flop against a large same-language clip context; a
-    // per-request fact does not. See utils/detectLanguage.buildLanguageDirective.
-    const languageDirective = buildLanguageDirective(message);
-    const languageReminder = buildLanguageReminder(message);
+    // Resolve the language the user is WRITING in. The stopword heuristic is
+    // brittle on short questions and questions that embed English proper nouns
+    // ("¿qué dice Michael Saylor en What Bitcoin Did?"), so use a cheap 4o-mini
+    // classifier that returns a confidence and is told to ignore embedded proper
+    // nouns; fall back to the heuristic when the model is unsure or unavailable.
+    // This one value is the single source of truth: it feeds the per-round and
+    // synthesis language directives, the last-message reminder, AND the
+    // end-of-pipeline proofreader trigger. Cost is recorded once `costs` exists.
+    let targetLanguage;
+    let _langClsUsage = null;
+    try {
+      const cls = await classifyQuestionLanguage(openai, message);
+      _langClsUsage = cls.usage;
+      targetLanguage = (cls.confidence >= 0.9 && cls.language) ? cls.language : detectQuestionLanguage(message);
+      console.log(`[lang] classifier: ${cls.language}@${cls.confidence} → target=${targetLanguage} (heuristic=${detectQuestionLanguage(message)}) for: ${String(message).slice(0, 80)}`);
+    } catch (e) {
+      targetLanguage = detectQuestionLanguage(message);
+      console.warn(`[lang] classifier failed (${e.message}); heuristic target=${targetLanguage}`);
+    }
+    const languageDirective = buildLanguageDirective(targetLanguage);
+    const languageReminder = buildLanguageReminder(targetLanguage);
     const { modelKey, modelConfig, executionProfile, profileKey } = resolveModelSelection(req.body || {});
     const maxToolRounds = executionProfile.maxToolRounds;
     const providerClient = createProvider(modelConfig.provider);
@@ -1244,6 +1259,10 @@ function createAgentChatRoutes({ openai } = {}) {
           classifierTokens.input_tokens || 0,
           classifierTokens.output_tokens || 0,
         );
+      }
+      // Language classifier (gpt-4o-mini) also ran before the cost tracker; backfill.
+      if (_langClsUsage) {
+        costs.addHelperLlmUsage('gpt-4o-mini', _langClsUsage.input || 0, _langClsUsage.output || 0);
       }
       const latency = createLatencyTracker(executionProfile, startTime);
       // Hoisted so the post-loop AUTO-SESSION path and the in-loop tool
@@ -2201,40 +2220,35 @@ function createAgentChatRoutes({ openai } = {}) {
       // what the user asked in. Fires only on mismatch, so most requests skip
       // it. Runs BEFORE costs.summary() below so its Haiku spend is billed into
       // the turn total (via addHelperLlmUsage → summary.total).
-      const targetLanguage = detectQuestionLanguage(message);
+      // targetLanguage resolved once at the top of the handler (LLM classifier
+      // + heuristic fallback) — reuse it so the proofreader trigger, the prompt
+      // directive, and the reminder all agree on one language.
       const answerToProof = agentLog.finalText || buffered.text || '';
 
-      // Decide whether to run the proofreader. Fire if EITHER:
+      // Decide whether to run the proofreader by looking at the RENDERED TEXT
+      // language — NOT the clips' source language. Fire if EITHER:
       //  (a) the whole answer reads in a different language than the question, OR
-      //  (b) ANY clip cited in the answer has a source language != the question
-      //      language. (b) is critical: the common failure is correct prose but
-      //      quotes still in the clip's language (e.g. English answer, Spanish
-      //      blockquotes). Whole-answer detection (a) MISSES that because the
-      //      prose token count dwarfs the quotes and reads as the target
-      //      language. Each clip's source language is known via the feed-language
-      //      join (searchQuotes attaches `sourceLanguage`), so we check it
-      //      directly rather than guessing from the quote text.
-      let citedClipMismatch = false;
-      const citedForeignLangs = new Set();
-      try {
-        for (const [shareLink, clip] of clipCache) {
-          if (!shareLink || !answerToProof.includes(shareLink)) continue;
-          const clipLang = (clip && (clip.sourceLanguage || clip.language)) || null;
-          if (clipLang && clipLang !== targetLanguage) {
-            citedClipMismatch = true;
-            citedForeignLangs.add(clipLang);
-          }
-        }
-      } catch (e) {
-        console.warn(`[${requestId}] Language proofreader: clip-language scan failed (non-fatal): ${e.message}`);
-      }
-
+      //  (b) the concatenated blockquote (quote) text reads in a different
+      //      language than the question. (b) catches the mixed case (correct
+      //      prose but quotes still in the source language). We deliberately do
+      //      NOT trigger on the clip's *source* language: the model usually
+      //      translates the quote display text into the target already, and
+      //      firing on source language re-translates an already-correct answer
+      //      (observed: a correct Spanish answer got clobbered back to English).
+      const quoteText = answerToProof
+        .split('\n')
+        .filter(l => l.trim().startsWith('>'))
+        .map(l => l.replace(/^\s*>\s*/, ''))
+        .join(' ')
+        .trim();
+      const quoteLang = quoteText ? detectTextLanguage(quoteText, { minTokens: 6, minScore: 2 }) : null;
       const wholeAnswerMismatch = responseLanguage !== targetLanguage;
-      if (answerToProof.trim() && (wholeAnswerMismatch || citedClipMismatch)) {
+      const quoteMismatch = quoteLang !== null && quoteLang !== targetLanguage;
+      if (answerToProof.trim() && (wholeAnswerMismatch || quoteMismatch)) {
         try {
           const targetName = LANGUAGE_NAMES[targetLanguage] || 'English';
           const proofModel = AGENT_MODELS.fast.id; // Haiku
-          console.log(`[${requestId}] Language proofreader trigger: target=${targetLanguage}, wholeAnswerMismatch=${wholeAnswerMismatch} (detected=${responseLanguage}), citedClipMismatch=${citedClipMismatch}${citedForeignLangs.size ? ` [${[...citedForeignLangs].join(',')}]` : ''}`);
+          console.log(`[${requestId}] Language proofreader trigger: target=${targetLanguage}, wholeAnswerMismatch=${wholeAnswerMismatch} (answer=${responseLanguage}), quoteMismatch=${quoteMismatch} (quotes=${quoteLang || 'n/a'})`);
           const { text: translated, usage, translated: didTranslate, reason } =
             await translateToLanguage(anthropic, proofModel, answerToProof, targetName);
           if (didTranslate) {
