@@ -5,6 +5,7 @@ const { promisify } = require('util');
 const { WorkProductV2 } = require('../models/WorkProductV2');
 const QueueJob = require('../models/QueueJob');
 const { printLog } = require('../constants');
+const { AUDIO_EXTENSIONS } = require('./audioFormat');
 
 const execAsync = promisify(exec);
 
@@ -21,7 +22,7 @@ class GarbageCollector {
         // Conservative cleanup settings
         this.minFileAge = 2 * 60 * 60 * 1000; // 2 hours minimum age
         this.maxFileAge = 7 * 24 * 60 * 60 * 1000; // 7 days maximum age
-        this.safeExtensions = ['.mp4', '.mp3', '.wav', '.png', '.jpg', '.jpeg'];
+        this.safeExtensions = ['.mp4', '.png', '.jpg', '.jpeg', ...AUDIO_EXTENSIONS.map(ext => `.${ext}`)];
         
         console.log('[INFO] GarbageCollector initialized');
     }

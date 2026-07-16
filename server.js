@@ -26,6 +26,7 @@ const callIngestor = require('./utils/callIngestor');
 const path = require('path');
 const {DEBUG_MODE, SCHEDULER_ENABLED, SCHEDULED_INGESTOR_TIMES, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
+const { AUDIO_EXTENSIONS, storageKeyFromUrl } = require('./utils/audioFormat');
 const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
 const QueueJob = require('./models/QueueJob');
@@ -3081,6 +3082,7 @@ const getWordTimestampsFromFullTranscriptJSON = async (guid, startTime, endTime)
  * @returns {Object} Raw transcript data
  */
 app.get('/api/debug/raw-transcript/:guid', async (req, res) => {
+  if (!DEBUG_MODE) return res.status(404).json({ error: 'Not found' });
   const debugPrefix = `[DEBUG-RAW-TRANSCRIPT][${Date.now()}]`;
   const guid = req.params.guid;
   
@@ -3136,6 +3138,7 @@ app.get('/api/debug/raw-transcript/:guid', async (req, res) => {
  * @returns {Object} Formatted transcript data
  */
 app.get('/api/debug/formatted-transcript/:guid', async (req, res) => {
+  if (!DEBUG_MODE) return res.status(404).json({ error: 'Not found' });
   const debugPrefix = `[DEBUG-FORMATTED-TRANSCRIPT][${Date.now()}]`;
   const guid = req.params.guid;
   
@@ -3195,6 +3198,7 @@ app.get('/api/debug/formatted-transcript/:guid', async (req, res) => {
  * @returns {Object} Debug information about subtitle generation
  */
 app.get('/api/debug/subtitles/:guid', async (req, res) => {
+  if (!DEBUG_MODE) return res.status(404).json({ error: 'Not found' });
   const debugPrefix = `[DEBUG-SUBTITLES][${Date.now()}]`;
   const { guid } = req.params;
   const startTime = parseFloat(req.query.startTime) || 0;
@@ -3284,6 +3288,7 @@ app.get('/api/debug/subtitles/:guid', async (req, res) => {
 
 // Add this new debug endpoint to print raw transcript content
 app.get('/api/debug/raw-transcript-content/:guid', async (req, res) => {
+  if (!DEBUG_MODE) return res.status(404).json({ error: 'Not found' });
   const debugPrefix = `[DEBUG-RAW-CONTENT][${Date.now()}]`;
   const guid = req.params.guid;
   
@@ -3631,7 +3636,7 @@ if (DEBUG_MODE) {
         paragraphsDeleted: 0,
         chaptersDeleted: 0,
         episodeDeleted: false,
-        mp3Deleted: false,
+        audioDeleted: false,
         transcriptDeleted: false,
         totalDeleted: 0
       };
@@ -3658,24 +3663,34 @@ if (DEBUG_MODE) {
         console.warn(`${debugPrefix} Error fetching episode data: ${episodeError.message}`);
       }
       
-      // Step 1: Delete the podcast mp3 from spaces bucket
-      console.log(`${debugPrefix} Step 1: Deleting podcast mp3 from spaces bucket`);
+      // Step 1: Delete the podcast source audio from spaces bucket.
+      // Format-agnostic: the source may be a legacy .mp3 or a re-encoded .m4a/AAC
+      // copy, so we clear the key derived from the stored audioUrl plus every
+      // known audio extension. DeleteObject is idempotent, so clearing an absent
+      // key is a harmless no-op and we never leave an orphaned file behind.
+      console.log(`${debugPrefix} Step 1: Deleting podcast source audio from spaces bucket`);
       if (feedId && spacesManager) {
-        try {
-          const mp3Key = `${feedId}/${guid}.mp3`;
-          const bucketName = process.env.SPACES_BUCKET_NAME;
-          
-          console.log(`${debugPrefix} Attempting to delete mp3: ${bucketName}/${mp3Key}`);
-          await spacesManager.deleteFile(bucketName, mp3Key);
-          
-          deletionStats.mp3Deleted = true;
-          console.log(`${debugPrefix} Successfully deleted mp3 file`);
-        } catch (mp3Error) {
-          console.warn(`${debugPrefix} Failed to delete mp3: ${mp3Error.message}`);
-          // Don't fail the entire operation if mp3 deletion fails
+        const bucketName = process.env.SPACES_BUCKET_NAME;
+        const audioKeys = new Set(AUDIO_EXTENSIONS.map(ext => `${feedId}/${guid}.${ext}`));
+        const derivedKey = storageKeyFromUrl(episodeData && episodeData.audioUrl);
+        if (derivedKey) audioKeys.add(derivedKey);
+
+        for (const audioKey of audioKeys) {
+          try {
+            console.log(`${debugPrefix} Attempting to delete audio: ${bucketName}/${audioKey}`);
+            await spacesManager.deleteFile(bucketName, audioKey);
+            deletionStats.audioDeleted = true;
+          } catch (audioError) {
+            console.warn(`${debugPrefix} Failed to delete audio ${audioKey}: ${audioError.message}`);
+            // Don't fail the entire operation if an audio deletion fails
+          }
+        }
+
+        if (deletionStats.audioDeleted) {
+          console.log(`${debugPrefix} Cleared source audio for ${feedId}/${guid} (format-agnostic)`);
         }
       } else {
-        console.warn(`${debugPrefix} Skipping mp3 deletion - feedId: ${feedId}, spacesManager: ${!!spacesManager}`);
+        console.warn(`${debugPrefix} Skipping audio deletion - feedId: ${feedId}, spacesManager: ${!!spacesManager}`);
       }
       
       // Step 2: Delete the podcast transcript
