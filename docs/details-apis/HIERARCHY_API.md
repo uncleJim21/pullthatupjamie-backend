@@ -50,7 +50,7 @@ curl -X GET "http://localhost:4132/api/get-hierarchy?paragraphId=https___lexfrid
     "paragraph": {
       "id": "https___lexfridman_com__p_6320_p715",
       "metadata": {
-        "audioUrl": "https://cascdr-chads-stay-winning.nyc3.cdn.digitaloceanspaces.com/745287/httpslexfridmancomp6320.mp3",
+        "audioUrl": "https://audio.pullthatupjamie.ai/745287/httpslexfridmancomp6320.mp3",
         "creator": "Lex Fridman Podcast",
         "end_time": 15686.3545,
         "episode": "#481 – Norman Ohler: Hitler, Nazis, Drugs, WW2, Blitzkrieg, LSD, MKUltra & CIA",
@@ -96,7 +96,7 @@ curl -X GET "http://localhost:4132/api/get-hierarchy?paragraphId=https___lexfrid
     "episode": {
       "id": "episode_https___lexfridman_com__p_6320",
       "metadata": {
-        "audioUrl": "https://cascdr-chads-stay-winning.nyc3.cdn.digitaloceanspaces.com/745287/httpslexfridmancomp6320.mp3",
+        "audioUrl": "https://audio.pullthatupjamie.ai/745287/httpslexfridmancomp6320.mp3",
         "creator": "Lex Fridman",
         "description": "Norman Ohler is a historian and author of \"Blitzed: Drugs in the Third Reich\"...",
         "duration": 16281,

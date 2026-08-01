@@ -5,6 +5,7 @@
  */
 
 const crypto = require('crypto');
+const { publicAudioUrl } = require('../../utils/audioFormat');
 const { TapeHttpError } = require('./tapeErrors');
 
 /**
@@ -28,7 +29,7 @@ function candidateFromResult(r) {
     creator: r.creator || null,
     feedId: r.feedId != null ? String(r.feedId) : null, // for source gating (tapeTaste.feed_allow)
     episodeImage: r.episodeImage && r.episodeImage !== 'Image unavailable' ? r.episodeImage : null,
-    audioUrl: r.audioUrl && r.audioUrl !== 'URL unavailable' ? r.audioUrl : null,
+    audioUrl: publicAudioUrl(r.audioUrl && r.audioUrl !== 'URL unavailable' ? r.audioUrl : null),
     startTime: Number.isFinite(start) ? start : null,
     endTime: Number.isFinite(end) ? end : null,
     publishedDate: r.date && r.date !== 'Date not provided' ? r.date : null,

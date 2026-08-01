@@ -243,7 +243,7 @@ Each result contains:
 - `quote` — transcript text
 - `episode` — episode title
 - `creator` — podcast name
-- `audioUrl` — direct audio file link
+- `audioUrl` — direct audio file link. **Use this value verbatim** to play or download audio; do not construct audio URLs from `feedId`/`guid` or hardcode a CDN host.
 - `date` — publish date
 - `similarity.combined` — relevance score (0-1, aim for >0.84)
 - `timeContext.start_time` / `end_time` — timestamp in seconds

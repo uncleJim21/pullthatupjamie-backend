@@ -1,4 +1,5 @@
 const neo4jDriver = require('./mentionsNeo4jDriver');
+const { publicAudioUrl } = require('../utils/audioFormat');
 
 // Neo4j query tools - each does exactly one thing
 const neo4jTools = {
@@ -34,7 +35,7 @@ const neo4jTools = {
                 return result.records.map(record => ({
                     episode: record.get('episode'),
                     creator: record.get('creator'),
-                    audioUrl: record.get('audioUrl'),
+                    audioUrl: publicAudioUrl(record.get('audioUrl')),
                     artworkUrl: record.get('artworkUrl'),
                     quote: record.get('quote'),
                     date: record.get('date'),

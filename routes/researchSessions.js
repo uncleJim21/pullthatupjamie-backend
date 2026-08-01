@@ -1,4 +1,5 @@
 const express = require('express');
+const { publicAudioUrl } = require('../utils/audioFormat');
 const router = express.Router();
 const mongoose = require('mongoose');
 
@@ -1694,7 +1695,7 @@ router.post('/enrich', async (req, res) => {
           episode: rest.episode || 'Unknown episode',
           creator: rest.creator || 'Unknown creator',
           episodeImage: rest.episodeImage || null,
-          audioUrl: rest.audioUrl || null,
+          audioUrl: publicAudioUrl(rest.audioUrl) || null,
           date: rest.date || null,
           feedId: rest.additionalFields?.feedId || null,
           guid: rest.additionalFields?.guid || null,
