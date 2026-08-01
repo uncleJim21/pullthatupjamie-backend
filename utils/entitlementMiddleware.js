@@ -6,6 +6,7 @@
  */
 
 const { resolveIdentity, TIERS } = require('./identityResolver');
+const { publicAudioUrl } = require('./audioFormat');
 const { Entitlement } = require('../models/Entitlement');
 const { AgentInvoice } = require('../models/AgentInvoice');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
@@ -438,7 +439,7 @@ async function generateDebugMockResponse(entitlementType, query) {
     description: null,
     episode: doc.episode || doc.metadataRaw?.episode || 'Mock Episode',
     creator: doc.creator || doc.metadataRaw?.creator || 'Mock Creator',
-    audioUrl: doc.audioUrl || doc.metadataRaw?.audioUrl || '',
+    audioUrl: publicAudioUrl(doc.audioUrl || doc.metadataRaw?.audioUrl) || '',
     episodeImage: doc.episodeImage || doc.metadataRaw?.episodeImage || '',
     date: doc.publishedDate || 'Date not provided',
     published: doc.publishedDate || null,

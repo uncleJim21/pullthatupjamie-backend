@@ -1,4 +1,5 @@
 const BASE_URL = process.env.FRONTEND_URL || 'https://www.pullthatupjamie.ai';
+const { publicAudioUrl } = require('./audioFormat');
 
 /**
  * Format workflow results based on the requested outputFormat.
@@ -48,7 +49,7 @@ function formatAsStructured(result) {
             : null,
           episode: item.episode || null,
           speaker: item.creator || null,
-          audioUrl: item.audioUrl || null,
+          audioUrl: publicAudioUrl(item.audioUrl) || null,
         },
         guid: item.guid || null,
         feedId: item.feedId || null,

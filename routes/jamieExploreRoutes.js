@@ -1,4 +1,5 @@
 const express = require('express');
+const { publicAudioUrl } = require('../utils/audioFormat');
 const router = express.Router();
 const { OpenAI } = require('openai');
 const { findSimilarDiscussions, getEpisodeByGuid, getParagraphWithEpisodeData, getClipById, formatResults } = require('../agent-tools/pineconeTools.js');
@@ -373,7 +374,7 @@ router.post('/search-quotes-3d', serviceHmac({ optional: true }), createEntitlem
           if (ep.episodeImage) result.episodeImage = ep.episodeImage;
         }
         if (!result.audioUrl || result.audioUrl === 'URL unavailable') {
-          if (ep.audioUrl) result.audioUrl = ep.audioUrl;
+          if (ep.audioUrl) result.audioUrl = publicAudioUrl(ep.audioUrl);
         }
         if (!result.creator || result.creator === 'Creator not specified') {
           if (ep.creator) result.creator = ep.creator;
@@ -1383,7 +1384,7 @@ router.post('/fetch-research-id', async (req, res) => {
           if (ep.episodeImage) result.episodeImage = ep.episodeImage;
         }
         if (!result.audioUrl || result.audioUrl === 'URL unavailable') {
-          if (ep.audioUrl) result.audioUrl = ep.audioUrl;
+          if (ep.audioUrl) result.audioUrl = publicAudioUrl(ep.audioUrl);
         }
         if (!result.creator || result.creator === 'Creator not specified') {
           if (ep.creator) result.creator = ep.creator;

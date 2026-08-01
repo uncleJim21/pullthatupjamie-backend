@@ -1,4 +1,5 @@
 const { printLog } = require('../constants.js');
+const { publicAudioUrl } = require('./audioFormat');
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const WorkProductV2 = require('../models/WorkProductV2');
 const { findSimilarDiscussions } = require('../agent-tools/pineconeTools');
@@ -26,7 +27,7 @@ function buildMiniPlayer(result) {
       : null,
     episode: result.episode || null,
     speaker: result.creator || null,
-    audioUrl: result.audioUrl || null,
+    audioUrl: publicAudioUrl(result.audioUrl) || null,
   };
 }
 
@@ -132,7 +133,7 @@ async function stepSearchQuotes({ query, feedIds = [], guids = [], limit = 10, m
         quote: metadata.text || metadata.summary || metadata.headline || 'Quote unavailable',
         episode: metadata.episode || metadata.title || 'Unknown episode',
         creator: metadata.creator || 'Unknown',
-        audioUrl: metadata.audioUrl || null,
+        audioUrl: publicAudioUrl(metadata.audioUrl) || null,
         episodeImage: metadata.episodeImage || null,
         date: metadata.publishedDate || null,
         similarity: parseFloat(r.score.toFixed(4)),
