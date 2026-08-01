@@ -26,7 +26,7 @@ const callIngestor = require('./utils/callIngestor');
 const path = require('path');
 const {DEBUG_MODE, SCHEDULER_ENABLED, SCHEDULED_INGESTOR_TIMES, printLog} = require('./constants.js')
 const ClipUtils = require('./utils/ClipUtils');
-const { AUDIO_EXTENSIONS, storageKeyFromUrl } = require('./utils/audioFormat');
+const { AUDIO_EXTENSIONS, storageKeyFromUrl, rewriteAudioUrlsDeep } = require('./utils/audioFormat');
 const { getPodcastFeed } = require('./utils/LandingPageService');
 const {WorkProductV2, calculateLookupHash} = require('./models/WorkProductV2')
 const QueueJob = require('./models/QueueJob');
@@ -227,6 +227,16 @@ app.use(cors(corsOptions));
 app.enable('trust proxy');
 app.set('trust proxy', true);
 app.use(express.json());
+
+// Rewrite any audioUrl in JSON responses to the Cloudflare-cached host, so no
+// endpoint — including ones that dump raw metadataRaw — hands agents/clients the
+// raw DigitalOcean origin (which bypasses the cache). Idempotent; no-ops on
+// non-bucket URLs. SSE endpoints use res.write and are unaffected.
+app.use((req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = (body) => sendJson(rewriteAudioUrlsDeep(body));
+  next();
+});
 app.use(cookieParser()); // Add this line before session middleware
 
 // Add session middleware

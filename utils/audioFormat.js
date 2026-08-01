@@ -49,4 +49,30 @@ function publicAudioUrl(url) {
   return url.replace(SPACES_AUDIO_HOST_RE, PUBLIC_AUDIO_HOST);
 }
 
-module.exports = { AUDIO_EXTENSIONS, storageKeyFromUrl, publicAudioUrl, PUBLIC_AUDIO_HOST };
+/**
+ * Recursively rewrite every `audioUrl` string field within a value (in place) to
+ * the public Cloudflare host. Catches audioUrl carried inside dumped `metadataRaw`
+ * objects / arrays that per-call-site wrapping misses. No-ops on non-bucket URLs
+ * and non-string values, so it's safe to run over any JSON response body.
+ *
+ * @param {*} value
+ * @returns {*} the same value, mutated in place
+ */
+function rewriteAudioUrlsDeep(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) rewriteAudioUrlsDeep(value[i]);
+    return value;
+  }
+  for (const key of Object.keys(value)) {
+    const v = value[key];
+    if (key === 'audioUrl' && typeof v === 'string') {
+      value[key] = publicAudioUrl(v);
+    } else if (v && typeof v === 'object') {
+      rewriteAudioUrlsDeep(v);
+    }
+  }
+  return value;
+}
+
+module.exports = { AUDIO_EXTENSIONS, storageKeyFromUrl, publicAudioUrl, PUBLIC_AUDIO_HOST, rewriteAudioUrlsDeep };
