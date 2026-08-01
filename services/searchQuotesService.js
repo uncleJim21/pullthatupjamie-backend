@@ -12,6 +12,7 @@
 
 const { printLog } = require('../constants.js');
 const { findSimilarDiscussions } = require('../agent-tools/pineconeTools.js');
+const { publicAudioUrl } = require('../utils/audioFormat.js');
 const { triageQuery } = require('../utils/queryTriage');
 const { isProperNounShaped } = require('../utils/properNounDetector');
 const { atlasTextSearch } = require('./atlasTextSearch');
@@ -284,7 +285,7 @@ async function searchQuotes(params, { openai, recordHelperLlmUsage }) {
         // answer language ("translated from German").
         sourceLanguage: getFeedLanguageSync(metadata.feedId),
         feedId: metadata.feedId != null ? String(metadata.feedId) : null,
-        audioUrl: metadata.audioUrl || 'URL unavailable',
+        audioUrl: publicAudioUrl(metadata.audioUrl) || 'URL unavailable',
         episodeImage: metadata.episodeImage || 'Image unavailable',
         listenLink: metadata.listenLink || '',
         date: metadata.publishedDate || 'Date not provided',
