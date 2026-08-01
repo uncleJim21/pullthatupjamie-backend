@@ -8,6 +8,7 @@ const TfIdf = natural.TfIdf;
 const JamieVectorMetadata = require('../models/JamieVectorMetadata');
 const { printLog } = require('../constants.js');
 const { ensureFeedLanguages, getFeedLanguageSync } = require('../utils/feedLanguage');
+const { publicAudioUrl } = require('../utils/audioFormat');
 
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = process.env.PINECONE_INDEX;
@@ -269,7 +270,7 @@ const pineconeTools = {
                 // in. Callers that can await should call ensureFeedLanguages()
                 // first; otherwise a cold cache safely falls back to "en".
                 language: getFeedLanguageSync(match.metadata.feedId),
-                audioUrl: match.metadata.audioUrl || "URL unavailable",
+                audioUrl: publicAudioUrl(match.metadata.audioUrl) || "URL unavailable",
                 episodeImage: match.metadata.episodeImage || "Image unavailable",
                 date: match.metadata.publishedDate || "Date not provided",
                 published: match.metadata.publishedDate || match.metadata.publishedTimestamp || null,
@@ -625,7 +626,7 @@ const pineconeTools = {
                 publishedDate: metadata.publishedDate || metadata.published_date || null,
                 creator: metadata.creator || "Unknown Creator",
                 feedId: metadata.feedId || null,
-                audioUrl: metadata.audioUrl || null,
+                audioUrl: publicAudioUrl(metadata.audioUrl) || null,
                 episodeImage: metadata.episodeImage 
                               || metadata.image 
                               || metadata.imageUrl 

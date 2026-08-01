@@ -27,4 +27,26 @@ function storageKeyFromUrl(url) {
   }
 }
 
-module.exports = { AUDIO_EXTENSIONS, storageKeyFromUrl };
+// User-facing audio host. Public audioUrls are rewritten to this Cloudflare-
+// fronted hostname so repeat playback is served from Cloudflare's cache instead
+// of billing DigitalOcean egress. The path (feedId/guid.ext) is unchanged; a
+// Cloudflare Worker on this host maps requests back to the raw Spaces origin.
+const PUBLIC_AUDIO_HOST = 'audio.pullthatupjamie.ai';
+
+// Our Spaces audio bucket host, in either the CDN or direct form.
+const SPACES_AUDIO_HOST_RE = /cascdr-chads-stay-winning\.nyc3\.(?:cdn\.)?digitaloceanspaces\.com/i;
+
+/**
+ * Rewrite a stored DigitalOcean Spaces audio URL to the public Cloudflare host.
+ * No-ops for empty/non-string values and for URLs that don't point at our audio
+ * bucket (e.g. original RSS enclosures hosted on the podcaster's own domain).
+ *
+ * @param {string} url
+ * @returns {string} the rewritten URL, or the input unchanged
+ */
+function publicAudioUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  return url.replace(SPACES_AUDIO_HOST_RE, PUBLIC_AUDIO_HOST);
+}
+
+module.exports = { AUDIO_EXTENSIONS, storageKeyFromUrl, publicAudioUrl, PUBLIC_AUDIO_HOST };
