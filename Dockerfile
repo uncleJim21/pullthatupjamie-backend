@@ -28,8 +28,11 @@ RUN echo "deb http://deb.debian.org/debian bullseye contrib" >> /etc/apt/sources
 # Create app directory
 WORKDIR /usr/src/app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files. .npmrc must come along BEFORE npm ci — it carries the
+# min-release-age quarantine window, and without it the image build would
+# resolve dependencies with no protection against a freshly-published
+# compromised version (the Shai-Hulud npm worm delivery path).
+COPY package*.json .npmrc ./
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps

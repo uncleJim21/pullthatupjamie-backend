@@ -5,6 +5,9 @@
   "main": "app.js",
   "scripts": {
     "prebuild": "mkdir -p dbs && chmod 755 dbs",
+    "check:npm-hardening": "node scripts/check-npm-hardening.js",
+    "deps:update": "scripts/safe-npm-update.sh update",
+    "deps:install": "scripts/safe-npm-update.sh install",
     "test": "node test/test-hmac.js",
     "test:hmac": "node test/test-hmac-all.js",
     "setup-subtitle-test": "node setup-subtitle-test.js",

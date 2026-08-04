@@ -31,12 +31,23 @@ jobs:
         with:
           node-version: "20"
 
+      # Fail the build if the quarantine window isn't in effect. Without this,
+      # losing .npmrc would silently downgrade CI to unprotected installs.
+      - name: Verify npm supply-chain hardening
+        run: node scripts/check-npm-hardening.js
+
+      # `npm ci` installs strictly from package-lock.json. `npm install` would
+      # re-resolve semver ranges on every run, so a freshly-published malicious
+      # version could land in CI without any commit to this repo — the exact
+      # delivery path used by the Shai-Hulud npm worm.
+      # --ignore-scripts: CI only builds/validates skills, so no native deps are
+      # needed here, and no dependency gets to execute code next to CI secrets.
       - name: Install project dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps --ignore-scripts
 
       - name: Install skills-ref CLI
         run: |
-          if npm install -g skills-ref 2>/dev/null; then
+          if npm install -g skills-ref --ignore-scripts 2>/dev/null; then
             echo "SKILLS_REF_AVAILABLE=true" >> $GITHUB_ENV
           else
             echo "SKILLS_REF_AVAILABLE=false" >> $GITHUB_ENV
