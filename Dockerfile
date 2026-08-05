@@ -28,8 +28,20 @@ RUN echo "deb http://deb.debian.org/debian bullseye contrib" >> /etc/apt/sources
 # Create app directory
 WORKDIR /usr/src/app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files. .npmrc must come along BEFORE npm ci — it carries the
+# min-release-age quarantine window, and without it the image build would
+# resolve dependencies with no protection against a freshly-published
+# compromised version (the Shai-Hulud npm worm delivery path).
+COPY package*.json .npmrc ./
+COPY scripts/check-npm-hardening.js ./scripts/
+
+# node:20-bullseye bundles npm 10.8.2, which does not support min-release-age
+# and SILENTLY IGNORES it — no warning, no error, just unprotected resolution.
+# Every Node 20 and 22 release is affected; only Node 24+ bundles npm >= 11.10.
+# So upgrade npm before installing anything, then assert the window is actually
+# in effect. The check turns a silent downgrade into a failed build.
+RUN npm install -g npm@11.10.0 \
+    && node scripts/check-npm-hardening.js
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps
