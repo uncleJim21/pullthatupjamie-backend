@@ -31,8 +31,16 @@ jobs:
         with:
           node-version: "20"
 
+      # setup-node@v4 with node-version 20 provisions npm 10.8.2, which predates
+      # min-release-age and silently ignores it — same trap as node:20-bullseye
+      # in the Dockerfile. Upgrade before installing anything. Pinned so the
+      # bootstrap itself is deterministic.
+      - name: Upgrade npm (Node 20 ships npm 10.x, too old for min-release-age)
+        run: npm install -g npm@11.10.0
+
       # Fail the build if the quarantine window isn't in effect. Without this,
-      # losing .npmrc would silently downgrade CI to unprotected installs.
+      # losing .npmrc — or an npm downgrade like the one above — would silently
+      # degrade CI to unprotected installs.
       - name: Verify npm supply-chain hardening
         run: node scripts/check-npm-hardening.js
 
