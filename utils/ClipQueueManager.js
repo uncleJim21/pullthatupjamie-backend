@@ -4,6 +4,7 @@ const { WorkProductV2 } = require('../models/WorkProductV2');
 const QueueJob = require('../models/QueueJob');
 const { v4: uuidv4 } = require('uuid');
 const { DEBUG_MODE, printLog } = require('../constants');
+const { dbReady } = require('./mongoConnect');
 
 class ClipQueueManager extends EventEmitter {
     constructor(options = {}, clipUtils, subtitleGenerator = null) {
@@ -26,8 +27,7 @@ class ClipQueueManager extends EventEmitter {
         // Start background processes
         if(!DEBUG_MODE) {
             this.startHeartbeat();
-            this.startJobPoller();
-            this.reclaimOrphanedJobs();
+            this.startJobPoller(); // reclaims orphans on its first tick once the DB is up
         }
         else{
             printLog(`[INFO] DEBUG_MODE is enabled, skipping heartbeat and job poller`);
@@ -82,6 +82,11 @@ class ClipQueueManager extends EventEmitter {
     // ✅ GUARANTEED TRANSFER: Poll database for available jobs
     async startJobPoller() {
         setInterval(async () => {
+            if (!dbReady()) return; // stay quiet while Mongo is down; no 10s buffer timeouts
+            if (!this._reclaimedOnce) {
+                this._reclaimedOnce = true;
+                await this.reclaimOrphanedJobs();
+            }
             if (this.activeWorkers < this.maxConcurrent) {
                 await this.claimAndProcessNextJob();
             }
@@ -432,6 +437,7 @@ class ClipQueueManager extends EventEmitter {
     // ✅ GUARANTEED TRANSFER: Heartbeat to prove instance is alive
     startHeartbeat() {
         setInterval(async () => {
+            if (!dbReady()) return;
             try {
                 // Update heartbeat for all jobs owned by this instance
                 await QueueJob.updateMany(
