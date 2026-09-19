@@ -1,5 +1,5 @@
 # Use Node.js LTS version as base
-FROM node:20-bullseye
+FROM node:20-bookworm
 
 # Install required dependencies for node-canvas and FFmpeg
 RUN apt-get update && apt-get install -y \
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install Microsoft Core Fonts (includes Impact)
 # Need to enable contrib repository for ttf-mscorefonts-installer
-RUN echo "deb http://deb.debian.org/debian bullseye contrib" >> /etc/apt/sources.list \
+RUN echo "deb http://deb.debian.org/debian bookworm contrib" >> /etc/apt/sources.list \
     && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
     && apt-get update \
     && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
@@ -35,7 +35,7 @@ WORKDIR /usr/src/app
 COPY package*.json .npmrc ./
 COPY scripts/check-npm-hardening.js ./scripts/
 
-# node:20-bullseye bundles npm 10.8.2, which does not support min-release-age
+# node:20-bookworm bundles npm 10.8.2, which does not support min-release-age
 # and SILENTLY IGNORES it — no warning, no error, just unprotected resolution.
 # Every Node 20 and 22 release is affected; only Node 24+ bundles npm >= 11.10.
 # So upgrade npm before installing anything, then assert the window is actually
