@@ -171,10 +171,12 @@ async function callOpenAIEmbeddingsWithRetry({ input, model = "text-embedding-ad
   }
 }
 
-mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
+const { connectWithRetry, requireDb, dbSnapshot } = require('./utils/mongoConnect');
+// Retries forever with capped backoff (1s..30s); a failed initial connect no
+// longer leaves the app half-dead. Only rejects if the URI itself is missing.
+connectWithRetry(mongoURI).catch((err) => console.error('[mongo] fatal:', err.message));
 
 const db = mongoose.connection;
-db.on("error", console.error.bind(console, "MongoDB connection error:"));
 db.once("open", () => {
   console.log("Connected to MongoDB!");
 });
@@ -256,6 +258,10 @@ app.use(session({
   },
   name: 'connect.sid' // Explicitly set the cookie name
 }));
+
+// While MongoDB is unreachable, answer /api/* with an immediate, specific 503
+// (see utils/mongoConnect.js) instead of buffering 10s into a generic 500.
+app.use('/api', requireDb);
 
 // Environment variables with defaults
 const PORT = process.env.PORT || 4132;
@@ -1641,7 +1647,8 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     availableModels: Object.keys(MODEL_CONFIGS),
-    searxngStatus: searxng ? 'connected' : 'disconnected'
+    searxngStatus: searxng ? 'connected' : 'disconnected',
+    db: dbSnapshot()
   });
 });
 

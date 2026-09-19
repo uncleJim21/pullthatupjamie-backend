@@ -24,7 +24,8 @@
     "nostr:decrypt-private-zap": "node scripts/nostr-decrypt-private-zap.js",
     "test:zap-validator": "node tests/zap-receipt-validator.test.js",
     "test:reranker": "node tests/clip-reranker.test.js",
-    "test:relay-pool": "node tests/nostr-relay-pool.test.js"
+    "test:relay-pool": "node tests/nostr-relay-pool.test.js",
+    "test:mongo-failsafe": "node tests/mongo-connect-failsafe.test.js"
   },
   "author": "uj21",
   "license": "ISC",
