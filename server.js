@@ -2124,17 +2124,28 @@ const _server = app.listen(PORT, async () => {
         
       console.log(`Using ingestor schedule times: ${ingestorTimes.join(', ')} (Chicago time)`);
       
+      // Two layers against duplicate triggers (each one re-embeds every feed
+      // at the ingestor): the per-slot scheduler lock below de-duplicates
+      // across containers for this cron tick, and callIngestor() itself holds
+      // a Mongo semaphore for INGESTOR_MIN_INTERVAL_MINUTES (default 180) so
+      // no second trigger of any origin gets through inside the window.
+      const { runIfLockHeld: runIngestIfLockHeld } = require('./utils/runIfLockHeld');
       scheduler.scheduleTask(
         'podcast-ingestor',
         ingestorTimes,
         async () => {
           try {
             const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
-            console.log(`[SCHEDULED TASK] Starting podcast ingestion at ${now} (Chicago time)`);
-            
-            const result = await callIngestor();
-            
-            return result;
+            const outcome = await runIngestIfLockHeld('podcast-ingestor', async () => {
+              console.log(`[SCHEDULED TASK] Starting podcast ingestion at ${now} (Chicago time)`);
+              const result = await callIngestor();
+              if (result && result.skipped) console.warn(`[SCHEDULED TASK] Ingestion skipped: ${result.reason}`);
+              return result;
+            }, { bucketResolutionSeconds: 3600, verbose: true });
+            if (!outcome.ranOnThisInstance) {
+              console.log(`[SCHEDULED TASK] Ingestion slot ${outcome.lockId} already claimed by another instance — skipped`);
+            }
+            return outcome;
           } catch (error) {
             console.error(`[SCHEDULED TASK] Error triggering podcast ingestion:`, error.message);
           }
@@ -3394,9 +3405,14 @@ if (DEBUG_MODE) {
   app.post('/api/debug/trigger-ingestor', async (req, res) => {
     try {
       const jobId = `manual-job-${Date.now()}`;
-      console.log(`[DEBUG] Manually triggering ingestor with job ID: ${jobId}`);
+      // Manual kicks respect the same window; pass ?force=true to override.
+      const force = req.query.force === 'true' || req.body?.force === true;
+      console.log(`[DEBUG] Manually triggering ingestor with job ID: ${jobId}${force ? ' (force)' : ''}`);
       
-      const result = await callIngestor(jobId);
+      const result = await callIngestor(jobId, null, { force });
+      if (result && result.skipped) {
+        return res.status(409).json({ success: false, skipped: true, reason: result.reason, lock: result.lock, hint: 'add ?force=true to override the ingest window' });
+      }
       
       res.json({
         success: true,
