@@ -2140,6 +2140,13 @@ const _server = app.listen(PORT, async () => {
               console.log(`[SCHEDULED TASK] Starting podcast ingestion at ${now} (Chicago time)`);
               const result = await callIngestor();
               if (result && result.skipped) console.warn(`[SCHEDULED TASK] Ingestion skipped: ${result.reason}`);
+              // Keep the pro-analyzer queue clean for its next walk (see utils/proQueueJanitor.js).
+              try {
+                const { pruneProQueues, ENABLED: janitorEnabled } = require('./utils/proQueueJanitor');
+                if (janitorEnabled) await pruneProQueues();
+              } catch (janitorErr) {
+                console.error('[PRO-QUEUE-JANITOR] post-ingest prune failed (non-fatal):', janitorErr.message);
+              }
               return result;
             }, { bucketResolutionSeconds: 3600, verbose: true });
             if (!outcome.ranOnThisInstance) {
@@ -2225,6 +2232,22 @@ const _server = app.listen(PORT, async () => {
         }
       });
       console.log('[SchedulerLockSmokeTest] Cron registered: every 5 minutes (guarded by SchedulerLock)');
+    }
+
+    // Pro-analyzer queue janitor — every 30 min, lock-guarded across containers.
+    // Strips untranscribed and already-run guids so the analyzer's next walk
+    // cannot re-run (and re-email) them. PRO_QUEUE_JANITOR_ENABLED=false disables.
+    if (process.env.PRO_QUEUE_JANITOR_ENABLED !== 'false') {
+      const cron = require('node-cron');
+      const { runIfLockHeld: runJanitorIfLockHeld } = require('./utils/runIfLockHeld');
+      const { pruneProQueues } = require('./utils/proQueueJanitor');
+      cron.schedule('*/30 * * * *', async () => {
+        try {
+          await runJanitorIfLockHeld('pro-queue-janitor', () => pruneProQueues(), { bucketResolutionSeconds: 1800 });
+        } catch (err) {
+          console.error('[PRO-QUEUE-JANITOR] cron error:', err.message);
+        }
+      });
     }
 
     // Blog ingestion cron — runs every 10 minutes, independent of SCHEDULER_ENABLED
