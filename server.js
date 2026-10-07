@@ -2123,6 +2123,11 @@ const _server = app.listen(PORT, async () => {
       const ingestorTimes = SCHEDULED_INGESTOR_TIMES;
         
       console.log(`Using ingestor schedule times: ${ingestorTimes.join(', ')} (Chicago time)`);
+      // Job stagger (Chicago): every scheduled job owns its own minute so no
+      // two fire together on this 2-vCPU box. Ingestor 09:30/16:15 (env),
+      // RSS refresh :20 hourly, janitor :07/:37, blog poll :03/:13/.../:53,
+      // lock smoke test :02/:07/..., warm read-ins 08:35, hydrate 10:40,
+      // backup 03:40. Keep new crons off these minutes.
       
       // Two layers against duplicate triggers (each one re-embeds every feed
       // at the ingestor): the per-slot scheduler lock below de-duplicates
@@ -2163,7 +2168,7 @@ const _server = app.listen(PORT, async () => {
       if (!DEBUG_MODE && dbBackupManager) {
         scheduler.scheduleTask(
           'database-backup',
-          ['03:00'],
+          ['03:40'],
           () => {
             console.log('Running scheduled database backup');
             dbBackupManager.performBackup().catch(err => {
@@ -2176,8 +2181,10 @@ const _server = app.listen(PORT, async () => {
       // Schedule hourly podcast RSS cache refresh
       scheduler.scheduleTask(
         'podcast-rss-cache-refresh',
-        ['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00', '08:00', '09:00', '10:00', '11:00', 
-         '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00'],
+        // :20 past each hour (not :00) so it never shares a minute with the
+        // hour-top crons below or with the 09:30 / 16:15 ingestor triggers.
+        ['00:20', '01:20', '02:20', '03:20', '04:20', '05:20', '06:20', '07:20', '08:20', '09:20', '10:20', '11:20',
+         '12:20', '13:20', '14:20', '15:20', '16:20', '17:20', '18:20', '19:20', '20:20', '21:20', '22:20', '23:20'],
         async () => {
           try {
             const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
@@ -2214,7 +2221,7 @@ const _server = app.listen(PORT, async () => {
       const cron = require('node-cron');
       const { runIfLockHeld } = require('./utils/runIfLockHeld');
       const instanceTag = process.env.HOSTNAME || process.env.HOST || 'unknown';
-      cron.schedule('*/5 * * * *', async () => {
+      cron.schedule('2-59/5 * * * *', async () => {
         try {
           const result = await runIfLockHeld(
             'scheduler-lock-smoke-test',
@@ -2241,7 +2248,7 @@ const _server = app.listen(PORT, async () => {
       const cron = require('node-cron');
       const { runIfLockHeld: runJanitorIfLockHeld } = require('./utils/runIfLockHeld');
       const { pruneProQueues } = require('./utils/proQueueJanitor');
-      cron.schedule('*/30 * * * *', async () => {
+      cron.schedule('7,37 * * * *', async () => {
         try {
           await runJanitorIfLockHeld('pro-queue-janitor', () => pruneProQueues(), { bucketResolutionSeconds: 1800 });
         } catch (err) {
@@ -2255,7 +2262,7 @@ const _server = app.listen(PORT, async () => {
     if (process.env.NOSTR_BLOG_ENABLED === 'true') {
       const cron = require('node-cron');
       const blogIngestionService = new BlogIngestionService();
-      cron.schedule('*/10 * * * *', async () => {
+      cron.schedule('3-59/10 * * * *', async () => {
         try {
           const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
           console.log(`[SCHEDULED TASK] Starting blog ingestion at ${now} (Chicago time)`);
@@ -2278,7 +2285,7 @@ const _server = app.listen(PORT, async () => {
       const path = require('path');
       const { spawn } = require('child_process');
       const { runIfLockHeld } = require('./utils/runIfLockHeld');
-      cron.schedule('0 10 * * *', async () => {
+      cron.schedule('40 10 * * *', async () => {
         try {
           const result = await runIfLockHeld('tape-card-hydrate', () => new Promise((resolve) => {
             const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
@@ -2292,7 +2299,7 @@ const _server = app.listen(PORT, async () => {
           console.error('[TapeCardHydrate] error:', err.message);
         }
       }, { timezone: 'America/Chicago' });
-      console.log('[TapeCardHydrate] Cron registered: daily 10:00 America/Chicago (set TAPE_CARD_HYDRATE_CRON=false to disable)');
+      console.log('[TapeCardHydrate] Cron registered: daily 10:40 America/Chicago (set TAPE_CARD_HYDRATE_CRON=false to disable)');
     } else {
       console.log('[TapeCardHydrate] Disabled (TAPE_CARD_HYDRATE_CRON=false)');
     }
@@ -2312,7 +2319,7 @@ const _server = app.listen(PORT, async () => {
       // default if the override is invalid. To test that the cron fires without
       // burning budget, prefer the CLI (`node scripts/warm-readins.js --limit 5`)
       // or set the schedule to a single near-future minute and revert after.
-      const DEFAULT_WARM_SCHEDULE = '0 8 * * *';
+      const DEFAULT_WARM_SCHEDULE = '35 8 * * *';
       let warmSchedule = process.env.TAPE_WARM_READIN_SCHEDULE || DEFAULT_WARM_SCHEDULE;
       if (!cron.validate(warmSchedule)) {
         console.warn(`[TapeWarm] invalid TAPE_WARM_READIN_SCHEDULE="${warmSchedule}"; using default "${DEFAULT_WARM_SCHEDULE}"`);
