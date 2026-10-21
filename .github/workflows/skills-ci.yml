@@ -29,18 +29,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Same patched LTS line as the Dockerfile (Oct 21, 2026 security
+          # release). Node 20 is end-of-life and receives no security fixes.
+          node-version-file: ".nvmrc"
 
-      # setup-node@v4 with node-version 20 provisions npm 10.8.2, which predates
-      # min-release-age and silently ignores it — same trap as node:20-bullseye
-      # in the Dockerfile. Upgrade before installing anything. Pinned so the
-      # bootstrap itself is deterministic.
-      - name: Upgrade npm (Node 20 ships npm 10.x, too old for min-release-age)
-        run: npm install -g npm@11.10.0
-
+      # Node 24 bundles npm >= 11.10, which honors min-release-age. (Node 20/22
+      # ship npm 10.x and silently ignore it — if the version is ever moved
+      # back, a global npm upgrade step must return here.)
       # Fail the build if the quarantine window isn't in effect. Without this,
-      # losing .npmrc — or an npm downgrade like the one above — would silently
-      # degrade CI to unprotected installs.
+      # losing .npmrc would silently degrade CI to unprotected installs.
       - name: Verify npm supply-chain hardening
         run: node scripts/check-npm-hardening.js
 

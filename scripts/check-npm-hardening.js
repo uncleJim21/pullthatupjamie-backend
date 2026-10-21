@@ -43,25 +43,48 @@ if (!fs.existsSync(NPMRC)) {
   }
 }
 
-// 2. npm must actually honor it. npm normalizes min-release-age into `before`
-//    and does NOT echo it back via `npm config get min-release-age` (always
-//    null), so the resolved cutoff date is the only trustworthy signal.
-let before;
-try {
-  before = execFileSync('npm', ['config', 'get', 'before'], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-  }).trim();
-} catch (err) {
-  fail(`could not read npm config: ${err.message}`);
+// 2. npm must actually honor it. How npm reports the setting changed between
+//    releases:
+//      - npm 11.10 – 11.16 normalize min-release-age into `before` and report
+//        `npm config get min-release-age` as null, so the resolved cutoff date
+//        is the only signal.
+//      - npm >= 11.17 keeps min-release-age as its own key (so it can coexist
+//        with --before), reports it directly, and leaves `before` null.
+//    Accept either form; anything older than 11.10 ignores the key entirely.
+const npmVersion = execFileSync('npm', ['-v'], { encoding: 'utf8' }).trim();
+const [npmMajor, npmMinor] = npmVersion.split('.').map(Number);
+if (npmMajor < 11 || (npmMajor === 11 && npmMinor < 10)) {
+  fail(`npm ${npmVersion} does not support min-release-age (requires npm >= 11.10).`);
 }
 
-if (!before || before === 'null' || before === 'undefined') {
-  fail(
-    'npm reports no `before` cutoff. Requires npm >= 11.10 — ' +
-      `this environment has ${execFileSync('npm', ['-v'], { encoding: 'utf8' }).trim()}.`
-  );
-} else {
+const getConfig = (key) => {
+  try {
+    return execFileSync('npm', ['config', 'get', key], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    }).trim();
+  } catch (err) {
+    fail(`could not read npm config ${key}: ${err.message}`);
+    return '';
+  }
+};
+
+const isUnset = (v) => !v || v === 'null' || v === 'undefined';
+const before = getConfig('before');
+const reported = getConfig('min-release-age');
+
+if (!isUnset(reported)) {
+  // Newer npm: the key is honored as-is.
+  if (Number(reported) !== REQUIRED_DAYS) {
+    fail(`npm reports min-release-age=${reported}, expected ${REQUIRED_DAYS}.`);
+  } else if (!process.exitCode) {
+    console.log(
+      `OK: npm ${npmVersion} enforces min-release-age=${REQUIRED_DAYS} ` +
+        `(~${REQUIRED_DAYS}-day quarantine window).`
+    );
+  }
+} else if (!isUnset(before)) {
+  // Older npm: verify the resolved cutoff date.
   const cutoff = new Date(before);
   if (Number.isNaN(cutoff.getTime())) {
     fail(`npm returned an unparseable cutoff: ${before}`);
@@ -75,11 +98,16 @@ if (!before || before === 'null' || before === 'undefined') {
       );
     } else if (!process.exitCode) {
       console.log(
-        `OK: npm ignores anything published after ${cutoff.toISOString()} ` +
+        `OK: npm ${npmVersion} ignores anything published after ${cutoff.toISOString()} ` +
           `(~${REQUIRED_DAYS}-day quarantine window).`
       );
     }
   }
+} else {
+  fail(
+    `npm ${npmVersion} reports neither a min-release-age nor a \`before\` cutoff. ` +
+      'The quarantine window is not in effect.'
+  );
 }
 
 if (process.exitCode) {
