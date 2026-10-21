@@ -1,5 +1,11 @@
-# Use Node.js LTS version as base
-FROM node:20-bookworm
+# Node.js 24 LTS, pinned to the exact patch that ships the October 21, 2026
+# security fixes (CVE-2026-111497 Brotli OOB write, CVE-2026-106069 /
+# CVE-2026-105483 / CVE-2026-106072 TLS hostname-check bypasses,
+# CVE-2026-105482 dns.resolve NUL truncation, CVE-2026-106074 snapshot RNG).
+# Node 20 reached end-of-life on 2026-04-30 and no longer receives security
+# releases. Bump this tag (never a floating major) when a new advisory lands:
+# https://nodejs.org/en/blog/vulnerability/
+FROM node:24.22.1-bookworm
 
 # Install required dependencies for node-canvas and FFmpeg
 RUN apt-get update && apt-get install -y \
@@ -35,13 +41,12 @@ WORKDIR /usr/src/app
 COPY package*.json .npmrc ./
 COPY scripts/check-npm-hardening.js ./scripts/
 
-# node:20-bookworm bundles npm 10.8.2, which does not support min-release-age
-# and SILENTLY IGNORES it — no warning, no error, just unprotected resolution.
-# Every Node 20 and 22 release is affected; only Node 24+ bundles npm >= 11.10.
-# So upgrade npm before installing anything, then assert the window is actually
-# in effect. The check turns a silent downgrade into a failed build.
-RUN npm install -g npm@11.10.0 \
-    && node scripts/check-npm-hardening.js
+# node:24.22.1 bundles npm 11.19.1, which honors min-release-age (needs npm
+# >= 11.10). Node 20/22 images bundle npm 10.x and SILENTLY IGNORE it, so if
+# the base image is ever moved back, the global npm upgrade must return too.
+# Assert the quarantine window is actually in effect before installing: the
+# check turns a silent downgrade into a failed build.
+RUN node scripts/check-npm-hardening.js
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps
