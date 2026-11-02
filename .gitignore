@@ -24,3 +24,6 @@ dist/clawhub/
 scripts/cutover-transcripts-to-private.js
 scripts/transcript-privacy-diagnostic.js
 scripts/apply-transcripts-private-bucket-policy.js
+
+# runtime logs
+*.log

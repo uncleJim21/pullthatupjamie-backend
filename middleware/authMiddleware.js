@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { User } = require('../models/shared/UserSchema');
 
 /**
@@ -92,6 +93,27 @@ async function authenticateToken(req, res, next) {
   }
 }
 
+/**
+ * Shared-secret gate for admin/debug routes. Compares the `x-admin-key` header
+ * (or `?adminKey=` for quick curl checks) against ADMIN_API_KEY in constant
+ * time. Fails closed: if ADMIN_API_KEY is unset the routes are unreachable,
+ * so a stray DEBUG_MODE=true in production exposes nothing.
+ */
+function requireAdminKey(req, res, next) {
+  const expected = process.env.ADMIN_API_KEY || '';
+  if (!expected) {
+    return res.status(503).json({ error: 'Admin routes disabled: ADMIN_API_KEY is not configured' });
+  }
+  const provided = String(req.headers['x-admin-key'] || req.query.adminKey || '');
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return next();
+}
+
 module.exports = {
-  authenticateToken
-}; 
+  authenticateToken,
+  requireAdminKey
+};
