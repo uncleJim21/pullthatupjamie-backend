@@ -14,7 +14,6 @@ dbs/*
 logs/
 tmp/
 test/
-tests/
 docs/
 dist/
 dev-helper-scripts/
