@@ -1077,13 +1077,18 @@ class ClipUtils {
    */
   async _getVideoDurationFromUrl(url) {
     const { promisify } = require('util');
-    const exec = promisify(require('child_process').exec);
+    const execFile = promisify(require('child_process').execFile);
     
     try {
-      // Use FFprobe to get duration from URL without downloading
-      const { stdout } = await exec(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${url}"`
-      );
+      // Use FFprobe to get duration from URL without downloading.
+      // execFile with an argv array: the URL comes from an ingested RSS feed
+      // (publisher-controlled), so it must never pass through a shell.
+      const { stdout } = await execFile('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        String(url)
+      ]);
       return parseFloat(stdout.trim());
     } catch (error) {
       console.warn(`Failed to get duration from URL, using fallback: ${error.message}`);
@@ -1501,12 +1506,15 @@ class ClipUtils {
    */
   async _getFileDuration(filePath) {
     const { promisify } = require('util');
-    const exec = promisify(require('child_process').exec);
+    const execFile = promisify(require('child_process').execFile);
     
     try {
-      const { stdout } = await exec(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
-      );
+      const { stdout } = await execFile('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        String(filePath)
+      ]);
       return parseFloat(stdout.trim());
     } catch (error) {
       throw new Error(`Failed to get file duration: ${error.message}`);

@@ -81,6 +81,9 @@ const JamieVectorMetadata = require('./models/JamieVectorMetadata');
 const { updateEntitlementConfig } = require('./utils/entitlements');
 const { checkAdminMode } = require('./middleware/authMiddleware');
 const { serviceHmac } = require('./middleware/hmac');
+const { requireAdminKey } = require('./middleware/authMiddleware');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const GarbageCollector = require('./utils/GarbageCollector');
 
 
@@ -225,10 +228,37 @@ const corsOptions = {
 };
 
 // Middleware
+// Security headers. CSP is left off because Swagger UI at /api/docs needs
+// inline scripts/styles; everything else (HSTS, nosniff, frameguard, hide
+// X-Powered-By, referrer policy) is on by default.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors(corsOptions));
-app.enable('trust proxy');
-app.set('trust proxy', true);
-app.use(express.json());
+// Trust exactly one proxy hop (DigitalOcean App Platform's ingress). `true`
+// trusts the entire X-Forwarded-For chain, so anyone who can reach the origin
+// picks their own client IP and walks around every IP-keyed rate limit.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
+
+// Rate limits for public, unauthenticated routes that fan out to paid LLM /
+// vector / render work. Keyed by client IP (see trust proxy above). Authed
+// agent traffic carries HMAC headers and has its own entitlement accounting,
+// so it is exempt from the IP bucket.
+const hasSvcHmac = (req) => Boolean(req.headers['x-svc-keyid'] && req.headers['x-svc-signature']);
+const expensiveRouteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.EXPENSIVE_ROUTE_RPM || 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: hasSvcHmac,
+  message: { error: 'Too many requests, slow down.' }
+});
+const feedbackLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: Number(process.env.FEEDBACK_RPH || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many feedback submissions.' }
+});
 
 // Rewrite any audioUrl in JSON responses to the Cloudflare-cached host, so no
 // endpoint — including ones that dump raw metadataRaw — hands agents/clients the
@@ -735,7 +765,7 @@ async function generateSubtitlesForClip(clipData, start, end) {
   }
 }
 
-app.post('/api/make-clip', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
+app.post('/api/make-clip', expensiveRouteLimiter, serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.MAKE_CLIP), async (req, res) => {
   // #swagger.tags = ['Create']
   // #swagger.summary = 'Create audio clip with burned-in subtitles'
   // #swagger.description = 'Generates an MP4 video clip from a podcast segment with burned-in subtitles. Processing is asynchronous — poll /api/clip-status/{lookupHash} for completion. Clips are cached: identical clipId + timestamps return immediately at no extra cost. Agent pricing: $0.05/clip (50,000 microUSD). Free tier quotas: 5/week (anonymous), 10/month (registered), 50/month (subscriber). Typical processing: <1 min, max ~2 min.'
@@ -1166,7 +1196,7 @@ app.get('/api/podcast-feed/:feedId', async (req, res) => {
 });
 
   
-app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
+app.post('/api/search-quotes', expensiveRouteLimiter, serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.SEARCH_QUOTES), async (req, res) => {
   // #swagger.tags = ['Search']
   // #swagger.summary = 'Semantic search across podcast transcripts'
   // #swagger.description = 'Performs vector-based semantic search across the podcast corpus using OpenAI embeddings and Pinecone. Supports filtering by feed, episode, date range, and episode name.'
@@ -1207,7 +1237,7 @@ app.post('/api/search-quotes', serviceHmac({ optional: true }), createEntitlemen
   }
 });
 
-app.post('/api/search-chapters', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.CHAPTER_SEARCH), async (req, res) => {
+app.post('/api/search-chapters', expensiveRouteLimiter, serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.CHAPTER_SEARCH), async (req, res) => {
   // #swagger.tags = ['Search']
   // #swagger.summary = 'Search chapters across the podcast corpus'
   // #swagger.description = 'Searches chapter metadata (keywords, headline, summary) across the entire corpus. Returns matching chapters with parent episode context. L402 payment required.'
@@ -1265,7 +1295,7 @@ app.post('/api/search-chapters', serviceHmac({ optional: true }), createEntitlem
   }
 });
 
-app.post('/api/stream-search', async (req, res) => {
+app.post('/api/stream-search', expensiveRouteLimiter, async (req, res) => {
   const requestId = `STREAM-SEARCH-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const { query, model = DEFAULT_MODEL, mode = 'default' } = req.body;
   
@@ -1594,7 +1624,7 @@ app.get('/invoice-pool', async (req, res) => {
 
 
 //collects data from user submitted feedback form
-app.post('/api/feedback', async (req, res) => {
+app.post('/api/feedback', feedbackLimiter, async (req, res) => {
   const { email, feedback, timestamp, mode } = req.body;
   try {
     // Validate required fields
@@ -1757,7 +1787,7 @@ app.use('/api/admin/nostr-bot', serviceHmac({ requiredScopes: ['nostr-bot:admin'
 // entitlement gating below. The agentChatRouter is still constructed because
 // /api/pull dispatches to it internally via req.url = '/agent'.
 const agentChatRouter = createAgentChatRoutes({ openai });
-app.post('/api/pull', serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
+app.post('/api/pull', expensiveRouteLimiter, serviceHmac({ optional: true }), createEntitlementMiddleware(ENTITLEMENT_TYPES.PULL), (req, res, next) => {
   // #swagger.tags = ['Pull']
   // #swagger.summary = 'Run an LLM-orchestrated research query (JSON by default, SSE on opt-in)'
   /* #swagger.description = 'Dispatches a natural-language query to the Jamie research agent. The agent autonomously runs a sequence of tools (semantic quote search, chapter lookup, person resolution, podcast discovery) across one or more rounds, then composes a final answer with quoted passages and episode metadata. RESPONSE MODE: Defaults to a single JSON body (`{ sessionId, text, suggestedActions }`) after the full agent loop completes. To opt into live streaming, either set `stream: true` in the request body OR send `Accept: text/event-stream`. In streaming mode the response is an SSE connection with event types: `status` (progress updates), `tool_call` (name of tool invoked), `tool_result` (tool completion), `text_delta` (incremental answer tokens), `text_done` (full final answer), `suggested_action` (optional follow-up button or transcription card), and `done` (terminal). PRICING: $0.10 per call, deducted from the prepaid L402 balance. AUTH: accepts L402 credentials, Bearer JWT, or anonymous free-tier quota (set X-Free-Tier: true). INVOICE AMOUNT: if you call without credentials to receive a 402 challenge, the invoice is auto-sized to cover approximately one call at the current BTC/USD rate (cost + ~2% buffer). Pass `?amountSats=N` (min 10, max 500,000) to prefund multiple calls. STATELESS CLIENT FLOW: the default invoice size means you can safely pay once, make one call, and discard the macaroon — no credential management required. Replaying the URL with `?amountSats` on the retry is harmless (the query param is silently ignored when a valid credential is present; the existing balance is debited).' */
@@ -1887,7 +1917,12 @@ app.use('/api', discoverRoutes); // Podcast discovery + RSS proxy endpoints
 
 // Only enable admin and debug routes in debug mode
 if (DEBUG_MODE) {
-  console.log('🔍 Debug mode enabled - Admin and debug routes are accessible');
+  console.log('🔍 Debug mode enabled - Admin and debug routes are accessible (ADMIN_API_KEY required)');
+  // Defense in depth: DEBUG_MODE is an env flag, so a misconfigured deploy
+  // would otherwise expose entitlement resets to the internet. Every admin
+  // and debug route also requires the ADMIN_API_KEY shared secret.
+  app.use('/api/admin', requireAdminKey);
+  app.use('/api/debug', requireAdminKey);
   app.use('/api/admin/entitlements', adminEntitlementsRoutes);
   app.use('/api/debug', debugRoutes);
   

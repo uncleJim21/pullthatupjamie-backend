@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const wav = require('wav');
 const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+const execFile = promisify(require('child_process').execFile);
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
 const sharp = require('sharp');
@@ -81,14 +81,22 @@ class VideoGenerator {
 
 
   async convertToWav() {
-      await exec(`ffmpeg -y -i "${this.audioPath}" -acodec pcm_s16le -ar 44100 -map_metadata -1 "${this.tempWavPath}"`);
+      // argv array, no shell: paths are derived from untrusted media metadata.
+      await execFile('ffmpeg', [
+        '-y', '-i', String(this.audioPath),
+        '-acodec', 'pcm_s16le', '-ar', '44100', '-map_metadata', '-1',
+        String(this.tempWavPath)
+      ]);
       return this.tempWavPath;
   }
 
   async getDuration(filePath) {
-    const { stdout } = await exec(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
-    );
+    const { stdout } = await execFile('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      String(filePath)
+    ]);
     return parseFloat(stdout);
   }
 

@@ -70,6 +70,12 @@ RUN mkdir -p /dev/shm/frames && chmod 777 /dev/shm/frames
 # Add environment variable
 ENV FRAMES_DIR=/dev/shm/frames
 
+# Hand the app tree and its writable dirs to the unprivileged `node` user that
+# the official image ships, then drop root. /dev/shm/frames is created above
+# as 777 so it stays writable after the switch.
+RUN chown -R node:node /usr/src/app /tmp/video-gen
+USER node
+
 # Expose the port your app runs on
 EXPOSE 4131
 
